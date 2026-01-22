@@ -1,1 +1,1 @@
-"""Data loading and preprocessing modules."""
+"""Data processing modules for cognitive resilience model."""
