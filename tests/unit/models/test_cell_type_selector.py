@@ -347,3 +347,146 @@ class TestDevicePlacement:
         assert weights.device.type == "cuda"
         assert selected.device.type == "cuda"
         assert mask.device.type == "cuda"
+
+
+# =============================================================================
+# EDGE CASES
+# =============================================================================
+
+class TestEdgeCases:
+    """Edge cases and boundary conditions."""
+
+    def test_single_cell_type(self):
+        """Single cell type: selection is trivial."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=1)
+        weights = selector.get_selection_weights()
+        selected = selector.get_selected_types(k=1)
+
+        assert torch.allclose(weights, torch.ones(1))
+        assert selected.item() == 0
+
+    def test_k_equals_n(self):
+        """Select all cell types."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=5)
+        selected = selector.get_selected_types(k=5)
+        mask = selector.get_selection_mask(k=5)
+
+        assert set(selected.tolist()) == {0, 1, 2, 3, 4}
+        assert mask.all()
+
+    def test_k_equals_one(self):
+        """Select single most important cell type."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=10)
+        selector.selection_logits.data = torch.arange(10, dtype=torch.float)
+
+        selected = selector.get_selected_types(k=1)
+
+        assert selected.item() == 9  # Highest logit
+
+    def test_all_equal_logits(self):
+        """All logits equal: uniform selection weights."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=5, init_uniform=True)
+        weights = selector.get_selection_weights()
+
+        expected = torch.ones(5) / 5
+        assert torch.allclose(weights, expected, atol=1e-5)
+
+
+# =============================================================================
+# NUMERICAL STABILITY
+# =============================================================================
+
+class TestNumericalStability:
+    """Numerical stability tests."""
+
+    def test_large_positive_logits(self):
+        """Large positive logits should not overflow."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=10)
+        selector.selection_logits.data = torch.randn(10) * 1000
+
+        weights = selector.get_selection_weights()
+
+        assert not torch.isnan(weights).any()
+        assert not torch.isinf(weights).any()
+        assert torch.allclose(weights.sum(), torch.tensor(1.0), atol=1e-4)
+
+    def test_large_negative_logits(self):
+        """Large negative logits may underflow but shouldn't produce NaN."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=10)
+        selector.selection_logits.data = torch.randn(10) * -1000
+
+        weights = selector.get_selection_weights()
+
+        assert not torch.isnan(weights).any()
+        # At least one weight should be non-zero (the "winner")
+        assert weights.max() > 0
+
+    def test_gradient_stability(self):
+        """Gradients should be stable, not NaN or Inf."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=10)
+        selector.selection_logits.data = torch.randn(10) * 5
+
+        weights = selector.get_selection_weights()
+        loss = weights.sum()
+        loss.backward()
+
+        assert not torch.isnan(selector.selection_logits.grad).any()
+        assert not torch.isinf(selector.selection_logits.grad).any()
+
+
+# =============================================================================
+# DETERMINISM
+# =============================================================================
+
+class TestDeterminism:
+    """Reproducibility tests."""
+
+    def test_same_logits_same_weights(self):
+        """Same logits should produce identical weights."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=10)
+        selector.selection_logits.data = torch.randn(10)
+
+        weights1 = selector.get_selection_weights()
+        weights2 = selector.get_selection_weights()
+
+        assert torch.equal(weights1, weights2)
+
+    def test_same_logits_same_selection(self):
+        """Same logits should produce identical selection."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=10)
+        selector.selection_logits.data = torch.randn(10)
+
+        selected1 = selector.get_selected_types(k=5)
+        selected2 = selector.get_selected_types(k=5)
+
+        assert torch.equal(selected1, selected2)
+
+    def test_seeded_init_reproducible(self):
+        """Seeded initialization should be reproducible."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        torch.manual_seed(42)
+        sel1 = CellTypeSelector(n_cell_types=10, init_uniform=False)
+
+        torch.manual_seed(42)
+        sel2 = CellTypeSelector(n_cell_types=10, init_uniform=False)
+
+        assert torch.equal(sel1.selection_logits, sel2.selection_logits)
