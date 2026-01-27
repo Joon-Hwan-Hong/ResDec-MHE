@@ -285,6 +285,10 @@ class SetTransformerEncoder(nn.Module):
     Architecture:
         Input embedding → ISAB × n_layers → PMA → Output
 
+    Handles edge cases:
+        - All-masked cell types: Returns learned "empty" embedding instead of NaN
+        - Empty sets: Same handling as all-masked
+
     Args:
         d_input: Input dimension (n_genes)
         d_model: Model dimension
@@ -332,6 +336,10 @@ class SetTransformerEncoder(nn.Module):
         # PMA for pooling
         self.pma = PMA(d_model, n_heads, n_pma_seeds, dropout)
 
+        # Learned embedding for empty sets (all cells masked)
+        # This prevents NaN from attention on all-masked inputs
+        self.empty_embedding = nn.Parameter(torch.zeros(d_model))
+
     def forward(
         self,
         x: torch.Tensor,
@@ -349,7 +357,43 @@ class SetTransformerEncoder(nn.Module):
         Returns:
             embedding: (batch, d_model) if n_pma_seeds=1, else (batch, n_seeds, d_model)
             attention: PMA attention weights or None
+
+        Note:
+            Handles all-masked inputs (empty sets) by returning a learned
+            empty_embedding instead of producing NaN from attention.
         """
+        batch_size = x.size(0)
+        device = x.device
+
+        # Detect which samples have all cells masked (empty sets)
+        if mask is not None:
+            # has_valid_cells: True if at least one cell is valid
+            has_valid_cells = mask.any(dim=1)  # (batch,)
+            all_empty = ~has_valid_cells.any()  # All samples are empty
+        else:
+            has_valid_cells = torch.ones(batch_size, dtype=torch.bool, device=device)
+            all_empty = False
+
+        # If ALL samples are empty, return empty embeddings directly
+        # This avoids any attention computation on all-masked inputs
+        if all_empty:
+            if self.n_pma_seeds == 1:
+                pooled = self.empty_embedding.unsqueeze(0).expand(batch_size, -1)
+            else:
+                pooled = self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
+                    batch_size, self.n_pma_seeds, -1
+                )
+            attention = None
+            if return_attention:
+                # Return zero attention weights for empty sets
+                n_cells = x.size(1)
+                attention = torch.zeros(
+                    batch_size, self.pma.mab.n_heads, self.n_pma_seeds, n_cells,
+                    device=device, dtype=x.dtype
+                )
+            return pooled, attention
+
+        # Normal processing for non-empty samples
         # Project to model dimension
         h = self.input_proj(x)
 
@@ -363,5 +407,37 @@ class SetTransformerEncoder(nn.Module):
         # Squeeze if single seed
         if self.n_pma_seeds == 1:
             pooled = pooled.squeeze(1)  # (batch, d_model)
+
+        # Replace empty sample outputs with learned empty embedding
+        if mask is not None and not has_valid_cells.all():
+            empty_mask = ~has_valid_cells  # (batch,)
+            if self.n_pma_seeds == 1:
+                # pooled: (batch, d_model)
+                pooled = torch.where(
+                    empty_mask.unsqueeze(-1),
+                    self.empty_embedding.unsqueeze(0).expand(batch_size, -1),
+                    pooled
+                )
+            else:
+                # pooled: (batch, n_seeds, d_model)
+                pooled = torch.where(
+                    empty_mask.unsqueeze(-1).unsqueeze(-1),
+                    self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
+                        batch_size, self.n_pma_seeds, -1
+                    ),
+                    pooled
+                )
+
+            # Also replace attention for empty samples to avoid NaN
+            # attention shape: (batch, n_heads, n_seeds, n_cells)
+            if attention is not None:
+                n_cells = x.size(1)
+                zero_attention = torch.zeros(
+                    batch_size, self.pma.mab.n_heads, self.n_pma_seeds, n_cells,
+                    device=device, dtype=x.dtype
+                )
+                # Expand empty_mask to match attention shape
+                empty_mask_expanded = empty_mask.view(batch_size, 1, 1, 1).expand_as(attention)
+                attention = torch.where(empty_mask_expanded, zero_attention, attention)
 
         return pooled, attention

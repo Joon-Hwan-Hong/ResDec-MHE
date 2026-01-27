@@ -14,6 +14,8 @@ import pandas as pd
 import scanpy as sc
 from anndata import AnnData
 
+from src.data.constants import GROUP_SEPARATOR
+
 
 def get_lr_genes_from_cellchatdb(cellchatdb_path: str | Path) -> set[str]:
     """
@@ -179,7 +181,6 @@ def preprocess_adata(
 def compute_pseudobulk(
     adata: AnnData,
     groupby: list[str],
-    cell_type_column: str = "supercluster_name",
     layer: str | None = None,
     use_raw: bool = False,
 ) -> pd.DataFrame:
@@ -189,7 +190,6 @@ def compute_pseudobulk(
     Args:
         adata: Preprocessed AnnData
         groupby: Columns to group by (e.g., ["ROSMAP_IndividualID", "supercluster_name"])
-        cell_type_column: Column containing cell type labels
         layer: Layer to use (None for .X)
         use_raw: Whether to use raw counts
 
@@ -210,8 +210,15 @@ def compute_pseudobulk(
     if hasattr(X, "toarray"):
         X = X.toarray()
 
-    # Create group labels
-    group_labels = adata.obs[groupby].apply(lambda x: "_".join(x.astype(str)), axis=1)
+    # Validate separator doesn't appear in data
+    for col in groupby:
+        if adata.obs[col].astype(str).str.contains(GROUP_SEPARATOR, regex=False).any():
+            raise ValueError(f"Column '{col}' contains reserved separator '{GROUP_SEPARATOR}'")
+
+    # Create group labels using safe separator
+    group_labels = adata.obs[groupby].apply(
+        lambda x: GROUP_SEPARATOR.join(x.astype(str)), axis=1
+    )
 
     # Aggregate by mean
     pseudobulk_list = []
@@ -223,8 +230,8 @@ def compute_pseudobulk(
         group_expr = X[mask].mean(axis=0)
         pseudobulk_list.append(group_expr)
 
-        # Extract group info
-        group_info = dict(zip(groupby, group_name.split("_")))
+        # Extract group info using safe separator
+        group_info = dict(zip(groupby, group_name.split(GROUP_SEPARATOR)))
         group_info["n_cells"] = mask.sum()
         group_info_list.append(group_info)
 

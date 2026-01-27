@@ -12,24 +12,35 @@ import numpy as np
 import pandas as pd
 from anndata import AnnData
 
+from src.data.constants import CELLCHATDB_CATEGORIES, NOVEL_CATEGORY, ALL_EDGE_TYPES
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CellChatDB Category Mapping
-# ─────────────────────────────────────────────────────────────────────────────
 
-# CellChatDB interaction categories (from annotation column)
-CELLCHATDB_CATEGORIES = [
-    "Secreted Signaling",
-    "ECM-Receptor",
-    "Cell-Cell Contact",
-    "Non-protein Signaling",
-]
+def _normalize_annotation(annotation: str) -> str:
+    """
+    Normalize CellChatDB annotation to our standard format.
 
-# Edge type for L-R pairs not in CellChatDB
-NOVEL_CATEGORY = "Novel/Uncharacterized"
+    CellChatDB uses spaces (e.g., "Secreted Signaling") but we use
+    underscores (e.g., "Secreted_Signaling") for code compatibility
+    with PyG edge type tuples and config keys.
 
-# All edge types including novel
-ALL_EDGE_TYPES = CELLCHATDB_CATEGORIES + [NOVEL_CATEGORY]
+    Args:
+        annotation: Raw annotation from CellChatDB
+
+    Returns:
+        Normalized annotation with underscores
+    """
+    # Replace spaces and hyphens with underscores
+    normalized = annotation.replace(" ", "_").replace("-", "_")
+
+    # Map common variations to our standard names
+    mapping = {
+        "Secreted_Signaling": "Secreted_Signaling",
+        "ECM_Receptor": "ECM_Receptor",
+        "Cell_Cell_Contact": "Cell_Cell_Contact",
+        "Non_protein_Signaling": "Non_protein_Signaling",
+    }
+
+    return mapping.get(normalized, normalized)
 
 
 def load_cellchatdb_categories(
@@ -42,7 +53,7 @@ def load_cellchatdb_categories(
         db_path: Path to CellChatDB_human_interaction.csv
 
     Returns:
-        Dict mapping "LIGAND_RECEPTOR" -> category name
+        Dict mapping "LIGAND_RECEPTOR" -> category name (normalized with underscores)
     """
     db = pd.read_csv(db_path)
 
@@ -56,15 +67,18 @@ def load_cellchatdb_categories(
         if pd.isna(ligand) or pd.isna(receptor):
             continue
 
+        # Normalize annotation to our standard format (underscores)
+        normalized_annotation = _normalize_annotation(str(annotation))
+
         # Create standardized LR key (gene symbols)
         lr_key = f"{ligand}_{receptor}"
-        lr_to_category[lr_key] = annotation
+        lr_to_category[lr_key] = normalized_annotation
 
         # Also store reversed for flexibility
         # (some tools might report receptor_ligand)
         lr_key_rev = f"{receptor}_{ligand}"
         if lr_key_rev not in lr_to_category:
-            lr_to_category[lr_key_rev] = annotation
+            lr_to_category[lr_key_rev] = normalized_annotation
 
     return lr_to_category
 
@@ -425,10 +439,17 @@ def build_subject_ccc_features(
 
     Returns:
         Dictionary with:
-        - 'adjacency': [n_cell_types, n_cell_types] interaction strength
+        - 'adjacency': [n_cell_types, n_cell_types] interaction strength (raw magnitude_rank)
         - 'edge_index': [2, n_edges] edge indices
         - 'edge_type': [n_edges] edge type indices
-        - 'edge_attr': [n_edges, 1] edge attributes (magnitude rank)
+        - 'edge_attr': [n_edges, 1] edge attributes (1.0 - magnitude_rank, so higher = stronger)
+
+    Note:
+        edge_attr is inverted from LIANA+'s magnitude_rank convention:
+        - LIANA+: lower magnitude_rank = stronger interaction (0 = strongest)
+        - edge_attr: higher value = stronger interaction (1 = strongest)
+        This matches HGTConvWithEdgeAttr's expectation that higher edge values
+        should increase attention and message strength.
     """
     if edge_types is None:
         edge_types = ALL_EDGE_TYPES
@@ -459,9 +480,13 @@ def build_subject_ccc_features(
         edge_dst.append(ct_to_idx[tgt])
         edge_type_list.append(et_to_idx.get(et_name, et_to_idx[NOVEL_CATEGORY]))
 
-        # Use magnitude_rank as edge attribute (lower = stronger)
-        magnitude = row.get("magnitude_rank", 0.5)
-        edge_attr_list.append([magnitude])
+        # Transform magnitude_rank to edge attribute
+        # LIANA+ convention: lower magnitude_rank = stronger interaction (0 = strongest)
+        # HGT convention: higher edge_attr = more attention/influence
+        # Solution: invert so that stronger interactions get higher values
+        magnitude_rank = row.get("magnitude_rank", 0.5)
+        edge_attr = 1.0 - magnitude_rank  # Now higher = stronger
+        edge_attr_list.append([edge_attr])
 
     # Convert to arrays
     if len(edge_src) > 0:

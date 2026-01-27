@@ -23,8 +23,7 @@ from typing import Any
 import torch
 from torch_geometric.data import Batch, Data, HeteroData
 
-from src.visualization.config import CELL_TYPE_ORDER
-from src.data.liana_processing import ALL_EDGE_TYPES
+from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES
 
 
 def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -32,7 +31,7 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     Collate function for CognitiveResilienceDataset.
 
     Handles:
-    - Standard tensor stacking (pseudobulk, pathology, target)
+    - Standard tensor stacking (pseudobulk, pathology, cognition)
     - Graph batching for variable-sized CCC graphs
     - Padded tensors (cells, cell_mask)
     - Subject IDs as list
@@ -44,16 +43,20 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         Batched dictionary with:
         - pseudobulk: [batch, n_cell_types, n_genes]
         - cell_type_mask: [batch, n_cell_types]
+        - cell_counts: [batch, n_cell_types] number of cells per type
         - pathology: [batch, n_pathology]
-        - target: [batch, 1]
-        - edge_index: [2, total_edges] batched edge indices (with node offsets)
-        - edge_type: [total_edges] edge type indices
-        - edge_attr: [total_edges, 1] edge attributes
+        - cognition: [batch, 1]
+        - ccc_edge_index: [2, total_edges] batched edge indices (with node offsets)
+        - ccc_edge_type: [total_edges] edge type indices
+        - ccc_edge_attr: [total_edges, 1] edge attributes
         - graph_batch: [total_nodes] mapping each node to its graph index
         - graph_ptr: [batch+1] pointers to graph boundaries
-        - cells: [batch, n_selected_types, max_cells, n_genes]
-        - cell_mask: [batch, n_selected_types, max_cells]
+        - cells: [batch, n_cell_types, max_cells, n_genes]
+        - cell_mask: [batch, n_cell_types, max_cells]
+        - region_mask: [batch, n_regions] bool mask for available regions
         - subject_ids: list of strings
+        - batch_size: int
+        - n_nodes_per_graph: int (31 cell types)
     """
     batch_size = len(batch)
 
@@ -62,10 +65,12 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     # ─────────────────────────────────────────────────────────────────────────
     pseudobulk = torch.stack([s["pseudobulk"] for s in batch], dim=0)
     cell_type_mask = torch.stack([s["cell_type_mask"] for s in batch], dim=0)
+    cell_counts = torch.stack([s["cell_counts"] for s in batch], dim=0)
     pathology = torch.stack([s["pathology"] for s in batch], dim=0)
-    target = torch.stack([s["target"] for s in batch], dim=0)
+    cognition = torch.stack([s["cognition"] for s in batch], dim=0)
     cells = torch.stack([s["cells"] for s in batch], dim=0)
     cell_mask = torch.stack([s["cell_mask"] for s in batch], dim=0)
+    region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Graph batching - Manual approach for homogeneous treatment
@@ -84,26 +89,26 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     node_offset = 0
 
     for s in batch:
-        edge_index = s["edge_index"]
-        n_edges = edge_index.shape[1] if edge_index.numel() > 0 else 0
+        ccc_edge_index = s["ccc_edge_index"]
+        n_edges = ccc_edge_index.shape[1] if ccc_edge_index.numel() > 0 else 0
 
         if n_edges > 0:
             # Add node offset for batching
-            edge_indices.append(edge_index + node_offset)
-            edge_types.append(s["edge_type"])
-            edge_attrs.append(s["edge_attr"])
+            edge_indices.append(ccc_edge_index + node_offset)
+            edge_types.append(s["ccc_edge_type"])
+            edge_attrs.append(s["ccc_edge_attr"])
 
         node_offset += n_nodes_per_graph
 
     # Concatenate all edges
     if edge_indices:
-        batched_edge_index = torch.cat(edge_indices, dim=1)
-        batched_edge_type = torch.cat(edge_types, dim=0)
-        batched_edge_attr = torch.cat(edge_attrs, dim=0)
+        batched_ccc_edge_index = torch.cat(edge_indices, dim=1)
+        batched_ccc_edge_type = torch.cat(edge_types, dim=0)
+        batched_ccc_edge_attr = torch.cat(edge_attrs, dim=0)
     else:
-        batched_edge_index = torch.zeros((2, 0), dtype=torch.long)
-        batched_edge_type = torch.zeros((0,), dtype=torch.long)
-        batched_edge_attr = torch.zeros((0, 1), dtype=torch.float)
+        batched_ccc_edge_index = torch.zeros((2, 0), dtype=torch.long)
+        batched_ccc_edge_type = torch.zeros((0,), dtype=torch.long)
+        batched_ccc_edge_attr = torch.zeros((0, 1), dtype=torch.float)
 
     # Create batch vector: [0,0,...,0, 1,1,...,1, 2,2,...,2, ...]
     graph_batch = torch.arange(batch_size).repeat_interleave(n_nodes_per_graph)
@@ -119,18 +124,21 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "pseudobulk": pseudobulk,
         "cell_type_mask": cell_type_mask,
+        "cell_counts": cell_counts,
         "pathology": pathology,
-        "target": target,
+        "cognition": cognition,
         # Graph data (flat representation for efficiency)
-        "edge_index": batched_edge_index,
-        "edge_type": batched_edge_type,
-        "edge_attr": batched_edge_attr,
+        "ccc_edge_index": batched_ccc_edge_index,
+        "ccc_edge_type": batched_ccc_edge_type,
+        "ccc_edge_attr": batched_ccc_edge_attr,
         "graph_batch": graph_batch,
         "graph_ptr": graph_ptr,
         "n_nodes_per_graph": n_nodes_per_graph,
-        # Cell-level data
+        # Cell-level data (all 31 cell types)
         "cells": cells,
         "cell_mask": cell_mask,
+        # Region mask
+        "region_mask": region_mask,
         # Metadata
         "subject_ids": subject_ids,
         "batch_size": batch_size,
@@ -151,18 +159,30 @@ def collate_to_heterodata(batch: list[dict[str, Any]]) -> dict[str, Any]:
     Returns:
         Batched dictionary with:
         - pseudobulk: [batch, n_cell_types, n_genes] (for non-graph branches)
+        - cell_type_mask: [batch, n_cell_types] bool mask for available cell types
+        - cell_counts: [batch, n_cell_types] number of cells per type
         - hetero_batch: PyG Batch of HeteroData objects
-        - Other standard fields (pathology, target, cells, etc.)
+        - pathology: [batch, n_pathology]
+        - cognition: [batch, 1]
+        - cells: [batch, n_cell_types, max_cells, n_genes]
+        - cell_mask: [batch, n_cell_types, max_cells]
+        - region_mask: [batch, n_regions] bool mask for available regions
+        - subject_ids: list of strings
+        - batch_size: int
+        - node_types: list of sanitized cell type names
+        - edge_types: list of sanitized edge type names
     """
     batch_size = len(batch)
 
     # Standard tensor stacking (same as collate_fn)
     pseudobulk = torch.stack([s["pseudobulk"] for s in batch], dim=0)
     cell_type_mask = torch.stack([s["cell_type_mask"] for s in batch], dim=0)
+    cell_counts = torch.stack([s["cell_counts"] for s in batch], dim=0)
     pathology = torch.stack([s["pathology"] for s in batch], dim=0)
-    target = torch.stack([s["target"] for s in batch], dim=0)
+    cognition = torch.stack([s["cognition"] for s in batch], dim=0)
     cells = torch.stack([s["cells"] for s in batch], dim=0)
     cell_mask = torch.stack([s["cell_mask"] for s in batch], dim=0)
+    region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Build HeteroData for each sample
@@ -187,9 +207,9 @@ def collate_to_heterodata(batch: list[dict[str, Any]]) -> dict[str, Any]:
             data[safe_ct].x = s["pseudobulk"][ct_idx].unsqueeze(0)  # [1, n_genes]
 
         # Add edges - group by (src_type, relation, dst_type) triplet
-        edge_index = s["edge_index"]
-        edge_type_indices = s["edge_type"]
-        edge_attr = s["edge_attr"]
+        edge_index = s["ccc_edge_index"]
+        edge_type_indices = s["ccc_edge_type"]
+        edge_attr = s["ccc_edge_attr"]
 
         if edge_index.numel() > 0:
             # Build a dictionary to accumulate edges per triplet
@@ -233,11 +253,16 @@ def collate_to_heterodata(batch: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "pseudobulk": pseudobulk,
         "cell_type_mask": cell_type_mask,
+        "cell_counts": cell_counts,
         "pathology": pathology,
-        "target": target,
+        "cognition": cognition,
         "hetero_batch": hetero_batch,
+        # Cell-level data (all 31 cell types)
         "cells": cells,
         "cell_mask": cell_mask,
+        # Region mask
+        "region_mask": region_mask,
+        # Metadata
         "subject_ids": subject_ids,
         "batch_size": batch_size,
         # Include metadata for model

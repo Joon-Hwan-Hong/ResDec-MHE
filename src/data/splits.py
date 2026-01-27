@@ -11,7 +11,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, train_test_split
 
 
 def create_stratification_variable(
@@ -23,6 +23,8 @@ def create_stratification_variable(
     """
     Create joint stratification variable from pathology and cognition.
 
+    Falls back to median split (2 bins) if tertiles fail due to ties.
+
     Args:
         metadata: Subject-level metadata
         pathology_column: Column for pathology (e.g., gpath)
@@ -32,22 +34,48 @@ def create_stratification_variable(
     Returns:
         Series with stratification labels (e.g., "low_high", "medium_medium")
     """
+    import warnings
+
     metadata = metadata.copy()
 
-    # Create tertile bins for pathology
-    metadata["pathology_bin"] = pd.qcut(
-        metadata[pathology_column],
-        q=n_bins,
-        labels=["low", "medium", "high"][:n_bins],
-        duplicates="drop",
+    def bin_column(values: pd.Series, col_name: str, n_bins: int) -> pd.Series:
+        """Bin a column, falling back to median if qcut fails."""
+        labels_3 = ["low", "medium", "high"]
+        labels_2 = ["low", "high"]
+
+        try:
+            binned = pd.qcut(
+                values,
+                q=n_bins,
+                labels=labels_3[:n_bins],
+                duplicates="drop",
+            )
+            # Check if we got fewer bins than requested
+            actual_bins = binned.nunique()
+            if actual_bins < n_bins:
+                raise ValueError(f"Only got {actual_bins} bins")
+            return binned
+        except (ValueError, IndexError):
+            # Fall back to median split
+            warnings.warn(
+                f"Tertile binning failed for {col_name} due to ties. "
+                f"Falling back to median split (2 bins).",
+                UserWarning,
+            )
+            median = values.median()
+            return pd.Series(
+                ["low" if v <= median else "high" for v in values],
+                index=values.index,
+            )
+
+    # Bin pathology
+    metadata["pathology_bin"] = bin_column(
+        metadata[pathology_column], pathology_column, n_bins
     )
 
-    # Create tertile bins for cognition
-    metadata["cognition_bin"] = pd.qcut(
-        metadata[cognition_column],
-        q=n_bins,
-        labels=["low", "medium", "high"][:n_bins],
-        duplicates="drop",
+    # Bin cognition
+    metadata["cognition_bin"] = bin_column(
+        metadata[cognition_column], cognition_column, n_bins
     )
 
     # Joint stratification variable
@@ -64,19 +92,26 @@ def create_stratified_splits(
     subject_column: str = "ROSMAP_IndividualID",
     pathology_column: str = "gpath",
     cognition_column: str = "cogn_global",
-    train_frac: float = 0.8,
-    val_frac: float = 0.1,
     test_frac: float = 0.1,
     n_folds: int = 5,
     random_state: int = 42,
 ) -> dict:
     """
-    Create subject-level stratified splits.
+    Create subject-level stratified splits using K-fold cross-validation.
 
     Strategy:
-    1. Hold out 10% as final test set (never touched during HP optimization)
-    2. Perform 5-fold CV on remaining 90% for HP selection
-    3. After HP selection, retrain on full 90% and evaluate on test set
+    1. Hold out test_frac (default 10%) as final test set (never touched during HP optimization)
+    2. Perform n_folds CV on remaining pool for HP selection
+    3. After HP selection, retrain on full pool and evaluate on test set
+
+    Split sizes with defaults (test_frac=0.1, n_folds=5):
+    - Test set: 10%
+    - Per-fold validation: 90% / 5 = 18%
+    - Per-fold training: 90% - 18% = 72%
+
+    Note: This uses true StratifiedKFold where each subject appears in exactly
+    one validation set across all folds. This provides disjoint validation sets
+    for statistically independent HP optimization estimates.
 
     Stratification:
     - gpath tertiles (low/medium/high pathology)
@@ -88,20 +123,20 @@ def create_stratified_splits(
         subject_column: Column containing subject IDs
         pathology_column: Column for pathology stratification
         cognition_column: Column for cognition stratification
-        train_frac: Fraction for training (within train+val pool)
-        val_frac: Fraction for validation
-        test_frac: Fraction for holdout test
-        n_folds: Number of CV folds
+        test_frac: Fraction for holdout test set (default: 0.1)
+        n_folds: Number of CV folds (determines val_frac = (1-test_frac)/n_folds)
         random_state: Random seed for reproducibility
 
     Returns:
         Dictionary with:
         - holdout_test: List of test subject IDs
+        - train_val_pool: List of all non-test subject IDs
         - folds: List of {train: [...], val: [...]} dictionaries
         - metadata: Split configuration metadata
     """
-    # Validate fractions
-    assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6, "Fractions must sum to 1"
+    # Validate test fraction
+    if not 0 < test_frac < 1:
+        raise ValueError(f"test_frac must be between 0 and 1, got {test_frac}")
 
     # Get unique subjects
     if subject_column in metadata.columns:
@@ -147,13 +182,21 @@ def create_stratified_splits(
     print(f"Holdout test set: {len(test_subjects)} subjects ({test_frac*100:.0f}%)")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Step 2: K-fold CV on remaining subjects
+    # Step 2: Create K-fold CV with disjoint validation sets
     # ─────────────────────────────────────────────────────────────────────────
     # Get strata for train_val subjects
     train_val_indices = np.isin(subjects, train_val_subjects)
     train_val_strata = strata_array[train_val_indices]
 
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    # Use StratifiedKFold for true K-fold CV:
+    # - Each subject appears in exactly one validation set across all folds
+    # - Validation sets are disjoint (no overlap)
+    # - Stratification preserves class distribution in each fold
+    skf = StratifiedKFold(
+        n_splits=n_folds,
+        shuffle=True,
+        random_state=random_state,
+    )
 
     folds = []
     for fold_idx, (train_idx, val_idx) in enumerate(skf.split(train_val_subjects, train_val_strata)):
@@ -167,6 +210,11 @@ def create_stratified_splits(
     # ─────────────────────────────────────────────────────────────────────────
     # Compile results
     # ─────────────────────────────────────────────────────────────────────────
+    # Calculate derived fractions for documentation
+    pool_frac = 1.0 - test_frac
+    val_frac_derived = pool_frac / n_folds
+    train_frac_derived = pool_frac - val_frac_derived
+
     splits = {
         "holdout_test": test_subjects.tolist(),
         "train_val_pool": train_val_subjects.tolist(),
@@ -176,9 +224,10 @@ def create_stratified_splits(
             "n_test": len(test_subjects),
             "n_train_val": len(train_val_subjects),
             "n_folds": n_folds,
-            "train_frac": train_frac,
-            "val_frac": val_frac,
             "test_frac": test_frac,
+            # Derived fractions (computed from test_frac and n_folds)
+            "val_frac_per_fold": val_frac_derived,
+            "train_frac_per_fold": train_frac_derived,
             "random_state": random_state,
             "pathology_column": pathology_column,
             "cognition_column": cognition_column,

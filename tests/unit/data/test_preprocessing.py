@@ -106,7 +106,7 @@ class TestCreateSubjectPseudoBulkTensor:
     def test_creates_correct_shape(self, mock_adata):
         """Tensor has shape [n_cell_types, n_genes]."""
         from src.data.preprocessing import create_subject_pseudobulk_tensor
-        from src.visualization.config import CELL_TYPE_ORDER
+        from src.data.constants import CELL_TYPE_ORDER
 
         pseudobulk, cell_types = create_subject_pseudobulk_tensor(
             mock_adata,
@@ -182,6 +182,64 @@ class TestGetSubjectsWithMinCells:
         # Threshold 10: all subjects
         subjects = get_subjects_with_min_cells(mock_adata, min_cells=10)
         assert set(subjects) == {"S1", "S2", "S3"}
+
+
+class TestGroupSeparator:
+    """Tests for safe group key joining/splitting."""
+
+    def test_separator_handles_underscores_in_cell_type(self):
+        """Cell type names with underscores should not corrupt group parsing."""
+        from src.data.preprocessing import compute_pseudobulk
+        from src.data.constants import GROUP_SEPARATOR
+        import anndata
+        import numpy as np
+        import pandas as pd
+
+        # Create mock AnnData with cell type containing underscore
+        n_cells = 20
+        n_genes = 10
+        X = np.random.rand(n_cells, n_genes).astype(np.float32)
+        obs = pd.DataFrame({
+            "ROSMAP_IndividualID": ["subj_001"] * 10 + ["subj_002"] * 10,
+            "supercluster_name": ["Astro_L2"] * 10 + ["Oligo_Deep"] * 10,
+        })
+        var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+        adata = anndata.AnnData(X=X, obs=obs, var=var)
+
+        # Should not raise and should correctly parse back
+        result = compute_pseudobulk(
+            adata,
+            groupby=["ROSMAP_IndividualID", "supercluster_name"],
+        )
+
+        # Verify cell types are correctly recovered
+        assert "Astro_L2" in result["supercluster_name"].values
+        assert "Oligo_Deep" in result["supercluster_name"].values
+        assert "subj_001" in result["ROSMAP_IndividualID"].values
+        assert "subj_002" in result["ROSMAP_IndividualID"].values
+
+    def test_separator_not_in_data(self):
+        """Separator should not appear in typical data values."""
+        from src.data.constants import GROUP_SEPARATOR, CELL_TYPE_ORDER
+
+        for ct in CELL_TYPE_ORDER:
+            assert GROUP_SEPARATOR not in ct, f"Separator found in cell type: {ct}"
+
+
+class TestComputePseudobulkSignature:
+    """Tests for compute_pseudobulk function signature."""
+
+    def test_groupby_is_required(self):
+        """groupby parameter should be required."""
+        import inspect
+        from src.data.preprocessing import compute_pseudobulk
+
+        sig = inspect.signature(compute_pseudobulk)
+        params = list(sig.parameters.keys())
+
+        assert "groupby" in params
+        # cell_type_column should NOT be a parameter (it's redundant with groupby)
+        assert "cell_type_column" not in params
 
 
 class TestComputePseudobulk:

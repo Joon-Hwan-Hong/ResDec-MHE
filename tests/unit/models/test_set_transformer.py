@@ -424,14 +424,89 @@ class TestEdgeCases:
     """Tests for boundary conditions and edge cases."""
 
     def test_empty_set_with_mask(self, encoder):
-        """All-masked input should still produce output (though meaningless)."""
+        """All-masked input should produce finite output (learned empty embedding)."""
         x = torch.randn(2, 10, 100)
         mask = torch.zeros(2, 10, dtype=torch.bool)  # All masked
 
-        # This is a degenerate case - output may be NaN or arbitrary
-        # We just verify it doesn't crash
         output, _ = encoder(x, mask=mask)
         assert output.shape == (2, 64)
+        # Output should be finite (no NaN, no Inf)
+        assert torch.isfinite(output).all(), "All-masked input produced NaN/Inf"
+
+    def test_all_masked_produces_finite_gradients(self):
+        """All-masked input should allow gradient flow through empty_embedding."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+
+        encoder = SetTransformerEncoder(d_input=50, d_model=32, n_heads=4)
+        x = torch.randn(2, 10, 50, requires_grad=True)
+        mask = torch.zeros(2, 10, dtype=torch.bool)  # All masked
+
+        output, _ = encoder(x, mask=mask)
+
+        # Compute loss and backprop
+        loss = output.sum()
+        loss.backward()
+
+        # empty_embedding should have gradient (it's being used)
+        assert encoder.empty_embedding.grad is not None
+        assert torch.isfinite(encoder.empty_embedding.grad).all()
+
+    def test_mixed_empty_and_valid_batches(self):
+        """Batch with some all-masked and some valid samples."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+
+        encoder = SetTransformerEncoder(d_input=50, d_model=32, n_heads=4)
+        x = torch.randn(4, 10, 50)
+        mask = torch.zeros(4, 10, dtype=torch.bool)
+        # Samples 0,2 have valid cells; samples 1,3 are all-masked
+        mask[0, :5] = True
+        mask[2, :3] = True
+
+        output, _ = encoder(x, mask=mask)
+
+        assert output.shape == (4, 32)
+        # All outputs should be finite
+        assert torch.isfinite(output).all()
+        # Empty samples should get empty_embedding
+        assert torch.allclose(output[1], output[3], atol=1e-6)  # Both use empty_embedding
+
+    def test_mixed_empty_and_valid_with_attention(self):
+        """Batch with mixed empty/valid samples should produce valid attention weights.
+
+        This tests the NaN risk when some samples are all-masked but others have valid cells.
+        The attention computation for empty samples should not produce NaN values.
+        """
+        from src.models.components.set_transformer import SetTransformerEncoder
+
+        encoder = SetTransformerEncoder(d_input=50, d_model=32, n_heads=4)
+        x = torch.randn(4, 10, 50)
+        mask = torch.zeros(4, 10, dtype=torch.bool)
+        # Samples 0,2 have valid cells; samples 1,3 are all-masked
+        mask[0, :5] = True
+        mask[2, :3] = True
+
+        output, attention = encoder(x, mask=mask, return_attention=True)
+
+        # Output should be finite for all samples
+        assert torch.isfinite(output).all()
+
+        # Attention should be finite (no NaN from empty samples)
+        assert attention is not None
+        assert torch.isfinite(attention).all(), (
+            "Attention weights contain NaN or Inf - empty samples may not be handled correctly"
+        )
+
+        # Empty samples (1,3) should have zero attention (replaced by fix)
+        assert (attention[1] == 0).all(), "Empty sample 1 should have zero attention"
+        assert (attention[3] == 0).all(), "Empty sample 3 should have zero attention"
+
+        # Valid samples (0,2) should have non-zero attention for valid cells
+        assert attention[0, :, :, :5].abs().max() > 0, "Valid cells should have attention"
+        assert attention[2, :, :, :3].abs().max() > 0, "Valid cells should have attention"
+
+        # Masked cells in valid samples should have ~0 attention
+        assert attention[0, :, :, 5:].abs().max() < 1e-4, "Masked cells should have ~0 attention"
+        assert attention[2, :, :, 3:].abs().max() < 1e-4, "Masked cells should have ~0 attention"
 
     def test_single_valid_cell(self, encoder):
         """Single valid cell in masked batch."""

@@ -4,6 +4,9 @@ Visualization configuration: colors, styling, and plotting defaults.
 Color scheme designed for publication-quality figures with:
 - Sequential colormap for attention/importance (white → coral)
 - Diverging colormap for resilience signatures (teal ↔ coral)
+
+Cell type order and edge type definitions are imported from src.data.constants
+to ensure consistency across the codebase.
 """
 
 from typing import Any
@@ -12,6 +15,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import seaborn as sns
+
+from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, EDGE_TYPE_DISPLAY_NAMES
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,9 +106,10 @@ def get_plotly_diverging_colorscale() -> list[list[float | str]]:
 # Cell Type Colors
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Allen ABC 31 supercluster cell types (from MapMyCells)
+# Colors for Allen ABC 31 supercluster cell types
+# Keys must match CELL_TYPE_ORDER from src.data.constants
 # Colors grouped by major class for visual consistency
-CELL_TYPE_COLORS = {
+CELL_TYPE_COLORS: dict[str, str] = {
     # Glial cells (orange/brown tones)
     "Oligodendrocyte": "#8C564B",
     "Astrocyte": "#FF7F0E",
@@ -154,54 +160,52 @@ CELL_TYPE_COLORS = {
     "Splatter": "#D3D3D3",
 }
 
-# Canonical order for consistent plotting
-CELL_TYPE_ORDER = [
-    # Glial
-    "Astrocyte",
-    "Oligodendrocyte",
-    "Oligodendrocyte precursor",
-    "Committed oligodendrocyte precursor",
-    "Microglia",
-    "Bergmann glia",
-    # Cortical excitatory
-    "Upper-layer intratelencephalic",
-    "Deep-layer intratelencephalic",
-    "Deep-layer corticothalamic and 6b",
-    "Deep-layer near-projecting",
-    # Cortical inhibitory
-    "CGE interneuron",
-    "MGE interneuron",
-    "LAMP5-LHX6 and Chandelier",
-    "Midbrain-derived inhibitory",
-    # Hippocampal
-    "Hippocampal dentate gyrus",
-    "Hippocampal CA1-3",
-    "Hippocampal CA4",
-    # Subcortical excitatory
-    "Amygdala excitatory",
-    "Thalamic excitatory",
-    "Mammillary body",
-    # Striatal
-    "Medium spiny neuron",
-    "Eccentric medium spiny neuron",
-    # Cerebellar
-    "Upper rhombic lip",
-    "Lower rhombic lip",
-    "Cerebellar inhibitory",
-    # Vascular/structural
-    "Vascular",
-    "Fibroblast",
-    "Ependymal",
-    "Choroid plexus",
-    # Other
-    "Miscellaneous",
-    "Splatter",
-]
 
 
 def get_cell_type_color(cell_type: str) -> str:
     """Get color for a cell type, with fallback to gray."""
     return CELL_TYPE_COLORS.get(cell_type, "#808080")
+
+
+def validate_cell_type_colors() -> list[str]:
+    """
+    Validate that CELL_TYPE_COLORS covers all cell types in CELL_TYPE_ORDER.
+
+    Returns:
+        List of missing cell types (empty if all covered)
+    """
+    missing = [ct for ct in CELL_TYPE_ORDER if ct not in CELL_TYPE_COLORS]
+    if missing:
+        import warnings
+        warnings.warn(
+            f"CELL_TYPE_COLORS missing colors for: {missing}. "
+            "These will use fallback gray color."
+        )
+    return missing
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Edge Type Colors
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Colors for CellChatDB edge types (cell-cell communication categories)
+EDGE_TYPE_COLORS: dict[str, str] = {
+    "Secreted_Signaling": "#1f77b4",      # Blue
+    "ECM_Receptor": "#ff7f0e",            # Orange
+    "Cell_Cell_Contact": "#2ca02c",       # Green
+    "Non_protein_Signaling": "#d62728",   # Red
+    "Novel_Uncharacterized": "#9467bd",   # Purple
+}
+
+
+def get_edge_type_color(edge_type: str) -> str:
+    """Get color for an edge type, with fallback to gray."""
+    return EDGE_TYPE_COLORS.get(edge_type, "#808080")
+
+
+def get_edge_type_display_name(edge_type: str) -> str:
+    """Get human-readable display name for an edge type."""
+    return EDGE_TYPE_DISPLAY_NAMES.get(edge_type, edge_type)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
