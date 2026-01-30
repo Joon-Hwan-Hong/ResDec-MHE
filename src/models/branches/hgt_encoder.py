@@ -22,12 +22,13 @@ Key features:
     - Interpretable: Attention weights and LayerScale values extractable
 """
 
+import warnings
 from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from src.data.constants import ALL_EDGE_TYPES, CELL_TYPE_ORDER
+from src.data.constants import ALL_EDGE_TYPES, CELL_TYPE_ORDER, sanitize_key
 from src.models.components.hgt_conv import HGTConvWithEdgeAttr
 
 
@@ -38,8 +39,21 @@ class HGTEncoder(nn.Module):
     Uses custom HGTConvWithEdgeAttr which implements type-specific projections,
     relation-specific attention, and edge feature support for LIANA magnitudes.
 
+    Input Preparation:
+        In the full model, HGT consumes ENCODED pseudobulk features from
+        PseudobulkEncoder, not raw gene expression. The typical flow:
+
+            pseudobulk_emb = pseudobulk_encoder(batch["pseudobulk"])  # [B, 31, d_embed]
+            x_dict_list = build_x_dict_list_from_embeddings(pseudobulk_emb, node_types)
+            hgt_out = hgt_encoder.forward_batched(x_dict_list, edge_dicts, ...)
+
+        This ensures gene attention gating (from PseudobulkEncoder) influences
+        the HGT's view of cell state, and keeps d_input = d_embed (typically 128)
+        rather than n_genes (~4000).
+
     Args:
-        d_input: Input feature dimension (from pseudobulk encoder)
+        d_input: Input feature dimension. Should match PseudobulkEncoder's d_embed
+            (typically 128). This is the dimension of encoded pseudobulk embeddings.
         d_hidden: Hidden dimension for HGT layers
         d_output: Output dimension
         n_heads: Number of attention heads
@@ -117,23 +131,23 @@ class HGTEncoder(nn.Module):
 
         # Input projection per node type (to d_hidden)
         self.input_projs = nn.ModuleDict({
-            self._sanitize_key(node_type): nn.Linear(d_input, d_hidden)
+            sanitize_key(node_type): nn.Linear(d_input, d_hidden)
             for node_type in self.node_types
         })
         self.input_norms = nn.ModuleDict({
-            self._sanitize_key(node_type): nn.LayerNorm(d_hidden)
+            sanitize_key(node_type): nn.LayerNorm(d_hidden)
             for node_type in self.node_types
         })
 
         # Mapping from original names to sanitized keys
         self._node_type_to_key = {
-            nt: self._sanitize_key(nt) for nt in self.node_types
+            nt: sanitize_key(nt) for nt in self.node_types
         }
 
         # Reverse mapping: sanitized key -> node type index (for LayerScale lookup)
         # This allows handling both sanitized and unsanitized input keys
         self._key_to_node_idx = {
-            self._sanitize_key(nt): idx for idx, nt in enumerate(self.node_types)
+            sanitize_key(nt): idx for idx, nt in enumerate(self.node_types)
         }
         # Also map original names to indices for unsanitized input
         self._key_to_node_idx.update({
@@ -157,7 +171,7 @@ class HGTEncoder(nn.Module):
             self.hgt_layers.append(layer)
             # LayerNorm per node type
             self.layer_norms.append(nn.ModuleDict({
-                self._sanitize_key(nt): nn.LayerNorm(d_hidden)
+                sanitize_key(nt): nn.LayerNorm(d_hidden)
                 for nt in self.node_types
             }))
 
@@ -174,7 +188,7 @@ class HGTEncoder(nn.Module):
         # Output projection per node type (if d_output != d_hidden)
         if d_output != d_hidden:
             self.output_projs = nn.ModuleDict({
-                self._sanitize_key(nt): nn.Linear(d_hidden, d_output)
+                sanitize_key(nt): nn.Linear(d_hidden, d_output)
                 for nt in self.node_types
             })
         else:
@@ -186,14 +200,6 @@ class HGTEncoder(nn.Module):
         self.edge_category_to_idx = {
             cat: idx for idx, cat in enumerate(self.edge_categories)
         }
-
-    @staticmethod
-    def _sanitize_key(name: str) -> str:
-        """Sanitize a name for use as a ModuleDict key."""
-        sanitized = name.replace(" ", "_").replace("-", "_")
-        if sanitized[0].isdigit():
-            sanitized = "_" + sanitized
-        return sanitized
 
     def forward(
         self,
@@ -220,7 +226,7 @@ class HGTEncoder(nn.Module):
         # Input projection per node type
         h_dict = {}
         for node_type, x in x_dict.items():
-            key = self._node_type_to_key.get(node_type, self._sanitize_key(node_type))
+            key = self._node_type_to_key.get(node_type, sanitize_key(node_type))
             if key in self.input_projs:
                 h = self.input_projs[key](x)
                 h = self.input_norms[key](h)
@@ -240,7 +246,7 @@ class HGTEncoder(nn.Module):
             # Pre-LN: normalize h_dict BEFORE passing to HGT layer
             h_normed_dict = {}
             for node_type in h_dict:
-                key = self._node_type_to_key.get(node_type, self._sanitize_key(node_type))
+                key = self._node_type_to_key.get(node_type, sanitize_key(node_type))
                 h_normed_dict[node_type] = norms[key](h_dict[node_type])
 
             # HGTConv forward on normalized features
@@ -257,7 +263,7 @@ class HGTEncoder(nn.Module):
             # Residual + LayerScale(message) per node type
             # Pre-LN: NO LayerNorm after the add - gradient flows directly!
             # NOTE: Iterate over h_dict.keys() (not self.node_types) to handle both
-            # sanitized keys (from collate_to_heterodata) and unsanitized keys.
+            # sanitized keys (from collate_for_hgt) and unsanitized keys.
             for node_key in list(h_dict.keys()):
                 # Look up node index for LayerScale (handles both sanitized/unsanitized)
                 node_type_idx = self._key_to_node_idx.get(node_key)
@@ -279,7 +285,7 @@ class HGTEncoder(nn.Module):
         output_dict = {}
         for node_type, h in h_dict.items():
             if self.output_projs is not None:
-                key = self._node_type_to_key.get(node_type, self._sanitize_key(node_type))
+                key = self._node_type_to_key.get(node_type, sanitize_key(node_type))
                 output_dict[node_type] = self.output_projs[key](h)
             else:
                 output_dict[node_type] = h
@@ -451,21 +457,28 @@ class HGTEncoderBatched(nn.Module):
                 all_attention.append(attn)
 
         # Stack outputs per node type
-        # Collect all node types across samples
+        # Collect all node types across samples and validate consistency
         all_node_types = set()
         for out_dict in outputs_list:
             all_node_types.update(out_dict.keys())
 
+        # Fill missing node types with zero embeddings so batch stacking succeeds
+        for i, out_dict in enumerate(outputs_list):
+            missing = all_node_types - set(out_dict.keys())
+            if missing:
+                warnings.warn(
+                    f"Sample {i} is missing node types {missing}. "
+                    f"Filling with zero embeddings."
+                )
+                for node_type in missing:
+                    # Get embedding dim from any existing output
+                    any_existing = next(iter(out_dict.values()))
+                    out_dict[node_type] = torch.zeros_like(any_existing)
+
         output_dict = {}
         for node_type in all_node_types:
-            tensors = [
-                out_dict.get(node_type)
-                for out_dict in outputs_list
-            ]
-            # Filter None values and stack
-            valid_tensors = [t for t in tensors if t is not None]
-            if valid_tensors:
-                output_dict[node_type] = torch.stack(valid_tensors, dim=0)
+            tensors = [out_dict[node_type] for out_dict in outputs_list]
+            output_dict[node_type] = torch.stack(tensors, dim=0)
 
         return output_dict, all_attention
 

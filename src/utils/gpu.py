@@ -3,9 +3,11 @@ GPU utilities for memory management and device selection.
 """
 
 import os
-from typing import Callable
+from typing import Any
 
 import torch
+
+from src.utils.device import move_batch_to_device
 
 
 def get_available_gpus() -> list[int]:
@@ -93,7 +95,7 @@ def set_visible_gpus(gpu_ids: list[int] | None) -> None:
 
 def estimate_batch_size(
     model: torch.nn.Module,
-    sample_input: dict[str, torch.Tensor],
+    sample_input: dict[str, Any],
     target_memory_fraction: float = 0.8,
     device: torch.device | str = "cuda",
 ) -> int:
@@ -102,7 +104,14 @@ def estimate_batch_size(
 
     Args:
         model: Model to estimate for
-        sample_input: Sample input dictionary (batch size 1)
+        sample_input: Sample input dictionary (batch size 1). Supports nested
+            dict/list structures (e.g., HGT format with x_dict_list).
+
+            IMPORTANT: This dict is unpacked as **kwargs to the model's forward()
+            method. Only include keys that match the model's forward signature.
+            Do NOT pass raw dataset samples or collated batches directly, as they
+            contain metadata keys (subject_id, cell_type_order, etc.) that will
+            cause TypeError. Filter to model-relevant keys first.
         target_memory_fraction: Target fraction of GPU memory to use
         device: Device to estimate for
 
@@ -119,8 +128,8 @@ def estimate_batch_size(
     clear_gpu_memory()
     baseline_memory = torch.cuda.memory_allocated(device)
 
-    # Move sample to device
-    sample = {k: v.to(device) for k, v in sample_input.items()}
+    # Move sample to device (handles nested dict/list structures)
+    sample = move_batch_to_device(sample_input, device)
 
     # Forward pass to measure memory
     model.eval()
@@ -140,20 +149,3 @@ def estimate_batch_size(
 
     # Clamp to reasonable range
     return max(1, min(estimated_batch_size, 128))
-
-
-def with_autocast(func: Callable, enabled: bool = True) -> Callable:
-    """
-    Decorator to run function with automatic mixed precision.
-
-    Args:
-        func: Function to wrap
-        enabled: Whether to enable autocast
-
-    Returns:
-        Wrapped function
-    """
-    def wrapper(*args, **kwargs):
-        with torch.amp.autocast(device_type="cuda", enabled=enabled):
-            return func(*args, **kwargs)
-    return wrapper

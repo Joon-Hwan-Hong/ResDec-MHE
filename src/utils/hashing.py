@@ -12,8 +12,11 @@ def generate_experiment_hash(config: dict[str, Any], length: int = 8) -> str:
     """
     Generate unique experiment hash from configuration.
 
-    Format: YYYYMMDD_HHMMSS_{config_hash}
-    Example: 20260113_143052_a3f7b2c1
+    Format: YYYYMMDD_HHMMSS_ffffff_{config_hash}
+    Example: 20260113_143052_123456_a3f7b2c1
+
+    The microsecond precision prevents collisions when identical configs
+    are started within the same second.
 
     Args:
         config: Experiment configuration dictionary
@@ -29,8 +32,8 @@ def generate_experiment_hash(config: dict[str, Any], length: int = 8) -> str:
     full_hash = hashlib.sha256(config_str.encode()).hexdigest()
     short_hash = full_hash[:length]
 
-    # Prepend timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Prepend timestamp with microseconds for uniqueness
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
     return f"{timestamp}_{short_hash}"
 
