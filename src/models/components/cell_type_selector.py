@@ -15,7 +15,9 @@ class CellTypeSelector(nn.Module):
     Learns which cell types need fine-grained cell-level modeling.
 
     Uses attention-based selection with temperature-controlled softmax.
-    After training, top-K types are selected for Set Transformer processing.
+    All 31 cell types are processed through Set Transformer with soft
+    attention weighting. After training, get_selected_types(k) can extract
+    the top-k most important types for interpretability analysis.
 
     Args:
         n_cell_types: Number of cell types (default: 31 for Allen ABC)
@@ -31,6 +33,7 @@ class CellTypeSelector(nn.Module):
         self,
         n_cell_types: int = 31,
         temperature: float = 1.0,
+        # TODO: Temperature annealing deferred until training loop is built. Design doc specifies annealing schedule (see docs/plans/2026-01-13-cognitive-resilience-model-design-part2-training-ops.md).
         init_uniform: bool = True,
     ):
         super().__init__()

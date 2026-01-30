@@ -34,6 +34,7 @@ class GeneAttentionGate(nn.Module):
         n_cell_types: int,
         n_genes: int,
         temperature: float = 1.0,
+        # TODO: Temperature annealing deferred until training loop is built. Design doc specifies annealing schedule (see docs/plans/2026-01-13-cognitive-resilience-model-design-part2-training-ops.md).
         init_uniform: bool = True,
     ):
         super().__init__()
@@ -93,13 +94,25 @@ class GeneAttentionGate(nn.Module):
         # Compute gate weights with temperature-controlled softmax
         gate = self.get_gate_weights()
 
+        # Scale by n_genes to preserve input magnitude.
+        # Softmax produces weights ~1/n_genes at initialization, which would
+        # shrink inputs by ~4000x. Scaling by n_genes gives ~1.0 per gene at
+        # init, so the downstream MLP receives properly-scaled inputs.
+        # This also eliminates weight decay asymmetry on the first MLP layer
+        # (see review discussion: Option A for gene gate scaling).
+        scaled_gate = gate * self.n_genes
+
         # Apply gating (broadcast over batch dimension)
-        # gate: [n_cell_types, n_genes] -> [1, n_cell_types, n_genes]
-        return x * gate.unsqueeze(0)
+        # scaled_gate: [n_cell_types, n_genes] -> [1, n_cell_types, n_genes]
+        return x * scaled_gate.unsqueeze(0)
 
     def get_gate_weights(self) -> torch.Tensor:
         """
-        Get current gate weights for interpretability.
+        Get current gate weights as probabilities for interpretability.
+
+        Returns probabilities (sum to 1 per cell type), NOT the scaled values
+        used in forward(). For the actual scaling applied during forward pass,
+        these weights are multiplied by n_genes.
 
         Returns:
             Gate weights of shape (n_cell_types, n_genes), each row sums to 1

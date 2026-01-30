@@ -232,10 +232,9 @@ class PMA(nn.Module):
         self.d_model = d_model
         self.n_seeds = n_seeds
 
-        # Learnable seed vectors
-        self.seed_vectors = nn.Parameter(
-            torch.randn(n_seeds, d_model) * 0.02
-        )
+        # Learnable seed vectors (Xavier initialization for proper scale)
+        self.seed_vectors = nn.Parameter(torch.empty(n_seeds, d_model))
+        nn.init.xavier_uniform_(self.seed_vectors)
 
         # MAB for pooling attention
         self.mab = MultiheadAttentionBlock(d_model, n_heads, dropout=dropout)
@@ -378,9 +377,9 @@ class SetTransformerEncoder(nn.Module):
         # This avoids any attention computation on all-masked inputs
         if all_empty:
             if self.n_pma_seeds == 1:
-                pooled = self.empty_embedding.unsqueeze(0).expand(batch_size, -1)
+                pooled = self.empty_embedding.to(device).unsqueeze(0).expand(batch_size, -1)
             else:
-                pooled = self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
+                pooled = self.empty_embedding.to(device).unsqueeze(0).unsqueeze(0).expand(
                     batch_size, self.n_pma_seeds, -1
                 )
             attention = None
@@ -415,14 +414,14 @@ class SetTransformerEncoder(nn.Module):
                 # pooled: (batch, d_model)
                 pooled = torch.where(
                     empty_mask.unsqueeze(-1),
-                    self.empty_embedding.unsqueeze(0).expand(batch_size, -1),
+                    self.empty_embedding.to(device).unsqueeze(0).expand(batch_size, -1),
                     pooled
                 )
             else:
                 # pooled: (batch, n_seeds, d_model)
                 pooled = torch.where(
                     empty_mask.unsqueeze(-1).unsqueeze(-1),
-                    self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
+                    self.empty_embedding.to(device).unsqueeze(0).unsqueeze(0).expand(
                         batch_size, self.n_pma_seeds, -1
                     ),
                     pooled

@@ -13,6 +13,16 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from src.data.constants import sanitize_key
+
+# Verify PyTorch version for scatter_reduce_ support
+_torch_version = tuple(int(x) for x in torch.__version__.split('.')[:2])
+if _torch_version < (2, 1):
+    raise ImportError(
+        f"HGTConvWithEdgeAttr requires PyTorch >= 2.1 for scatter_reduce_ support, "
+        f"got {torch.__version__}"
+    )
+
 
 class HGTConvWithEdgeAttr(nn.Module):
     """
@@ -88,17 +98,17 @@ class HGTConvWithEdgeAttr(nn.Module):
         # This captures cell-type-specific representation learning
 
         self.q_lin = nn.ModuleDict({
-            self._sanitize_key(node_type): nn.Linear(in_channels, out_channels)
+            sanitize_key(node_type): nn.Linear(in_channels, out_channels)
             for node_type in node_types
         })
 
         self.k_lin = nn.ModuleDict({
-            self._sanitize_key(node_type): nn.Linear(in_channels, out_channels)
+            sanitize_key(node_type): nn.Linear(in_channels, out_channels)
             for node_type in node_types
         })
 
         self.v_lin = nn.ModuleDict({
-            self._sanitize_key(node_type): nn.Linear(in_channels, out_channels)
+            sanitize_key(node_type): nn.Linear(in_channels, out_channels)
             for node_type in node_types
         })
 
@@ -110,7 +120,7 @@ class HGTConvWithEdgeAttr(nn.Module):
         # Shape: [heads, d_k, d_k] - transforms K before dot product with Q
 
         self.w_att = nn.ParameterDict({
-            self._sanitize_key(edge_cat): nn.Parameter(
+            sanitize_key(edge_cat): nn.Parameter(
                 torch.empty(heads, self.d_k, self.d_k)
             )
             for edge_cat in edge_categories
@@ -123,7 +133,7 @@ class HGTConvWithEdgeAttr(nn.Module):
         # Shape: [heads, d_k, d_k]
 
         self.w_msg = nn.ParameterDict({
-            self._sanitize_key(edge_cat): nn.Parameter(
+            sanitize_key(edge_cat): nn.Parameter(
                 torch.empty(heads, self.d_k, self.d_k)
             )
             for edge_cat in edge_categories
@@ -158,28 +168,14 @@ class HGTConvWithEdgeAttr(nn.Module):
 
         # Mapping from original names to sanitized keys
         self._node_type_to_key = {
-            nt: self._sanitize_key(nt) for nt in node_types
+            nt: sanitize_key(nt) for nt in node_types
         }
         self._edge_cat_to_key = {
-            ec: self._sanitize_key(ec) for ec in edge_categories
+            ec: sanitize_key(ec) for ec in edge_categories
         }
 
         # Initialize parameters
         self._reset_parameters()
-
-    @staticmethod
-    def _sanitize_key(name: str) -> str:
-        """
-        Sanitize a name for use as a ModuleDict/ParameterDict key.
-
-        PyTorch requires keys to be valid Python identifiers.
-        """
-        # Replace spaces and hyphens with underscores
-        sanitized = name.replace(" ", "_").replace("-", "_")
-        # Ensure it starts with a letter or underscore
-        if sanitized[0].isdigit():
-            sanitized = "_" + sanitized
-        return sanitized
 
     def _reset_parameters(self):
         """Initialize attention and message weights.
@@ -256,9 +252,9 @@ class HGTConvWithEdgeAttr(nn.Module):
             dst_idx = edge_index[1]  # [n_edges]
 
             # Get sanitized keys for module lookups
-            src_key = self._node_type_to_key.get(src_type, self._sanitize_key(src_type))
-            dst_key = self._node_type_to_key.get(dst_type, self._sanitize_key(dst_type))
-            rel_key = self._edge_cat_to_key.get(rel, self._sanitize_key(rel))
+            src_key = self._node_type_to_key.get(src_type, sanitize_key(src_type))
+            dst_key = self._node_type_to_key.get(dst_type, sanitize_key(dst_type))
+            rel_key = self._edge_cat_to_key.get(rel, sanitize_key(rel))
 
             # Skip if node type or relation not in our learned parameters
             if src_key not in self.k_lin or dst_key not in self.q_lin:
@@ -360,9 +356,29 @@ class HGTConvWithEdgeAttr(nn.Module):
                 messages_flat,
             )
 
+        # Track which nodes received any messages (non-zero before out_lin)
+        # This is used to zero out isolated nodes after out_lin
+        # Rationale: "no LIANA edges = no communication contribution"
+        received_messages = {
+            node_type: (out.abs().sum(dim=-1) > 0)  # [n_nodes] bool
+            for node_type, out in out_dict.items()
+        }
+
         # Apply output projection
         out_dict = {
             node_type: self.out_lin(out)
+            for node_type, out in out_dict.items()
+        }
+
+        # Zero out isolated nodes (those that received no messages)
+        # Without this, out_lin's bias would give isolated nodes a non-zero
+        # "communication" signal, conflating "no edges" with "baseline signal"
+        out_dict = {
+            node_type: torch.where(
+                received_messages[node_type].unsqueeze(-1),
+                out,
+                torch.zeros_like(out)
+            )
             for node_type, out in out_dict.items()
         }
 
@@ -395,6 +411,7 @@ class HGTConvWithEdgeAttr(nn.Module):
         max_scores = torch.full(
             (num_nodes, n_heads), float('-inf'), device=device, dtype=dtype
         )
+        # scatter_reduce_ requires PyTorch >= 2.1 (checked at module import)
         max_scores.scatter_reduce_(
             0,
             target_idx.unsqueeze(-1).expand(-1, n_heads),
