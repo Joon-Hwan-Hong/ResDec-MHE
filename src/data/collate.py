@@ -18,12 +18,113 @@ Note on Multi-GPU:
     See: https://lightning.ai/docs/pytorch/stable/accelerators/gpu_intermediate.html
 """
 
+import re
+import warnings
 from typing import Any
 
 import torch
 from torch_geometric.data import Batch, Data, HeteroData
 
-from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES
+from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX, sanitize_key
+
+
+def _derive_available_regions_from_keys(sample: dict[str, Any]) -> list[int]:
+    """
+    Derive available regions from region_{idx}_pseudobulk keys in sample.
+
+    Args:
+        sample: Sample dictionary
+
+    Returns:
+        Sorted list of region indices found in sample keys
+    """
+    pattern = re.compile(r"^region_(\d+)_pseudobulk$")
+    regions = []
+    for key in sample.keys():
+        match = pattern.match(key)
+        if match:
+            regions.append(int(match.group(1)))
+    return sorted(regions)
+
+
+def _assemble_region_tensors(
+    batch: list[dict[str, Any]],
+    batch_size: int,
+    n_cell_types: int,
+    n_genes: int,
+    n_regions: int = N_REGIONS,
+    auto_derive_regions: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Assemble region pseudobulk tensors from per-sample data.
+
+    Shared logic for collate_multiregion and collate_for_hgt_multiregion.
+
+    Args:
+        batch: List of sample dictionaries
+        batch_size: Number of samples
+        n_cell_types: Number of cell types per region
+        n_genes: Number of genes per cell type
+        n_regions: Number of brain regions
+        auto_derive_regions: If True, derive available_regions from
+            region_{idx}_pseudobulk keys when not explicitly provided,
+            and emit a warning. If False, fall back to PFC only.
+
+    Returns:
+        region_pseudobulk: [batch_size, n_regions, n_cell_types, n_genes]
+        region_mask: [batch_size, n_regions] bool mask
+    """
+    region_pseudobulk = torch.zeros(batch_size, n_regions, n_cell_types, n_genes)
+    region_mask = torch.zeros(batch_size, n_regions, dtype=torch.bool)
+
+    missing_count = 0
+
+    for i, s in enumerate(batch):
+        # Determine available regions for this sample
+        if "available_regions" in s:
+            available_regions = s["available_regions"]
+        elif auto_derive_regions:
+            derived_regions = _derive_available_regions_from_keys(s)
+            if derived_regions:
+                available_regions = derived_regions
+                if i == 0:  # Warn once per batch
+                    warnings.warn(
+                        f"Sample missing 'available_regions' key but has "
+                        f"region_*_pseudobulk keys for regions {derived_regions}. "
+                        f"Deriving available_regions from keys. Consider adding "
+                        f"'available_regions' explicitly to samples.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+            else:
+                available_regions = [PFC_REGION_IDX]
+        else:
+            available_regions = [PFC_REGION_IDX]
+
+        for region_idx in available_regions:
+            if region_idx < n_regions:
+                region_key = f"region_{region_idx}_pseudobulk"
+                if region_key in s:
+                    region_pseudobulk[i, region_idx] = s[region_key]
+                    region_mask[i, region_idx] = True
+                elif region_idx == PFC_REGION_IDX:
+                    # Use main pseudobulk for PFC
+                    region_pseudobulk[i, PFC_REGION_IDX] = s["pseudobulk"]
+                    region_mask[i, PFC_REGION_IDX] = True
+                else:
+                    # Non-PFC region key missing — zero-filled, mask stays False
+                    missing_count += 1
+
+    if missing_count > 0:
+        warnings.warn(
+            f"{missing_count} region entries missing across batch "
+            f"(zero-filled, region_mask=False). "
+            f"This is expected for single-region subjects.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    return region_pseudobulk, region_mask
 
 
 def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -145,23 +246,32 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def collate_to_heterodata(batch: list[dict[str, Any]]) -> dict[str, Any]:
+def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    Collate function creating proper HeteroData for HGTConv.
+    Collate function returning dict format for HGTEncoderBatched.
 
     This is the RECOMMENDED collate function for our model because:
     - We have 31 distinct node types (cell types)
     - We have 5 distinct edge/relation types (CellChatDB categories)
-    - HGTConv learns type-specific projection matrices
+    - HGTEncoderBatched expects lists of dicts (one per sample)
 
-    See: https://pytorch-geometric.readthedocs.io/en/latest/notes/heterogeneous.html
+    Returns dicts directly compatible with HGTEncoderBatched, avoiding the need
+    for HeteroData → dict conversion at runtime.
+
+    Note:
+        This collate does NOT produce x_dict_list for HGT node features.
+        The full model builds its own x_dict_list from encoded embeddings via
+        build_x_dict_list_from_embeddings(). For standalone HGT testing,
+        use build_x_dict_list_from_embeddings() with raw pseudobulk or
+        dummy embeddings.
 
     Returns:
         Batched dictionary with:
-        - pseudobulk: [batch, n_cell_types, n_genes] (for non-graph branches)
+        - pseudobulk: [batch, n_cell_types, n_genes] (for PseudobulkEncoder)
         - cell_type_mask: [batch, n_cell_types] bool mask for available cell types
         - cell_counts: [batch, n_cell_types] number of cells per type
-        - hetero_batch: PyG Batch of HeteroData objects
+        - edge_index_dict_list: List of {(src, rel, dst): (2, n_edges)} per sample
+        - edge_attr_dict_list: List of {(src, rel, dst): (n_edges, 1)} per sample
         - pathology: [batch, n_pathology]
         - cognition: [batch, 1]
         - cells: [batch, n_cell_types, max_cells, n_genes]
@@ -185,68 +295,89 @@ def collate_to_heterodata(batch: list[dict[str, Any]]) -> dict[str, Any]:
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Build HeteroData for each sample
+    # Build dict lists for HGTEncoderBatched
     # ─────────────────────────────────────────────────────────────────────────
-    hetero_graphs = []
-    cell_type_names = CELL_TYPE_ORDER
+    # Use cell_type_order from dataset, with fallback to global constant for
+    # backward compatibility with samples that don't include it
+    cell_type_names = batch[0].get("cell_type_order", CELL_TYPE_ORDER)
     edge_type_names = ALL_EDGE_TYPES
 
-    # Sanitize edge type names for PyG (no spaces, slashes)
-    def sanitize_name(name: str) -> str:
-        return name.replace(" ", "_").replace("/", "_").replace("-", "_")
+    # Validate all samples have the same cell_type_order (structural invariant)
+    # This catches dataset mixing bugs where samples have different orderings
+    for i, s in enumerate(batch[1:], start=1):
+        sample_order = s.get("cell_type_order", CELL_TYPE_ORDER)
+        if sample_order != cell_type_names:
+            raise ValueError(
+                f"Sample {i} has different cell_type_order than sample 0. "
+                f"All samples in a batch must have the same cell type ordering. "
+                f"Sample 0: {cell_type_names[:3]}... Sample {i}: {sample_order[:3]}..."
+            )
 
-    sanitized_edge_types = [sanitize_name(et) for et in edge_type_names]
+    # Sanitize names for PyG compatibility (uses shared sanitize_key from constants)
+    sanitized_cell_types = [sanitize_key(ct) for ct in cell_type_names]
+    sanitized_edge_types = [sanitize_key(et) for et in edge_type_names]
+
+    edge_index_dict_list = []
+    edge_attr_dict_list = []
 
     for s in batch:
-        data = HeteroData()
+        # Build edge dicts: {(src, rel, dst): tensor}
+        edge_index_dict: dict[tuple[str, str, str], torch.Tensor] = {}
+        edge_attr_dict: dict[tuple[str, str, str], torch.Tensor] = {}
 
-        # Add node features for each cell type
-        # Each cell type is a separate node type with 1 node per subject
-        for ct_idx, ct_name in enumerate(cell_type_names):
-            safe_ct = sanitize_name(ct_name)
-            data[safe_ct].x = s["pseudobulk"][ct_idx].unsqueeze(0)  # [1, n_genes]
-
-        # Add edges - group by (src_type, relation, dst_type) triplet
         edge_index = s["ccc_edge_index"]
         edge_type_indices = s["ccc_edge_type"]
         edge_attr = s["ccc_edge_attr"]
 
         if edge_index.numel() > 0:
-            # Build a dictionary to accumulate edges per triplet
-            edge_dict: dict[tuple, dict] = {}
+            # Vectorized grouping: compute a composite key per edge encoding
+            # (src_type, edge_type, dst_type) as a single integer, then use
+            # torch.unique to find distinct triplets in one pass.
+            n_ct = len(sanitized_cell_types)
+            n_et = len(sanitized_edge_types)
 
-            n_edges = edge_index.shape[1]
-            for e in range(n_edges):
-                src_ct_idx = edge_index[0, e].item()
-                dst_ct_idx = edge_index[1, e].item()
-                et_idx = edge_type_indices[e].item()
+            src_indices = edge_index[0]       # [n_edges]
+            dst_indices = edge_index[1]       # [n_edges]
 
-                src_ct = sanitize_name(cell_type_names[src_ct_idx])
-                dst_ct = sanitize_name(cell_type_names[dst_ct_idx])
-                relation = sanitized_edge_types[et_idx]
-
-                triplet = (src_ct, relation, dst_ct)
-
-                if triplet not in edge_dict:
-                    edge_dict[triplet] = {"src": [], "dst": [], "attr": []}
-
-                # All edges go from node 0 to node 0 (single node per type per subject)
-                edge_dict[triplet]["src"].append(0)
-                edge_dict[triplet]["dst"].append(0)
-                edge_dict[triplet]["attr"].append(edge_attr[e])
-
-            # Convert accumulated edges to tensors
-            for triplet, edges in edge_dict.items():
-                data[triplet].edge_index = torch.tensor(
-                    [edges["src"], edges["dst"]], dtype=torch.long
+            # Guard against silent integer overflow in composite key arithmetic.
+            # With int64 this is safe for current constants (31 cell types, 5 edge types)
+            # but would fail loudly if constants ever grow beyond safe limits.
+            max_key = (n_ct - 1) * n_ct * n_et + (n_ct - 1) * n_et + (n_et - 1)
+            if max_key >= torch.iinfo(torch.int64).max:
+                raise ValueError(
+                    f"Composite key overflow: max_key={max_key} exceeds int64 max "
+                    f"({torch.iinfo(torch.int64).max}). n_cell_types={n_ct}, n_edge_types={n_et}"
                 )
-                data[triplet].edge_attr = torch.stack(edges["attr"], dim=0)
 
-        hetero_graphs.append(data)
+            # Composite key: src * (n_ct * n_et) + dst * n_et + edge_type
+            composite = src_indices * (n_ct * n_et) + dst_indices * n_et + edge_type_indices
 
-    # Batch heterogeneous graphs
-    # PyG handles variable schemas by only batching edges that exist
-    hetero_batch = Batch.from_data_list(hetero_graphs)
+            unique_keys, inverse = torch.unique(composite, return_inverse=True)
+
+            for i, key_val in enumerate(unique_keys):
+                k = key_val.item()
+                src_idx = k // (n_ct * n_et)
+                remaining = k % (n_ct * n_et)
+                dst_idx = remaining // n_et
+                et_idx = remaining % n_et
+
+                triplet = (
+                    sanitized_cell_types[src_idx],
+                    sanitized_edge_types[et_idx],
+                    sanitized_cell_types[dst_idx],
+                )
+
+                mask = inverse == i
+                n_triplet_edges = mask.sum().item()
+
+                # All edges are node 0 → node 0 (one node per type per subject)
+                edge_index_dict[triplet] = torch.zeros(
+                    2, n_triplet_edges, dtype=torch.long
+                )
+                edge_attr_dict[triplet] = edge_attr[mask]
+
+        edge_index_dict_list.append(edge_index_dict)
+        edge_attr_dict_list.append(edge_attr_dict)
 
     subject_ids = [s["subject_id"] for s in batch]
 
@@ -256,7 +387,9 @@ def collate_to_heterodata(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "cell_counts": cell_counts,
         "pathology": pathology,
         "cognition": cognition,
-        "hetero_batch": hetero_batch,
+        # HGT inputs (dict lists for HGTEncoderBatched)
+        "edge_index_dict_list": edge_index_dict_list,
+        "edge_attr_dict_list": edge_attr_dict_list,
         # Cell-level data (all 31 cell types)
         "cells": cells,
         "cell_mask": cell_mask,
@@ -266,16 +399,74 @@ def collate_to_heterodata(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "subject_ids": subject_ids,
         "batch_size": batch_size,
         # Include metadata for model
-        "node_types": [sanitize_name(ct) for ct in cell_type_names],
+        "node_types": sanitized_cell_types,
         "edge_types": sanitized_edge_types,
+        # Raw cell type order (unsanitized) for reference
+        "cell_type_order": cell_type_names,
     }
+
+
+def build_x_dict_list_from_embeddings(
+    pseudobulk_embeddings: torch.Tensor,
+    node_types: list[str],
+) -> list[dict[str, torch.Tensor]]:
+    """
+    Build x_dict_list from encoded pseudobulk embeddings for HGTEncoderBatched.
+
+    This is the RECOMMENDED way to prepare HGT node features in the full model.
+    Call this in model.forward() after running PseudobulkEncoder:
+
+        pseudobulk_emb = self.pseudobulk_encoder(batch["pseudobulk"])
+        x_dict_list = build_x_dict_list_from_embeddings(
+            pseudobulk_emb, batch["node_types"]
+        )
+        hgt_out, _ = self.hgt_encoder(
+            x_dict_list,
+            batch["edge_index_dict_list"],
+            batch["edge_attr_dict_list"],
+        )
+
+    Args:
+        pseudobulk_embeddings: [batch, n_cell_types, d_embed] encoded features
+            from PseudobulkEncoder
+        node_types: List of sanitized cell type names (from batch["node_types"])
+
+    Returns:
+        List of {cell_type: (1, d_embed)} dicts, one per sample in batch.
+        Ready to pass to HGTEncoderBatched.
+    """
+    batch_size = pseudobulk_embeddings.size(0)
+    # n_cell_types is always 31 (Allen Brain Cell Atlas mapping invariant from snRNAseq data)
+    n_cell_types = pseudobulk_embeddings.size(1)
+
+    x_dict_list = []
+    for b in range(batch_size):
+        x_dict = {
+            node_types[ct_idx]: pseudobulk_embeddings[b, ct_idx].unsqueeze(0)
+            for ct_idx in range(n_cell_types)
+        }
+        x_dict_list.append(x_dict)
+
+    return x_dict_list
 
 
 def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    Collate function for multi-region data.
+    Collate function for multi-region data (non-HGT format).
 
     Handles subjects with variable numbers of brain regions.
+
+    Note:
+        This function has LIMITED multi-region support:
+        - Requires "region_pseudobulk" sentinel key for activation
+        - Does not auto-derive available_regions from region keys
+        - Does not warn about missing available_regions
+
+        For full multi-region support with HGT graph format, use
+        collate_for_hgt_multiregion() instead, which:
+        - Auto-detects multi-region from region_{idx}_pseudobulk keys
+        - Derives available_regions when not provided
+        - Warns about missing metadata
 
     Args:
         batch: List of sample dictionaries with per-region data
@@ -284,7 +475,7 @@ def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
         Batched dictionary with region dimension
     """
     batch_size = len(batch)
-    n_regions = 6  # Fixed number of regions
+    n_regions = N_REGIONS
 
     # Check if multi-region data is present
     has_regions = "region_pseudobulk" in batch[0]
@@ -296,29 +487,13 @@ def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     # ─────────────────────────────────────────────────────────────────────────
     # Multi-region tensor handling
     # ─────────────────────────────────────────────────────────────────────────
-
-    # Get dimensions from first sample
     n_cell_types = batch[0]["pseudobulk"].shape[0]
     n_genes = batch[0]["pseudobulk"].shape[1]
 
-    # Initialize tensors
-    region_pseudobulk = torch.zeros(batch_size, n_regions, n_cell_types, n_genes)
-    region_mask = torch.zeros(batch_size, n_regions, dtype=torch.bool)
-
-    for i, s in enumerate(batch):
-        # Get available regions for this subject
-        available_regions = s.get("available_regions", [0])  # Default: only DLPFC
-
-        for region_idx in available_regions:
-            if region_idx < n_regions:
-                region_key = f"region_{region_idx}_pseudobulk"
-                if region_key in s:
-                    region_pseudobulk[i, region_idx] = s[region_key]
-                    region_mask[i, region_idx] = True
-                elif region_idx == 0:
-                    # Use main pseudobulk for DLPFC
-                    region_pseudobulk[i, 0] = s["pseudobulk"]
-                    region_mask[i, 0] = True
+    region_pseudobulk, region_mask = _assemble_region_tensors(
+        batch, batch_size, n_cell_types, n_genes,
+        n_regions=n_regions, auto_derive_regions=False,
+    )
 
     # Standard collate for non-region data
     base_batch = collate_fn(batch)
@@ -330,6 +505,56 @@ def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     return base_batch
 
 
+def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Collate function combining HGT format with multi-region support.
+
+    This combines:
+    - Dict lists for HGTEncoderBatched (from collate_for_hgt)
+    - Region-specific pseudobulk tensors (from collate_multiregion)
+
+    Use this when you need both HGT graph structure AND multi-region data.
+
+    Args:
+        batch: List of sample dictionaries
+
+    Returns:
+        Batched dictionary with:
+        - All keys from collate_for_hgt (edge dicts, pseudobulk, etc.)
+        - region_pseudobulk: [batch, n_regions, n_cell_types, n_genes]
+        - region_mask: [batch, n_regions] bool mask (overrides inherited version
+          with actual data presence check)
+    """
+    # Start with HGT format collate
+    result = collate_for_hgt(batch)
+
+    # Check if multi-region data is present by looking for region_{idx}_pseudobulk keys
+    # in any sample (not just the sentinel "region_pseudobulk" key)
+    has_regions = False
+    for s in batch:
+        if "region_pseudobulk" in s or _derive_available_regions_from_keys(s):
+            has_regions = True
+            break
+
+    if has_regions:
+        batch_size = len(batch)
+        n_cell_types = batch[0]["pseudobulk"].shape[0]
+        n_genes = batch[0]["pseudobulk"].shape[1]
+
+        region_pseudobulk, region_mask = _assemble_region_tensors(
+            batch, batch_size, n_cell_types, n_genes,
+            n_regions=N_REGIONS, auto_derive_regions=True,
+        )
+
+        result["region_pseudobulk"] = region_pseudobulk
+        # Override inherited region_mask with the computed version based on
+        # actual data presence. This is more accurate than the sample-level
+        # region_mask which may differ in edge cases.
+        result["region_mask"] = region_mask
+
+    return result
+
+
 def create_dataloader(
     dataset,
     batch_size: int = 16,
@@ -338,7 +563,7 @@ def create_dataloader(
     pin_memory: bool = True,
     drop_last: bool = False,
     multiregion: bool = False,
-    use_heterodata: bool = True,  # Default True - proper heterogeneous graphs
+    use_hgt_format: bool = True,  # Default True - dict format for HGTEncoderBatched
 ) -> torch.utils.data.DataLoader:
     """
     Create DataLoader with appropriate collate function.
@@ -349,6 +574,21 @@ def create_dataloader(
         creation via LightningDataModule, which properly sets up
         DistributedSampler for DDP training.
 
+    Note on Worker Reproducibility:
+        When using num_workers > 0, cell sampling may not be fully reproducible
+        across runs because each worker gets a copy of CellSampler with the same
+        seed. For exact reproducibility with multi-worker loading, a worker_init_fn
+        would need to re-seed CellSampler per worker. This is not currently
+        implemented because:
+        - With small datasets (~400 subjects), num_workers=0 is usually sufficient
+        - Training is typically GPU-bound, not I/O-bound
+        - Statistical similarity across runs is acceptable for most use cases
+
+        To implement if needed later:
+        1. Add worker_init_fn parameter
+        2. Re-seed dataset.sampler.rng with (base_seed + worker_id) per worker
+        3. Wire through to DataLoader
+
     Args:
         dataset: CognitiveResilienceDataset or PrecomputedDataset
         batch_size: Batch size (per GPU when using DDP)
@@ -357,14 +597,17 @@ def create_dataloader(
         pin_memory: Pin memory for faster GPU transfer
         drop_last: Drop incomplete last batch
         multiregion: Use multi-region collate function
-        use_heterodata: Use HeteroData collate for proper heterogeneous HGT
-                        (default: True, recommended for our model)
+        use_hgt_format: Use collate_for_hgt which returns dict lists compatible
+                        with HGTEncoderBatched (default: True, recommended)
 
     Returns:
         Configured DataLoader
     """
-    if use_heterodata:
-        collate = collate_to_heterodata
+    # Select collate function based on flags
+    if use_hgt_format and multiregion:
+        collate = collate_for_hgt_multiregion
+    elif use_hgt_format:
+        collate = collate_for_hgt
     elif multiregion:
         collate = collate_multiregion
     else:
@@ -385,46 +628,10 @@ def create_dataloader(
 # ─────────────────────────────────────────────────────────────────────────────
 # Device utilities (for non-Lightning usage only)
 # ─────────────────────────────────────────────────────────────────────────────
-
-def move_batch_to_device(
-    batch: dict[str, Any],
-    device: torch.device | str,
-) -> dict[str, Any]:
-    """
-    Move batch tensors to specified device.
-
-    WARNING: This function is for manual/debugging use only.
-    When using PyTorch Lightning, device placement is handled automatically
-    by the Trainer. Do NOT call this in LightningModule.training_step().
-
-    For multi-GPU setups:
-    - With DDP: Each process sees only its GPU as device 0
-    - The Trainer handles data distribution and device placement
-    - Effective batch size = batch_size * num_gpus
-
-    Args:
-        batch: Batch dictionary from collate_fn
-        device: Target device (e.g., "cuda:0", "cuda:1", torch.device("cuda"))
-
-    Returns:
-        Batch with tensors on device
-    """
-    if isinstance(device, str):
-        device = torch.device(device)
-
-    moved = {}
-
-    for key, value in batch.items():
-        if isinstance(value, torch.Tensor):
-            moved[key] = value.to(device, non_blocking=True)
-        elif isinstance(value, (Batch, HeteroData)):
-            moved[key] = value.to(device)
-        elif key in ("subject_ids", "batch_size", "n_nodes_per_graph"):
-            moved[key] = value  # Keep as-is
-        else:
-            moved[key] = value
-
-    return moved
+# Canonical implementations live in src.utils.device.  Re-exported here for
+# backward-compatibility so that existing ``from src.data.collate import
+# move_batch_to_device`` statements continue to work.
+from src.utils.device import _move_to_device, move_batch_to_device  # noqa: F401
 
 
 def get_effective_batch_size(batch_size: int, num_gpus: int, strategy: str = "ddp") -> int:

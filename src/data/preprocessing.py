@@ -14,7 +14,7 @@ import pandas as pd
 import scanpy as sc
 from anndata import AnnData
 
-from src.data.constants import GROUP_SEPARATOR
+from src.data.constants import CELLCHATDB_PATH, GROUP_SEPARATOR
 
 
 def get_lr_genes_from_cellchatdb(cellchatdb_path: str | Path) -> set[str]:
@@ -50,7 +50,7 @@ def get_lr_genes_from_cellchatdb(cellchatdb_path: str | Path) -> set[str]:
 
 def preprocess_adata(
     adata_path: str | Path,
-    cellchatdb_path: str | Path = "data/database/CellChatDB_human_interaction.csv",
+    cellchatdb_path: str | Path = CELLCHATDB_PATH,
     n_hvg: int = 4000,
     target_sum: float = 1e4,
     min_cells_per_gene: int = 10,
@@ -95,6 +95,22 @@ def preprocess_adata(
     sc.pp.filter_genes(adata, min_cells=min_cells_per_gene)
     print(f"After gene filter (min_cells={min_cells_per_gene}): {adata.n_vars:,} genes "
           f"(removed {n_genes_before - adata.n_vars:,})")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 1b: Round counts for CellBender-corrected subjects
+    # ─────────────────────────────────────────────────────────────────────────
+    # 20 subjects in the "DLPFC" batch have fractional counts from CellBender
+    # ambient RNA correction. Batch B32 (200709-B32-A/B) is entirely composed
+    # of decontaminated subjects (all 8), while the other 12 are scattered
+    # across 7 additional batches that also contain unaffected subjects —
+    # the correction was applied per-subject, not per-batch. Round to nearest
+    # integer so seurat_v3 HVG selection operates on proper count data.
+    from scipy import sparse
+    if sparse.issparse(adata.X):
+        np.round(adata.X.data, out=adata.X.data)
+    else:
+        np.round(adata.X, out=adata.X)
+    print("Rounded counts to integers (handles CellBender-corrected subjects)")
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 2: HVG selection on RAW COUNTS
@@ -275,9 +291,9 @@ def create_subject_pseudobulk_tensor(
     if adata_subject.n_obs == 0:
         raise ValueError(f"No cells found for subject {subject_id}")
 
-    # Default cell type order from visualization config
+    # Default cell type order from central constants
     if cell_type_order is None:
-        from src.visualization.config import CELL_TYPE_ORDER
+        from src.data.constants import CELL_TYPE_ORDER
         cell_type_order = CELL_TYPE_ORDER
 
     # Get expression matrix

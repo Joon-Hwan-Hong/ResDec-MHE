@@ -5,6 +5,14 @@ Single source of truth for cell types, edge types, and regions.
 All data modules import from here.
 """
 
+from pathlib import Path
+
+# Project root: resolve from this file's location (src/data/constants.py → project root)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# CellChatDB database path (anchored to project root)
+CELLCHATDB_PATH: Path = _PROJECT_ROOT / "data" / "database" / "CellChatDB_human_interaction.csv"
+
 # 31 cell types from Allen Brain Atlas taxonomy
 CELL_TYPE_ORDER: list[str] = [
     # Glial
@@ -75,13 +83,15 @@ EDGE_TYPE_DISPLAY_NAMES: dict[str, str] = {
     EDGE_TYPE_NOVEL: "Novel/Uncharacterized",
 }
 
-# Legacy aliases for backwards compatibility
-CELLCHATDB_CATEGORIES = CELLCHATDB_EDGE_TYPES
-NOVEL_CATEGORY = EDGE_TYPE_NOVEL
-
 # 6 ROSMAP brain regions
+# Names match design doc (2026-01-27-region-handler-design.md) and RegionHandler.REGIONS
 REGION_ORDER: list[str] = [
-    "PFC", "EC", "HC", "TH", "AG", "MTC"
+    "PFC",  # Prefrontal cortex (Region 0, primary)
+    "AG",   # Angular gyrus
+    "MTC",  # Midtemporal cortex
+    "EC",   # Entorhinal cortex
+    "HC",   # Hippocampus
+    "TH",   # Anterior thalamus
 ]
 
 # Derived constants
@@ -91,3 +101,30 @@ N_REGIONS: int = len(REGION_ORDER)        # 6
 
 # Separator for composite keys (must not appear in cell type names or subject IDs)
 GROUP_SEPARATOR: str = "||"
+
+# Index of the primary region (PFC) within REGION_ORDER
+PFC_REGION_IDX: int = REGION_ORDER.index("PFC")  # 0
+
+
+def sanitize_key(name: str) -> str:
+    """
+    Sanitize a name for use as a PyTorch ModuleDict/ParameterDict key.
+
+    PyTorch requires keys to be valid Python identifiers. This function
+    replaces characters that appear in cell type names, edge type names,
+    and region names with underscores.
+
+    This is the single canonical implementation — all modules that need
+    sanitized keys (HGTConvWithEdgeAttr, HGTEncoder, collate_for_hgt,
+    CognitiveResilienceModel) must import and use this function.
+
+    Args:
+        name: Original name (e.g., "Oligodendrocyte precursor", "ECM-Receptor")
+
+    Returns:
+        Sanitized string safe for use as a dict key
+    """
+    sanitized = name.replace(" ", "_").replace("-", "_").replace("/", "_")
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "_" + sanitized
+    return sanitized

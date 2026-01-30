@@ -32,6 +32,7 @@ Design Decisions:
      others receive learned empty_embedding (no NaN, fully differentiable)
 """
 
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,7 @@ class CognitiveResilienceDataset(Dataset):
         min_cells_threshold: int = 50,
         sampling_strategy: str = "random",
         sampling_seed: int = 42,
+        region_column: str = "BrainRegion",
         transform: Any = None,
     ):
         """
@@ -95,6 +97,7 @@ class CognitiveResilienceDataset(Dataset):
             min_cells_threshold: Minimum cells needed for valid cell-level data
             sampling_strategy: Strategy for cell sampling ("random", "stratified", "importance")
             sampling_seed: Random seed for reproducible cell sampling
+            region_column: Column in adata.obs for brain region labels (for multi-region)
             transform: Optional transform to apply to samples
 
         Note:
@@ -110,6 +113,7 @@ class CognitiveResilienceDataset(Dataset):
         self.cell_type_column = cell_type_column
         self.subject_column = subject_column
         self.target_column = target_column
+        self.region_column = region_column
         self.pathology_columns = pathology_columns or ["gpath", "amylsqrt", "tangsqrt"]
 
         self.cell_type_order = cell_type_order or CELL_TYPE_ORDER
@@ -136,7 +140,7 @@ class CognitiveResilienceDataset(Dataset):
         self._validate_subjects()
 
     def _validate_subjects(self):
-        """Validate that all subject IDs exist in data."""
+        """Validate that all subject IDs exist in data and have valid targets/pathology."""
         adata_subjects = set(self.adata.obs[self.subject_column].unique())
         metadata_subjects = set(self.metadata.index)
 
@@ -147,9 +151,44 @@ class CognitiveResilienceDataset(Dataset):
 
         if len(valid_subjects) < len(self.subject_ids):
             n_removed = len(self.subject_ids) - len(valid_subjects)
-            print(f"Warning: Removed {n_removed} subjects not found in adata or metadata")
+            warnings.warn(
+                f"Removed {n_removed} subjects not found in adata or metadata",
+                UserWarning,
+                stacklevel=2,
+            )
 
         self.subject_ids = valid_subjects
+
+        # Validate no NaN in target column for included subjects
+        if self.target_column in self.metadata.columns:
+            target_values = self.metadata.loc[
+                self.metadata.index.isin(self.subject_ids), self.target_column
+            ]
+            nan_targets = target_values[target_values.isna()]
+            if len(nan_targets) > 0:
+                nan_ids = list(nan_targets.index[:10])  # Show first 10
+                suffix = f" (and {len(nan_targets) - 10} more)" if len(nan_targets) > 10 else ""
+                raise ValueError(
+                    f"{len(nan_targets)} subject(s) have NaN in target column "
+                    f"'{self.target_column}': {nan_ids}{suffix}. "
+                    f"Filter these subjects before constructing the dataset."
+                )
+
+        # Validate no NaN in pathology columns for included subjects
+        for col in self.pathology_columns:
+            if col in self.metadata.columns:
+                path_values = self.metadata.loc[
+                    self.metadata.index.isin(self.subject_ids), col
+                ]
+                nan_path = path_values[path_values.isna()]
+                if len(nan_path) > 0:
+                    nan_ids = list(nan_path.index[:10])
+                    suffix = f" (and {len(nan_path) - 10} more)" if len(nan_path) > 10 else ""
+                    raise ValueError(
+                        f"{len(nan_path)} subject(s) have NaN in pathology column "
+                        f"'{col}': {nan_ids}{suffix}. "
+                        f"Filter these subjects before constructing the dataset."
+                    )
 
     def __len__(self) -> int:
         return len(self.subject_ids)
@@ -200,9 +239,10 @@ class CognitiveResilienceDataset(Dataset):
         edge_index, edge_type, edge_attr = self._get_graph_features(subject_id)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Region mask
+        # Region mask and multi-region pseudobulk
         # ─────────────────────────────────────────────────────────────────────
         region_mask = self._get_region_mask(adata_subject)
+        region_pseudobulks, available_regions = self._compute_pseudobulk_by_region(adata_subject)
 
         # ─────────────────────────────────────────────────────────────────────
         # Phenotypes
@@ -226,7 +266,15 @@ class CognitiveResilienceDataset(Dataset):
             # Phenotypes
             "pathology": torch.from_numpy(pathology).float(),
             "cognition": torch.tensor([target], dtype=torch.float32),
+            # Metadata for collate - cell type ordering for edge index mapping
+            "cell_type_order": self.cell_type_order,
         }
+
+        # Add multi-region pseudobulk data (if BrainRegion column exists)
+        for key, value in region_pseudobulks.items():
+            sample[key] = torch.from_numpy(value).float()
+        if available_regions:
+            sample["available_regions"] = available_regions
 
         if self.transform:
             sample = self.transform(sample)
@@ -256,22 +304,72 @@ class CognitiveResilienceDataset(Dataset):
 
         return pseudobulk, cell_type_mask, cell_counts
 
+    def _compute_pseudobulk_by_region(
+        self, adata_subject: AnnData
+    ) -> tuple[dict[str, np.ndarray], list[int]]:
+        """
+        Compute per-region pseudobulk for multi-region data.
+
+        For subjects with cells from multiple brain regions, computes separate
+        pseudobulk aggregations per region. This enables the model to learn
+        region-specific expression patterns.
+
+        Args:
+            adata_subject: AnnData subset for one subject
+
+        Returns:
+            region_pseudobulks: Dict mapping "region_{idx}_pseudobulk" -> [n_cell_types, n_genes]
+            available_regions: Sorted list of region indices with data
+        """
+        region_pseudobulks = {}
+        available_regions = []
+
+        # If no region column, return empty (single-region fallback)
+        if self.region_column not in adata_subject.obs.columns:
+            return region_pseudobulks, available_regions
+
+        # Get expression matrix once
+        X = adata_subject.X
+        if hasattr(X, "toarray"):
+            X = X.toarray()
+
+        for region_idx, region_name in enumerate(REGION_ORDER):
+            # Filter cells for this region
+            region_mask = adata_subject.obs[self.region_column] == region_name
+            if not region_mask.any():
+                continue
+
+            # Compute pseudobulk for this region
+            pseudobulk = np.zeros((self.n_cell_types, self.n_genes), dtype=np.float32)
+            X_region = X[region_mask.values]
+            obs_region = adata_subject.obs[region_mask]
+
+            for ct_idx, ct_name in enumerate(self.cell_type_order):
+                ct_mask = obs_region[self.cell_type_column] == ct_name
+                if ct_mask.sum() > 0:
+                    pseudobulk[ct_idx] = X_region[ct_mask.values].mean(axis=0)
+
+            region_pseudobulks[f"region_{region_idx}_pseudobulk"] = pseudobulk
+            available_regions.append(region_idx)
+
+        return region_pseudobulks, sorted(available_regions)
+
     def _get_region_mask(self, adata_subject: AnnData) -> np.ndarray:
         """Create boolean mask indicating which brain regions are present for this subject.
 
-        If BrainRegion column is missing, defaults to first region (PFC) only.
-        This handles single-region datasets like DLPFC-only data.
+        If the region column is missing, defaults to first region (PFC) only.
+        This handles single-region datasets like PFC-only data.
         """
         region_mask = np.zeros(len(REGION_ORDER), dtype=bool)
 
-        # Check if BrainRegion column exists
-        if "BrainRegion" not in adata_subject.obs.columns:
+        # Check if region column exists
+        if self.region_column not in adata_subject.obs.columns:
             # Default to first region (PFC) if column missing
             region_mask[0] = True
             return region_mask
 
         # Get the unique regions present in this subject's cells
-        present_regions = set(adata_subject.obs["BrainRegion"].unique())
+        present_regions = set(adata_subject.obs[self.region_column].unique())
 
         for idx, region in enumerate(REGION_ORDER):
             if region in present_regions:
@@ -335,23 +433,42 @@ class CognitiveResilienceDataset(Dataset):
         return features["edge_index"], features["edge_type"], features["edge_attr"]
 
     def _get_pathology(self, subject_id: str) -> np.ndarray:
-        """Get pathology scores for subject."""
+        """Get pathology scores for subject.
+
+        NaN values are validated at __init__ time and should never be encountered here.
+        """
         pathology = np.zeros(len(self.pathology_columns), dtype=np.float32)
 
         if subject_id in self.metadata.index:
             for i, col in enumerate(self.pathology_columns):
                 if col in self.metadata.columns:
                     val = self.metadata.loc[subject_id, col]
-                    pathology[i] = 0.0 if pd.isna(val) else float(val)
+                    if pd.isna(val):
+                        raise RuntimeError(
+                            f"NaN in pathology column '{col}' for subject '{subject_id}'. "
+                            f"This should have been caught at __init__ validation."
+                        )
+                    pathology[i] = float(val)
 
         return pathology
 
     def _get_target(self, subject_id: str) -> float:
-        """Get cognition target for subject."""
+        """Get cognition target for subject.
+
+        NaN values are validated at __init__ time and should never be encountered here.
+        """
         if subject_id in self.metadata.index:
             val = self.metadata.loc[subject_id, self.target_column]
-            return 0.0 if pd.isna(val) else float(val)
-        return 0.0
+            if pd.isna(val):
+                raise RuntimeError(
+                    f"NaN in target column '{self.target_column}' for subject '{subject_id}'. "
+                    f"This should have been caught at __init__ validation."
+                )
+            return float(val)
+        raise RuntimeError(
+            f"Subject '{subject_id}' not found in metadata. "
+            f"This should have been caught at __init__ validation."
+        )
 
     def get_gene_names(self) -> list[str]:
         """Get gene names in order."""
@@ -381,6 +498,7 @@ class PrecomputedDataset(Dataset):
         subject_column: str = "ROSMAP_IndividualID",
         target_column: str = "cogn_global",
         pathology_columns: list[str] | None = None,
+        cell_type_order: list[str] | None = None,
     ):
         """
         Initialize from precomputed features.
@@ -392,6 +510,9 @@ class PrecomputedDataset(Dataset):
             subject_column: Column for subject IDs
             target_column: Column for cognition target
             pathology_columns: Columns for pathology scores
+            cell_type_order: Order of cell types for edge index mapping.
+                Must match the order used when precomputing features.
+                Defaults to CELL_TYPE_ORDER from constants.
         """
         self.feature_dir = Path(feature_dir)
         self.subject_ids = list(subject_ids)
@@ -399,9 +520,13 @@ class PrecomputedDataset(Dataset):
 
         self.target_column = target_column
         self.pathology_columns = pathology_columns or ["gpath", "amylsqrt", "tangsqrt"]
+        self.cell_type_order = cell_type_order or CELL_TYPE_ORDER
 
         # Validate files exist
         self._validate_files()
+
+        # Validate no NaN in target or pathology columns
+        self._validate_metadata()
 
     def _validate_files(self):
         """Check that feature files exist for all subjects."""
@@ -413,9 +538,42 @@ class PrecomputedDataset(Dataset):
 
         if len(valid_subjects) < len(self.subject_ids):
             n_removed = len(self.subject_ids) - len(valid_subjects)
-            print(f"Warning: Removed {n_removed} subjects without feature files")
+            warnings.warn(f"Removed {n_removed} subjects without feature files")
 
         self.subject_ids = valid_subjects
+
+    def _validate_metadata(self):
+        """Validate that target and pathology columns have no NaN for included subjects."""
+        # Validate no NaN in target column for included subjects
+        if self.target_column in self.metadata.columns:
+            target_values = self.metadata.loc[
+                self.metadata.index.isin(self.subject_ids), self.target_column
+            ]
+            nan_targets = target_values[target_values.isna()]
+            if len(nan_targets) > 0:
+                nan_ids = list(nan_targets.index[:10])  # Show first 10
+                suffix = f" (and {len(nan_targets) - 10} more)" if len(nan_targets) > 10 else ""
+                raise ValueError(
+                    f"{len(nan_targets)} subject(s) have NaN in target column "
+                    f"'{self.target_column}': {nan_ids}{suffix}. "
+                    f"Filter these subjects before constructing the dataset."
+                )
+
+        # Validate no NaN in pathology columns for included subjects
+        for col in self.pathology_columns:
+            if col in self.metadata.columns:
+                path_values = self.metadata.loc[
+                    self.metadata.index.isin(self.subject_ids), col
+                ]
+                nan_path = path_values[path_values.isna()]
+                if len(nan_path) > 0:
+                    nan_ids = list(nan_path.index[:10])
+                    suffix = f" (and {len(nan_path) - 10} more)" if len(nan_path) > 10 else ""
+                    raise ValueError(
+                        f"{len(nan_path)} subject(s) have NaN in pathology column "
+                        f"'{col}': {nan_ids}{suffix}. "
+                        f"Filter these subjects before constructing the dataset."
+                    )
 
     def __len__(self) -> int:
         return len(self.subject_ids)
@@ -433,15 +591,54 @@ class PrecomputedDataset(Dataset):
         for i, col in enumerate(self.pathology_columns):
             if col in self.metadata.columns:
                 val = self.metadata.loc[subject_id, col]
-                pathology[i] = 0.0 if pd.isna(val) else float(val)
+                if pd.isna(val):
+                    raise RuntimeError(
+                        f"NaN in pathology column '{col}' for subject '{subject_id}'. "
+                        f"This should have been caught at __init__ validation."
+                    )
+                pathology[i] = float(val)
 
         target = self.metadata.loc[subject_id, self.target_column]
-        target = 0.0 if pd.isna(target) else float(target)
+        if pd.isna(target):
+            raise RuntimeError(
+                f"NaN in target column '{self.target_column}' for subject '{subject_id}'. "
+                f"This should have been caught at __init__ validation."
+            )
+        target = float(target)
 
-        return {
+        # Validate cell_type_order matches (if stored in file)
+        if "cell_type_order" in data:
+            saved_order = list(data["cell_type_order"])
+            if saved_order != self.cell_type_order:
+                raise ValueError(
+                    f"Precomputed file {feature_file} was saved with different "
+                    f"cell_type_order than expected. Edge indices may be incorrectly "
+                    f"mapped. Saved: {saved_order[:3]}... Expected: {self.cell_type_order[:3]}..."
+                )
+
+        # Load cell_counts and region_mask (with backward compatibility for older files)
+        if "cell_counts" in data:
+            cell_counts = torch.from_numpy(data["cell_counts"]).long()
+        else:
+            # Derive cell_counts from cell_mask: sum valid cells per cell type
+            # cell_mask shape: [n_cell_types, max_cells] -> sum along dim=1
+            cell_mask = data["cell_mask"]  # [n_cell_types, max_cells] bool
+            cell_counts = torch.from_numpy(cell_mask.sum(axis=1).astype(np.int64))
+
+        if "region_mask" in data:
+            region_mask = torch.from_numpy(data["region_mask"]).bool()
+        else:
+            # Default to first region only (PFC) for backward compatibility
+            from src.data.constants import REGION_ORDER
+            region_mask = torch.zeros(len(REGION_ORDER), dtype=torch.bool)
+            region_mask[0] = True
+
+        sample = {
             "subject_id": subject_id,
             "pseudobulk": torch.from_numpy(data["pseudobulk"]).float(),
             "cell_type_mask": torch.from_numpy(data["cell_type_mask"]).bool(),
+            "cell_counts": cell_counts,
+            "region_mask": region_mask,
             "cells": torch.from_numpy(data["cells"]).float(),
             "cell_mask": torch.from_numpy(data["cell_mask"]).bool(),
             # Graph features (CCC = cell-cell communication)
@@ -451,7 +648,19 @@ class PrecomputedDataset(Dataset):
             # Phenotypes
             "pathology": torch.from_numpy(pathology).float(),
             "cognition": torch.tensor([target], dtype=torch.float32),
+            # Metadata for collate - cell type ordering for edge index mapping
+            "cell_type_order": self.cell_type_order,
         }
+
+        # Load multi-region pseudobulk data (if present in file)
+        for key in data.files:
+            if key.startswith("region_") and key.endswith("_pseudobulk"):
+                sample[key] = torch.from_numpy(data[key]).float()
+
+        if "available_regions" in data:
+            sample["available_regions"] = list(data["available_regions"])
+
+        return sample
 
 
 def save_precomputed_features(
@@ -476,19 +685,33 @@ def save_precomputed_features(
 
         output_file = output_dir / f"{subject_id}.npz"
 
-        np.savez_compressed(
-            output_file,
-            pseudobulk=sample["pseudobulk"].numpy(),
-            cell_type_mask=sample["cell_type_mask"].numpy(),
+        # Build save dict with core features
+        save_data = {
+            "pseudobulk": sample["pseudobulk"].numpy(),
+            "cell_type_mask": sample["cell_type_mask"].numpy(),
+            "cell_counts": sample["cell_counts"].numpy(),
+            "region_mask": sample["region_mask"].numpy(),
             # Note: We keep the npz keys as edge_* for backward compatibility
             # with existing precomputed files. The PrecomputedDataset maps
             # these to ccc_edge_* when loading.
-            edge_index=sample["ccc_edge_index"].numpy(),
-            edge_type=sample["ccc_edge_type"].numpy(),
-            edge_attr=sample["ccc_edge_attr"].numpy(),
-            cells=sample["cells"].numpy(),
-            cell_mask=sample["cell_mask"].numpy(),
-        )
+            "edge_index": sample["ccc_edge_index"].numpy(),
+            "edge_type": sample["ccc_edge_type"].numpy(),
+            "edge_attr": sample["ccc_edge_attr"].numpy(),
+            "cells": sample["cells"].numpy(),
+            "cell_mask": sample["cell_mask"].numpy(),
+            # Store ordering metadata for validation on load
+            "cell_type_order": np.array(sample["cell_type_order"], dtype=object),
+        }
+
+        # Add multi-region pseudobulk data (if present)
+        for key in sample:
+            if key.startswith("region_") and key.endswith("_pseudobulk"):
+                save_data[key] = sample[key].numpy()
+
+        if "available_regions" in sample:
+            save_data["available_regions"] = np.array(sample["available_regions"])
+
+        np.savez_compressed(output_file, **save_data)
 
         if verbose and (i + 1) % 50 == 0:
             print(f"Saved {i + 1}/{len(dataset)} subjects")

@@ -6,12 +6,13 @@ Stratification by joint pathology × cognition tertiles ensures balanced represe
 """
 
 import json
+import warnings
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, train_test_split
+from sklearn.model_selection import KFold, StratifiedKFold, StratifiedShuffleSplit, train_test_split
 
 
 def create_stratification_variable(
@@ -58,8 +59,8 @@ def create_stratification_variable(
         except (ValueError, IndexError):
             # Fall back to median split
             warnings.warn(
-                f"Tertile binning failed for {col_name} due to ties. "
-                f"Falling back to median split (2 bins).",
+                f"Could not create {n_bins} bins for {col_name}, falling back to "
+                f"median split (2 bins). This may reduce stratification granularity.",
                 UserWarning,
             )
             median = values.median()
@@ -164,10 +165,26 @@ def create_stratified_splits(
 
     rare_strata = strata_counts[strata_counts < min_count_for_split].index.tolist()
     if rare_strata:
-        print(f"Combining {len(rare_strata)} rare strata into 'other'")
-        strata = strata.replace(rare_strata, "other")
+        warnings.warn(
+            f"Combining {len(rare_strata)} rare strata into '__rare_combined__'",
+            UserWarning,
+            stacklevel=2,
+        )
+        strata = strata.replace(rare_strata, "__rare_combined__")
 
     strata_array = strata.values
+
+    # Check if strata collapsed to single class after merge
+    # This can happen with very homogeneous data or small sample sizes
+    n_unique_strata = len(np.unique(strata_array))
+    use_stratification = n_unique_strata >= 2
+
+    if not use_stratification:
+        warnings.warn(
+            f"Strata collapsed to {n_unique_strata} class(es) after merging rare categories. "
+            "Falling back to non-stratified splitting. This may result in imbalanced folds.",
+            UserWarning
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 1: Hold out fixed test set
@@ -175,7 +192,7 @@ def create_stratified_splits(
     train_val_subjects, test_subjects = train_test_split(
         subjects,
         test_size=test_frac,
-        stratify=strata_array,
+        stratify=strata_array if use_stratification else None,
         random_state=random_state,
     )
 
@@ -184,22 +201,44 @@ def create_stratified_splits(
     # ─────────────────────────────────────────────────────────────────────────
     # Step 2: Create K-fold CV with disjoint validation sets
     # ─────────────────────────────────────────────────────────────────────────
-    # Get strata for train_val subjects
-    train_val_indices = np.isin(subjects, train_val_subjects)
-    train_val_strata = strata_array[train_val_indices]
+    # Get strata for train_val subjects IN THE SAME ORDER as train_val_subjects
+    # IMPORTANT: train_test_split shuffles the output, so we must look up strata
+    # by subject ID, not by position in the original subjects array.
+    subject_to_strata = dict(zip(subjects, strata_array))
+    train_val_strata = np.array([subject_to_strata[s] for s in train_val_subjects])
 
-    # Use StratifiedKFold for true K-fold CV:
+    # Check if train_val strata also collapsed (can happen after test split)
+    n_unique_train_val_strata = len(np.unique(train_val_strata))
+    use_stratified_kfold = use_stratification and n_unique_train_val_strata >= 2
+
+    if use_stratification and not use_stratified_kfold:
+        warnings.warn(
+            f"Train/val strata collapsed to {n_unique_train_val_strata} class(es) after test split. "
+            "Falling back to non-stratified K-fold.",
+            UserWarning
+        )
+
+    # Use StratifiedKFold if possible, otherwise fall back to KFold
     # - Each subject appears in exactly one validation set across all folds
     # - Validation sets are disjoint (no overlap)
-    # - Stratification preserves class distribution in each fold
-    skf = StratifiedKFold(
-        n_splits=n_folds,
-        shuffle=True,
-        random_state=random_state,
-    )
+    # - Stratification preserves class distribution in each fold (when possible)
+    if use_stratified_kfold:
+        kfold = StratifiedKFold(
+            n_splits=n_folds,
+            shuffle=True,
+            random_state=random_state,
+        )
+        fold_iterator = kfold.split(train_val_subjects, train_val_strata)
+    else:
+        kfold = KFold(
+            n_splits=n_folds,
+            shuffle=True,
+            random_state=random_state,
+        )
+        fold_iterator = kfold.split(train_val_subjects)
 
     folds = []
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(train_val_subjects, train_val_strata)):
+    for fold_idx, (train_idx, val_idx) in enumerate(fold_iterator):
         fold = {
             "train": train_val_subjects[train_idx].tolist(),
             "val": train_val_subjects[val_idx].tolist(),

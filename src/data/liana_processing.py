@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from anndata import AnnData
 
-from src.data.constants import CELLCHATDB_CATEGORIES, NOVEL_CATEGORY, ALL_EDGE_TYPES
+from src.data.constants import CELLCHATDB_EDGE_TYPES, CELLCHATDB_PATH, EDGE_TYPE_NOVEL, ALL_EDGE_TYPES
 
 
 def _normalize_annotation(annotation: str) -> str:
@@ -29,18 +29,10 @@ def _normalize_annotation(annotation: str) -> str:
     Returns:
         Normalized annotation with underscores
     """
-    # Replace spaces and hyphens with underscores
-    normalized = annotation.replace(" ", "_").replace("-", "_")
-
-    # Map common variations to our standard names
-    mapping = {
-        "Secreted_Signaling": "Secreted_Signaling",
-        "ECM_Receptor": "ECM_Receptor",
-        "Cell_Cell_Contact": "Cell_Cell_Contact",
-        "Non_protein_Signaling": "Non_protein_Signaling",
-    }
-
-    return mapping.get(normalized, normalized)
+    # Replace spaces and hyphens with underscores to match our standard format
+    # (e.g., "Secreted Signaling" → "Secreted_Signaling",
+    #  "Non-protein Signaling" → "Non_protein_Signaling")
+    return annotation.replace(" ", "_").replace("-", "_")
 
 
 def load_cellchatdb_categories(
@@ -59,12 +51,28 @@ def load_cellchatdb_categories(
 
     lr_to_category = {}
     for _, row in db.iterrows():
-        # Get ligand and receptor symbols
-        ligand = row.get("ligand.symbol") or row.get("ligand_symbol", "")
-        receptor = row.get("receptor.symbol") or row.get("receptor_symbol", "")
-        annotation = row.get("annotation", NOVEL_CATEGORY)
+        # Get ligand and receptor symbols with proper NaN handling
+        # row.get() returns NaN if column exists but value is NaN, and NaN
+        # is truthy so "NaN or fallback" doesn't work as expected.
+        ligand = row.get("ligand.symbol")
+        if pd.isna(ligand):
+            ligand = row.get("ligand_symbol", "")
+        if pd.isna(ligand):
+            ligand = ""
 
-        if pd.isna(ligand) or pd.isna(receptor):
+        receptor = row.get("receptor.symbol")
+        if pd.isna(receptor):
+            receptor = row.get("receptor_symbol", "")
+        if pd.isna(receptor):
+            receptor = ""
+
+        # row.get returns NaN if column exists but value is NaN;
+        # the default is only used when key is missing entirely
+        annotation = row.get("annotation", EDGE_TYPE_NOVEL)
+        if pd.isna(annotation):
+            annotation = EDGE_TYPE_NOVEL
+
+        if not ligand or not receptor:
             continue
 
         # Normalize annotation to our standard format (underscores)
@@ -85,8 +93,8 @@ def load_cellchatdb_categories(
 
 def assign_edge_types(
     liana_results: pd.DataFrame,
-    cellchatdb_path: str | Path = "data/database/CellChatDB_human_interaction.csv",
-    novel_category: str = NOVEL_CATEGORY,
+    cellchatdb_path: str | Path = CELLCHATDB_PATH,
+    novel_category: str = EDGE_TYPE_NOVEL,
     ligand_col: str = "ligand_complex",
     receptor_col: str = "receptor_complex",
 ) -> pd.DataFrame:
@@ -114,7 +122,7 @@ def assign_edge_types(
         lr_to_category = {}
 
     # Get unique categories for encoding
-    categories = CELLCHATDB_CATEGORIES + [novel_category]
+    categories = CELLCHATDB_EDGE_TYPES + [novel_category]
     category_to_idx = {cat: idx for idx, cat in enumerate(categories)}
 
     # Assign edge types
@@ -302,13 +310,16 @@ def liana_to_adjacency_matrix(
     """
     Convert LIANA+ results to adjacency matrix.
 
+    Only includes edges with valid magnitude_rank values (not NaN, in [0, 1]).
+    This matches the filtering in build_subject_ccc_features for consistency.
+
     Args:
         liana_results: LIANA+ output
         cell_types: Ordered list of cell types
         source_col: Column for source cell type
         target_col: Column for target cell type
         score_col: Column for edge weights (lower is better for ranks)
-        fill_value: Value for missing edges
+        fill_value: Value for missing edges (and invalid edges)
 
     Returns:
         Adjacency matrix [n_cell_types, n_cell_types]
@@ -325,9 +336,16 @@ def liana_to_adjacency_matrix(
         tgt = row[target_col]
 
         if src in ct_to_idx and tgt in ct_to_idx:
+            score = row.get(score_col)
+
+            # Skip invalid magnitude_rank values - consistent with edge building
+            if score is None or pd.isna(score):
+                continue
+            if score < 0.0 or score > 1.0:
+                continue
+
             src_idx = ct_to_idx[src]
             tgt_idx = ct_to_idx[tgt]
-            score = row[score_col]
 
             # For ranks, keep minimum (most significant)
             adj_matrix[src_idx, tgt_idx] = min(adj_matrix[src_idx, tgt_idx], score)
@@ -471,21 +489,42 @@ def build_subject_ccc_features(
     for _, row in liana_results.iterrows():
         src = row.get("source", "")
         tgt = row.get("target", "")
-        et_name = row.get("edge_type_name", NOVEL_CATEGORY)
+        et_name = row.get("edge_type_name", EDGE_TYPE_NOVEL)
 
         if src not in ct_to_idx or tgt not in ct_to_idx:
             continue
 
+        # Validate magnitude_rank before adding edge
+        # Skip edges with invalid scores - only include edges where LIANA+ has
+        # full confidence. This is more conservative than imputing missing values.
+        #
+        # Why skip rather than impute:
+        #   - NaN means LIANA+ couldn't compute reliable statistics (sparse data,
+        #     too few cells, numerical issues)
+        #   - Including with neutral weight (0.5) would treat uncertain edges
+        #     as "average" - inflating low-quality data
+        #   - Including with weak weight (0.0) preserves topology but adds noise
+        #   - Skipping is cleanest: only trust edges with valid LIANA+ scores
+        #
+        # Why skip out-of-range values:
+        #   - magnitude_rank should be in [0, 1] by LIANA+ definition
+        #   - Values outside this range indicate data quality issues
+        #   - Rather than clamp and guess, skip these unreliable edges
+        magnitude_rank = row.get("magnitude_rank")
+        if magnitude_rank is None or pd.isna(magnitude_rank):
+            continue
+        if magnitude_rank < 0.0 or magnitude_rank > 1.0:
+            continue
+
         edge_src.append(ct_to_idx[src])
         edge_dst.append(ct_to_idx[tgt])
-        edge_type_list.append(et_to_idx.get(et_name, et_to_idx[NOVEL_CATEGORY]))
+        edge_type_list.append(et_to_idx.get(et_name, et_to_idx[EDGE_TYPE_NOVEL]))
 
         # Transform magnitude_rank to edge attribute
         # LIANA+ convention: lower magnitude_rank = stronger interaction (0 = strongest)
         # HGT convention: higher edge_attr = more attention/influence
         # Solution: invert so that stronger interactions get higher values
-        magnitude_rank = row.get("magnitude_rank", 0.5)
-        edge_attr = 1.0 - magnitude_rank  # Now higher = stronger
+        edge_attr = 1.0 - float(magnitude_rank)  # Now higher = stronger
         edge_attr_list.append([edge_attr])
 
     # Convert to arrays

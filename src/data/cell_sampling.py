@@ -19,6 +19,17 @@ class CellSampler:
     - random: Uniform random sampling
     - stratified: Sample proportionally to preserve distribution
     - importance: Use metadata to prioritize certain cells (future)
+
+    Note on Worker Reproducibility:
+        When using DataLoader with num_workers > 0, each worker process gets a
+        copy of the dataset (including this sampler) with the same RNG state.
+        This means different workers may produce the same samples, breaking the
+        expected randomization. For exact reproducibility across runs with
+        multi-worker loading, a worker_init_fn would need to re-seed this
+        sampler's RNG per worker (e.g., with base_seed + worker_id).
+
+        See create_dataloader() docstring for details on why this is not
+        currently implemented and how to add it if needed.
     """
 
     def __init__(
@@ -130,6 +141,16 @@ class CellSampler:
             # Add remaining samples to largest strata
             largest_strata_idx = np.argsort(counts)[-diff:]
             samples_per_stratum[largest_strata_idx] += 1
+        elif diff < 0:
+            # Rounding produced more than max_cells_per_type; reduce largest strata
+            excess = -diff
+            largest_first = np.argsort(counts)[::-1]
+            for idx in largest_first:
+                reduce = min(excess, samples_per_stratum[idx])
+                samples_per_stratum[idx] -= reduce
+                excess -= reduce
+                if excess == 0:
+                    break
 
         sampled = []
         for stratum, n_samples in zip(unique_strata, samples_per_stratum):
@@ -154,6 +175,16 @@ class CellSampler:
 
         Can use QC metrics, expression of marker genes, etc.
         """
+        # Derive indices from mask to guarantee alignment between mask and indices.
+        # This prevents silent bugs if the caller ever passes non-aligned arguments.
+        derived_indices = np.where(mask.values if hasattr(mask, 'values') else mask)[0]
+        if len(derived_indices) != len(indices):
+            raise ValueError(
+                f"mask/indices mismatch: mask selects {len(derived_indices)} cells "
+                f"but indices has {len(indices)} entries"
+            )
+        indices = derived_indices
+
         # Check for importance scores
         if "importance_score" in adata.obs.columns:
             scores = adata.obs.loc[mask, "importance_score"].values

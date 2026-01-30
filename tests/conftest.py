@@ -61,12 +61,6 @@ def n_heads():
 
 
 @pytest.fixture
-def n_selected_types():
-    """Number of cell types selected for Set Transformer."""
-    return 8
-
-
-@pytest.fixture
 def max_cells():
     """Maximum cells per cell type."""
     return 100  # Smaller for faster tests
@@ -96,22 +90,10 @@ def dummy_cognition(batch_size):
 
 
 @pytest.fixture
-def dummy_cells(batch_size, n_selected_types, max_cells, n_genes):
-    """Dummy cell-level expression data."""
-    return torch.randn(batch_size, n_selected_types, max_cells, n_genes)
-
-
-@pytest.fixture
-def dummy_cell_mask(batch_size, n_selected_types, max_cells):
-    """Dummy cell mask (all cells valid)."""
-    return torch.ones(batch_size, n_selected_types, max_cells, dtype=torch.bool)
-
-
-@pytest.fixture
 def dummy_region_mask(batch_size):
-    """Dummy region mask (only DLPFC available)."""
+    """Dummy region mask (only PFC available)."""
     mask = torch.zeros(batch_size, 6, dtype=torch.bool)
-    mask[:, 0] = True  # DLPFC always available
+    mask[:, 0] = True  # PFC always available
     return mask
 
 
@@ -147,64 +129,6 @@ def dummy_edge_attr(n_cell_types):
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def model_config(n_genes, n_cell_types, d_embed, n_heads, n_selected_types):
-    """Minimal model configuration for testing."""
-    return {
-        "n_genes": n_genes,
-        "n_cell_types": n_cell_types,
-        "d_embed": d_embed,
-        "d_fused": d_embed,
-        "n_heads": n_heads,
-        "pseudobulk": {
-            "mlp_hidden": [256, 128],
-            "dropout": 0.1,
-        },
-        "gene_gate": {
-            "initial_temperature": 2.0,
-        },
-        "hgt": {
-            "n_layers": 2,
-            "dropout": 0.1,
-        },
-        "set_transformer": {
-            "n_isab_layers": 2,
-            "n_inducing": 16,
-            "n_pma_seeds": 1,
-            "dropout": 0.1,
-            "max_cells_per_type": 100,
-            "min_cells_threshold": 10,
-        },
-        "cell_type_selector": {
-            "n_selected_types": n_selected_types,
-            "selection_temperature": 1.0,
-        },
-        "pathology_attention": {
-            "d_cond": 64,
-            "n_pathology_features": 3,
-        },
-        "head": {
-            "type": "deterministic",  # Faster for tests
-            "d_hidden": 64,
-        },
-    }
-
-
-@pytest.fixture
-def training_config():
-    """Minimal training configuration for testing."""
-    return {
-        "batch_size": 4,
-        "max_epochs": 2,
-        "lr": 1e-4,
-        "weight_decay": 1e-4,
-        "loss": {
-            "type": "beta_nll",
-            "beta": 0.5,
-        },
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
