@@ -37,6 +37,10 @@ from src.utils.gpu import (
     clear_gpu_memory,
     select_device,
     set_visible_gpus,
+    estimate_batch_size,
+)
+from src.utils.device import (
+    move_batch_to_device,
 )
 
 __all__ = [
@@ -72,4 +76,7 @@ __all__ = [
     "clear_gpu_memory",
     "select_device",
     "set_visible_gpus",
+    "estimate_batch_size",
+    # Device
+    "move_batch_to_device",
 ]

@@ -67,15 +67,17 @@ class TestDatasetToCollate:
         assert result["pseudobulk"].shape[0] == 4
         assert result["cells"].shape[0] == 4
 
-    def test_collate_to_heterodata_accepts_dataset_format(self):
-        """collate_to_heterodata should accept dataset output format."""
-        from src.data.collate import collate_to_heterodata
+    def test_collate_for_hgt_accepts_dataset_format(self):
+        """collate_for_hgt should accept dataset output format."""
+        from src.data.collate import collate_for_hgt
 
         batch = [create_mock_dataset_sample() for _ in range(4)]
-        result = collate_to_heterodata(batch)
+        result = collate_for_hgt(batch)
 
         assert result["batch_size"] == 4
-        assert "hetero_batch" in result
+        assert "edge_index_dict_list" in result
+        assert "edge_attr_dict_list" in result
+        assert len(result["edge_index_dict_list"]) == 4
 
 
 class TestCollateToCellTransformer:
@@ -251,19 +253,38 @@ class TestEndToEndPipeline:
 
 
 class TestCollateToHGTEncoder:
-    """Test that collate_to_heterodata output works with HGTEncoder."""
+    """Test that collate_for_hgt output works with HGTEncoder and HGTEncoderBatched."""
 
-    def test_hgt_encoder_accepts_heterodata(self):
-        """HGTEncoder should accept HeteroData from collate."""
-        from src.data.collate import collate_to_heterodata
+    def test_collate_for_hgt_produces_valid_format(self):
+        """collate_for_hgt should produce dict lists compatible with HGTEncoderBatched."""
+        from src.data.collate import collate_for_hgt, build_x_dict_list_from_embeddings
         from src.models.branches.hgt_encoder import HGTEncoder
 
         d_input = 100
         d_hidden = 64
 
         batch = [create_mock_dataset_sample(n_genes=d_input, n_edges=30) for _ in range(4)]
-        collated = collate_to_heterodata(batch)
+        collated = collate_for_hgt(batch)
 
+        # Verify dict list structure
+        assert "edge_index_dict_list" in collated
+        assert "edge_attr_dict_list" in collated
+        assert len(collated["edge_index_dict_list"]) == 4
+        assert len(collated["edge_attr_dict_list"]) == 4
+
+        # Build x_dict_list from pseudobulk for standalone HGT testing
+        x_dict_list = build_x_dict_list_from_embeddings(
+            collated["pseudobulk"], collated["node_types"]
+        )
+
+        # Verify each sample's x_dict has all cell types
+        assert len(x_dict_list) == 4
+        for x_dict in x_dict_list:
+            assert len(x_dict) == N_CELL_TYPES
+            for node_type, x in x_dict.items():
+                assert x.shape == (1, d_input)
+
+        # Verify encoder can be created with correct structure
         encoder = HGTEncoder(
             d_input=d_input,
             d_hidden=d_hidden,
@@ -271,25 +292,54 @@ class TestCollateToHGTEncoder:
             n_heads=4,
             n_layers=2,
         )
-
-        # Extract data from HeteroData batch for single-sample processing
-        hetero_batch = collated["hetero_batch"]
-
-        # Process first graph in batch (HGTEncoder expects unbatched for now)
-        # Build x_dict, edge_index_dict, edge_attr_dict from hetero_batch
-        x_dict = {}
-        for node_type in collated["node_types"]:
-            if hasattr(hetero_batch, node_type) and hasattr(hetero_batch[node_type], 'x'):
-                # Take first sample's node (batched has multiple)
-                x_dict[node_type] = hetero_batch[node_type].x[:1]
-
-        # Build edge dicts - need to handle batched edge indices
-        edge_index_dict = {}
-        edge_attr_dict = {}
-
-        # For this test, just verify the encoder can be created and has correct structure
         assert encoder.n_node_types == N_CELL_TYPES
         assert encoder.n_edge_types == len(ALL_EDGE_TYPES)
+
+    def test_hgt_encoder_batched_with_collate_for_hgt(self):
+        """End-to-end: collate_for_hgt output should run through HGTEncoderBatched."""
+        from src.data.collate import collate_for_hgt, build_x_dict_list_from_embeddings
+        from src.models.branches.hgt_encoder import HGTEncoderBatched
+
+        d_input = 100
+        d_hidden = 64
+        d_output = 64
+
+        # Create batch and collate
+        batch = [create_mock_dataset_sample(n_genes=d_input, n_edges=30) for _ in range(4)]
+        collated = collate_for_hgt(batch)
+
+        # Build x_dict_list from pseudobulk (as the full model would after encoding)
+        x_dict_list = build_x_dict_list_from_embeddings(
+            collated["pseudobulk"], collated["node_types"]
+        )
+
+        # Create encoder with sanitized node types from collate
+        encoder = HGTEncoderBatched(
+            d_input=d_input,
+            d_hidden=d_hidden,
+            d_output=d_output,
+            n_heads=4,
+            n_layers=2,
+            node_types=collated["node_types"],
+            edge_categories=collated["edge_types"],
+        )
+
+        # Forward pass using built x_dict_list and collate edge dicts
+        output_dict, attention = encoder(
+            x_dict_list,
+            collated["edge_index_dict_list"],
+            collated["edge_attr_dict_list"],
+            return_attention=True,
+        )
+
+        # Verify outputs
+        assert len(output_dict) == N_CELL_TYPES
+        for node_type, out in output_dict.items():
+            assert out.shape == (4, 1, d_output)  # (batch, n_nodes, d_output)
+            assert torch.isfinite(out).all()
+
+        assert attention is not None
+        assert len(attention) == 4  # One per batch sample
 
     def test_hgt_encoder_forward_with_manual_heterodata(self):
         """Test HGT forward pass with manually constructed HeteroData."""

@@ -12,7 +12,7 @@ Tests cover:
 import pytest
 import torch
 
-from src.models.branches.cell_transformer import CellTransformer, CellTransformerBatched
+from src.models.branches.cell_transformer import CellTransformer
 
 
 # ============================================================================
@@ -289,46 +289,6 @@ class TestGradientFlow:
                     has_grad = True
                     break
         assert has_grad
-
-
-# ============================================================================
-# Batched Wrapper Tests
-# ============================================================================
-
-
-class TestBatchedWrapper:
-    """Test CellTransformerBatched wrapper."""
-
-    def test_batched_initialization(self, small_config):
-        """Test batched wrapper initializes correctly."""
-        batched = CellTransformerBatched(**small_config)
-        assert batched.n_cell_types == small_config["n_cell_types"]
-        assert batched.d_model == small_config["d_model"]
-
-    def test_batched_forward(self, small_config, sample_data):
-        """Test batched forward pass."""
-        batched = CellTransformerBatched(**small_config)
-        cells, cell_mask = sample_data
-
-        embeddings, selection_weights, _ = batched(cells, cell_mask)
-
-        assert embeddings.shape == (
-            cells.size(0),
-            small_config["n_cell_types"],
-            small_config["d_model"],
-        )
-
-    def test_batched_selector_access(self, small_config):
-        """Test accessing selector through wrapper."""
-        batched = CellTransformerBatched(**small_config)
-        weights = batched.get_selection_weights()
-        assert weights.shape == (small_config["n_cell_types"],)
-
-    def test_batched_get_top_k(self, small_config):
-        """Test getting top-k types through wrapper."""
-        batched = CellTransformerBatched(**small_config)
-        top_k = batched.get_top_k_types(3)
-        assert top_k.shape == (3,)
 
 
 # ============================================================================

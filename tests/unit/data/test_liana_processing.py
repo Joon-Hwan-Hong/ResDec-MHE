@@ -86,6 +86,81 @@ class TestLoadCellChatDBCategories:
         assert "TGFB1_TGFBR1" in lr_to_cat
         assert len([k for k in lr_to_cat if "IL1R1" in k]) == 0
 
+    def test_handles_nan_annotation(self, tmp_path):
+        """Should use EDGE_TYPE_NOVEL for NaN annotations."""
+        from src.data.liana_processing import load_cellchatdb_categories, EDGE_TYPE_NOVEL
+
+        csv_path = tmp_path / "db_with_nan_annotation.csv"
+
+        db_data = pd.DataFrame({
+            "ligand.symbol": ["TGFB1", "APP"],
+            "receptor.symbol": ["TGFBR1", "CD74"],
+            "annotation": ["Secreted Signaling", np.nan],  # Second has NaN annotation
+        })
+        db_data.to_csv(csv_path, index=False)
+
+        lr_to_cat = load_cellchatdb_categories(csv_path)
+
+        # Normal annotation should be normalized
+        assert lr_to_cat["TGFB1_TGFBR1"] == "Secreted_Signaling"
+
+        # NaN annotation should get EDGE_TYPE_NOVEL, not "nan" string
+        assert lr_to_cat["APP_CD74"] == EDGE_TYPE_NOVEL
+        assert lr_to_cat["APP_CD74"] != "nan"
+
+    def test_falls_back_to_alternate_columns_when_nan(self, tmp_path):
+        """Should use ligand_symbol/receptor_symbol when primary columns are NaN."""
+        from src.data.liana_processing import load_cellchatdb_categories
+
+        csv_path = tmp_path / "db_with_alternate_columns.csv"
+
+        db_data = pd.DataFrame({
+            # Primary columns have NaN, alternate columns have values
+            "ligand.symbol": ["TGFB1", np.nan, np.nan],
+            "receptor.symbol": ["TGFBR1", np.nan, np.nan],
+            "ligand_symbol": [np.nan, "IL1B", "APP"],
+            "receptor_symbol": [np.nan, "IL1R1", "CD74"],
+            "annotation": ["Secreted_Signaling", "Secreted_Signaling", "ECM_Receptor"],
+        })
+        db_data.to_csv(csv_path, index=False)
+
+        lr_to_cat = load_cellchatdb_categories(csv_path)
+
+        # First row: primary columns work
+        assert "TGFB1_TGFBR1" in lr_to_cat
+
+        # Second row: should fall back to alternate columns
+        assert "IL1B_IL1R1" in lr_to_cat
+        assert lr_to_cat["IL1B_IL1R1"] == "Secreted_Signaling"
+
+        # Third row: should also use alternate columns
+        assert "APP_CD74" in lr_to_cat
+        assert lr_to_cat["APP_CD74"] == "ECM_Receptor"
+
+    def test_skips_when_all_symbol_columns_are_nan(self, tmp_path):
+        """Should skip rows when both primary and alternate columns are NaN."""
+        from src.data.liana_processing import load_cellchatdb_categories
+
+        csv_path = tmp_path / "db_with_all_nan_symbols.csv"
+
+        db_data = pd.DataFrame({
+            "ligand.symbol": ["TGFB1", np.nan],
+            "receptor.symbol": ["TGFBR1", np.nan],
+            "ligand_symbol": [np.nan, np.nan],  # Both alternate also NaN
+            "receptor_symbol": [np.nan, np.nan],
+            "annotation": ["Secreted_Signaling", "ECM_Receptor"],
+        })
+        db_data.to_csv(csv_path, index=False)
+
+        lr_to_cat = load_cellchatdb_categories(csv_path)
+
+        # First row should work
+        assert "TGFB1_TGFBR1" in lr_to_cat
+
+        # Second row should be skipped (no valid symbols)
+        # Just verify we don't crash and the first row is present
+        assert len(lr_to_cat) >= 2  # At least the forward and reverse for first row
+
 
 class TestAssignEdgeTypes:
     """Tests for edge type assignment."""
@@ -110,7 +185,7 @@ class TestAssignEdgeTypes:
     def test_unknown_interaction_gets_novel_category(self, mock_liana_results, mock_cellchatdb_csv):
         """Unknown L-R pairs should get Novel/Uncharacterized category."""
         from src.data.liana_processing import assign_edge_types
-        from src.data.constants import NOVEL_CATEGORY
+        from src.data.constants import EDGE_TYPE_NOVEL
 
         result = assign_edge_types(
             mock_liana_results,
@@ -119,19 +194,19 @@ class TestAssignEdgeTypes:
 
         # FAKE_LIGAND_FAKE_RECEPTOR is not in DB
         fake_row = result[result["ligand_complex"] == "FAKE_LIGAND"].iloc[0]
-        assert fake_row["edge_type_name"] == NOVEL_CATEGORY
+        assert fake_row["edge_type_name"] == EDGE_TYPE_NOVEL
 
     def test_edge_type_indices_consistent(self, mock_liana_results, mock_cellchatdb_csv):
         """Edge type indices should match category order."""
         from src.data.liana_processing import assign_edge_types
-        from src.data.constants import CELLCHATDB_CATEGORIES, NOVEL_CATEGORY
+        from src.data.constants import CELLCHATDB_EDGE_TYPES, EDGE_TYPE_NOVEL
 
         result = assign_edge_types(
             mock_liana_results,
             cellchatdb_path=mock_cellchatdb_csv
         )
 
-        categories = CELLCHATDB_CATEGORIES + [NOVEL_CATEGORY]
+        categories = CELLCHATDB_EDGE_TYPES + [EDGE_TYPE_NOVEL]
         category_to_idx = {cat: idx for idx, cat in enumerate(categories)}
 
         for _, row in result.iterrows():
@@ -141,7 +216,7 @@ class TestAssignEdgeTypes:
     def test_handles_missing_db_file(self, mock_liana_results, tmp_path, capsys):
         """Should handle missing CellChatDB file gracefully."""
         from src.data.liana_processing import assign_edge_types
-        from src.data.constants import NOVEL_CATEGORY
+        from src.data.constants import EDGE_TYPE_NOVEL
 
         # Use non-existent path
         result = assign_edge_types(
@@ -150,7 +225,7 @@ class TestAssignEdgeTypes:
         )
 
         # All interactions should get novel category
-        assert (result["edge_type_name"] == NOVEL_CATEGORY).all()
+        assert (result["edge_type_name"] == EDGE_TYPE_NOVEL).all()
 
         # Should print warning
         captured = capsys.readouterr()
@@ -376,6 +451,35 @@ class TestLianaToAdjacencyMatrix:
 
         # Should only have Astrocyte -> Microglia interaction
         assert adj.shape == (2, 2)
+
+    def test_skips_invalid_magnitude_rank(self):
+        """Should skip edges with NaN or out-of-range magnitude_rank."""
+        from src.data.liana_processing import liana_to_adjacency_matrix
+
+        # Create data with invalid magnitude_rank values
+        df = pd.DataFrame({
+            "source": ["Astrocyte", "Microglia", "Oligodendrocyte", "Astrocyte"],
+            "target": ["Microglia", "Oligodendrocyte", "Astrocyte", "Oligodendrocyte"],
+            "magnitude_rank": [0.3, np.nan, -0.1, 1.5],  # Valid, NaN, negative, >1
+        })
+
+        cell_types = ["Astrocyte", "Microglia", "Oligodendrocyte"]
+        fill_value = 1.0
+
+        adj = liana_to_adjacency_matrix(df, cell_types, fill_value=fill_value)
+
+        # Only Astrocyte -> Microglia (0.3) should be included
+        astro_idx = cell_types.index("Astrocyte")
+        micro_idx = cell_types.index("Microglia")
+        oligo_idx = cell_types.index("Oligodendrocyte")
+
+        # Valid edge: Astrocyte -> Microglia = 0.3
+        assert adj[astro_idx, micro_idx] == 0.3
+
+        # Invalid edges: should have fill_value
+        assert adj[micro_idx, oligo_idx] == fill_value  # NaN
+        assert adj[oligo_idx, astro_idx] == fill_value  # negative
+        assert adj[astro_idx, oligo_idx] == fill_value  # >1
 
 
 class TestBuildSubjectCCCFeatures:
@@ -620,23 +724,50 @@ class TestEdgeCases:
         assert features["edge_index"][1, 0] == 0
 
     def test_nan_in_magnitude_rank(self, mock_cellchatdb_csv):
-        """Should handle NaN magnitude_rank."""
+        """Edges with NaN magnitude_rank should be skipped.
+
+        We only include edges where LIANA+ computed valid scores.
+        This is more conservative than imputing missing values.
+        """
         from src.data.liana_processing import build_subject_ccc_features, assign_edge_types
 
         df_with_nan = pd.DataFrame({
-            "source": ["Astrocyte"],
-            "target": ["Microglia"],
-            "ligand_complex": ["TGFB1"],
-            "receptor_complex": ["TGFBR1"],
-            "magnitude_rank": [np.nan],
+            "source": ["Astrocyte", "Microglia"],
+            "target": ["Microglia", "Astrocyte"],
+            "ligand_complex": ["TGFB1", "IL1B"],
+            "receptor_complex": ["TGFBR1", "IL1R1"],
+            "magnitude_rank": [np.nan, 0.3],  # First is NaN, second is valid
         })
 
         cell_types = ["Astrocyte", "Microglia"]
         df_with_types = assign_edge_types(df_with_nan, cellchatdb_path=mock_cellchatdb_csv)
         features = build_subject_ccc_features(df_with_types, cell_types)
 
-        # Should still build features (NaN becomes edge attr)
+        # Should only include the valid edge, skip the NaN one
         assert features["n_edges"] == 1
+        # The valid edge should have edge_attr = 1.0 - 0.3 = 0.7
+        assert np.isclose(features["edge_attr"][0, 0], 0.7)
+
+    def test_out_of_range_magnitude_rank_skipped(self, mock_cellchatdb_csv):
+        """Edges with magnitude_rank outside [0, 1] should be skipped."""
+        from src.data.liana_processing import build_subject_ccc_features, assign_edge_types
+
+        df_with_invalid = pd.DataFrame({
+            "source": ["Astrocyte", "Microglia", "Astrocyte"],
+            "target": ["Microglia", "Astrocyte", "Astrocyte"],
+            "ligand_complex": ["TGFB1", "IL1B", "NGF"],
+            "receptor_complex": ["TGFBR1", "IL1R1", "NGFR"],
+            "magnitude_rank": [-0.5, 1.5, 0.5],  # Two invalid, one valid
+        })
+
+        cell_types = ["Astrocyte", "Microglia"]
+        df_with_types = assign_edge_types(df_with_invalid, cellchatdb_path=mock_cellchatdb_csv)
+        features = build_subject_ccc_features(df_with_types, cell_types)
+
+        # Should only include the valid edge (0.5), skip the out-of-range ones
+        assert features["n_edges"] == 1
+        # The valid edge should have edge_attr = 1.0 - 0.5 = 0.5
+        assert np.isclose(features["edge_attr"][0, 0], 0.5)
 
     def test_large_number_of_edges(self, mock_cellchatdb_csv):
         """Should handle large number of edges efficiently."""

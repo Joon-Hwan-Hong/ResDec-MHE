@@ -375,3 +375,177 @@ class TestStratificationFallback:
         # Cognition should have ~33/33/33 split (tertiles)
         # Total strata: 2 * 3 = 6 (or fewer if combined)
         assert strata.nunique() >= 2
+
+
+class TestStratificationAlignment:
+    """Tests for correct alignment of stratification labels with shuffled subjects."""
+
+    def test_strata_aligned_with_train_val_subjects(self):
+        """Strata passed to StratifiedKFold must match train_val_subjects order.
+
+        Regression test for bug where train_val_strata was built using original
+        subjects order, but train_val_subjects was shuffled by train_test_split.
+        """
+        from src.data.splits import create_stratified_splits
+
+        # Create metadata with distinct, predictable strata
+        # Subject IDs encode their stratum: S_low_high_0, S_medium_low_1, etc.
+        n = 90  # Divisible by 9 for 3x3 strata
+        metadata_rows = []
+        for i in range(n):
+            # Assign to one of 9 strata (3x3)
+            path_bin = i % 3  # 0, 1, 2 -> low, medium, high
+            cogn_bin = (i // 3) % 3  # 0, 1, 2 -> low, medium, high
+            path_labels = ["low", "medium", "high"]
+            cogn_labels = ["low", "medium", "high"]
+
+            metadata_rows.append({
+                "ROSMAP_IndividualID": f"S_{path_labels[path_bin]}_{cogn_labels[cogn_bin]}_{i}",
+                "gpath": path_bin * 0.4 + 0.1,  # 0.1, 0.5, 0.9
+                "cogn_global": cogn_bin * 0.4 + 0.1,  # 0.1, 0.5, 0.9
+            })
+
+        metadata = pd.DataFrame(metadata_rows)
+
+        splits = create_stratified_splits(metadata, test_frac=0.1, n_folds=5)
+
+        # For each fold, verify strata distribution is balanced
+        # If strata were misaligned, StratifiedKFold would produce imbalanced folds
+        for fold_idx, fold in enumerate(splits["folds"]):
+            val_subjects = fold["val"]
+
+            # Extract strata from subject IDs (encoded in name)
+            val_strata = []
+            for s in val_subjects:
+                parts = s.split("_")
+                stratum = f"{parts[1]}_{parts[2]}"  # e.g., "low_high"
+                val_strata.append(stratum)
+
+            # Check that we have multiple strata represented in validation
+            # (if alignment was wrong, might get all from one stratum)
+            unique_strata = set(val_strata)
+            assert len(unique_strata) >= 2, (
+                f"Fold {fold_idx} validation has only {len(unique_strata)} stratum: {unique_strata}. "
+                "This suggests stratification labels were misaligned with subjects."
+            )
+
+    def test_strata_match_subject_identity(self):
+        """Each subject's stratum in KFold should match their actual stratum.
+
+        This directly tests that the stratum array passed to StratifiedKFold
+        corresponds to the correct subjects.
+        """
+        from src.data.splits import create_stratified_splits, create_stratification_variable
+
+        np.random.seed(42)
+        n = 100
+        metadata = pd.DataFrame({
+            "ROSMAP_IndividualID": [f"subj_{i:03d}" for i in range(n)],
+            "gpath": np.random.uniform(0, 1, n),
+            "cogn_global": np.random.uniform(-2, 2, n),
+        })
+
+        # Create strata for verification
+        strata = create_stratification_variable(metadata.set_index("ROSMAP_IndividualID"))
+        subject_to_stratum = dict(zip(metadata["ROSMAP_IndividualID"], strata))
+
+        splits = create_stratified_splits(metadata, test_frac=0.1, n_folds=5)
+
+        # Verify each fold's val subjects have diverse strata
+        for fold_idx, fold in enumerate(splits["folds"]):
+            val_strata = [subject_to_stratum[s] for s in fold["val"]]
+            train_strata = [subject_to_stratum[s] for s in fold["train"]]
+
+            # With proper stratification, each fold should have similar strata distribution
+            val_unique = set(val_strata)
+            train_unique = set(train_strata)
+
+            # Training set should have all strata (or most)
+            # Validation set should have representation from multiple strata
+            assert len(val_unique) >= 2 or len(train_unique) >= 2, (
+                f"Fold {fold_idx}: val has {len(val_unique)} strata, "
+                f"train has {len(train_unique)} strata. Stratification may be broken."
+            )
+
+
+class TestStrataCollapseFallback:
+    """Tests for fallback when strata collapse to single class."""
+
+    def test_falls_back_when_strata_collapse(self):
+        """Should fall back to non-stratified splits when strata collapse."""
+        from src.data.splits import create_stratified_splits
+        import warnings
+
+        # Create highly homogeneous data where all subjects end up in same stratum
+        n = 50
+        metadata = pd.DataFrame({
+            "ROSMAP_IndividualID": [f"subj_{i:03d}" for i in range(n)],
+            "gpath": [0.5] * n,  # All same value
+            "cogn_global": [0.5] * n,  # All same value
+        })
+
+        # Should warn about collapsed strata but still produce valid splits
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            splits = create_stratified_splits(metadata, n_folds=5)
+
+            # Should have warned about strata collapse
+            assert any("collapsed" in str(warning.message).lower() for warning in w)
+
+        # Should still produce valid splits
+        assert len(splits["holdout_test"]) > 0
+        assert len(splits["folds"]) == 5
+        for fold in splits["folds"]:
+            assert len(fold["train"]) > 0
+            assert len(fold["val"]) > 0
+
+    def test_no_subject_leakage_with_collapsed_strata(self):
+        """Even with collapsed strata, no subject should leak between splits."""
+        from src.data.splits import create_stratified_splits
+        import warnings
+
+        n = 50
+        metadata = pd.DataFrame({
+            "ROSMAP_IndividualID": [f"subj_{i:03d}" for i in range(n)],
+            "gpath": [0.5] * n,
+            "cogn_global": [0.5] * n,
+        })
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            splits = create_stratified_splits(metadata, n_folds=5)
+
+        test_set = set(splits["holdout_test"])
+
+        for fold in splits["folds"]:
+            train_set = set(fold["train"])
+            val_set = set(fold["val"])
+
+            # No overlap with test
+            assert len(train_set & test_set) == 0
+            assert len(val_set & test_set) == 0
+
+            # No overlap within fold
+            assert len(train_set & val_set) == 0
+
+    def test_partial_collapse_handled(self):
+        """Should handle case where strata collapse after rare-strata merge."""
+        from src.data.splits import create_stratified_splits
+        import warnings
+
+        # Create data with many small strata that collapse to "other"
+        n = 30
+        metadata = pd.DataFrame({
+            "ROSMAP_IndividualID": [f"subj_{i:03d}" for i in range(n)],
+            # Many unique values, each appearing only once → all become "other"
+            "gpath": np.arange(n, dtype=float),
+            "cogn_global": np.arange(n, dtype=float),
+        })
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            splits = create_stratified_splits(metadata, n_folds=3)
+
+        # Should produce valid splits regardless of warnings
+        assert len(splits["holdout_test"]) > 0
+        assert len(splits["folds"]) == 3

@@ -9,6 +9,7 @@ from src.models.components.set_transformer import (
 )
 from src.models.components.cell_type_selector import CellTypeSelector
 from src.models.components.hgt_conv import HGTConvWithEdgeAttr
+from src.models.components.region_handler import RegionHandler
 
 __all__ = [
     "GeneAttentionGate",
@@ -18,4 +19,5 @@ __all__ = [
     "SetTransformerEncoder",
     "CellTypeSelector",
     "HGTConvWithEdgeAttr",
+    "RegionHandler",
 ]

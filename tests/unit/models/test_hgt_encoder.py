@@ -532,6 +532,34 @@ class TestBatchedEncoder:
         with pytest.raises(ValueError, match="must match batch size"):
             batched_encoder(x_dict_list, edge_index_dict_list)
 
+    def test_batched_mismatched_node_types(
+        self, batched_encoder, small_encoder_config, mini_node_types
+    ):
+        """Test warning and zero-fill when samples have different node types."""
+        d_input = small_encoder_config["d_input"]
+
+        # Sample 0: has all node types
+        # Sample 1: missing one node type
+        x_dict_list = [
+            {nt: torch.randn(1, d_input) for nt in mini_node_types},
+            {nt: torch.randn(1, d_input) for nt in mini_node_types[:-1]},  # Missing last type
+        ]
+        edge_index_dict_list = [{}, {}]
+
+        import warnings as _warnings
+        with _warnings.catch_warnings(record=True) as w:
+            _warnings.simplefilter("always")
+            output_dict, _ = batched_encoder(x_dict_list, edge_index_dict_list)
+            # Should have issued a warning about missing node types
+            assert any("missing node types" in str(warning.message) for warning in w)
+        # Missing node type should be zero-filled in sample 1
+        missing_type = mini_node_types[-1]
+        assert missing_type in output_dict
+        # Sample 1's missing type should have zero input (zero-filled)
+        # After encoder processing, it may not be exactly zero due to bias terms,
+        # but the output should exist and have the right shape
+        assert output_dict[missing_type].shape[0] == 2  # batch size
+
 
 # ============================================================================
 # Edge Cases and Error Handling Tests
@@ -1276,6 +1304,54 @@ class TestMechanisticCorrectness:
             assert output_dict[nt].abs().sum() > 0
             assert not torch.isnan(output_dict[nt]).any()
             assert not torch.isinf(output_dict[nt]).any()
+
+    def test_isolated_nodes_get_zero_conv_output(
+        self, mini_node_types, mini_edge_categories
+    ):
+        """HGT conv should output zero for isolated nodes (no incoming edges).
+
+        This tests the conv layer directly (not the encoder), verifying that
+        'no LIANA edges = no communication contribution'. The encoder adds
+        residual connections, so isolated nodes still get non-zero final output,
+        but the conv layer's contribution should be exactly zero.
+        """
+        # Create conv layer directly
+        d_model = 16
+        conv = HGTConvWithEdgeAttr(
+            in_channels=d_model,
+            out_channels=d_model,
+            heads=2,
+            node_types=mini_node_types,
+            edge_categories=mini_edge_categories,
+            edge_dim=1,
+        )
+        conv.eval()
+
+        # Input features for all node types
+        x_dict = {nt: torch.randn(1, d_model) for nt in mini_node_types}
+
+        # Only one edge: type[0] -> type[1]
+        # type[2] is isolated (no incoming edges)
+        edge_type = (mini_node_types[0], mini_edge_categories[0], mini_node_types[1])
+        edge_index_dict = {edge_type: torch.tensor([[0], [0]])}
+        edge_attr_dict = {edge_type: torch.tensor([[0.8]])}
+
+        out_dict, _ = conv(x_dict, edge_index_dict, edge_attr_dict)
+
+        # type[1] received a message, should be non-zero
+        assert out_dict[mini_node_types[1]].abs().sum() > 0, (
+            "Node receiving message should have non-zero conv output"
+        )
+
+        # type[2] is isolated, should be exactly zero (no communication)
+        assert out_dict[mini_node_types[2]].abs().sum() == 0, (
+            "Isolated node should have zero conv output (no LIANA edges = no communication)"
+        )
+
+        # type[0] is source but receives no incoming edges, should be zero
+        assert out_dict[mini_node_types[0]].abs().sum() == 0, (
+            "Source-only node should have zero conv output (no incoming edges)"
+        )
 
     # === Attention Properties ===
 

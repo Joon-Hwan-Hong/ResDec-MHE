@@ -7,13 +7,46 @@ from src.models.components import (
     PMA,
     SetTransformerEncoder,
     CellTypeSelector,
+    RegionHandler,
 )
+from src.models.branches import (
+    PseudobulkEncoder,
+    HGTEncoder,
+    HGTEncoderBatched,
+    CellTransformer,
+)
+from src.models.fusion import (
+    FusionLayer,
+    PathologyEncoder,
+    PathologyStratifiedAttention,
+)
+from src.models.heads import (
+    BayesianPredictionHead,
+    DeterministicPredictionHead,
+)
+from src.models.full_model import CognitiveResilienceModel
 
 __all__ = [
+    # Components
     "GeneAttentionGate",
     "MultiheadAttentionBlock",
     "ISAB",
     "PMA",
     "SetTransformerEncoder",
     "CellTypeSelector",
+    "RegionHandler",
+    # Branches
+    "PseudobulkEncoder",
+    "HGTEncoder",
+    "HGTEncoderBatched",
+    "CellTransformer",
+    # Fusion
+    "FusionLayer",
+    "PathologyEncoder",
+    "PathologyStratifiedAttention",
+    # Heads
+    "BayesianPredictionHead",
+    "DeterministicPredictionHead",
+    # Full Model
+    "CognitiveResilienceModel",
 ]

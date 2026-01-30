@@ -123,12 +123,13 @@ class TestForwardPass:
         assert output.shape == x.shape
 
     def test_output_is_gated_input(self, small_gate):
-        """Output should be input * gate_weights."""
+        """Output should be input * scaled_gate_weights (gate * n_genes)."""
         x = torch.randn(2, 5, 10)
         gate_weights = small_gate.get_gate_weights()
         output = small_gate(x)
 
-        expected = x * gate_weights.unsqueeze(0)
+        # forward() scales gate weights by n_genes to preserve input magnitude
+        expected = x * (gate_weights * small_gate.n_genes).unsqueeze(0)
         assert torch.allclose(output, expected)
 
     def test_batch_size_one(self, small_gate):

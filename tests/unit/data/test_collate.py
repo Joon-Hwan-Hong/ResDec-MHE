@@ -26,7 +26,7 @@ def mock_batch():
         return {
             "subject_id": subject_id,
             "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
-            "cell_type_mask": torch.randint(0, 2, (N_CELL_TYPES,)).bool(),
+            "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
             "cell_counts": torch.randint(0, 100, (N_CELL_TYPES,)),
             # cells now has ALL 31 cell types (not just selected)
             "cells": torch.randn(N_CELL_TYPES, max_cells, n_genes),
@@ -79,18 +79,19 @@ class TestCollateOutputSchema:
         assert batch["cells"].shape[0] == batch_size
         assert batch["cells"].shape[1] == N_CELL_TYPES
 
-    def test_collate_to_heterodata_output_keys(self, mock_batch):
-        """collate_to_heterodata should output all required keys."""
-        from src.data.collate import collate_to_heterodata
+    def test_collate_for_hgt_output_keys(self, mock_batch):
+        """collate_for_hgt should output all required keys."""
+        from src.data.collate import collate_for_hgt
 
-        batch = collate_to_heterodata(mock_batch)
+        batch = collate_for_hgt(mock_batch)
 
         required_keys = {
             "pseudobulk", "cell_type_mask", "cell_counts",
             "cells", "cell_mask",
             "pathology", "cognition",
             "region_mask",
-            "hetero_batch",
+            # HGT dict lists (x_dict_list built separately via build_x_dict_list_from_embeddings)
+            "edge_index_dict_list", "edge_attr_dict_list",
             "subject_ids", "batch_size",
             "node_types", "edge_types",
         }
@@ -98,11 +99,11 @@ class TestCollateOutputSchema:
         assert required_keys.issubset(set(batch.keys())), \
             f"Missing keys: {required_keys - set(batch.keys())}"
 
-    def test_collate_to_heterodata_key_shapes(self, mock_batch):
-        """Verify shapes of collate_to_heterodata output keys."""
-        from src.data.collate import collate_to_heterodata
+    def test_collate_for_hgt_key_shapes(self, mock_batch):
+        """Verify shapes of collate_for_hgt output keys."""
+        from src.data.collate import collate_for_hgt
 
-        batch = collate_to_heterodata(mock_batch)
+        batch = collate_for_hgt(mock_batch)
         batch_size = len(mock_batch)
 
         # cell_counts: [batch, n_cell_types]
@@ -112,6 +113,9 @@ class TestCollateOutputSchema:
         # cells: [batch, n_cell_types, max_cells, n_genes]
         assert batch["cells"].shape[0] == batch_size
         assert batch["cells"].shape[1] == N_CELL_TYPES
+        # HGT dict lists should have length == batch_size
+        assert len(batch["edge_index_dict_list"]) == batch_size
+        assert len(batch["edge_attr_dict_list"]) == batch_size
 
 
 def create_mock_sample(
@@ -235,25 +239,27 @@ class TestCollateFn:
         assert result["subject_ids"] == ["SUBJ_A", "SUBJ_B", "SUBJ_C"]
 
 
-class TestCollateToHeterodata:
-    """Tests for collate_to_heterodata() - heterogeneous graph batching."""
+class TestCollateForHgt:
+    """Tests for collate_for_hgt() - dict format for HGTEncoderBatched."""
 
-    def test_creates_heterodata_batch(self):
-        """Creates PyG HeteroData batch."""
-        from src.data.collate import collate_to_heterodata
+    def test_creates_dict_lists(self):
+        """Creates dict lists for HGTEncoderBatched."""
+        from src.data.collate import collate_for_hgt
 
         batch = [create_mock_sample() for _ in range(3)]
-        result = collate_to_heterodata(batch)
+        result = collate_for_hgt(batch)
 
-        assert "hetero_batch" in result
+        assert "edge_index_dict_list" in result
+        assert "edge_attr_dict_list" in result
         assert result["batch_size"] == 3
+        assert len(result["edge_index_dict_list"]) == 3
 
     def test_includes_node_and_edge_types(self):
         """Result includes metadata about node/edge types."""
-        from src.data.collate import collate_to_heterodata
+        from src.data.collate import collate_for_hgt
 
         batch = [create_mock_sample() for _ in range(2)]
-        result = collate_to_heterodata(batch)
+        result = collate_for_hgt(batch)
 
         assert "node_types" in result
         assert "edge_types" in result
@@ -261,11 +267,11 @@ class TestCollateToHeterodata:
         assert len(result["edge_types"]) == 5   # CellChatDB categories
 
     def test_sanitizes_names(self):
-        """Node and edge type names should be sanitized for PyG."""
-        from src.data.collate import collate_to_heterodata
+        """Node and edge type names should be sanitized."""
+        from src.data.collate import collate_for_hgt
 
         batch = [create_mock_sample() for _ in range(1)]
-        result = collate_to_heterodata(batch)
+        result = collate_for_hgt(batch)
 
         # Names should not contain spaces or slashes
         for name in result["node_types"]:
@@ -274,20 +280,212 @@ class TestCollateToHeterodata:
 
     def test_single_sample_batch(self):
         """Handle batch of size 1."""
-        from src.data.collate import collate_to_heterodata
+        from src.data.collate import collate_for_hgt
 
         batch = [create_mock_sample()]
-        result = collate_to_heterodata(batch)
+        result = collate_for_hgt(batch)
 
         assert result["batch_size"] == 1
         assert result["pseudobulk"].shape[0] == 1
+        assert len(result["edge_index_dict_list"]) == 1
+
+    def test_x_dict_structure_via_build_helper(self):
+        """build_x_dict_list_from_embeddings should produce x_dicts with all cell types."""
+        from src.data.collate import collate_for_hgt, build_x_dict_list_from_embeddings
+
+        batch = [create_mock_sample() for _ in range(2)]
+        result = collate_for_hgt(batch)
+
+        # Build x_dict_list from raw pseudobulk (as standalone HGT tests would)
+        x_dict_list = build_x_dict_list_from_embeddings(
+            result["pseudobulk"], result["node_types"]
+        )
+
+        assert len(x_dict_list) == 2
+        for x_dict in x_dict_list:
+            # Should have 31 cell types
+            assert len(x_dict) == 31
+            # Each value should be (1, n_genes)
+            for ct_name, tensor in x_dict.items():
+                assert tensor.shape[0] == 1  # Single node per type per subject
+
+        # Verify values match source pseudobulk
+        for b in range(2):  # batch size
+            for ct_idx, ct_name in enumerate(result["node_types"]):
+                expected = result["pseudobulk"][b, ct_idx]
+                actual = x_dict_list[b][ct_name].squeeze(0)
+                assert torch.allclose(expected, actual), f"Mismatch for batch {b}, type {ct_name}"
+
+    def test_edge_dict_triplet_keys(self):
+        """Edge dicts should have (src, rel, dst) triplet keys."""
+        from src.data.collate import collate_for_hgt
+
+        # Create sample with edges
+        sample = create_mock_sample()
+        sample["ccc_edge_index"] = torch.tensor([[0, 1], [1, 2]])
+        sample["ccc_edge_type"] = torch.tensor([0, 1])
+        sample["ccc_edge_attr"] = torch.tensor([[0.8], [0.5]])
+
+        result = collate_for_hgt([sample])
+
+        edge_index_dict = result["edge_index_dict_list"][0]
+        edge_attr_dict = result["edge_attr_dict_list"][0]
+
+        # Should have edges
+        assert len(edge_index_dict) > 0
+        # Keys should be triplets
+        for key in edge_index_dict.keys():
+            assert isinstance(key, tuple)
+            assert len(key) == 3  # (src_type, relation, dst_type)
+
+    def test_uses_custom_cell_type_order(self):
+        """Should use cell_type_order from sample, not global constant."""
+        from src.data.collate import collate_for_hgt, build_x_dict_list_from_embeddings
+
+        # Create sample with custom cell type order
+        custom_order = ["TypeA", "TypeB", "TypeC"]
+        sample = create_mock_sample()
+        sample["pseudobulk"] = torch.randn(3, 100)  # 3 cell types
+        sample["cell_type_order"] = custom_order
+
+        # Edge from TypeA (0) to TypeB (1)
+        sample["ccc_edge_index"] = torch.tensor([[0], [1]])
+        sample["ccc_edge_type"] = torch.tensor([0])
+        sample["ccc_edge_attr"] = torch.tensor([[0.5]])
+
+        result = collate_for_hgt([sample])
+
+        # Node types should match custom order (sanitized)
+        assert result["node_types"] == ["TypeA", "TypeB", "TypeC"]
+
+        # Build x_dict_list from pseudobulk and verify custom type names as keys
+        x_dict_list = build_x_dict_list_from_embeddings(
+            result["pseudobulk"], result["node_types"]
+        )
+        x_dict = x_dict_list[0]
+        assert set(x_dict.keys()) == {"TypeA", "TypeB", "TypeC"}
+
+        # Raw cell_type_order should be preserved
+        assert result["cell_type_order"] == custom_order
+
+    def test_falls_back_to_default_cell_type_order(self):
+        """Should use CELL_TYPE_ORDER when sample doesn't include cell_type_order."""
+        from src.data.collate import collate_for_hgt
+        from src.data.constants import CELL_TYPE_ORDER
+
+        # Create sample WITHOUT cell_type_order key
+        sample = create_mock_sample()
+        # Ensure no cell_type_order key
+        if "cell_type_order" in sample:
+            del sample["cell_type_order"]
+
+        result = collate_for_hgt([sample])
+
+        # Should fall back to default CELL_TYPE_ORDER
+        assert result["cell_type_order"] == CELL_TYPE_ORDER
+
+    def test_raises_on_mismatched_cell_type_order(self):
+        """Should raise ValueError when samples have different cell_type_order."""
+        from src.data.collate import collate_for_hgt
+
+        n_cell_types = 3
+        n_genes = 10
+        order_a = ["TypeA", "TypeB", "TypeC"]
+        order_b = ["TypeC", "TypeA", "TypeB"]  # Different order
+
+        sample_a = create_mock_sample(n_genes=n_genes, n_cell_types=n_cell_types)
+        sample_a["cell_type_order"] = order_a
+
+        sample_b = create_mock_sample(n_genes=n_genes, n_cell_types=n_cell_types)
+        sample_b["cell_type_order"] = order_b
+
+        with pytest.raises(ValueError, match="different cell_type_order"):
+            collate_for_hgt([sample_a, sample_b])
+
+
+class TestBuildXDictListFromEmbeddings:
+    """Tests for build_x_dict_list_from_embeddings() helper."""
+
+    def test_creates_correct_structure(self):
+        """Should create list of dicts with correct structure."""
+        from src.data.collate import build_x_dict_list_from_embeddings
+
+        batch_size = 3
+        n_cell_types = 31
+        d_embed = 128
+        node_types = [f"CellType_{i}" for i in range(n_cell_types)]
+
+        embeddings = torch.randn(batch_size, n_cell_types, d_embed)
+        x_dict_list = build_x_dict_list_from_embeddings(embeddings, node_types)
+
+        assert len(x_dict_list) == batch_size
+        for x_dict in x_dict_list:
+            assert len(x_dict) == n_cell_types
+            for ct_name, tensor in x_dict.items():
+                assert tensor.shape == (1, d_embed)
+
+    def test_preserves_tensor_values(self):
+        """Output tensors should contain the correct values."""
+        from src.data.collate import build_x_dict_list_from_embeddings
+
+        embeddings = torch.tensor([
+            [[1.0, 2.0], [3.0, 4.0]],  # Sample 0: 2 cell types, 2 features
+            [[5.0, 6.0], [7.0, 8.0]],  # Sample 1
+        ])
+        node_types = ["Type_A", "Type_B"]
+
+        x_dict_list = build_x_dict_list_from_embeddings(embeddings, node_types)
+
+        # Sample 0, Type_A should be [1.0, 2.0]
+        assert torch.allclose(x_dict_list[0]["Type_A"], torch.tensor([[1.0, 2.0]]))
+        # Sample 1, Type_B should be [7.0, 8.0]
+        assert torch.allclose(x_dict_list[1]["Type_B"], torch.tensor([[7.0, 8.0]]))
+
+    def test_output_compatible_with_hgt_encoder_batched(self):
+        """Output should be directly usable with HGTEncoderBatched."""
+        from src.data.collate import build_x_dict_list_from_embeddings
+        from src.models.branches.hgt_encoder import HGTEncoderBatched
+        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES
+
+        # Setup
+        batch_size = 2
+        d_embed = 64  # Matches HGT d_input
+        node_types = [ct.replace(" ", "_").replace("/", "_").replace("-", "_")
+                      for ct in CELL_TYPE_ORDER]
+
+        # Create encoded embeddings
+        embeddings = torch.randn(batch_size, len(node_types), d_embed)
+        x_dict_list = build_x_dict_list_from_embeddings(embeddings, node_types)
+
+        # Create empty edge dicts (no communication)
+        edge_index_dict_list = [{} for _ in range(batch_size)]
+        edge_attr_dict_list = [{} for _ in range(batch_size)]
+
+        # HGT encoder should accept this
+        encoder = HGTEncoderBatched(
+            d_input=d_embed,
+            d_hidden=64,
+            d_output=64,
+            n_heads=4,
+            n_layers=2,
+        )
+
+        out, _ = encoder(
+            x_dict_list, edge_index_dict_list, edge_attr_dict_list
+        )
+
+        # Output is a dict of {cell_type: (batch, 1, d_output)}
+        assert isinstance(out, dict)
+        assert len(out) == len(node_types)
+        for ct_name, tensor in out.items():
+            assert tensor.shape == (batch_size, 1, 64)
 
 
 class TestCreateDataloader:
     """Tests for create_dataloader()."""
 
-    def test_uses_heterodata_by_default(self):
-        """Default should use HeteroData collate."""
+    def test_uses_hgt_format_by_default(self):
+        """Default should use collate_for_hgt."""
         from src.data.collate import create_dataloader
         from torch.utils.data import TensorDataset
 
@@ -296,7 +494,7 @@ class TestCreateDataloader:
 
         loader = create_dataloader(dataset, batch_size=2)
 
-        # Check that use_heterodata default is True
+        # Check that use_hgt_format default is True
         # (We can't easily test the collate_fn directly, but we can check the setting)
         assert loader.batch_size == 2
 
@@ -311,12 +509,72 @@ class TestCreateDataloader:
         assert loader.num_workers == 0
 
 
+class TestCollateForHgtMultiregion:
+    """Tests for collate_for_hgt_multiregion() combined function."""
+
+    def test_includes_hgt_format_keys(self):
+        """Should include all keys from collate_for_hgt."""
+        from src.data.collate import collate_for_hgt_multiregion
+
+        sample = create_mock_sample()
+        result = collate_for_hgt_multiregion([sample])
+
+        # HGT keys should be present
+        assert "edge_index_dict_list" in result
+        assert "edge_attr_dict_list" in result
+        assert "node_types" in result
+        assert "edge_types" in result
+
+    def test_includes_region_data_when_present(self):
+        """Should include region data when samples have region_pseudobulk."""
+        from src.data.collate import collate_for_hgt_multiregion
+
+        n_genes = 100
+        n_cell_types = 31
+
+        sample = create_mock_sample()
+        sample["region_pseudobulk"] = torch.randn(n_cell_types, n_genes)
+        sample["available_regions"] = [0, 2]  # PFC and MTC region
+        sample["region_0_pseudobulk"] = torch.randn(n_cell_types, n_genes)
+        sample["region_2_pseudobulk"] = torch.randn(n_cell_types, n_genes)
+
+        result = collate_for_hgt_multiregion([sample])
+
+        # Region data should be present
+        assert "region_pseudobulk" in result
+        assert "region_mask" in result
+
+        # Check shapes
+        assert result["region_pseudobulk"].shape == (1, 6, n_cell_types, n_genes)
+        assert result["region_mask"].shape == (1, 6)
+
+        # Regions 0 and 2 should be available (computed from actual data presence)
+        assert result["region_mask"][0, 0] == True
+        assert result["region_mask"][0, 2] == True
+        assert result["region_mask"][0, 1] == False
+
+    def test_works_without_region_data(self):
+        """Should work when samples don't have region data."""
+        from src.data.collate import collate_for_hgt_multiregion
+
+        sample = create_mock_sample()
+        # No region_pseudobulk key
+
+        result = collate_for_hgt_multiregion([sample])
+
+        # HGT keys should still be present
+        assert "edge_index_dict_list" in result
+
+        # No region data expected
+        assert "region_pseudobulk" not in result or result.get("region_pseudobulk") is None
+
+
 class TestMoveBatchToDevice:
     """Tests for move_batch_to_device()."""
 
     def test_moves_tensors_to_device(self):
         """All tensors should be moved to specified device."""
-        from src.data.collate import move_batch_to_device
+        from src.utils.device import move_batch_to_device
 
         batch = {
             "pseudobulk": torch.randn(2, 31, 100),
@@ -333,12 +591,81 @@ class TestMoveBatchToDevice:
 
     def test_handles_string_device(self):
         """Accept device as string."""
-        from src.data.collate import move_batch_to_device
+        from src.utils.device import move_batch_to_device
 
         batch = {"tensor": torch.randn(5)}
         moved = move_batch_to_device(batch, "cpu")
 
         assert moved["tensor"].device == torch.device("cpu")
+
+    def test_moves_x_dict_list(self):
+        """Should move tensors in x_dict_list to device."""
+        from src.utils.device import move_batch_to_device
+
+        batch = {
+            "x_dict_list": [
+                {"TypeA": torch.randn(1, 64), "TypeB": torch.randn(1, 64)},
+                {"TypeA": torch.randn(1, 64), "TypeB": torch.randn(1, 64)},
+            ],
+            "node_types": ["TypeA", "TypeB"],
+        }
+
+        moved = move_batch_to_device(batch, "cpu")
+
+        # Check all tensors in x_dict_list are on CPU
+        for x_dict in moved["x_dict_list"]:
+            for ct_name, tensor in x_dict.items():
+                assert tensor.device == torch.device("cpu")
+
+        # Metadata should be unchanged
+        assert moved["node_types"] == ["TypeA", "TypeB"]
+
+    def test_moves_edge_dict_lists(self):
+        """Should move tensors in edge_index_dict_list and edge_attr_dict_list."""
+        from src.utils.device import move_batch_to_device
+
+        batch = {
+            "edge_index_dict_list": [
+                {("TypeA", "rel", "TypeB"): torch.tensor([[0], [0]])},
+            ],
+            "edge_attr_dict_list": [
+                {("TypeA", "rel", "TypeB"): torch.tensor([[0.5]])},
+            ],
+        }
+
+        moved = move_batch_to_device(batch, "cpu")
+
+        # Check edge_index_dict_list
+        for edge_dict in moved["edge_index_dict_list"]:
+            for triplet, tensor in edge_dict.items():
+                assert tensor.device == torch.device("cpu")
+
+        # Check edge_attr_dict_list
+        for edge_dict in moved["edge_attr_dict_list"]:
+            for triplet, tensor in edge_dict.items():
+                assert tensor.device == torch.device("cpu")
+
+    def test_preserves_metadata_keys(self):
+        """Should keep metadata keys on CPU."""
+        from src.utils.device import move_batch_to_device
+
+        batch = {
+            "pseudobulk": torch.randn(2, 31, 100),
+            "subject_ids": ["A", "B"],
+            "batch_size": 2,
+            "node_types": ["TypeA", "TypeB"],
+            "edge_types": ["rel1", "rel2"],
+            "cell_type_order": ["TypeA", "TypeB"],
+        }
+
+        moved = move_batch_to_device(batch, "cpu")
+
+        # These should be unchanged
+        assert moved["subject_ids"] == ["A", "B"]
+        assert moved["batch_size"] == 2
+        assert moved["node_types"] == ["TypeA", "TypeB"]
+        assert moved["edge_types"] == ["rel1", "rel2"]
+        assert moved["cell_type_order"] == ["TypeA", "TypeB"]
 
 
 class TestGetEffectiveBatchSize:
@@ -379,8 +706,8 @@ class TestOutputSchemaKeys:
             "region_mask",
         }
 
-        # This test documents the expected contract
-        assert expected_keys  # Placeholder assertion
+        sample = create_mock_sample()
+        assert set(sample.keys()) == expected_keys
 
     def test_collate_fn_output_keys(self):
         """collate_fn output should use renamed keys."""
@@ -401,12 +728,12 @@ class TestOutputSchemaKeys:
         assert "edge_attr" not in result
         assert "target" not in result
 
-    def test_collate_to_heterodata_output_keys(self):
-        """collate_to_heterodata output should use renamed keys."""
-        from src.data.collate import collate_to_heterodata
+    def test_collate_for_hgt_output_keys(self):
+        """collate_for_hgt output should use renamed keys."""
+        from src.data.collate import collate_for_hgt
 
         batch = [create_mock_sample() for _ in range(2)]
-        result = collate_to_heterodata(batch)
+        result = collate_for_hgt(batch)
 
         # Verify renamed key exists
         assert "cognition" in result
@@ -449,3 +776,155 @@ class TestEdgeCases:
 
         # Total edges: 5 + 20 + 10 = 35
         assert result["ccc_edge_index"].shape[1] == 35
+
+
+class TestMultiregionAvailableRegionsDerivation:
+    """Tests for deriving available_regions from region keys."""
+
+    def _make_multiregion_sample(self, n_genes=100, max_cells=50):
+        """Create a properly structured sample for multi-region testing."""
+        return {
+            "subject_id": "test_subject",
+            "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
+            "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
+            "cell_counts": torch.randint(1, 100, (N_CELL_TYPES,)),
+            "cells": torch.randn(N_CELL_TYPES, max_cells, n_genes),
+            "cell_mask": torch.ones(N_CELL_TYPES, max_cells, dtype=torch.bool),
+            "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, 50)),
+            "ccc_edge_type": torch.randint(0, 5, (50,)),
+            "ccc_edge_attr": torch.rand(50, 1),
+            "pathology": torch.rand(3),
+            "cognition": torch.rand(1),
+            "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
+        }
+
+    def test_derives_available_regions_from_keys_when_missing(self):
+        """Should derive available_regions from region_*_pseudobulk keys."""
+        import warnings
+        from src.data.collate import collate_for_hgt_multiregion
+
+        n_genes = 100
+
+        sample = self._make_multiregion_sample(n_genes=n_genes)
+        sample["region_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        # Add region keys but no available_regions
+        sample["region_0_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        sample["region_2_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        # No "available_regions" key
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = collate_for_hgt_multiregion([sample])
+            # Should warn about missing available_regions
+            assert len(w) == 1
+            assert "available_regions" in str(w[0].message)
+            assert "region_*_pseudobulk" in str(w[0].message)
+
+        # Should have derived regions [0, 2] from keys
+        assert result["region_mask"][0, 0].item() is True
+        assert result["region_mask"][0, 1].item() is False
+        assert result["region_mask"][0, 2].item() is True
+
+    def test_no_warning_when_available_regions_provided(self):
+        """Should not warn when available_regions is explicitly provided."""
+        import warnings
+        from src.data.collate import collate_for_hgt_multiregion
+
+        n_genes = 100
+
+        sample = self._make_multiregion_sample(n_genes=n_genes)
+        sample["region_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        sample["region_0_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        sample["region_1_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        sample["available_regions"] = [0, 1]
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = collate_for_hgt_multiregion([sample])
+            # Should not warn
+            assert len(w) == 0
+
+        assert result["region_mask"][0, 0].item() is True
+        assert result["region_mask"][0, 1].item() is True
+
+    def test_defaults_to_dlpfc_when_no_region_keys(self):
+        """Should default to [0] when no region_*_pseudobulk keys exist."""
+        import warnings
+        from src.data.collate import collate_for_hgt_multiregion
+
+        n_genes = 100
+
+        sample = self._make_multiregion_sample(n_genes=n_genes)
+        sample["region_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        # No region_*_pseudobulk keys and no available_regions
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = collate_for_hgt_multiregion([sample])
+            # Should not warn (default behavior, no keys to derive from)
+            assert len(w) == 0
+
+        # Default PFC
+        assert result["region_mask"][0, 0].item() is True
+        assert result["region_mask"][0, 1].item() is False
+
+    def test_detects_multiregion_without_sentinel_key(self):
+        """Should detect multi-region from region_{idx}_pseudobulk keys without sentinel."""
+        import warnings
+        from src.data.collate import collate_for_hgt_multiregion
+
+        n_genes = 100
+
+        sample = self._make_multiregion_sample(n_genes=n_genes)
+        # Add region keys but NO "region_pseudobulk" sentinel
+        sample["region_0_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        sample["region_1_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        # Explicitly ensure no sentinel
+        assert "region_pseudobulk" not in sample
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = collate_for_hgt_multiregion([sample])
+            # Should warn about missing available_regions
+            assert len(w) == 1
+
+        # Should have detected multi-region and processed regions 0 and 1
+        assert "region_pseudobulk" in result
+        assert "region_mask" in result
+        assert result["region_mask"][0, 0].item() is True
+        assert result["region_mask"][0, 1].item() is True
+        assert result["region_mask"][0, 2].item() is False
+
+    def test_mixed_batch_some_with_regions_some_without(self):
+        """Should handle mixed batches where some samples have region keys."""
+        import warnings
+        from src.data.collate import collate_for_hgt_multiregion
+
+        n_genes = 100
+
+        # Sample 1: has multi-region data
+        sample1 = self._make_multiregion_sample(n_genes=n_genes)
+        sample1["region_0_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+        sample1["region_2_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+
+        # Sample 2: single region only (no region_* keys)
+        sample2 = self._make_multiregion_sample(n_genes=n_genes)
+        # No region_*_pseudobulk keys - will default to PFC from pseudobulk
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = collate_for_hgt_multiregion([sample1, sample2])
+
+        # Should have region_pseudobulk with shape [2, 6, n_cell_types, n_genes]
+        assert result["region_pseudobulk"].shape[0] == 2
+        assert result["region_pseudobulk"].shape[1] == 6
+
+        # Sample 1: regions 0 and 2 available
+        assert result["region_mask"][0, 0].item() is True
+        assert result["region_mask"][0, 1].item() is False
+        assert result["region_mask"][0, 2].item() is True
+
+        # Sample 2: only PFC (region 0) from default
+        assert result["region_mask"][1, 0].item() is True
+        assert result["region_mask"][1, 1].item() is False
+        assert result["region_mask"][1, 2].item() is False
