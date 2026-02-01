@@ -748,3 +748,144 @@ class TestDevice:
             out2, _ = encoder(x_perm)
 
         assert torch.allclose(out1, out2, atol=1e-4)
+
+
+# =============================================================================
+# 10. MULTI-SEED MASKING TESTS
+# =============================================================================
+
+class TestMultiSeedMasking:
+    """A11-2/A11-3: Tests for n_pma_seeds > 1 with masking."""
+
+    def test_multi_seed_all_masked_output_shape(self):
+        """A11-2: All-masked with n_pma_seeds>1 should return [B, n_seeds, d_model]."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+
+        enc = SetTransformerEncoder(
+            d_input=50, d_model=32, n_heads=4, n_isab_layers=1,
+            n_inducing=8, n_pma_seeds=3, dropout=0.0
+        )
+        enc.eval()
+
+        B, n_cells = 2, 10
+        x = torch.randn(B, n_cells, 50)
+        mask = torch.zeros(B, n_cells, dtype=torch.bool)  # All masked
+
+        with torch.no_grad():
+            pooled, attention = enc(x, mask)
+
+        assert pooled.shape == (B, 3, 32), f"Expected (2, 3, 32), got {pooled.shape}"
+        assert torch.isfinite(pooled).all()
+
+        # All outputs should be the empty_embedding repeated
+        for b in range(B):
+            for s in range(3):
+                assert torch.allclose(pooled[b, s], enc.empty_embedding, atol=1e-6)
+
+    def test_multi_seed_all_masked_with_return_attention(self):
+        """A11-2: All-masked with return_attention should return zero attention."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+
+        enc = SetTransformerEncoder(
+            d_input=50, d_model=32, n_heads=4, n_isab_layers=1,
+            n_inducing=8, n_pma_seeds=3, dropout=0.0
+        )
+        enc.eval()
+
+        B, n_cells = 2, 10
+        x = torch.randn(B, n_cells, 50)
+        mask = torch.zeros(B, n_cells, dtype=torch.bool)
+
+        with torch.no_grad():
+            pooled, attention = enc(x, mask, return_attention=True)
+
+        assert attention is not None
+        assert attention.shape == (B, 4, 3, n_cells)  # [B, n_heads, n_seeds, n_cells]
+        assert torch.allclose(attention, torch.zeros_like(attention))
+
+    def test_multi_seed_mixed_batch(self):
+        """A11-3: Mixed batch with n_pma_seeds>1: empty samples get empty_embedding."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+
+        enc = SetTransformerEncoder(
+            d_input=50, d_model=32, n_heads=4, n_isab_layers=1,
+            n_inducing=8, n_pma_seeds=3, dropout=0.0
+        )
+        enc.eval()
+
+        B, n_cells = 3, 10
+        x = torch.randn(B, n_cells, 50)
+        mask = torch.zeros(B, n_cells, dtype=torch.bool)
+        mask[0, :5] = True   # Sample 0: 5 valid cells
+        # Sample 1: all masked
+        mask[2, :8] = True   # Sample 2: 8 valid cells
+
+        with torch.no_grad():
+            pooled, attention = enc(x, mask)
+
+        assert pooled.shape == (B, 3, 32)
+        assert torch.isfinite(pooled).all()
+
+        # Empty sample (1) should have empty_embedding for all seeds
+        for s in range(3):
+            assert torch.allclose(pooled[1, s], enc.empty_embedding, atol=1e-6)
+
+        # Valid samples should differ from empty_embedding (with high probability)
+        # Check at least one seed differs
+        assert not torch.allclose(pooled[0], pooled[1], atol=1e-4)
+        assert not torch.allclose(pooled[2], pooled[1], atol=1e-4)
+
+    def test_multi_seed_mixed_batch_attention_replacement(self):
+        """A11-3: Empty samples should get zero attention in mixed batch."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+
+        enc = SetTransformerEncoder(
+            d_input=50, d_model=32, n_heads=4, n_isab_layers=1,
+            n_inducing=8, n_pma_seeds=3, dropout=0.0
+        )
+        enc.eval()
+
+        B, n_cells = 3, 10
+        x = torch.randn(B, n_cells, 50)
+        mask = torch.zeros(B, n_cells, dtype=torch.bool)
+        mask[0, :5] = True
+        mask[2, :8] = True
+
+        with torch.no_grad():
+            pooled, attention = enc(x, mask, return_attention=True)
+
+        assert attention is not None
+        assert attention.shape == (B, 4, 3, n_cells)
+
+        # Empty sample attention should be zero
+        assert torch.allclose(attention[1], torch.zeros_like(attention[1]))
+
+        # Valid samples should have non-zero attention
+        assert attention[0].abs().sum() > 0
+        assert attention[2].abs().sum() > 0
+
+    def test_multi_seed_gradient_flow_mixed_batch(self):
+        """A11-3: Gradients should flow correctly through mixed batch with multi-seed."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+
+        enc = SetTransformerEncoder(
+            d_input=50, d_model=32, n_heads=4, n_isab_layers=1,
+            n_inducing=8, n_pma_seeds=3, dropout=0.0
+        )
+
+        B, n_cells = 3, 10
+        x = torch.randn(B, n_cells, 50, requires_grad=True)
+        mask = torch.zeros(B, n_cells, dtype=torch.bool)
+        mask[0, :5] = True
+        mask[2, :8] = True
+
+        pooled, _ = enc(x, mask)
+        loss = pooled.sum()
+        loss.backward()
+
+        # Input gradients should be finite
+        assert torch.isfinite(x.grad).all()
+
+        # Encoder parameters should get gradients
+        has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 for p in enc.parameters())
+        assert has_grad, "No parameter received gradients"

@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 
 from src.models.full_model import CognitiveResilienceModel
-from src.data.constants import N_CELL_TYPES, N_EDGE_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+from src.data.constants import N_CELL_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
 
 
 def _make_edge_dicts(batch_size, n_edges=5):

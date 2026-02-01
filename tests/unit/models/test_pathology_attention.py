@@ -478,3 +478,123 @@ class TestExtraRepr:
         assert "d_cond=32" in str_repr
         assert "n_heads=4" in str_repr
         assert "n_cell_types=31" in str_repr
+
+
+class TestCellTypeMasking:
+    """PA-G1/G2/G3: Tests for cell_type_mask masking behavior."""
+
+    def test_masked_cell_types_get_zero_attention(self):
+        """PA-G1: Masked cell types should get zero attention weight."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=8)
+        attn.eval()
+
+        cell_embs = torch.randn(2, 8, 64)
+        path_emb = torch.randn(2, 32)
+
+        # Mask out last 4 cell types
+        mask = torch.ones(2, 8, dtype=torch.bool)
+        mask[:, 4:] = False
+
+        with torch.no_grad():
+            attended, weights = attn(cell_embs, path_emb, cell_type_mask=mask)
+
+        # Masked cell types should have zero attention
+        assert torch.allclose(weights[:, :, 4:], torch.zeros_like(weights[:, :, 4:]), atol=1e-6)
+        # Unmasked cell types should have non-zero attention that sums to 1
+        unmasked_sum = weights[:, :, :4].sum(dim=-1)
+        assert torch.allclose(unmasked_sum, torch.ones_like(unmasked_sum), atol=1e-5)
+
+    def test_all_masked_produces_zero_attention_and_output(self):
+        """PA-G2: All cell types masked should produce zero attention weights and near-zero output."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=8)
+        attn.eval()
+
+        cell_embs = torch.randn(2, 8, 64)
+        path_emb = torch.randn(2, 32)
+
+        # All cell types masked
+        mask = torch.zeros(2, 8, dtype=torch.bool)
+
+        with torch.no_grad():
+            attended, weights = attn(cell_embs, path_emb, cell_type_mask=mask)
+
+        # Attention weights should all be zero
+        assert torch.allclose(weights, torch.zeros_like(weights), atol=1e-6)
+        # Output should be finite (not NaN)
+        assert torch.isfinite(attended).all()
+
+    def test_all_masked_no_nan_in_gradients(self):
+        """PA-G2: All-masked should not produce NaN gradients."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=8)
+
+        cell_embs = torch.randn(2, 8, 64, requires_grad=True)
+        path_emb = torch.randn(2, 32, requires_grad=True)
+        mask = torch.zeros(2, 8, dtype=torch.bool)
+
+        attended, weights = attn(cell_embs, path_emb, cell_type_mask=mask)
+        loss = attended.sum()
+        loss.backward()
+
+        # No NaN in gradients
+        assert torch.isfinite(cell_embs.grad).all()
+        assert torch.isfinite(path_emb.grad).all()
+        for p in attn.parameters():
+            if p.grad is not None:
+                assert torch.isfinite(p.grad).all(), f"NaN gradient in {p.shape}"
+
+    def test_mixed_batch_partial_masking(self):
+        """PA-G3: Mixed batch where some samples are fully masked and others have valid cells."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=8)
+        attn.eval()
+
+        cell_embs = torch.randn(3, 8, 64)
+        path_emb = torch.randn(3, 32)
+
+        mask = torch.zeros(3, 8, dtype=torch.bool)
+        mask[0, :4] = True   # Sample 0: first 4 valid
+        mask[1, :] = False    # Sample 1: all masked
+        mask[2, :] = True     # Sample 2: all valid
+
+        with torch.no_grad():
+            attended, weights = attn(cell_embs, path_emb, cell_type_mask=mask)
+
+        # Sample 0: masked cells get 0, unmasked sum to 1
+        assert torch.allclose(weights[0, :, 4:], torch.zeros(4, 4), atol=1e-6)
+        assert torch.allclose(weights[0, :, :4].sum(dim=-1), torch.ones(4), atol=1e-5)
+
+        # Sample 1: all zero attention
+        assert torch.allclose(weights[1], torch.zeros_like(weights[1]), atol=1e-6)
+
+        # Sample 2: all cells valid, sum to 1
+        assert torch.allclose(weights[2].sum(dim=-1), torch.ones(4), atol=1e-5)
+
+        # All outputs should be finite
+        assert torch.isfinite(attended).all()
+
+    def test_mask_changes_output(self):
+        """PA-G1: Applying a mask should change the output compared to no mask."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=8)
+        attn.eval()
+
+        cell_embs = torch.randn(2, 8, 64)
+        path_emb = torch.randn(2, 32)
+
+        with torch.no_grad():
+            attended_no_mask, _ = attn(cell_embs, path_emb)
+
+            # Mask out half the cell types
+            mask = torch.ones(2, 8, dtype=torch.bool)
+            mask[:, 4:] = False
+            attended_masked, _ = attn(cell_embs, path_emb, cell_type_mask=mask)
+
+        assert not torch.allclose(attended_no_mask, attended_masked, atol=1e-6)

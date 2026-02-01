@@ -9,6 +9,9 @@ Tests cover:
 - Adjacency matrix conversion
 """
 
+import sys
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -824,3 +827,257 @@ class TestEdgeCases:
 
         assert features["n_edges"] == n_edges
         assert features["edge_index"].shape == (2, n_edges)
+
+
+class TestRunLianaAnalysis:
+    """L-A1: Tests for run_liana_analysis() function."""
+
+    def test_import_error_when_liana_not_installed(self):
+        """Should raise ImportError with helpful message when liana not installed."""
+        from anndata import AnnData
+        from src.data.liana_processing import run_liana_analysis
+
+        # Create minimal AnnData
+        adata = AnnData(np.random.rand(10, 5))
+        adata.obs["supercluster_name"] = ["TypeA"] * 5 + ["TypeB"] * 5
+
+        # Setting sys.modules["liana"] = None causes `import liana` to raise ImportError
+        with patch.dict(sys.modules, {"liana": None}):
+            with pytest.raises(ImportError, match="LIANA"):
+                run_liana_analysis(adata)
+
+    def test_calls_rank_aggregate_with_correct_params(self):
+        """Should call li.mt.rank_aggregate with correct parameters."""
+        from anndata import AnnData
+
+        adata = AnnData(np.random.rand(20, 10))
+        adata.obs["supercluster_name"] = ["TypeA"] * 10 + ["TypeB"] * 10
+
+        # Mock liana module
+        mock_li = MagicMock()
+        mock_liana_res = pd.DataFrame({
+            "source": ["TypeA"], "target": ["TypeB"],
+            "ligand_complex": ["L1"], "receptor_complex": ["R1"],
+            "magnitude_rank": [0.1],
+        })
+
+        # rank_aggregate stores results in adata.uns
+        def fake_rank_aggregate(adata_arg, **kwargs):
+            adata_arg.uns["liana_res"] = mock_liana_res
+
+        mock_li.mt.rank_aggregate = MagicMock(side_effect=fake_rank_aggregate)
+
+        with patch.dict(sys.modules, {"liana": mock_li}):
+            from src.data.liana_processing import run_liana_analysis
+            result = run_liana_analysis(
+                adata,
+                cell_type_column="supercluster_name",
+                resource_name="CellChatDB",
+                verbose=False,
+            )
+
+        # Verify rank_aggregate was called
+        mock_li.mt.rank_aggregate.assert_called_once()
+        call_kwargs = mock_li.mt.rank_aggregate.call_args
+        # Check groupby parameter (could be positional or keyword)
+        if call_kwargs.kwargs:
+            assert call_kwargs.kwargs.get("groupby") == "supercluster_name"
+        else:
+            assert call_kwargs[1]["groupby"] == "supercluster_name"
+
+        # Verify result is a DataFrame
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 1
+
+    def test_returns_copy_of_results(self):
+        """Should return a copy, not a reference to adata.uns."""
+        from anndata import AnnData
+
+        adata = AnnData(np.random.rand(20, 10))
+        adata.obs["supercluster_name"] = ["TypeA"] * 10 + ["TypeB"] * 10
+
+        mock_li = MagicMock()
+        original_df = pd.DataFrame({"source": ["TypeA"], "target": ["TypeB"]})
+
+        def fake_rank_aggregate(adata_arg, **kwargs):
+            adata_arg.uns["liana_res"] = original_df
+
+        mock_li.mt.rank_aggregate = MagicMock(side_effect=fake_rank_aggregate)
+
+        with patch.dict(sys.modules, {"liana": mock_li}):
+            from src.data.liana_processing import run_liana_analysis
+            result = run_liana_analysis(adata, verbose=False)
+
+        # Modifying result should not affect original
+        result["new_col"] = 1
+        assert "new_col" not in adata.uns["liana_res"].columns
+
+
+class TestRunLianaPerSubject:
+    """L-A2: Tests for run_liana_per_subject() function."""
+
+    def test_skips_subject_with_too_few_cell_types(self):
+        """Should skip subjects with < 2 valid cell types and return empty DataFrame."""
+        from anndata import AnnData
+
+        # Create AnnData with 2 subjects, one has only 1 cell type
+        n_cells = 30
+        adata = AnnData(np.random.rand(n_cells, 10))
+        adata.obs["subject_id"] = ["S1"] * 20 + ["S2"] * 10
+        adata.obs["supercluster_name"] = (
+            ["TypeA"] * 10 + ["TypeB"] * 10 +  # S1: 2 types
+            ["TypeA"] * 10                       # S2: only 1 type
+        )
+
+        mock_li = MagicMock()
+        mock_result = pd.DataFrame({
+            "source": ["TypeA"], "target": ["TypeB"],
+            "magnitude_rank": [0.1],
+        })
+
+        def fake_rank_aggregate(adata_arg, **kwargs):
+            adata_arg.uns["liana_res"] = mock_result
+
+        mock_li.mt.rank_aggregate = MagicMock(side_effect=fake_rank_aggregate)
+
+        with patch.dict(sys.modules, {"liana": mock_li}):
+            from src.data.liana_processing import run_liana_per_subject
+            results = run_liana_per_subject(
+                adata,
+                subject_column="subject_id",
+                cell_type_column="supercluster_name",
+                min_cells_per_type=10,
+                verbose=False,
+            )
+
+        # S1 should have results, S2 should be empty
+        assert "S1" in results
+        assert "S2" in results
+        assert len(results["S2"]) == 0  # Skipped
+
+    def test_caches_results_to_parquet(self, tmp_path):
+        """Should cache results to parquet files."""
+        from anndata import AnnData
+
+        adata = AnnData(np.random.rand(20, 10))
+        adata.obs["subject_id"] = ["S1"] * 10 + ["S2"] * 10
+        adata.obs["supercluster_name"] = (
+            ["TypeA"] * 5 + ["TypeB"] * 5 + ["TypeA"] * 5 + ["TypeB"] * 5
+        )
+
+        mock_li = MagicMock()
+        call_count = [0]
+
+        def fake_rank_aggregate(adata_arg, **kwargs):
+            call_count[0] += 1
+            adata_arg.uns["liana_res"] = pd.DataFrame({
+                "source": ["TypeA"], "target": ["TypeB"],
+                "magnitude_rank": [0.1],
+            })
+
+        mock_li.mt.rank_aggregate = MagicMock(side_effect=fake_rank_aggregate)
+
+        cache_dir = tmp_path / "liana_cache"
+
+        with patch.dict(sys.modules, {"liana": mock_li}):
+            from src.data.liana_processing import run_liana_per_subject
+
+            # First run should compute and cache
+            results1 = run_liana_per_subject(
+                adata,
+                subject_column="subject_id",
+                min_cells_per_type=5,
+                cache_dir=cache_dir,
+                verbose=False,
+            )
+            first_call_count = call_count[0]
+
+            # Second run should load from cache
+            results2 = run_liana_per_subject(
+                adata,
+                subject_column="subject_id",
+                min_cells_per_type=5,
+                cache_dir=cache_dir,
+                verbose=False,
+            )
+
+        # Cache files should exist
+        assert (cache_dir / "liana_S1.parquet").exists()
+        assert (cache_dir / "liana_S2.parquet").exists()
+
+        # Second run should not have called rank_aggregate again
+        assert call_count[0] == first_call_count
+
+    def test_handles_analysis_error_gracefully(self):
+        """Should store empty DataFrame on error and continue to next subject."""
+        from anndata import AnnData
+
+        adata = AnnData(np.random.rand(20, 10))
+        adata.obs["subject_id"] = ["S1"] * 10 + ["S2"] * 10
+        adata.obs["supercluster_name"] = (
+            ["TypeA"] * 5 + ["TypeB"] * 5 + ["TypeA"] * 5 + ["TypeB"] * 5
+        )
+
+        mock_li = MagicMock()
+        call_idx = [0]
+
+        def fake_rank_aggregate(adata_arg, **kwargs):
+            call_idx[0] += 1
+            if call_idx[0] == 1:
+                raise RuntimeError("LIANA analysis failed")
+            adata_arg.uns["liana_res"] = pd.DataFrame({
+                "source": ["TypeA"], "target": ["TypeB"],
+                "magnitude_rank": [0.1],
+            })
+
+        mock_li.mt.rank_aggregate = MagicMock(side_effect=fake_rank_aggregate)
+
+        with patch.dict(sys.modules, {"liana": mock_li}):
+            from src.data.liana_processing import run_liana_per_subject
+            results = run_liana_per_subject(
+                adata,
+                subject_column="subject_id",
+                min_cells_per_type=5,
+                verbose=False,
+            )
+
+        # Both subjects should have entries
+        assert len(results) == 2
+        # One should be empty (error), other should have data
+        empty_count = sum(1 for v in results.values() if len(v) == 0)
+        assert empty_count == 1
+
+    def test_adds_subject_id_column(self):
+        """Should add subject_id column to results."""
+        from anndata import AnnData
+
+        adata = AnnData(np.random.rand(20, 10))
+        adata.obs["subject_id"] = ["S1"] * 10 + ["S2"] * 10
+        adata.obs["supercluster_name"] = (
+            ["TypeA"] * 5 + ["TypeB"] * 5 + ["TypeA"] * 5 + ["TypeB"] * 5
+        )
+
+        mock_li = MagicMock()
+
+        def fake_rank_aggregate(adata_arg, **kwargs):
+            adata_arg.uns["liana_res"] = pd.DataFrame({
+                "source": ["TypeA"], "target": ["TypeB"],
+                "magnitude_rank": [0.1],
+            })
+
+        mock_li.mt.rank_aggregate = MagicMock(side_effect=fake_rank_aggregate)
+
+        with patch.dict(sys.modules, {"liana": mock_li}):
+            from src.data.liana_processing import run_liana_per_subject
+            results = run_liana_per_subject(
+                adata,
+                subject_column="subject_id",
+                min_cells_per_type=5,
+                verbose=False,
+            )
+
+        # Non-empty results should have subject_id column
+        for subject_id, df in results.items():
+            if len(df) > 0:
+                assert "subject_id" in df.columns
+                assert (df["subject_id"] == subject_id).all()

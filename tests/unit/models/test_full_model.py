@@ -11,7 +11,7 @@ Note: Full gradient flow and integration tests are in Task 8.
 import pytest
 import torch
 
-from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key, N_CELL_TYPES, N_REGIONS
 from src.models.full_model import CognitiveResilienceModel
 
 
@@ -41,11 +41,11 @@ class TestInitialization:
         """Small model configuration for testing."""
         return {
             'n_genes': 100,
-            'n_cell_types': 31,
+            'n_cell_types': N_CELL_TYPES,
             'd_embed': 32,
             'd_fused': 32,
             'd_cond': 16,
-            'n_regions': 6,
+            'n_regions': N_REGIONS,
             'n_hgt_layers': 2,
             'n_hgt_heads': 4,
             'n_isab_layers': 1,
@@ -160,11 +160,11 @@ class TestForwardPass:
         """Create small Bayesian model for testing."""
         return CognitiveResilienceModel(
             n_genes=50,
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             d_embed=32,
             d_fused=32,
             d_cond=16,
-            n_regions=6,
+            n_regions=N_REGIONS,
             n_hgt_layers=1,
             n_hgt_heads=4,
             n_isab_layers=1,
@@ -180,11 +180,11 @@ class TestForwardPass:
         """Create small deterministic model for testing."""
         return CognitiveResilienceModel(
             n_genes=50,
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             d_embed=32,
             d_fused=32,
             d_cond=16,
-            n_regions=6,
+            n_regions=N_REGIONS,
             n_hgt_layers=1,
             n_hgt_heads=4,
             n_isab_layers=1,
@@ -199,8 +199,8 @@ class TestForwardPass:
     def sample_inputs(self):
         """Create sample inputs for forward pass."""
         B = 2  # Batch size
-        n_regions = 6
-        n_cell_types = 31
+        n_regions = N_REGIONS
+        n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
@@ -238,7 +238,7 @@ class TestForwardPass:
     def test_output_shapes_bayesian(self, small_model_bayesian, sample_inputs):
         """Test output shapes for Bayesian model."""
         B = sample_inputs['region_pseudobulk'].size(0)
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_attention_heads = 4
 
         output = small_model_bayesian(**sample_inputs)
@@ -255,7 +255,7 @@ class TestForwardPass:
     def test_output_shapes_deterministic(self, small_model_deterministic, sample_inputs):
         """Test output shapes for deterministic model."""
         B = sample_inputs['region_pseudobulk'].size(0)
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_attention_heads = 4
 
         output = small_model_deterministic(**sample_inputs)
@@ -303,11 +303,11 @@ class TestInterpretability:
         """Create model for interpretability testing."""
         return CognitiveResilienceModel(
             n_genes=50,
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             d_embed=32,
             d_fused=32,
             d_cond=16,
-            n_regions=6,
+            n_regions=N_REGIONS,
             n_hgt_layers=1,
             n_hgt_heads=4,
             n_isab_layers=1,
@@ -322,7 +322,7 @@ class TestInterpretability:
         importance = model.get_cell_type_importance()
 
         assert isinstance(importance, dict)
-        assert len(importance) == 31  # All cell types
+        assert len(importance) == N_CELL_TYPES  # All cell types
         assert all(isinstance(v, float) for v in importance.values())
 
         # Weights should sum to 1 (softmax)
@@ -342,13 +342,13 @@ class TestInterpretability:
         assert scales['scales'].dim() == 2
         n_layers = scales['scales'].size(0)
         assert n_layers > 0
-        assert scales['scales'].size(1) == 31
+        assert scales['scales'].size(1) == N_CELL_TYPES
 
         # cell_types list matches node count
-        assert len(scales['cell_types']) == 31
+        assert len(scales['cell_types']) == N_CELL_TYPES
 
         # per_cell_type has one entry per cell type, each [n_layers]
-        assert len(scales['per_cell_type']) == 31
+        assert len(scales['per_cell_type']) == N_CELL_TYPES
         for ct, vals in scales['per_cell_type'].items():
             assert vals.shape == (n_layers,)
 
@@ -357,7 +357,7 @@ class TestInterpretability:
         importance = model.get_region_importance()
 
         assert isinstance(importance, dict)
-        assert len(importance) == 6  # All regions
+        assert len(importance) == N_REGIONS  # All regions
 
         # Weights should sum to 1 (softmax)
         total = sum(importance.values())
@@ -414,11 +414,11 @@ class TestEdgeCases:
         """Create small model for edge case testing."""
         return CognitiveResilienceModel(
             n_genes=50,
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             d_embed=32,
             d_fused=32,
             d_cond=16,
-            n_regions=6,
+            n_regions=N_REGIONS,
             n_hgt_layers=1,
             n_hgt_heads=4,
             n_isab_layers=1,
@@ -432,18 +432,18 @@ class TestEdgeCases:
     def test_single_region_available(self, small_model):
         """Test forward pass with only one region available."""
         B = 2
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
         # Only first region available
-        region_mask = torch.zeros(B, 6, dtype=torch.bool)
+        region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
         region_mask[:, 0] = True
 
         edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
 
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
             'region_mask': region_mask,
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
@@ -458,13 +458,13 @@ class TestEdgeCases:
     def test_empty_edges(self, small_model):
         """Test forward pass with no CCC edges (empty edge dicts)."""
         B = 2
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': [{}, {}],  # Empty dicts
             'edge_attr_dict_list': [{}, {}],
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
@@ -478,7 +478,7 @@ class TestEdgeCases:
     def test_partial_cell_mask(self, small_model):
         """Test forward pass with some cells masked out."""
         B = 2
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
@@ -489,8 +489,8 @@ class TestEdgeCases:
         edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
 
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
@@ -508,7 +508,7 @@ class TestEdgeCases:
         filled, and produce the same output structure as the multi-region path.
         """
         B = 2
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
@@ -532,15 +532,15 @@ class TestEdgeCases:
     def test_batch_size_one(self, small_model):
         """Test forward pass with batch size of 1."""
         B = 1
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
         edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
 
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
@@ -554,15 +554,15 @@ class TestEdgeCases:
     def test_invalid_cell_type_mask_shape_raises_error(self, small_model):
         """Test that wrong cell_type_mask shape raises ValueError early."""
         B = 2
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
         edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
 
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
@@ -577,7 +577,7 @@ class TestEdgeCases:
     def test_empty_edge_dicts_not_mutated(self, small_model):
         """Test that passing empty edge dicts does not mutate the caller's lists."""
         B = 2
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
@@ -586,8 +586,8 @@ class TestEdgeCases:
         edge_attr_dict_list = [{}, {}]
 
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
@@ -617,7 +617,7 @@ class TestEdgeCases:
 
         output = small_model._convert_hgt_batched_output_to_tensor(hgt_out_dict, B, device)
 
-        assert output.shape == (B, 31, 32)
+        assert output.shape == (B, N_CELL_TYPES, 32)
 
         # Known cell types should have their embeddings placed correctly
         idx0 = small_model._node_type_to_idx[known_types[0]]

@@ -1099,3 +1099,58 @@ class TestHGTEncoderCUDA:
         for nt, out in out_dict.items():
             assert out.device.type == "cuda", f"Output for {nt} not on CUDA"
             assert out.shape == (1, 64)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+class TestHGTEncoderBatchedCUDA:
+    """Test HGTEncoderBatched on GPU."""
+
+    def test_hgt_encoder_batched_cuda(self, cuda_device):
+        """HGTEncoderBatched forward on GPU with batched inputs."""
+        from src.models.branches.hgt_encoder import HGTEncoderBatched
+        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+
+        node_types = list(CELL_TYPE_ORDER)[:5]  # Use subset for speed
+        edge_categories = list(ALL_EDGE_TYPES)
+
+        encoder = HGTEncoderBatched(
+            d_input=64,
+            d_hidden=64,
+            d_output=64,
+            n_heads=4,
+            n_layers=1,
+            dropout=0.0,
+            edge_dim=1,
+            node_types=node_types,
+            edge_categories=edge_categories,
+        ).to(cuda_device)
+
+        # Build batched inputs (list of per-sample dicts)
+        B = 2
+        x_dict_list = []
+        edge_index_dict_list = []
+        edge_attr_dict_list = []
+
+        for _ in range(B):
+            x_dict = {nt: torch.randn(1, 64, device=cuda_device) for nt in node_types}
+            x_dict_list.append(x_dict)
+
+            edge_key = (
+                sanitize_key(node_types[0]),
+                sanitize_key(edge_categories[0]),
+                sanitize_key(node_types[1]),
+            )
+            edge_index_dict = {edge_key: torch.tensor([[0], [0]], device=cuda_device)}
+            edge_attr_dict = {edge_key: torch.randn(1, 1, device=cuda_device)}
+
+            edge_index_dict_list.append(edge_index_dict)
+            edge_attr_dict_list.append(edge_attr_dict)
+
+        out_dict, _ = encoder(x_dict_list, edge_index_dict_list, edge_attr_dict_list)
+
+        # Verify outputs are on CUDA, finite, and have correct batch dimension
+        for nt, out in out_dict.items():
+            assert out.device.type == "cuda", f"Output for {nt} not on CUDA"
+            assert torch.isfinite(out).all(), f"Output for {nt} contains non-finite values"
+            assert out.shape[0] == B, f"Expected batch dim {B}, got {out.shape[0]}"
+            assert out.shape[-1] == 64, f"Expected output dim 64, got {out.shape[-1]}"

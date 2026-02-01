@@ -601,3 +601,80 @@ class TestSmallDataset:
 
         # No data leakage
         assert validate_no_leakage(splits)
+
+
+class TestTestFracValidation:
+    """S-A1: Tests for test_frac validation in create_stratified_splits."""
+
+    @pytest.fixture
+    def simple_metadata(self):
+        """Minimal metadata for validation tests."""
+        np.random.seed(42)
+        return pd.DataFrame({
+            "ROSMAP_IndividualID": [f"S{i}" for i in range(50)],
+            "gpath": np.random.uniform(0, 1, 50),
+            "cogn_global": np.random.uniform(-2, 2, 50),
+        })
+
+    def test_rejects_test_frac_zero(self, simple_metadata):
+        """test_frac=0 should raise ValueError."""
+        from src.data.splits import create_stratified_splits
+
+        with pytest.raises(ValueError, match="test_frac must be between 0 and 1"):
+            create_stratified_splits(simple_metadata, test_frac=0)
+
+    def test_rejects_test_frac_one(self, simple_metadata):
+        """test_frac=1 should raise ValueError."""
+        from src.data.splits import create_stratified_splits
+
+        with pytest.raises(ValueError, match="test_frac must be between 0 and 1"):
+            create_stratified_splits(simple_metadata, test_frac=1.0)
+
+    def test_rejects_test_frac_negative(self, simple_metadata):
+        """Negative test_frac should raise ValueError."""
+        from src.data.splits import create_stratified_splits
+
+        with pytest.raises(ValueError, match="test_frac must be between 0 and 1"):
+            create_stratified_splits(simple_metadata, test_frac=-0.1)
+
+    def test_rejects_test_frac_greater_than_one(self, simple_metadata):
+        """test_frac > 1 should raise ValueError."""
+        from src.data.splits import create_stratified_splits
+
+        with pytest.raises(ValueError, match="test_frac must be between 0 and 1"):
+            create_stratified_splits(simple_metadata, test_frac=1.5)
+
+
+class TestGetFoldSubjectsValidation:
+    """S-A2: Tests for get_fold_subjects() invalid split_type."""
+
+    @pytest.fixture
+    def mock_splits(self):
+        return {
+            "holdout_test": ["T1", "T2"],
+            "train_val_pool": ["S1", "S2", "S3", "S4"],
+            "folds": [
+                {"train": ["S1", "S2", "S3"], "val": ["S4"]},
+            ],
+        }
+
+    def test_rejects_unknown_split_type(self, mock_splits):
+        """Unknown split_type should raise ValueError."""
+        from src.data.splits import get_fold_subjects
+
+        with pytest.raises(ValueError, match="Unknown split_type"):
+            get_fold_subjects(mock_splits, fold_idx=0, split_type="invalid")
+
+    def test_rejects_empty_string_split_type(self, mock_splits):
+        """Empty string split_type should raise ValueError."""
+        from src.data.splits import get_fold_subjects
+
+        with pytest.raises(ValueError, match="Unknown split_type"):
+            get_fold_subjects(mock_splits, fold_idx=0, split_type="")
+
+    def test_rejects_all_split_type(self, mock_splits):
+        """split_type='all' is not valid, should raise ValueError."""
+        from src.data.splits import get_fold_subjects
+
+        with pytest.raises(ValueError, match="Unknown split_type"):
+            get_fold_subjects(mock_splits, fold_idx=0, split_type="all")
