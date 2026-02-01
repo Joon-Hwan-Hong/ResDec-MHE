@@ -508,6 +508,21 @@ class TestCreateDataloader:
 
         assert loader.num_workers == 0
 
+    @pytest.mark.parametrize("use_hgt,multiregion,expected_fn_name", [
+        (False, False, "collate_fn"),
+        (True, False, "collate_for_hgt"),
+        (False, True, "collate_multiregion"),
+        (True, True, "collate_for_hgt_multiregion"),
+    ])
+    def test_create_dataloader_selects_correct_collate(self, use_hgt, multiregion, expected_fn_name):
+        """Verify correct collate function is selected for each flag combination."""
+        from src.data.collate import create_dataloader
+        from torch.utils.data import TensorDataset
+
+        dataset = TensorDataset(torch.randn(4, 10))
+        dl = create_dataloader(dataset, batch_size=2, use_hgt_format=use_hgt, multiregion=multiregion)
+        assert expected_fn_name in dl.collate_fn.__name__
+
 
 class TestCollateForHgtMultiregion:
     """Tests for collate_for_hgt_multiregion() combined function."""
@@ -776,6 +791,84 @@ class TestEdgeCases:
 
         # Total edges: 5 + 20 + 10 = 35
         assert result["ccc_edge_index"].shape[1] == 35
+
+
+class TestDeriveAvailableRegionsFromKeys:
+    """Tests for _derive_available_regions_from_keys() helper."""
+
+    def test_extracts_region_indices(self):
+        """Should extract sorted region indices from region_*_pseudobulk keys."""
+        from src.data.collate import _derive_available_regions_from_keys
+
+        sample = {
+            'region_0_pseudobulk': torch.randn(31, 50),
+            'region_2_pseudobulk': torch.randn(31, 50),
+            'region_5_pseudobulk': torch.randn(31, 50),
+            'pseudobulk': torch.randn(31, 50),
+        }
+        regions = _derive_available_regions_from_keys(sample)
+        assert regions == [0, 2, 5]
+
+    def test_empty_when_no_region_keys(self):
+        """Should return empty list when no region_*_pseudobulk keys exist."""
+        from src.data.collate import _derive_available_regions_from_keys
+
+        sample = {'pseudobulk': torch.randn(31, 50)}
+        regions = _derive_available_regions_from_keys(sample)
+        assert regions == []
+
+
+class TestAssembleRegionTensors:
+    """Tests for _assemble_region_tensors() helper."""
+
+    def test_basic_assembly(self):
+        """Should assemble region tensors with correct shape and mask."""
+        from src.data.collate import _assemble_region_tensors
+
+        batch = [
+            {'region_0_pseudobulk': torch.randn(N_CELL_TYPES, 50),
+             'region_1_pseudobulk': torch.randn(N_CELL_TYPES, 50),
+             'available_regions': [0, 1]},
+        ]
+        region_pb, region_mask = _assemble_region_tensors(batch, batch_size=1, n_cell_types=N_CELL_TYPES, n_genes=50)
+        assert region_pb.shape == (1, N_REGIONS, N_CELL_TYPES, 50)
+        assert region_mask.shape == (1, N_REGIONS)
+        assert region_mask[0, 0] == True
+        assert region_mask[0, 1] == True
+        assert region_mask[0, 2] == False
+
+
+class TestCompositeKeyOverflow:
+    """Tests for composite key overflow detection in collate_for_hgt."""
+
+    def test_overflow_raises_value_error(self, monkeypatch):
+        """Should raise ValueError when composite key would overflow int64."""
+        import src.data.collate as collate_mod
+
+        huge_n = 2_200_000
+        fake_ct = [f"c{i}" for i in range(huge_n)]
+        fake_et = [f"e{i}" for i in range(huge_n)]
+        monkeypatch.setattr(collate_mod, "ALL_EDGE_TYPES", fake_et)
+        monkeypatch.setattr(collate_mod, "sanitize_key", lambda x: x)
+        n_ct_small = 4
+        sample = {
+            "pseudobulk": torch.randn(n_ct_small, 10),
+            "cell_type_mask": torch.ones(n_ct_small, dtype=torch.bool),
+            "cell_counts": torch.ones(n_ct_small, dtype=torch.long),
+            "cells": torch.randn(n_ct_small, 5, 10),
+            "cell_mask": torch.ones(n_ct_small, 5, dtype=torch.bool),
+            "ccc_edge_index": torch.tensor([[0, 1], [1, 0]]),
+            "ccc_edge_type": torch.tensor([0, 0]),
+            "ccc_edge_attr": torch.randn(2, 1),
+            "pathology": torch.randn(3),
+            "cognition": torch.randn(1),
+            "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
+            "subject_id": "test_subj",
+            "cell_type_order": fake_ct,
+        }
+        from src.data.collate import collate_for_hgt
+        with pytest.raises(ValueError, match="Composite key overflow"):
+            collate_for_hgt([sample])
 
 
 class TestMultiregionAvailableRegionsDerivation:

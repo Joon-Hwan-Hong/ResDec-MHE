@@ -428,6 +428,14 @@ class TestInterpretability:
         # Values are floats, not tensors
         assert all(isinstance(v, float) for v in importance.values())
 
+    def test_get_region_importance_dict_with_fewer_regions(self):
+        """When n_regions < len(REGIONS), dict should only have n_regions entries."""
+        from src.models.components.region_handler import RegionHandler
+        handler = RegionHandler(d_model=64, n_regions=3)
+        importance = handler.get_region_importance_dict()
+        assert len(importance) == 3
+        assert abs(sum(importance.values()) - 1.0) < 1e-5
+
 
 # =============================================================================
 # 5. EDGE CASES AND NUMERICAL STABILITY

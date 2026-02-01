@@ -531,3 +531,58 @@ class TestFullModelGradientFlowEndToEnd:
         assert model.region_handler.region_weights.grad is not None
         # With all regions available, all weights should have non-zero gradient
         assert (model.region_handler.region_weights.grad.abs() > 1e-10).any()
+
+
+class TestCellTransformerEdgeCases:
+    """Test CellTransformer with edge-case inputs."""
+
+    @pytest.fixture
+    def transformer(self):
+        from src.models.branches.cell_transformer import CellTransformer
+        return CellTransformer(
+            n_genes=50,
+            n_cell_types=31,
+            d_model=32,
+            n_heads=2,
+            n_isab_layers=1,
+            n_inducing=8,
+            dropout=0.0,
+        )
+
+    def test_cell_transformer_all_cells_masked(self, transformer):
+        """CellTransformer with all cells masked should produce finite output."""
+        B = 2
+        n_cell_types = 31
+        max_cells = 10
+        n_genes = 50
+
+        cells = torch.randn(B, n_cell_types, max_cells, n_genes)
+        # All mask entries False (no valid cells)
+        cell_mask = torch.zeros(B, n_cell_types, max_cells, dtype=torch.bool)
+
+        transformer.eval()
+        with torch.no_grad():
+            output, selection_weights, _ = transformer(cells, cell_mask)
+
+        # Output should be finite (uses empty_embedding path in SetTransformer)
+        assert output.shape == (B, n_cell_types, 32)
+        assert torch.isfinite(output).all(), \
+            "CellTransformer output should be finite even with all cells masked"
+
+    def test_cell_transformer_single_cell_per_type(self, transformer):
+        """CellTransformer with 1 cell per type should work."""
+        B = 2
+        n_cell_types = 31
+        max_cells = 1  # Only 1 cell per type
+        n_genes = 50
+
+        cells = torch.randn(B, n_cell_types, max_cells, n_genes)
+        cell_mask = torch.ones(B, n_cell_types, max_cells, dtype=torch.bool)
+
+        transformer.eval()
+        with torch.no_grad():
+            output, selection_weights, _ = transformer(cells, cell_mask)
+
+        assert output.shape == (B, n_cell_types, 32)
+        assert torch.isfinite(output).all(), \
+            "CellTransformer should handle single cell per type"

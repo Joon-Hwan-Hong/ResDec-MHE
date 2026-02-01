@@ -276,124 +276,106 @@ class TestModelStateDictShapes:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestFusionLayerSerialization:
-    """Test FusionLayer state_dict serialization."""
+def _make_fusion_layer():
+    """Create a FusionLayer for serialization testing."""
+    from src.models.fusion.fusion_layer import FusionLayer
+    return FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
 
-    def test_fusion_layer_serialization(self):
-        """FusionLayer state_dict save/load."""
-        from src.models.fusion.fusion_layer import FusionLayer
 
-        layer1 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
-        state_dict = layer1.state_dict()
+def _make_pathology_encoder():
+    """Create a PathologyEncoder for serialization testing."""
+    from src.models.fusion.pathology_encoder import PathologyEncoder
+    return PathologyEncoder(n_pathology_features=3, d_region=128, d_cond=64)
 
-        layer2 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
-        layer2.load_state_dict(state_dict)
 
-        # Verify state
-        for (name1, param1), (name2, param2) in zip(
-            layer1.named_parameters(),
-            layer2.named_parameters()
+def _make_pathology_attention():
+    """Create a PathologyStratifiedAttention for serialization testing."""
+    from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+    return PathologyStratifiedAttention(
+        d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
+    )
+
+
+def _make_deterministic_head():
+    """Create a DeterministicPredictionHead for serialization testing."""
+    from src.models.heads.deterministic_head import DeterministicPredictionHead
+    return DeterministicPredictionHead(d_input=128, d_hidden=64)
+
+
+SIMPLE_SERIALIZATION_CASES = [
+    ("FusionLayer", _make_fusion_layer, ["proj", "layer_norm"]),
+    ("PathologyEncoder", _make_pathology_encoder, ["pathology_mlp", "region_proj", "combine"]),
+    ("PathologyAttention", _make_pathology_attention,
+     ["query_generator", "key_proj", "value_proj", "pathology_bias", "out_proj"]),
+    ("DeterministicHead", _make_deterministic_head, ["mlp.0", "mlp.3", "mlp.6"]),
+]
+
+
+class TestComponentSerializationParametrized:
+    """Parametrized serialization tests for simple components.
+
+    Covers save/load state_dict round-trip and expected key verification
+    for: FusionLayer, PathologyEncoder, PathologyAttention, DeterministicHead.
+    """
+
+    @pytest.mark.parametrize(
+        "name,make_component,key_substrings",
+        SIMPLE_SERIALIZATION_CASES,
+        ids=[c[0] for c in SIMPLE_SERIALIZATION_CASES],
+    )
+    def test_save_load_state_dict(self, name, make_component, key_substrings):
+        """State_dict save/load round-trip preserves all parameters."""
+        original = make_component()
+        state_dict = original.state_dict()
+
+        restored = make_component()
+        restored.load_state_dict(state_dict)
+
+        for (n1, p1), (n2, p2) in zip(
+            original.named_parameters(),
+            restored.named_parameters(),
         ):
-            assert torch.equal(param1, param2), f"FusionLayer parameter mismatch: {name1}"
+            assert n1 == n2
+            assert torch.equal(p1, p2), f"{name} parameter mismatch: {n1}"
 
-    def test_fusion_layer_serialization_file(self):
-        """FusionLayer state_dict save/load via file."""
-        from src.models.fusion.fusion_layer import FusionLayer
+    @pytest.mark.parametrize(
+        "name,make_component,key_substrings",
+        SIMPLE_SERIALIZATION_CASES,
+        ids=[c[0] for c in SIMPLE_SERIALIZATION_CASES],
+    )
+    def test_state_dict_has_expected_keys(self, name, make_component, key_substrings):
+        """State_dict contains all expected key substrings."""
+        component = make_component()
+        keys = list(component.state_dict().keys())
+        for substring in key_substrings:
+            assert any(substring in k for k in keys), \
+                f"{name}: missing key containing '{substring}'"
 
-        layer1 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+    @pytest.mark.parametrize(
+        "name,make_component,key_substrings",
+        SIMPLE_SERIALIZATION_CASES,
+        ids=[c[0] for c in SIMPLE_SERIALIZATION_CASES],
+    )
+    def test_save_load_state_dict_file(self, name, make_component, key_substrings):
+        """State_dict save/load via file preserves all parameters."""
+        original = make_component()
 
         with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
             temp_path = Path(f.name)
 
         try:
-            torch.save(layer1.state_dict(), temp_path)
+            torch.save(original.state_dict(), temp_path)
 
-            layer2 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
-            layer2.load_state_dict(torch.load(temp_path, weights_only=True))
+            restored = make_component()
+            restored.load_state_dict(torch.load(temp_path, weights_only=True))
 
-            for (name1, param1), (name2, param2) in zip(
-                layer1.named_parameters(),
-                layer2.named_parameters()
+            for (n1, p1), (n2, p2) in zip(
+                original.named_parameters(),
+                restored.named_parameters(),
             ):
-                assert torch.equal(param1, param2)
+                assert torch.equal(p1, p2), f"{name} file-load parameter mismatch: {n1}"
         finally:
             temp_path.unlink()
-
-
-class TestPathologyEncoderSerialization:
-    """Test PathologyEncoder state_dict serialization."""
-
-    def test_pathology_encoder_serialization(self):
-        """PathologyEncoder state_dict save/load."""
-        from src.models.fusion.pathology_encoder import PathologyEncoder
-
-        encoder1 = PathologyEncoder(n_pathology_features=3, d_region=128, d_cond=64)
-        state_dict = encoder1.state_dict()
-
-        encoder2 = PathologyEncoder(n_pathology_features=3, d_region=128, d_cond=64)
-        encoder2.load_state_dict(state_dict)
-
-        for (name1, param1), (name2, param2) in zip(
-            encoder1.named_parameters(),
-            encoder2.named_parameters()
-        ):
-            assert torch.equal(param1, param2), f"PathologyEncoder parameter mismatch: {name1}"
-
-    def test_pathology_encoder_state_dict_keys(self):
-        """PathologyEncoder state_dict contains expected keys."""
-        from src.models.fusion.pathology_encoder import PathologyEncoder
-
-        encoder = PathologyEncoder(n_pathology_features=3, d_region=128, d_cond=64)
-        state_dict = encoder.state_dict()
-
-        # Should have keys for pathology_mlp, region_proj, combine
-        key_prefixes = set(k.split('.')[0] for k in state_dict.keys())
-
-        assert 'pathology_mlp' in key_prefixes
-        assert 'region_proj' in key_prefixes
-        assert 'combine' in key_prefixes
-
-
-class TestPathologyAttentionSerialization:
-    """Test PathologyStratifiedAttention state_dict serialization."""
-
-    def test_pathology_attention_serialization(self):
-        """PathologyStratifiedAttention state_dict save/load."""
-        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
-
-        attention1 = PathologyStratifiedAttention(
-            d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
-        )
-        state_dict = attention1.state_dict()
-
-        attention2 = PathologyStratifiedAttention(
-            d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
-        )
-        attention2.load_state_dict(state_dict)
-
-        for (name1, param1), (name2, param2) in zip(
-            attention1.named_parameters(),
-            attention2.named_parameters()
-        ):
-            assert torch.equal(param1, param2), f"PathologyAttention parameter mismatch: {name1}"
-
-    def test_pathology_attention_state_dict_keys(self):
-        """PathologyStratifiedAttention state_dict contains expected keys."""
-        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
-
-        attention = PathologyStratifiedAttention(
-            d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
-        )
-        state_dict = attention.state_dict()
-
-        # Should have keys for query_generator, key_proj, value_proj, etc.
-        key_prefixes = set(k.split('.')[0] for k in state_dict.keys())
-
-        assert 'query_generator' in key_prefixes
-        assert 'key_proj' in key_prefixes
-        assert 'value_proj' in key_prefixes
-        assert 'pathology_bias' in key_prefixes
-        assert 'out_proj' in key_prefixes
 
 
 class TestRegionHandlerSerialization:
@@ -504,58 +486,67 @@ class TestBayesianHeadSerialization:
             temp_path.unlink()
 
 
-class TestDeterministicHeadSerialization:
-    """Test DeterministicPredictionHead state_dict serialization."""
+class TestCellTransformerSerialization:
+    """Test CellTransformer state_dict serialization and output preservation."""
 
-    def test_deterministic_head_serialization(self):
-        """DeterministicPredictionHead state_dict save/load."""
-        from src.models.heads.deterministic_head import DeterministicPredictionHead
+    def test_save_and_load_preserves_output(self):
+        """CellTransformer save/load preserves output."""
+        from src.models.branches.cell_transformer import CellTransformer
+        from src.data.constants import N_CELL_TYPES
 
-        head1 = DeterministicPredictionHead(d_input=128, d_hidden=64)
-        state_dict = head1.state_dict()
+        ct = CellTransformer(n_genes=50, n_cell_types=N_CELL_TYPES, d_model=64, n_heads=4, n_isab_layers=1, n_inducing=16, n_pma_seeds=1)
+        ct.eval()
+        x = torch.randn(2, N_CELL_TYPES, 10, 50)
+        mask = torch.ones(2, N_CELL_TYPES, 10, dtype=torch.bool)
+        out1 = ct(x, mask)[0]
+        # Save and reload
+        state = ct.state_dict()
+        ct2 = CellTransformer(n_genes=50, n_cell_types=N_CELL_TYPES, d_model=64, n_heads=4, n_isab_layers=1, n_inducing=16, n_pma_seeds=1)
+        ct2.load_state_dict(state)
+        ct2.eval()
+        out2 = ct2(x, mask)[0]
+        assert torch.allclose(out1, out2)
 
-        head2 = DeterministicPredictionHead(d_input=128, d_hidden=64)
-        head2.load_state_dict(state_dict)
 
-        for (name1, param1), (name2, param2) in zip(
-            head1.named_parameters(),
-            head2.named_parameters()
-        ):
-            assert torch.equal(param1, param2), f"DeterministicHead parameter mismatch: {name1}"
+class TestHGTEncoderSerialization:
+    """Test HGTEncoder state_dict serialization and output preservation."""
 
-    def test_deterministic_head_state_dict_keys(self):
-        """DeterministicPredictionHead state_dict contains expected keys."""
-        from src.models.heads.deterministic_head import DeterministicPredictionHead
+    def test_save_and_load_preserves_output(self):
+        """HGTEncoder save/load preserves output."""
+        from src.models.branches.hgt_encoder import HGTEncoder
+        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
 
-        head = DeterministicPredictionHead(d_input=128, d_hidden=64)
-        state_dict = head.state_dict()
+        node_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
+        edge_categories = [sanitize_key(et) for et in ALL_EDGE_TYPES]
+        hgt = HGTEncoder(d_input=32, d_hidden=32, d_output=32, n_heads=4, n_layers=1, dropout=0.0, edge_dim=1, node_types=node_types, edge_categories=edge_categories)
+        hgt.eval()
 
-        # Should have mlp layers (3 linear layers)
-        mlp_keys = [k for k in state_dict.keys() if 'mlp' in k]
-        assert len(mlp_keys) >= 6, "Expected 6+ mlp keys (3 layers x 2 params each)"
+        # Create inputs
+        x_dict = {nt: torch.randn(3, 32) for nt in node_types[:3]}
+        edge_index_dict = {
+            (node_types[0], edge_categories[0], node_types[1]): torch.tensor([[0, 1], [1, 2]]),
+            (node_types[1], edge_categories[0], node_types[2]): torch.tensor([[0], [0]]),
+        }
+        edge_attr_dict = {
+            (node_types[0], edge_categories[0], node_types[1]): torch.rand(2, 1),
+            (node_types[1], edge_categories[0], node_types[2]): torch.rand(1, 1),
+        }
 
-    def test_deterministic_head_serialization_file(self):
-        """DeterministicPredictionHead state_dict file save/load."""
-        from src.models.heads.deterministic_head import DeterministicPredictionHead
+        # Forward pass
+        out1, _ = hgt(x_dict, edge_index_dict, edge_attr_dict)
 
-        head1 = DeterministicPredictionHead(d_input=128, d_hidden=64)
+        # Save and reload
+        state = hgt.state_dict()
+        hgt2 = HGTEncoder(d_input=32, d_hidden=32, d_output=32, n_heads=4, n_layers=1, dropout=0.0, edge_dim=1, node_types=node_types, edge_categories=edge_categories)
+        hgt2.load_state_dict(state)
+        hgt2.eval()
 
-        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
-            temp_path = Path(f.name)
+        # Forward pass with reloaded model
+        out2, _ = hgt2(x_dict, edge_index_dict, edge_attr_dict)
 
-        try:
-            torch.save(head1.state_dict(), temp_path)
-
-            head2 = DeterministicPredictionHead(d_input=128, d_hidden=64)
-            head2.load_state_dict(torch.load(temp_path, weights_only=True))
-
-            for (name1, param1), (name2, param2) in zip(
-                head1.named_parameters(),
-                head2.named_parameters()
-            ):
-                assert torch.equal(param1, param2)
-        finally:
-            temp_path.unlink()
+        # Verify outputs match
+        for nt in out1.keys():
+            assert torch.allclose(out1[nt], out2[nt])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

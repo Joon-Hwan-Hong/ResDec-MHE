@@ -332,3 +332,38 @@ class TestEdgeCases:
         out = small_encoder(x)
         assert not torch.isnan(out).any()
         assert not torch.isinf(out).any()
+
+    def test_layer_norm_disabled(self):
+        """Should work without LayerNorm in MLP."""
+        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        enc = PseudobulkEncoder(n_cell_types=5, n_genes=50, d_embed=64, use_layer_norm=False)
+        x = torch.randn(2, 5, 50)
+        out = enc(x)
+        assert out.shape == (2, 5, 64)
+        assert torch.isfinite(out).all()
+
+    def test_dropout_train_vs_eval(self):
+        """Dropout should cause different outputs in train vs eval mode."""
+        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        enc = PseudobulkEncoder(n_cell_types=5, n_genes=50, d_embed=64, dropout=0.5)
+        x = torch.randn(2, 5, 50)
+        enc.train()
+        out_train = enc(x)
+        enc.eval()
+        out_eval = enc(x)
+        assert not torch.allclose(out_train, out_eval, atol=1e-6)
+
+    def test_cell_type_independence(self):
+        """Modifying one cell type should not affect others (shared MLP but independent gating)."""
+        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        enc = PseudobulkEncoder(n_cell_types=5, n_genes=50, d_embed=64)
+        enc.eval()
+        x = torch.randn(1, 5, 50)
+        out1 = enc(x).clone()
+        x_modified = x.clone()
+        x_modified[0, 0, :] = torch.randn(50)
+        out2 = enc(x_modified)
+        # First cell type output should change
+        assert not torch.allclose(out1[0, 0], out2[0, 0])
+        # Other cell types should remain the same
+        assert torch.allclose(out1[0, 1:], out2[0, 1:])

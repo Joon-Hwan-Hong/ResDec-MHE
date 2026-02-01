@@ -988,6 +988,82 @@ class TestPrecomputedDataset:
         assert torch.equal(loaded_sample["cell_counts"], expected_counts)
 
 
+class TestPrecomputedNaNFallbacks:
+    """D-A4: Tests for PrecomputedDataset backward-compatible NaN fallbacks."""
+
+    def test_precomputed_derives_cell_counts_when_missing(self, mock_dataset, tmp_path):
+        """When cell_counts absent, should derive from cell_mask."""
+        from src.data.datasets import PrecomputedDataset
+
+        # Manually save a file WITHOUT cell_counts (simulating older format)
+        subject_id = mock_dataset.subject_ids[0]
+        sample = mock_dataset[0]
+
+        np.savez_compressed(
+            tmp_path / f"{subject_id}.npz",
+            pseudobulk=sample["pseudobulk"].numpy(),
+            cell_type_mask=sample["cell_type_mask"].numpy(),
+            # Intentionally omit cell_counts
+            edge_index=sample["ccc_edge_index"].numpy(),
+            edge_type=sample["ccc_edge_type"].numpy(),
+            edge_attr=sample["ccc_edge_attr"].numpy(),
+            cells=sample["cells"].numpy(),
+            cell_mask=sample["cell_mask"].numpy(),
+            region_mask=sample["region_mask"].numpy(),
+        )
+
+        precomputed = PrecomputedDataset(
+            feature_dir=tmp_path,
+            metadata=mock_dataset.metadata,
+            subject_ids=[subject_id],
+        )
+
+        loaded_sample = precomputed[0]
+
+        # cell_counts should be derived from cell_mask: sum of True values per cell type
+        assert "cell_counts" in loaded_sample
+        assert loaded_sample["cell_counts"].dtype == torch.long
+        expected_counts = sample["cell_mask"].sum(dim=1).long()
+        assert torch.equal(loaded_sample["cell_counts"], expected_counts)
+
+    def test_precomputed_defaults_region_mask_to_pfc(self, mock_dataset, tmp_path):
+        """When region_mask absent, should default to PFC only."""
+        from src.data.datasets import PrecomputedDataset
+        from src.data.constants import REGION_ORDER
+
+        # Manually save a file WITHOUT region_mask (simulating older format)
+        subject_id = mock_dataset.subject_ids[0]
+        sample = mock_dataset[0]
+
+        np.savez_compressed(
+            tmp_path / f"{subject_id}.npz",
+            pseudobulk=sample["pseudobulk"].numpy(),
+            cell_type_mask=sample["cell_type_mask"].numpy(),
+            cell_counts=sample["cell_counts"].numpy(),
+            # Intentionally omit region_mask
+            edge_index=sample["ccc_edge_index"].numpy(),
+            edge_type=sample["ccc_edge_type"].numpy(),
+            edge_attr=sample["ccc_edge_attr"].numpy(),
+            cells=sample["cells"].numpy(),
+            cell_mask=sample["cell_mask"].numpy(),
+        )
+
+        precomputed = PrecomputedDataset(
+            feature_dir=tmp_path,
+            metadata=mock_dataset.metadata,
+            subject_ids=[subject_id],
+        )
+
+        loaded_sample = precomputed[0]
+
+        # region_mask should default to [True, False, False, ...]
+        assert "region_mask" in loaded_sample
+        assert loaded_sample["region_mask"].dtype == torch.bool
+        assert loaded_sample["region_mask"].shape == (len(REGION_ORDER),)
+        assert loaded_sample["region_mask"][0].item() is True  # PFC
+        assert loaded_sample["region_mask"].sum().item() == 1  # Only PFC
+
+
 class TestPrecomputedCellTypeOrderValidation:
     """Tests for cell_type_order validation in precomputed features."""
 

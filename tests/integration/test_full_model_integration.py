@@ -163,6 +163,59 @@ class TestEndToEndForward:
         # Attention weights should still be valid
         assert torch.isfinite(output['attention_weights']).all()
 
+    def test_region_mask_propagates_to_region_handler(self, model_kwargs, sample_batch):
+        """Region mask should produce different outputs with different masks."""
+        model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
+
+        B = sample_batch['region_pseudobulk'].size(0)
+
+        # Run with first two regions active
+        mask_two = torch.zeros(B, N_REGIONS, dtype=torch.bool)
+        mask_two[:, :2] = True
+        batch_two = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                     for k, v in sample_batch.items()}
+        batch_two['region_mask'] = mask_two
+        output_two = model(**batch_two)
+
+        # Run with only first region active
+        mask_one = torch.zeros(B, N_REGIONS, dtype=torch.bool)
+        mask_one[:, :1] = True
+        batch_one = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                     for k, v in sample_batch.items()}
+        batch_one['region_mask'] = mask_one
+        output_one = model(**batch_one)
+
+        # Outputs should differ because different regions are pooled
+        assert not torch.allclose(output_two['mean'], output_one['mean'], atol=1e-6), \
+            "Different region masks should produce different outputs"
+
+    def test_different_region_masks_produce_different_outputs(self, model_kwargs, sample_batch):
+        """Different region masks should produce different predictions."""
+        model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
+
+        B = sample_batch['region_pseudobulk'].size(0)
+
+        # All regions active
+        all_true_mask = torch.ones(B, N_REGIONS, dtype=torch.bool)
+        batch_all = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                     for k, v in sample_batch.items()}
+        batch_all['region_mask'] = all_true_mask
+        output_all = model(**batch_all)
+
+        # Single region active
+        single_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
+        single_mask[:, 0] = True
+        batch_single = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                        for k, v in sample_batch.items()}
+        batch_single['region_mask'] = single_mask
+        output_single = model(**batch_single)
+
+        # Outputs should differ
+        assert not torch.allclose(output_all['mean'], output_single['mean'], atol=1e-6), \
+            "All-True mask vs single-region mask should produce different outputs"
+
     def test_forward_without_cognition_target(self, model_kwargs, sample_batch):
         """Forward pass works in inference mode (no cognition target)."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
@@ -449,6 +502,20 @@ class TestAttentionInterpretability:
 
 class TestNumericalStability:
     """Test numerical stability of the full model."""
+
+    def test_nan_input_produces_nan_output(self, model_kwargs, sample_batch):
+        """NaN in input should propagate to output."""
+        model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
+
+        # Inject NaN into region_pseudobulk
+        sample_batch['region_pseudobulk'][0, 0, 0, :] = float('nan')
+
+        output = model(**sample_batch)
+
+        # Output should contain NaN because NaN propagates through linear layers
+        assert torch.isnan(output['mean']).any(), \
+            "NaN in region_pseudobulk should propagate to output"
 
     def test_large_input_values(self, model_kwargs, sample_batch):
         """Model handles large input values without NaN."""

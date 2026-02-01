@@ -183,6 +183,31 @@ class TestForwardPass:
         assert mean.shape == (8, 1)
         assert std.shape == (8, 1)
 
+    def test_output_varies_across_forward_passes(self):
+        """Multiple forward passes should produce different outputs due to weight sampling."""
+        from src.models.heads.bayesian_head import BayesianPredictionHead
+
+        head = BayesianPredictionHead(d_input=64, d_hidden=32)
+        x = torch.randn(4, 64)
+        outputs = [head(x)[0] for _ in range(5)]
+        all_same = all(torch.allclose(outputs[0], o, atol=1e-7) for o in outputs[1:])
+        assert not all_same
+
+    def test_train_vs_eval_mode_behavior(self):
+        """Should produce correct shapes in both train and eval mode."""
+        from src.models.heads.bayesian_head import BayesianPredictionHead
+
+        head = BayesianPredictionHead(d_input=64, d_hidden=32)
+        x = torch.randn(4, 64)
+        y = torch.randn(4, 1)
+        head.train()
+        mean_train, std_train = head(x, y)
+        assert mean_train.shape == (4, 1)
+        head.eval()
+        mean_eval, std_eval = head(x)
+        assert mean_eval.shape == (4, 1)
+        assert std_eval.shape == (4, 1)
+
 
 class TestPyroIntegration:
     """Tests for Pyro integration."""

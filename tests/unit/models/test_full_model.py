@@ -136,6 +136,21 @@ class TestInitialization:
         with pytest.raises(ValueError, match="d_fused.*must be divisible by n_attention_heads"):
             CognitiveResilienceModel(**model_config)
 
+    def test_invalid_n_cell_types_raises_error(self):
+        """n_cell_types=0 should raise ValueError."""
+        with pytest.raises(ValueError, match="n_cell_types must be positive"):
+            CognitiveResilienceModel(n_genes=50, n_cell_types=0, d_embed=32, d_fused=32, d_cond=16)
+
+    def test_invalid_d_embed_raises_error(self):
+        """d_embed=0 should raise ValueError."""
+        with pytest.raises(ValueError, match="d_embed must be positive"):
+            CognitiveResilienceModel(n_genes=50, d_embed=0, d_fused=32, d_cond=16)
+
+    def test_invalid_d_cond_raises_error(self):
+        """d_cond=0 should raise ValueError."""
+        with pytest.raises(ValueError, match="d_cond must be positive"):
+            CognitiveResilienceModel(n_genes=50, d_embed=32, d_fused=32, d_cond=0)
+
 
 class TestForwardPass:
     """Test forward pass output structure and shapes."""
@@ -383,6 +398,13 @@ class TestInterpretability:
         assert counts['prediction_head'] == 817
         assert counts['total'] == 356_897
 
+    def test_num_parameters_trainable_only_false(self, model):
+        """num_parameters(trainable_only=False) should include all params."""
+        counts_all = model.num_parameters(trainable_only=False)
+        counts_trainable = model.num_parameters(trainable_only=True)
+        assert counts_all['total'] >= counts_trainable['total']
+        assert counts_all['total'] == counts_trainable['total']  # all trainable by default
+
 
 class TestEdgeCases:
     """Test edge cases and error handling."""
@@ -578,3 +600,32 @@ class TestEdgeCases:
         # Original lists should still contain empty dicts
         assert edge_index_dict_list == [{}, {}]
         assert edge_attr_dict_list == [{}, {}]
+
+    def test_convert_hgt_ignores_unknown_node_types(self, small_model):
+        """Unknown node types in HGT output should be silently skipped."""
+        B = 2
+        device = torch.device('cpu')
+
+        # Use actual node type names from the model
+        known_types = small_model.node_types[:2]  # e.g. 'Astrocyte', 'Oligodendrocyte'
+        hgt_out_dict = {
+            known_types[0]: torch.randn(B, 1, 32),
+            known_types[1]: torch.randn(B, 1, 32),
+            'UnknownCellType': torch.randn(B, 1, 32),  # Unknown
+            'AnotherFakeCellType': torch.randn(B, 1, 32),  # Unknown
+        }
+
+        output = small_model._convert_hgt_batched_output_to_tensor(hgt_out_dict, B, device)
+
+        assert output.shape == (B, 31, 32)
+
+        # Known cell types should have their embeddings placed correctly
+        idx0 = small_model._node_type_to_idx[known_types[0]]
+        idx1 = small_model._node_type_to_idx[known_types[1]]
+        assert torch.allclose(output[:, idx0, :], hgt_out_dict[known_types[0]].squeeze(1))
+        assert torch.allclose(output[:, idx1, :], hgt_out_dict[known_types[1]].squeeze(1))
+
+        # Cell types not in dict should have zeros
+        for ct_idx, ct_name in enumerate(small_model.node_types):
+            if ct_name not in hgt_out_dict:
+                assert torch.allclose(output[:, ct_idx, :], torch.zeros(B, 32))

@@ -164,6 +164,7 @@ def create_sample_inputs(
             batch_size, n_cell_types, max_cells, dtype=torch.bool, device=device
         ),
         'pathology': torch.randn(batch_size, 3, device=device),
+        'cognition': torch.randn(batch_size, 1, device=device),
     }
 
 

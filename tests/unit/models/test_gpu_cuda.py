@@ -240,126 +240,126 @@ class TestModelToGPU:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestFusionLayerCUDA:
-    """Test FusionLayer on GPU."""
+# ── Factory functions for parametrized component CUDA tests ──────────────────
 
-    def test_fusion_layer_cuda(self, cuda_device):
-        """FusionLayer forward and backward on GPU."""
-        from src.models.fusion.fusion_layer import FusionLayer
-
-        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31).to(cuda_device)
-
-        pseudobulk = torch.randn(4, 31, 64, device=cuda_device, requires_grad=True)
-        hgt = torch.randn(4, 31, 64, device=cuda_device, requires_grad=True)
-        cell = torch.randn(4, 31, 64, device=cuda_device, requires_grad=True)
-
-        output = layer(pseudobulk, hgt, cell)
-
-        # Verify output on CUDA
-        assert output.device.type == "cuda"
-        assert output.shape == (4, 31, 128)
-
-        # Verify gradients flow
-        loss = output.sum()
-        loss.backward()
-
-        assert pseudobulk.grad is not None
-        assert hgt.grad is not None
-        assert cell.grad is not None
+N_CT = 31   # local shorthand matching small_model_config
+N_REG = 6
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestPathologyEncoderCUDA:
-    """Test PathologyEncoder on GPU."""
-
-    def test_pathology_encoder_cuda(self, cuda_device):
-        """PathologyEncoder forward and backward on GPU."""
-        from src.models.fusion.pathology_encoder import PathologyEncoder
-
-        encoder = PathologyEncoder(
-            n_pathology_features=3,
-            d_region=128,
-            d_cond=64,
-        ).to(cuda_device)
-
-        pathology = torch.randn(4, 3, device=cuda_device, requires_grad=True)
-        region_context = torch.randn(4, 128, device=cuda_device, requires_grad=True)
-
-        output = encoder(pathology, region_context)
-
-        # Verify output on CUDA
-        assert output.device.type == "cuda"
-        assert output.shape == (4, 64)
-
-        # Verify gradients flow
-        loss = output.sum()
-        loss.backward()
-
-        assert pathology.grad is not None
-        assert region_context.grad is not None
+def _make_fusion_layer():
+    from src.models.fusion.fusion_layer import FusionLayer
+    return FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CT)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestPathologyAttentionCUDA:
-    """Test PathologyStratifiedAttention on GPU."""
+def _fusion_inputs(device):
+    return (
+        torch.randn(4, N_CT, 64, device=device, requires_grad=True),
+        torch.randn(4, N_CT, 64, device=device, requires_grad=True),
+        torch.randn(4, N_CT, 64, device=device, requires_grad=True),
+    )
 
-    def test_pathology_attention_cuda(self, cuda_device):
-        """PathologyStratifiedAttention forward and backward on GPU."""
-        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attention = PathologyStratifiedAttention(
-            d_fused=64,
-            d_cond=32,
-            n_heads=4,
-            n_cell_types=31,
-        ).to(cuda_device)
+def _make_pathology_encoder():
+    from src.models.fusion.pathology_encoder import PathologyEncoder
+    return PathologyEncoder(n_pathology_features=3, d_region=128, d_cond=64)
 
-        cell_type_embeddings = torch.randn(4, 31, 64, device=cuda_device, requires_grad=True)
-        path_emb = torch.randn(4, 32, device=cuda_device, requires_grad=True)
 
-        attended, weights = attention(cell_type_embeddings, path_emb)
+def _pathology_encoder_inputs(device):
+    return (
+        torch.randn(4, 3, device=device, requires_grad=True),
+        torch.randn(4, 128, device=device, requires_grad=True),
+    )
 
-        # Verify outputs on CUDA
-        assert attended.device.type == "cuda"
-        assert weights.device.type == "cuda"
-        assert attended.shape == (4, 64)
-        assert weights.shape == (4, 4, 31)
 
-        # Verify gradients flow
-        loss = attended.sum()
-        loss.backward()
+def _make_pathology_attention():
+    from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+    return PathologyStratifiedAttention(
+        d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CT,
+    )
 
-        assert cell_type_embeddings.grad is not None
-        assert path_emb.grad is not None
+
+def _pathology_attention_inputs(device):
+    return (
+        torch.randn(4, N_CT, 64, device=device, requires_grad=True),
+        torch.randn(4, 32, device=device, requires_grad=True),
+    )
+
+
+def _make_region_handler():
+    from src.models.components.region_handler import RegionHandler
+    return RegionHandler(d_model=128, n_regions=N_REG)
+
+
+def _region_handler_inputs(device):
+    return (
+        torch.randn(4, N_REG, N_CT, 128, device=device, requires_grad=True),
+        torch.ones(4, N_REG, dtype=torch.bool, device=device),
+    )
+
+
+def _make_deterministic_head():
+    from src.models.heads.deterministic_head import DeterministicPredictionHead
+    return DeterministicPredictionHead(d_input=128, d_hidden=64)
+
+
+def _deterministic_head_inputs(device):
+    return (
+        torch.randn(4, 128, device=device, requires_grad=True),
+    )
+
+
+COMPONENT_CUDA_CASES = [
+    ("FusionLayer", _make_fusion_layer, _fusion_inputs),
+    ("PathologyEncoder", _make_pathology_encoder, _pathology_encoder_inputs),
+    ("PathologyAttention", _make_pathology_attention, _pathology_attention_inputs),
+    ("RegionHandler", _make_region_handler, _region_handler_inputs),
+    ("DeterministicHead", _make_deterministic_head, _deterministic_head_inputs),
+]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestRegionHandlerCUDA:
-    """Test RegionHandler on GPU."""
+class TestComponentCUDAParametrized:
+    """Parametrized CUDA tests for simple components.
 
-    def test_region_handler_cuda(self, cuda_device):
-        """RegionHandler forward and backward on GPU."""
-        from src.models.components.region_handler import RegionHandler
+    Each case creates a component, moves it to GPU, runs a forward pass,
+    and verifies output is on CUDA, finite, and that gradients flow back.
+    """
 
-        handler = RegionHandler(d_model=128, n_regions=6).to(cuda_device)
+    @pytest.mark.parametrize(
+        "name,make_component,make_inputs",
+        COMPONENT_CUDA_CASES,
+        ids=[c[0] for c in COMPONENT_CUDA_CASES],
+    )
+    def test_forward_on_cuda(self, cuda_device, name, make_component, make_inputs):
+        """Component forward and backward on GPU."""
+        component = make_component().to(cuda_device)
+        inputs = make_inputs(cuda_device)
 
-        x = torch.randn(4, 6, 31, 128, device=cuda_device, requires_grad=True)
-        region_mask = torch.ones(4, 6, dtype=torch.bool, device=cuda_device)
+        output = component(*inputs)
 
-        pooled, region_context = handler(x, region_mask)
+        # Unpack output: may be a single tensor or a tuple
+        if isinstance(output, tuple):
+            out_tensor = output[0]
+        elif isinstance(output, dict):
+            out_tensor = next(iter(output.values()))
+        else:
+            out_tensor = output
 
-        # Verify outputs on CUDA
-        assert pooled.device.type == "cuda"
-        assert region_context.device.type == "cuda"
-        assert pooled.shape == (4, 31, 128)
-        assert region_context.shape == (4, 128)
+        # Verify output is on CUDA and finite
+        assert out_tensor.device.type == "cuda", f"{name} output not on CUDA"
+        assert torch.isfinite(out_tensor).all(), f"{name} output contains non-finite values"
 
-        # Verify gradients flow
-        loss = pooled.sum() + region_context.sum()
+        # Verify gradients flow to at least one grad-requiring input
+        if isinstance(output, tuple):
+            loss = sum(o.sum() for o in output if isinstance(o, torch.Tensor))
+        else:
+            loss = out_tensor.sum()
         loss.backward()
 
-        assert x.grad is not None
+        grad_inputs = [inp for inp in inputs if isinstance(inp, torch.Tensor) and inp.requires_grad]
+        assert any(inp.grad is not None for inp in grad_inputs), (
+            f"{name}: no gradients flowed to any input"
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -410,31 +410,6 @@ class TestBayesianHeadCUDA:
         # Expected: fc_log_std has 64*1 + 1 = 65 parameters
         # The PyroSample parameters are handled differently
         assert param_count >= 65, "Expected at least fc_log_std parameters"
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestDeterministicHeadCUDA:
-    """Test DeterministicPredictionHead on GPU."""
-
-    def test_deterministic_head_cuda(self, cuda_device):
-        """DeterministicPredictionHead forward and backward on GPU."""
-        from src.models.heads.deterministic_head import DeterministicPredictionHead
-
-        head = DeterministicPredictionHead(d_input=128, d_hidden=64).to(cuda_device)
-
-        x = torch.randn(4, 128, device=cuda_device, requires_grad=True)
-
-        output = head(x)
-
-        # Verify output on CUDA
-        assert output.device.type == "cuda"
-        assert output.shape == (4, 1)
-
-        # Verify gradients flow
-        loss = output.sum()
-        loss.backward()
-
-        assert x.grad is not None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -466,6 +466,26 @@ class TestInterpretability:
             assert len(top_genes[ct_idx]) == 5
 
 
+class TestGetTopGenesEdgeCases:
+    """Tests for get_top_genes_per_cell_type with k<=0."""
+
+    def test_get_top_genes_k_zero_returns_empty(self):
+        """k=0 silently returns empty gene lists (torch.topk accepts k=0)."""
+        from src.models.components.gene_attention_gate import GeneAttentionGate
+        gate = GeneAttentionGate(n_cell_types=3, n_genes=50)
+        result = gate.get_top_genes_per_cell_type(k=0)
+        assert len(result) == 3
+        for ct_idx in range(3):
+            assert result[ct_idx] == []
+
+    def test_get_top_genes_k_negative_raises_runtime_error(self):
+        """Negative k raises RuntimeError from torch.topk."""
+        from src.models.components.gene_attention_gate import GeneAttentionGate
+        gate = GeneAttentionGate(n_cell_types=3, n_genes=50)
+        with pytest.raises(RuntimeError):
+            gate.get_top_genes_per_cell_type(k=-1)
+
+
 # =============================================================================
 # 7. EDGE CASES TESTS
 # =============================================================================

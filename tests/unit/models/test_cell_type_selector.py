@@ -288,6 +288,14 @@ class TestTemperatureEffects:
         with pytest.raises(ValueError, match="temperature must be positive"):
             selector.temperature = -1.0
 
+    def test_extra_repr_contains_parameters(self):
+        from src.models.components.cell_type_selector import CellTypeSelector
+        from src.data.constants import N_CELL_TYPES
+        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
+        repr_str = selector.extra_repr()
+        assert f"n_cell_types={N_CELL_TYPES}" in repr_str
+        assert "temperature=" in repr_str
+
 
 class TestGradientFlow:
     """Tests for gradient computation."""
@@ -446,6 +454,16 @@ class TestNumericalStability:
 
         assert not torch.isnan(selector.selection_logits.grad).any()
         assert not torch.isinf(selector.selection_logits.grad).any()
+
+    def test_near_zero_temperature_numerical_stability(self):
+        from src.models.components.cell_type_selector import CellTypeSelector
+        from src.data.constants import N_CELL_TYPES
+        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES, temperature=1e-6)
+        # Set non-uniform logits to test near-zero temperature behavior
+        selector.selection_logits.data = torch.randn(N_CELL_TYPES)
+        weights = selector.get_selection_weights()
+        assert torch.isfinite(weights).all()
+        assert weights.max() > 0.9
 
 
 # =============================================================================

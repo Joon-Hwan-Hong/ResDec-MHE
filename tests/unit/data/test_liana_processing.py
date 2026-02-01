@@ -44,6 +44,19 @@ def mock_cellchatdb_csv(tmp_path):
     return csv_path
 
 
+class TestNormalizeAnnotation:
+    """L-A3: Tests for _normalize_annotation utility."""
+
+    def test_normalize_annotation(self):
+        """Should replace spaces and hyphens with underscores."""
+        from src.data.liana_processing import _normalize_annotation
+
+        assert _normalize_annotation("Secreted Signaling") == "Secreted_Signaling"
+        assert _normalize_annotation("Non-protein Signaling") == "Non_protein_Signaling"
+        assert _normalize_annotation("ECM-Receptor") == "ECM_Receptor"
+        assert _normalize_annotation("Simple") == "Simple"
+
+
 class TestLoadCellChatDBCategories:
     """Tests for loading CellChatDB category mappings."""
 
@@ -244,6 +257,29 @@ class TestAssignEdgeTypes:
         assert "edge_type_name" in result.columns
         assert "edge_type" in result.columns
         assert len(result) == 0
+
+    def test_assign_edge_types_nan_ligand(self, mock_cellchatdb_csv):
+        """L-A6: NaN ligand should map to novel_category."""
+        from src.data.liana_processing import assign_edge_types
+        from src.data.constants import EDGE_TYPE_NOVEL
+
+        # Create DataFrame with NaN in ligand column
+        df_with_nan = pd.DataFrame({
+            "source": ["Astrocyte", "Microglia", "Astrocyte"],
+            "target": ["Microglia", "Astrocyte", "Oligodendrocyte"],
+            "ligand_complex": [np.nan, "IL1B", "TGFB1"],
+            "receptor_complex": ["TGFBR1", np.nan, "TGFBR1"],
+            "magnitude_rank": [0.1, 0.2, 0.3],
+        })
+
+        result = assign_edge_types(df_with_nan, cellchatdb_path=mock_cellchatdb_csv)
+
+        # Row 0: NaN ligand -> novel_category
+        assert result.iloc[0]["edge_type_name"] == EDGE_TYPE_NOVEL
+        # Row 1: NaN receptor -> novel_category
+        assert result.iloc[1]["edge_type_name"] == EDGE_TYPE_NOVEL
+        # Row 2: valid ligand+receptor (TGFB1_TGFBR1 in DB) -> Secreted_Signaling
+        assert result.iloc[2]["edge_type_name"] == "Secreted_Signaling"
 
 
 class TestGetEdgeTypeMetadata:

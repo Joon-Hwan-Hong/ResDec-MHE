@@ -532,6 +532,25 @@ class TestBatchedEncoder:
         with pytest.raises(ValueError, match="must match batch size"):
             batched_encoder(x_dict_list, edge_index_dict_list)
 
+    def test_edge_attr_dict_list_length_mismatch(
+        self, batched_encoder, small_encoder_config, mini_node_types, mini_edge_categories
+    ):
+        """Mismatched edge_index and edge_attr list lengths should raise ValueError."""
+        d_input = small_encoder_config["d_input"]
+
+        # Create 2 x_dict and edge_index entries
+        x_dict_list = [
+            {nt: torch.randn(1, d_input) for nt in mini_node_types}
+            for _ in range(2)
+        ]
+        edge_index_dict_list = [{} for _ in range(2)]
+
+        # But 3 edge_attr entries (mismatch)
+        edge_attr_dict_list = [{} for _ in range(3)]
+
+        with pytest.raises(ValueError, match="must match batch size"):
+            batched_encoder(x_dict_list, edge_index_dict_list, edge_attr_dict_list)
+
     def test_batched_mismatched_node_types(
         self, batched_encoder, small_encoder_config, mini_node_types
     ):

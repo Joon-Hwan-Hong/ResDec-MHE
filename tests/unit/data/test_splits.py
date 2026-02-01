@@ -199,6 +199,18 @@ class TestGetFoldSubjects:
         assert test == ["T1", "T2"]
 
 
+class TestGetFinalTrainSubjects:
+    """S-A3: Tests for get_final_train_subjects()."""
+
+    def test_get_final_train_subjects(self):
+        """Should return the full train_val_pool for final retraining."""
+        from src.data.splits import get_final_train_subjects
+
+        splits = {"train_val_pool": ["S1", "S2", "S3"], "test": ["S4"]}
+        result = get_final_train_subjects(splits)
+        assert result == ["S1", "S2", "S3"]
+
+
 class TestValidateNoLeakage:
     """Tests for validate_no_leakage()."""
 
@@ -549,3 +561,43 @@ class TestStrataCollapseFallback:
         # Should produce valid splits regardless of warnings
         assert len(splits["holdout_test"]) > 0
         assert len(splits["folds"]) == 3
+
+
+class TestSmallDataset:
+    """S-A7: Tests for small datasets (N < 20 subjects)."""
+
+    def test_small_dataset_under_20_subjects(self):
+        """Should handle small datasets (N<20) without crashing."""
+        from src.data.splits import create_stratified_splits, validate_no_leakage
+        import warnings
+
+        # Create metadata with ~10 subjects
+        n = 10
+        np.random.seed(42)
+        metadata = pd.DataFrame({
+            "ROSMAP_IndividualID": [f"S{i}" for i in range(n)],
+            "gpath": np.random.uniform(0, 1, n),
+            "cogn_global": np.random.uniform(-2, 2, n),
+        })
+
+        # Use fewer folds appropriate for small N
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            splits = create_stratified_splits(
+                metadata,
+                test_frac=0.2,  # 2 subjects for test
+                n_folds=3,      # 3-fold on remaining 8
+            )
+
+        # Should produce valid splits
+        assert len(splits["holdout_test"]) > 0
+        assert len(splits["train_val_pool"]) > 0
+        assert len(splits["folds"]) == 3
+
+        # All subjects should be accounted for
+        all_subjects = set(metadata["ROSMAP_IndividualID"])
+        split_subjects = set(splits["holdout_test"]) | set(splits["train_val_pool"])
+        assert split_subjects == all_subjects
+
+        # No data leakage
+        assert validate_no_leakage(splits)

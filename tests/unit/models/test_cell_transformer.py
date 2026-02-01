@@ -239,6 +239,29 @@ class TestAttention:
 
         assert attention is None
 
+    def test_return_attention_shape_detail(self, small_transformer, sample_data, small_config):
+        """Attention tensors should have expected dimensionality."""
+        cells, cell_mask = sample_data
+        batch_size = cells.size(0)
+
+        embeddings, selection_weights, attention = small_transformer(
+            cells, cell_mask, return_attention=True
+        )
+
+        assert attention is not None
+        assert len(attention) == small_config["n_cell_types"]
+
+        # Each attention tensor should be 4D: [batch, n_heads, n_pma_seeds, max_cells]
+        for ct_idx, attn in enumerate(attention):
+            assert attn.dim() == 4, f"Cell type {ct_idx} attention should be 4D"
+            assert attn.shape[0] == batch_size
+            # n_heads from the set encoder
+            assert attn.shape[1] == small_config["n_heads"]
+            # n_pma_seeds
+            assert attn.shape[2] == small_config["n_pma_seeds"]
+            # max_cells dimension
+            assert attn.shape[3] == cells.size(2)
+
 
 # ============================================================================
 # Gradient Flow Tests
@@ -419,6 +442,30 @@ class TestDeterminism:
 
         assert torch.equal(weights1, weights2)
         assert torch.allclose(embeddings1, embeddings2)
+
+    def test_dropout_train_vs_eval_differs(self):
+        """Outputs should differ between train/eval with dropout > 0."""
+        from src.data.constants import N_CELL_TYPES
+
+        ct = CellTransformer(
+            n_genes=50,
+            n_cell_types=N_CELL_TYPES,
+            d_model=32,
+            n_heads=2,
+            n_isab_layers=1,
+            n_inducing=8,
+            dropout=0.5,
+        )
+        x = torch.randn(2, N_CELL_TYPES, 10, 50)
+        mask = torch.ones(2, N_CELL_TYPES, 10, dtype=torch.bool)
+
+        ct.train()
+        out_train = ct(x, mask)[0]
+
+        ct.eval()
+        out_eval = ct(x, mask)[0]
+
+        assert not torch.allclose(out_train, out_eval, atol=1e-6)
 
 
 # ============================================================================

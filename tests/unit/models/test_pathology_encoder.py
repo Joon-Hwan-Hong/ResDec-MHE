@@ -316,6 +316,41 @@ class TestValidation:
             encoder(pathology, region_context)
 
 
+class TestEdgeCasesExtended:
+    """Extended edge case tests."""
+
+    def test_extreme_pathology_values(self):
+        """Should handle extreme pathology values without NaN/Inf."""
+        from src.models.fusion.pathology_encoder import PathologyEncoder
+
+        enc = PathologyEncoder(n_pathology_features=3, d_region=64, d_cond=32)
+
+        for values in [torch.zeros(2, 3), torch.ones(2, 3), -torch.ones(2, 3)]:
+            region_context = torch.randn(2, 64)
+            out = enc(values, region_context)
+            assert torch.isfinite(out).all()
+
+    def test_all_same_pathology_scores(self):
+        """All-same pathology scores with same region context should produce identical outputs."""
+        from src.models.fusion.pathology_encoder import PathologyEncoder
+
+        enc = PathologyEncoder(n_pathology_features=3, d_region=64, d_cond=32)
+        enc.eval()
+
+        # Same pathology and region context for all samples
+        x = torch.ones(4, 3) * 0.5
+        region_context_single = torch.randn(1, 64)
+        region_context = region_context_single.repeat(4, 1)  # Same region for all
+
+        with torch.no_grad():
+            out = enc(x, region_context)
+
+        # All samples have same inputs, so outputs should be identical
+        assert torch.allclose(out[0], out[1])
+        assert torch.allclose(out[1], out[2])
+        assert torch.allclose(out[2], out[3])
+
+
 class TestExtraRepr:
     """Tests for extra_repr method."""
 

@@ -235,6 +235,81 @@ class TestFullModelGradientFlow:
 
 
 # =============================================================================
+# Bayesian KL Divergence Gradient Flow Tests
+# =============================================================================
+
+
+class TestBayesianKLGradientFlow:
+    """Test gradient flow through Bayesian head KL divergence."""
+
+    def test_bayesian_kl_divergence_gradient_flow(self):
+        """KL divergence from Bayesian head should produce gradients."""
+        model = CognitiveResilienceModel(
+            n_genes=N_GENES,
+            n_cell_types=N_CELL_TYPES,
+            d_embed=D_EMBED,
+            d_fused=D_FUSED,
+            d_cond=D_COND,
+            n_regions=N_REGIONS,
+            n_hgt_layers=1,
+            n_hgt_heads=2,
+            n_isab_layers=1,
+            n_inducing_points=8,
+            n_attention_heads=2,
+            d_head_hidden=16,
+            dropout=0.0,
+            use_bayesian_head=True,
+        )
+
+        B = 2
+        edge_index_dict_list, edge_attr_dict_list = [], []
+        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
+        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
+        for _ in range(B):
+            edge_key = (sanitized_types[0], sanitized_edges[0], sanitized_types[1])
+            edge_index_dict_list.append({edge_key: torch.tensor([[0], [0]])})
+            edge_attr_dict_list.append({edge_key: torch.rand(1, 1)})
+
+        inputs = {
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
+            'edge_index_dict_list': edge_index_dict_list,
+            'edge_attr_dict_list': edge_attr_dict_list,
+            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
+            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            'pathology': torch.randn(B, 3),
+            'cognition': torch.randn(B, 1),
+        }
+
+        # Forward pass (Bayesian head returns mean and std)
+        output = model(**inputs)
+        mean = output['mean']
+        std = output['std']
+
+        # Compute ELBO-style loss: negative log-likelihood + KL-like term
+        # The KL divergence is implicitly handled by Pyro's plate/sample,
+        # but for gradient flow testing we use a loss that depends on both
+        # mean and std, mirroring what ELBO does.
+        nll = 0.5 * ((inputs['cognition'] - mean) / std).pow(2) + std.log()
+        loss = nll.sum()
+        loss.backward()
+
+        # Verify gradients flow to prediction head params
+        head_has_grad = False
+        for name, param in model.prediction_head.named_parameters():
+            if param.grad is not None and not torch.all(param.grad == 0):
+                head_has_grad = True
+                break
+        assert head_has_grad, "No gradients reached Bayesian prediction head"
+
+        # Specifically check fc_log_std (aleatoric uncertainty branch)
+        assert model.prediction_head.fc_log_std.weight.grad is not None, \
+            "No gradients reached fc_log_std weight"
+        assert not torch.all(model.prediction_head.fc_log_std.weight.grad == 0), \
+            "fc_log_std weight has zero gradients"
+
+
+# =============================================================================
 # Multi-Region Behavior Tests
 # =============================================================================
 

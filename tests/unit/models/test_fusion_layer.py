@@ -132,6 +132,41 @@ class TestGradientFlow:
         assert layer.proj.weight.grad is not None
         assert layer.proj.bias.grad is not None
 
+    def test_mismatched_d_embed_raises_error(self):
+        """Inputs with wrong feature dimension should raise RuntimeError."""
+        from src.models.fusion.fusion_layer import FusionLayer
+        from src.data.constants import N_CELL_TYPES
+
+        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
+
+        wrong_pb = torch.randn(2, N_CELL_TYPES, 32)  # d_embed=32 != 64
+        correct = torch.randn(2, N_CELL_TYPES, 64)
+
+        with pytest.raises(ValueError):
+            layer(wrong_pb, correct, correct)
+
+    def test_all_three_branches_contribute_to_output(self):
+        """Changing any single branch input should change the output."""
+        from src.models.fusion.fusion_layer import FusionLayer
+        from src.data.constants import N_CELL_TYPES
+
+        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
+
+        pb = torch.randn(2, N_CELL_TYPES, 64)
+        hgt = torch.randn(2, N_CELL_TYPES, 64)
+        cell = torch.randn(2, N_CELL_TYPES, 64)
+
+        layer.eval()
+        base = layer(pb, hgt, cell)
+
+        for i, modified in enumerate([
+            (torch.randn_like(pb), hgt, cell),
+            (pb, torch.randn_like(hgt), cell),
+            (pb, hgt, torch.randn_like(cell)),
+        ]):
+            alt = layer(*modified)
+            assert not torch.allclose(base, alt, atol=1e-6), f"Branch {i} doesn't affect output"
+
 
 class TestValidation:
     """Tests for input validation."""

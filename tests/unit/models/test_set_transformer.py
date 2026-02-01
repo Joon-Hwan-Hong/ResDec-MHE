@@ -626,6 +626,24 @@ class TestNumericalStability:
         grad_norm = x.grad.norm()
         assert grad_norm < 100, f"Gradient norm too large: {grad_norm}"
 
+    def test_mixed_batch_gradient_flow(self):
+        """Gradients should flow for mixed empty/valid batches."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+        enc = SetTransformerEncoder(d_input=50, d_model=32, n_heads=2, n_isab_layers=1, n_inducing=8)
+        x = torch.randn(4, 10, 50, requires_grad=True)
+        mask = torch.ones(4, 10, dtype=torch.bool)
+        mask[0, :] = False  # First sample fully masked
+        mask[2, :] = False  # Third sample fully masked
+        out, _ = enc(x, mask)
+        loss = out.sum()
+        loss.backward()
+        # Encoder parameters should receive gradients from valid samples
+        has_param_grad = any(
+            p.grad is not None and p.grad.abs().sum() > 0
+            for p in enc.parameters()
+        )
+        assert has_param_grad, "No encoder parameters received gradients"
+
 
 # =============================================================================
 # 8. DETERMINISM TESTS
