@@ -8,10 +8,9 @@ ResilienceMetrics computes prediction quality and uncertainty calibration:
 - Calibration error: Whether predicted σ matches actual errors
 """
 
-from typing import Optional
-
 import numpy as np
 import torch
+from scipy.special import erf as scipy_erf
 from scipy.stats import pearsonr, spearmanr
 
 
@@ -26,8 +25,8 @@ class ResilienceMetrics:
     def compute(
         self,
         mean: torch.Tensor,
-        std: Optional[torch.Tensor] = None,
-        target: torch.Tensor = None,
+        std: torch.Tensor | None = None,
+        target: torch.Tensor | None = None,
     ) -> dict[str, float]:
         """
         Compute all metrics.
@@ -75,11 +74,39 @@ class ResilienceMetrics:
             result["calibration_error"] = float(
                 self._calibration_error(mean_np, std_np, target_np)
             )
+            result["crps"] = float(self._crps(mean_np, std_np, target_np))
         else:
             result["mean_std"] = float('nan')
             result["calibration_error"] = float('nan')
+            result["crps"] = float('nan')
 
         return result
+
+    @staticmethod
+    def _crps(
+        mean: np.ndarray,
+        std: np.ndarray,
+        target: np.ndarray,
+    ) -> float:
+        """
+        Compute mean CRPS for Gaussian predictions (numpy version).
+
+        CRPS(N(μ,σ), y) = σ * [z*(2Φ(z) - 1) + 2φ(z) - 1/√π]
+        where z = (y - μ) / σ
+
+        Args:
+            mean: [N] predicted values
+            std: [N] predicted standard deviations
+            target: [N] ground truth values
+
+        Returns:
+            Mean CRPS across all samples
+        """
+        z = (target - mean) / (std + 1e-10)
+        cdf_z = 0.5 * (1.0 + scipy_erf(z / np.sqrt(2.0)))
+        pdf_z = np.exp(-0.5 * z ** 2) / np.sqrt(2.0 * np.pi)
+        crps = std * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z - 1.0 / np.sqrt(np.pi))
+        return float(np.mean(crps))
 
     @staticmethod
     def _calibration_error(

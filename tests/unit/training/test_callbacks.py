@@ -215,6 +215,72 @@ class TestGradientNormLogger:
         assert callback.get_severity(1.0) == "normal"
 
 
+class TestResilienceModelCheckpoint:
+    """Tests for ResilienceModelCheckpoint callback."""
+
+    def _make_checkpoint_context(self):
+        """Create mock trainer, module, and checkpoint dict."""
+        from src.training.callbacks import ResilienceModelCheckpoint
+        from omegaconf import OmegaConf
+
+        callback = ResilienceModelCheckpoint()
+        trainer = MagicMock()
+        pl_module = MagicMock()
+        pl_module.config = OmegaConf.create({
+            "model": {
+                "n_genes": 50,
+                "d_embed": 32,
+                "head": {"type": "bayesian"},
+            },
+            "training": {"max_epochs": 10},
+        })
+        checkpoint = {}
+        return callback, trainer, pl_module, checkpoint
+
+    def test_adds_checkpoint_version(self):
+        """Checkpoint contains checkpoint_version string."""
+        callback, trainer, pl_module, checkpoint = self._make_checkpoint_context()
+        callback.on_save_checkpoint(trainer, pl_module, checkpoint)
+        assert "checkpoint_version" in checkpoint
+        assert isinstance(checkpoint["checkpoint_version"], str)
+
+    def test_adds_experiment_hash(self):
+        """Checkpoint contains experiment_hash (SHA-256 hex string)."""
+        callback, trainer, pl_module, checkpoint = self._make_checkpoint_context()
+        callback.on_save_checkpoint(trainer, pl_module, checkpoint)
+        assert "experiment_hash" in checkpoint
+        assert isinstance(checkpoint["experiment_hash"], str)
+        assert len(checkpoint["experiment_hash"]) == 64  # SHA-256 hex length
+
+    def test_adds_timestamp_iso_parseable(self):
+        """Checkpoint contains ISO 8601 parseable timestamp."""
+        from datetime import datetime
+        callback, trainer, pl_module, checkpoint = self._make_checkpoint_context()
+        callback.on_save_checkpoint(trainer, pl_module, checkpoint)
+        assert "timestamp" in checkpoint
+        # Should be parseable as ISO 8601
+        parsed = datetime.fromisoformat(checkpoint["timestamp"])
+        assert parsed is not None
+
+    def test_adds_rng_states(self):
+        """Checkpoint contains RNG states for python, numpy, torch."""
+        callback, trainer, pl_module, checkpoint = self._make_checkpoint_context()
+        callback.on_save_checkpoint(trainer, pl_module, checkpoint)
+        assert "rng_states" in checkpoint
+        rng = checkpoint["rng_states"]
+        assert "python" in rng
+        assert "numpy" in rng
+        assert "torch" in rng
+
+    def test_adds_model_config(self):
+        """Checkpoint contains model_config dict."""
+        callback, trainer, pl_module, checkpoint = self._make_checkpoint_context()
+        callback.on_save_checkpoint(trainer, pl_module, checkpoint)
+        assert "model_config" in checkpoint
+        assert isinstance(checkpoint["model_config"], dict)
+        assert checkpoint["model_config"]["n_genes"] == 50
+
+
 class TestEarlyStopping:
     """Tests for early stopping configuration."""
 

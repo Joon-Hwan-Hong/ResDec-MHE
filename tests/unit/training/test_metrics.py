@@ -37,7 +37,7 @@ class TestResilienceMetrics:
         std = torch.rand(16, 1) + 0.1
         target = torch.randn(16, 1)
         result = metrics.compute(mean, std, target)
-        expected_keys = {"r2", "rmse", "mae", "pearson_r", "spearman_rho", "mean_std", "calibration_error"}
+        expected_keys = {"r2", "rmse", "mae", "pearson_r", "spearman_rho", "mean_std", "calibration_error", "crps"}
         assert set(result.keys()) == expected_keys
 
     def test_compute_without_std(self):
@@ -178,3 +178,28 @@ class TestResilienceMetrics:
         )
         for key, val in result.items():
             assert isinstance(val, float), f"{key} is {type(val)}, expected float"
+
+
+class TestCRPSMetric:
+    """Tests for CRPS metric in ResilienceMetrics."""
+
+    def test_crps_present_when_std_provided(self):
+        """CRPS is present and finite when std is provided."""
+        from src.training.metrics import ResilienceMetrics
+        metrics = ResilienceMetrics()
+        mean = torch.randn(16, 1)
+        std = torch.rand(16, 1) + 0.1
+        target = torch.randn(16, 1)
+        result = metrics.compute(mean, std, target)
+        assert "crps" in result
+        assert np.isfinite(result["crps"])
+
+    def test_crps_nan_when_std_not_provided(self):
+        """CRPS is NaN when std is not provided."""
+        from src.training.metrics import ResilienceMetrics
+        metrics = ResilienceMetrics()
+        mean = torch.randn(16, 1)
+        target = torch.randn(16, 1)
+        result = metrics.compute(mean, target=target)
+        assert "crps" in result
+        assert np.isnan(result["crps"])

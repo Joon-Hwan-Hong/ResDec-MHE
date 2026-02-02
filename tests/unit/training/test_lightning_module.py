@@ -238,6 +238,69 @@ class TestValidationStep:
         assert "val_loss" in logged
 
 
+class TestTestStep:
+    """Tests for test_step."""
+
+    def test_test_step_runs(self, base_config):
+        """test_step runs without error."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        module.eval()
+        batch = _make_batch(n_genes=50)
+        # Should not raise
+        module.test_step(batch, batch_idx=0)
+
+    def test_test_step_logs_with_test_prefix(self, base_config):
+        """test_step logs metrics with test_ prefix."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        module.eval()
+
+        logged = {}
+        module.log = lambda name, value, **kwargs: logged.__setitem__(name, value)
+
+        batch = _make_batch(n_genes=50)
+        module.test_step(batch, batch_idx=0)
+
+        assert "test_loss" in logged
+        test_metric_keys = [k for k in logged if k.startswith("test_") and k != "test_loss"]
+        assert len(test_metric_keys) > 0
+
+
+class TestPredictStep:
+    """Tests for predict_step."""
+
+    def test_predict_step_returns_dict(self, base_config):
+        """predict_step returns a dict with 'mean' key."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        module.eval()
+        batch = _make_batch(n_genes=50)
+        result = module.predict_step(batch, batch_idx=0)
+        assert isinstance(result, dict)
+        assert "mean" in result
+
+    def test_predict_step_bayesian_includes_std(self, bayesian_config):
+        """Bayesian head predict_step includes 'std' in result."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        module.eval()
+        batch = _make_batch(n_genes=50)
+        result = module.predict_step(batch, batch_idx=0)
+        assert "std" in result
+
+    def test_predict_step_includes_attention_if_present(self, base_config):
+        """predict_step includes attention weights if model provides them."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        module.eval()
+        batch = _make_batch(n_genes=50)
+        result = module.predict_step(batch, batch_idx=0)
+        # The model returns attention weights, so they should be in the result
+        if "attention" in result:
+            assert result["attention"] is not None
+
+
 class TestLossBranching:
     """Tests for loss function branching based on head type."""
 

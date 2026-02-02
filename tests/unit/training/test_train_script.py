@@ -196,6 +196,15 @@ class TestSetupCallbacks:
         loggers = [c for c in callbacks if isinstance(c, GradientNormLogger)]
         assert len(loggers) == 1
 
+    def test_setup_callbacks_includes_resilience_checkpoint(self, train_config):
+        """Callbacks include ResilienceModelCheckpoint."""
+        from scripts.train import setup_callbacks
+        from src.training.callbacks import ResilienceModelCheckpoint
+
+        callbacks = setup_callbacks(train_config)
+        ckpts = [c for c in callbacks if isinstance(c, ResilienceModelCheckpoint)]
+        assert len(ckpts) == 1
+
     def test_setup_callbacks_includes_lr_monitor(self, train_config):
         """Callbacks include LearningRateMonitor."""
         from scripts.train import setup_callbacks
@@ -242,6 +251,18 @@ class TestSetupTrainer:
 
         trainer = setup_trainer(train_config)
         assert trainer.gradient_clip_val == 1.0
+
+    def test_setup_trainer_benchmark_false(self, train_config, tmp_path):
+        """Trainer sets torch.backends.cudnn.benchmark=False for reproducibility."""
+        from scripts.train import setup_trainer
+
+        train_config.paths.output_dir = str(tmp_path)
+        train_config.paths.logs_dir = str(tmp_path / "logs")
+        train_config.paths.checkpoint_dir = str(tmp_path / "checkpoints")
+        train_config.reproducibility = {"seed": 42, "deterministic": True, "benchmark": False}
+
+        setup_trainer(train_config)
+        assert torch.backends.cudnn.benchmark is False
 
     def test_setup_trainer_has_callbacks(self, train_config, tmp_path):
         """Trainer has callbacks configured."""

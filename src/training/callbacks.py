@@ -12,9 +12,13 @@ GradientNormLogger: Monitors per-branch gradient norms to detect training
 
 import logging
 import math
+from datetime import datetime, timezone
 
 import torch
 import lightning.pytorch as pl
+from omegaconf import OmegaConf
+
+from src.utils.hashing import hash_config
 
 logger = logging.getLogger(__name__)
 
@@ -241,3 +245,56 @@ class GradientNormLogger(pl.Callback):
             f"critical_threshold={self.critical_threshold}, "
             f"log_every_n_steps={self.log_every_n_steps})"
         )
+
+
+CHECKPOINT_VERSION = "1.0"
+
+
+class ResilienceModelCheckpoint(pl.Callback):
+    """
+    Add custom metadata to Lightning checkpoints for reproducibility.
+
+    Metadata added to every checkpoint:
+    - checkpoint_version: Schema version for future compatibility
+    - experiment_hash: SHA-256 of model config for experiment tracking
+    - timestamp: ISO 8601 UTC timestamp of checkpoint creation
+    - rng_states: Python, NumPy, PyTorch (and CUDA) RNG states
+    - model_config: Full model configuration dict
+    """
+
+    def on_save_checkpoint(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        checkpoint: dict,
+    ) -> None:
+        """Add custom metadata to checkpoint dict."""
+        import random
+        import numpy as np
+
+        config = pl_module.config
+
+        # Convert OmegaConf to plain dict if needed
+        if OmegaConf.is_config(config):
+            config_dict = OmegaConf.to_container(config, resolve=True)
+        else:
+            config_dict = dict(config) if not isinstance(config, dict) else config
+
+        # Experiment hash from model config (uses same hashing as ExperimentManager)
+        model_config = config_dict.get("model", config_dict)
+        experiment_hash = hash_config(model_config)
+
+        # RNG states
+        rng_states = {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch": torch.random.get_rng_state(),
+        }
+        if torch.cuda.is_available():
+            rng_states["cuda"] = torch.cuda.get_rng_state_all()
+
+        checkpoint["checkpoint_version"] = CHECKPOINT_VERSION
+        checkpoint["experiment_hash"] = experiment_hash
+        checkpoint["timestamp"] = datetime.now(timezone.utc).isoformat()
+        checkpoint["rng_states"] = rng_states
+        checkpoint["model_config"] = model_config

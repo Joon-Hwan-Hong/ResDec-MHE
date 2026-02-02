@@ -220,6 +220,33 @@ class TestSampleHyperparameters:
         assert 2 <= params["n_hgt_layers"] <= 4
 
 
+class TestObjectiveFunction:
+    """Tests for objective function signature and GPU support."""
+
+    def test_objective_accepts_gpu_id(self, optuna_config):
+        """objective() accepts gpu_id parameter."""
+        import inspect
+        from scripts.optuna_optimize import objective
+        sig = inspect.signature(objective)
+        assert "gpu_id" in sig.parameters
+
+    def test_objective_accepts_data_params(self, optuna_config):
+        """objective() accepts adata, metadata, and splits parameters."""
+        import inspect
+        from scripts.optuna_optimize import objective
+        sig = inspect.signature(objective)
+        assert "adata" in sig.parameters
+        assert "metadata" in sig.parameters
+        assert "splits" in sig.parameters
+
+    def test_create_study_accepts_storage(self, optuna_config):
+        """create_study() accepts optional storage parameter."""
+        import inspect
+        from scripts.optuna_optimize import create_study
+        sig = inspect.signature(create_study)
+        assert "storage" in sig.parameters
+
+
 class TestBuildTrialConfig:
     """Tests for overriding base config with trial parameters."""
 

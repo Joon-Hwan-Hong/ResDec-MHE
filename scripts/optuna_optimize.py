@@ -9,7 +9,7 @@ Usage:
     optuna-dashboard sqlite:///outputs/optuna.db
 
 Workflow:
-1. Create Optuna study with TPE sampler + Hyperband pruner
+1. Create Optuna study with TPE sampler + MedianPruner
 2. For each trial:
    a. Sample hyperparameters from search space
    b. Build trial config (override base config with sampled params)
@@ -20,7 +20,6 @@ Workflow:
 
 import argparse
 import logging
-from copy import deepcopy
 from pathlib import Path
 
 import optuna
@@ -29,15 +28,17 @@ from omegaconf import DictConfig, OmegaConf
 logger = logging.getLogger(__name__)
 
 
-def create_study(config: DictConfig) -> optuna.Study:
+def create_study(config: DictConfig, storage: str | None = None) -> optuna.Study:
     """
     Create Optuna study with configured sampler and pruner.
 
-    Uses TPE sampler (Tree-structured Parzen Estimator) and Hyperband pruner
-    for efficient search with early termination of unpromising trials.
+    Uses TPE sampler (Tree-structured Parzen Estimator) and configured pruner
+    (MedianPruner or HyperbandPruner) for efficient search with early
+    termination of unpromising trials.
 
     Args:
         config: Full experiment config with optuna section
+        storage: Optional Optuna storage URL (e.g., sqlite:///outputs/optuna.db)
 
     Returns:
         Configured Optuna Study (direction=minimize)
@@ -63,7 +64,8 @@ def create_study(config: DictConfig) -> optuna.Study:
     elif pruner_cfg.type == "median":
         pruner = optuna.pruners.MedianPruner(
             n_startup_trials=pruner_cfg.get("n_startup_trials", 5),
-            n_warmup_steps=pruner_cfg.get("n_warmup_steps", 10),
+            n_warmup_steps=pruner_cfg.get("n_warmup_steps", 25),
+            interval_steps=pruner_cfg.get("interval_steps", 5),
         )
     else:
         raise ValueError(f"Unknown pruner type: {pruner_cfg.type}")
@@ -73,6 +75,8 @@ def create_study(config: DictConfig) -> optuna.Study:
         direction="minimize",
         sampler=sampler,
         pruner=pruner,
+        storage=storage,
+        load_if_exists=True,
     )
 
     return study
@@ -180,6 +184,10 @@ def build_trial_config(
 def objective(
     trial: optuna.Trial,
     base_config: DictConfig,
+    gpu_id: int | None = None,
+    adata=None,
+    metadata=None,
+    splits: dict | None = None,
 ) -> float:
     """
     Optuna objective function: train model and return mean val_loss across folds.
@@ -193,6 +201,10 @@ def objective(
     Args:
         trial: Optuna trial object
         base_config: Base experiment config
+        gpu_id: Optional GPU device index for training
+        adata: Pre-loaded AnnData object (optional, for data loading)
+        metadata: Pre-loaded metadata DataFrame (optional, for data loading)
+        splits: Pre-computed splits dict (optional, for data loading)
 
     Returns:
         Mean validation loss across CV folds (lower is better)
@@ -213,6 +225,14 @@ def objective(
     n_folds = config.data.splits.get("n_folds", 5)
     fold_val_losses = []
 
+    # GPU configuration
+    if gpu_id is not None:
+        accelerator = "gpu"
+        devices = [gpu_id]
+    else:
+        accelerator = "auto"
+        devices = "auto"
+
     for fold_idx in range(n_folds):
         # Build model
         module = CognitiveResilienceLightningModule(config)
@@ -228,25 +248,84 @@ def objective(
         # Trainer for this fold
         trainer = pl.Trainer(
             max_epochs=config.training.max_epochs,
-            accelerator="auto",
+            min_epochs=config.training.early_stopping.get("min_epochs", 1),
+            accelerator=accelerator,
+            devices=devices,
             precision=config.training.get("precision", "32"),
             gradient_clip_val=config.training.get("gradient_clip_val", None),
             callbacks=callbacks,
             enable_progress_bar=False,
             enable_model_summary=False,
             logger=False,
-            deterministic=True,
+            deterministic=config.get("reproducibility", {}).get("deterministic", True),
+            benchmark=config.get("reproducibility", {}).get("benchmark", False),
         )
 
-        # Note: In production, load data and create fold-specific dataloaders here.
-        # trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        # Data loading for this fold
+        if splits is None or adata is None or metadata is None:
+            logger.warning(
+                "Data not provided to objective() — returning inf. "
+                "Pass --splits-path to enable real training."
+            )
+            return float("inf")
 
-        # For now, return the trial's best val_loss from the trainer
-        # In production: fold_val_losses.append(trainer.callback_metrics["val_loss"].item())
+        if splits is not None and adata is not None and metadata is not None:
+            from src.data.splits import get_fold_subjects
+            from src.data.datasets import CognitiveResilienceDataset
+            from src.data.collate import create_dataloader
+
+            train_subjects = get_fold_subjects(splits, fold_idx=fold_idx, split_type="train")
+            val_subjects = get_fold_subjects(splits, fold_idx=fold_idx, split_type="val")
+
+            data_cfg = config.data
+            train_ds = CognitiveResilienceDataset(
+                adata, metadata, train_subjects,
+                cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
+                subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
+                target_column=data_cfg.get("target_column", "cogn_global"),
+                pathology_columns=list(data_cfg.get("pathology_columns", [])),
+                max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
+                min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
+            )
+            val_ds = CognitiveResilienceDataset(
+                adata, metadata, val_subjects,
+                cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
+                subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
+                target_column=data_cfg.get("target_column", "cogn_global"),
+                pathology_columns=list(data_cfg.get("pathology_columns", [])),
+                max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
+                min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
+            )
+
+            dl_cfg = data_cfg.dataloader
+            train_loader = create_dataloader(
+                train_ds, batch_size=dl_cfg.batch_size, shuffle=True,
+                num_workers=dl_cfg.get("num_workers", 4),
+                pin_memory=dl_cfg.get("pin_memory", True),
+                multiregion=True, use_hgt_format=True,
+            )
+            val_loader = create_dataloader(
+                val_ds, batch_size=dl_cfg.batch_size, shuffle=False,
+                num_workers=dl_cfg.get("num_workers", 4),
+                pin_memory=dl_cfg.get("pin_memory", True),
+                multiregion=True, use_hgt_format=True,
+            )
+
+            trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+            val_loss = trainer.callback_metrics.get("val_loss")
+            if val_loss is not None:
+                fold_val_losses.append(val_loss.item())
+
+            # Report intermediate value for pruning
+            trial.report(fold_val_losses[-1] if fold_val_losses else float("inf"), fold_idx)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
 
     # Return mean val_loss across folds
-    # In production: return sum(fold_val_losses) / len(fold_val_losses)
-    return float("inf")  # Placeholder until data loading is connected
+    if fold_val_losses:
+        return sum(fold_val_losses) / len(fold_val_losses)
+    return float("inf")  # Placeholder when data not provided
 
 
 def main() -> None:
@@ -279,6 +358,18 @@ def main() -> None:
         help="Optuna storage URL (e.g., sqlite:///outputs/optuna.db)",
     )
     parser.add_argument(
+        "--gpu",
+        type=int,
+        default=None,
+        help="GPU device index for training (e.g., 0, 1)",
+    )
+    parser.add_argument(
+        "--splits-path",
+        type=str,
+        default=None,
+        help="Path to pre-computed splits JSON file",
+    )
+    parser.add_argument(
         "overrides",
         nargs="*",
         help="Config overrides in dotlist format",
@@ -295,27 +386,25 @@ def main() -> None:
     n_trials = args.n_trials or optuna_cfg.get("n_trials", 100)
     timeout = args.timeout or optuna_cfg.get("timeout", None)
 
-    # Create study
-    if args.storage:
-        # With persistent storage
-        study = optuna.create_study(
-            study_name=config.experiment.get("name", "cognitive_resilience"),
-            storage=args.storage,
-            direction="minimize",
-            sampler=optuna.samplers.TPESampler(
-                seed=optuna_cfg.sampler.get("seed", 42),
-                n_startup_trials=optuna_cfg.sampler.get("n_startup_trials", 10),
-                multivariate=True,
-            ),
-            pruner=optuna.pruners.HyperbandPruner(
-                min_resource=optuna_cfg.pruner.get("min_resource", 5),
-                max_resource=optuna_cfg.pruner.get("max_resource", 100),
-                reduction_factor=optuna_cfg.pruner.get("reduction_factor", 3),
-            ),
-            load_if_exists=True,
-        )
-    else:
-        study = create_study(config)
+    # Load data once (if splits path provided)
+    adata = None
+    metadata = None
+    splits = None
+    if args.splits_path:
+        from src.data.splits import load_splits
+        splits = load_splits(args.splits_path)
+        logger.info("Loaded splits from %s", args.splits_path)
+
+        # Load adata and metadata
+        import scanpy as sc
+        import pandas as pd
+        adata = sc.read_h5ad(config.data.adata_path)
+        metadata_path = Path(config.data.metadata_path)
+        metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
+        logger.info("Loaded adata (%d cells) and metadata", adata.n_obs)
+
+    # Create study (always use create_study to respect config pruner type)
+    study = create_study(config, storage=args.storage)
 
     logger.info(
         "Starting optimization: n_trials=%d, timeout=%s",
@@ -323,8 +412,12 @@ def main() -> None:
         timeout,
     )
 
+    gpu_id = args.gpu
     study.optimize(
-        lambda trial: objective(trial, config),
+        lambda trial: objective(
+            trial, config, gpu_id=gpu_id,
+            adata=adata, metadata=metadata, splits=splits,
+        ),
         n_trials=n_trials,
         timeout=timeout,
     )

@@ -135,6 +135,36 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             if not (isinstance(value, float) and value != value):  # skip NaN
                 self.log(f"val_{name}", value, sync_dist=True)
 
+    def test_step(self, batch: dict, batch_idx: int) -> None:
+        """Test step: forward pass + loss + metrics (same as validation, test_ prefix)."""
+        output = self._forward_batch(batch)
+        loss = self._compute_loss(output, batch["cognition"])
+        self.log("test_loss", loss, prog_bar=True, sync_dist=True)
+
+        # Compute and log metrics
+        std = output.get("std")
+        metrics = self.metrics.compute(output["mean"], std, batch["cognition"])
+        for name, value in metrics.items():
+            if not (isinstance(value, float) and value != value):  # skip NaN
+                self.log(f"test_{name}", value, sync_dist=True)
+
+    def predict_step(self, batch: dict, batch_idx: int) -> dict[str, Any]:
+        """Predict step: forward pass returning predictions dict.
+
+        Returns:
+            Dict with keys:
+            - mean: [B, 1] predicted values
+            - std: [B, 1] predicted uncertainty (if Bayesian head)
+            - attention: attention weights dict (if present in model output)
+        """
+        output = self._forward_batch(batch)
+        result = {"mean": output["mean"]}
+        if "std" in output and output["std"] is not None:
+            result["std"] = output["std"]
+        if "attention" in output and output["attention"] is not None:
+            result["attention"] = output["attention"]
+        return result
+
     def configure_optimizers(self) -> dict[str, Any]:
         """Configure optimizer and learning rate scheduler."""
         train_cfg = self.config.training

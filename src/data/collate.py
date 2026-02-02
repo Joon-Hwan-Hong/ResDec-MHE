@@ -22,6 +22,7 @@ import re
 import warnings
 from typing import Any
 
+import numpy as np
 import torch
 from torch_geometric.data import Batch, Data, HeteroData
 
@@ -555,6 +556,37 @@ def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _worker_init_fn(worker_id: int) -> None:
+    """
+    Re-seed each DataLoader worker for reproducible cell sampling.
+
+    When num_workers > 0, each worker process gets a copy of the dataset.
+    Without re-seeding, all workers share the same CellSampler RNG state,
+    producing identical samples. This function seeds each worker's
+    CellSampler.rng with (base_seed + worker_id) so each worker produces
+    unique but reproducible samples.
+
+    Also seeds numpy and stdlib random for any other stochastic operations
+    in the data pipeline.
+
+    Args:
+        worker_id: Worker process index (0 to num_workers-1)
+    """
+    import random
+
+    # Use PyTorch's built-in worker seed (set from the global seed + worker_id)
+    worker_seed = torch.utils.data.get_worker_info().seed % (2**32)
+
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+    # Re-seed CellSampler's RNG if the dataset has one
+    worker_info = torch.utils.data.get_worker_info()
+    dataset = worker_info.dataset
+    if hasattr(dataset, "cell_sampler") and hasattr(dataset.cell_sampler, "rng"):
+        dataset.cell_sampler.rng = np.random.default_rng(worker_seed)
+
+
 def create_dataloader(
     dataset,
     batch_size: int = 16,
@@ -574,20 +606,11 @@ def create_dataloader(
         creation via LightningDataModule, which properly sets up
         DistributedSampler for DDP training.
 
-    Note on Worker Reproducibility:
-        When using num_workers > 0, cell sampling may not be fully reproducible
-        across runs because each worker gets a copy of CellSampler with the same
-        seed. For exact reproducibility with multi-worker loading, a worker_init_fn
-        would need to re-seed CellSampler per worker. This is not currently
-        implemented because:
-        - With small datasets (~400 subjects), num_workers=0 is usually sufficient
-        - Training is typically GPU-bound, not I/O-bound
-        - Statistical similarity across runs is acceptable for most use cases
-
-        To implement if needed later:
-        1. Add worker_init_fn parameter
-        2. Re-seed dataset.sampler.rng with (base_seed + worker_id) per worker
-        3. Wire through to DataLoader
+    Worker Reproducibility:
+        Uses _worker_init_fn to re-seed each worker's CellSampler RNG
+        with a unique seed derived from (global_seed + worker_id). This
+        ensures each worker produces unique but reproducible cell samples
+        across runs.
 
     Args:
         dataset: CognitiveResilienceDataset or PrecomputedDataset
@@ -622,6 +645,7 @@ def create_dataloader(
         drop_last=drop_last,
         collate_fn=collate,
         persistent_workers=num_workers > 0,
+        worker_init_fn=_worker_init_fn if num_workers > 0 else None,
     )
 
 

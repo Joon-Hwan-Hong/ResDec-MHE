@@ -32,7 +32,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig, OmegaConf
 
-from src.training.callbacks import GradientNormLogger, TemperatureAnnealing
+from src.training.callbacks import GradientNormLogger, ResilienceModelCheckpoint, TemperatureAnnealing
 from src.training.lightning_module import CognitiveResilienceLightningModule
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,7 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
     - LearningRateMonitor: log LR to TensorBoard
     - TemperatureAnnealing: anneal gene gate temperature
     - GradientNormLogger: monitor per-branch gradient health
+    - ResilienceModelCheckpoint: save custom metadata (version, hash, RNG states)
 
     Args:
         config: Full experiment config
@@ -151,6 +152,9 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
         )
     )
 
+    # ResilienceModelCheckpoint (custom metadata)
+    callbacks.append(ResilienceModelCheckpoint())
+
     return callbacks
 
 
@@ -188,6 +192,9 @@ def setup_trainer(
     else:
         accelerator = "cpu"
 
+    # Read reproducibility settings from config
+    repro_cfg = config.get("reproducibility", {})
+
     trainer = pl.Trainer(
         max_epochs=train_cfg.max_epochs,
         min_epochs=train_cfg.early_stopping.get("min_epochs", 1),
@@ -198,7 +205,8 @@ def setup_trainer(
         logger=tb_logger,
         log_every_n_steps=train_cfg.get("logging", {}).get("log_every_n_steps", 10),
         val_check_interval=train_cfg.get("logging", {}).get("val_check_interval", 1.0),
-        deterministic=True,
+        deterministic=repro_cfg.get("deterministic", True),
+        benchmark=repro_cfg.get("benchmark", False),
         enable_progress_bar=True,
     )
 
@@ -219,6 +227,18 @@ def main() -> None:
         type=int,
         default=0,
         help="Cross-validation fold index (0-indexed)",
+    )
+    parser.add_argument(
+        "--splits-path",
+        type=str,
+        default=None,
+        help="Path to pre-computed splits JSON file",
+    )
+    parser.add_argument(
+        "--precomputed-dir",
+        type=str,
+        default=None,
+        help="Path to precomputed feature directory (skip on-the-fly preprocessing)",
     )
     parser.add_argument(
         "overrides",
@@ -250,28 +270,108 @@ def main() -> None:
     trainer = setup_trainer(config)
     logger.info("Trainer configured: max_epochs=%d", trainer.max_epochs)
 
-    # Note: Data loading is deferred until actual data is available.
-    # For full training, load adata + metadata, create splits, build dataloaders,
-    # then call trainer.fit(module, train_dataloaders=..., val_dataloaders=...)
-    #
-    # Example:
-    #   from src.data.splits import create_stratified_splits, get_fold_subjects
-    #   from src.data.datasets import CognitiveResilienceDataset
-    #   from src.data.collate import create_dataloader
-    #
-    #   splits = create_stratified_splits(metadata, ...)
-    #   train_subjects = get_fold_subjects(splits, fold_idx=args.fold, split_type="train")
-    #   val_subjects = get_fold_subjects(splits, fold_idx=args.fold, split_type="val")
-    #
-    #   train_ds = CognitiveResilienceDataset(adata, metadata, train_subjects, ...)
-    #   val_ds = CognitiveResilienceDataset(adata, metadata, val_subjects, ...)
-    #
-    #   train_loader = create_dataloader(train_ds, batch_size=..., shuffle=True, ...)
-    #   val_loader = create_dataloader(val_ds, batch_size=..., shuffle=False, ...)
-    #
-    #   trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    # Data loading
+    from src.data.splits import create_stratified_splits, get_fold_subjects, load_splits
+    from src.data.datasets import CognitiveResilienceDataset, PrecomputedDataset
+    from src.data.collate import create_dataloader
 
-    logger.info("Training script ready. Provide data loaders to begin training.")
+    data_cfg = config.data
+    dl_cfg = data_cfg.dataloader
+
+    adata = None
+    metadata = None
+
+    # Load or create splits
+    if args.splits_path:
+        splits = load_splits(args.splits_path)
+        logger.info("Loaded splits from %s", args.splits_path)
+    else:
+        import scanpy as sc
+        import pandas as pd
+        adata = sc.read_h5ad(data_cfg.adata_path)
+        metadata_path = Path(data_cfg.metadata_path)
+        metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
+        splits = create_stratified_splits(
+            metadata,
+            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
+            pathology_column=data_cfg.splits.stratify_by[0] if data_cfg.splits.get("stratify_by") else "gpath",
+            cognition_column=data_cfg.get("target_column", "cogn_global"),
+            test_frac=data_cfg.splits.test_frac,
+            n_folds=data_cfg.splits.n_folds,
+            random_state=seed,
+        )
+        logger.info("Created stratified splits: %d folds", data_cfg.splits.n_folds)
+
+    # Get fold subjects
+    train_subjects = get_fold_subjects(splits, fold_idx=args.fold, split_type="train")
+    val_subjects = get_fold_subjects(splits, fold_idx=args.fold, split_type="val")
+    logger.info("Fold %d: %d train, %d val subjects", args.fold, len(train_subjects), len(val_subjects))
+
+    # Ensure metadata is loaded (needed for both dataset types)
+    if metadata is None:
+        import pandas as pd
+        metadata_path = Path(data_cfg.metadata_path)
+        metadata = pd.read_csv(metadata_path / "metadata.csv")
+
+    # Create datasets
+    if args.precomputed_dir:
+        train_ds = PrecomputedDataset(
+            feature_dir=args.precomputed_dir,
+            subject_ids=train_subjects,
+            metadata=metadata,
+            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
+            target_column=data_cfg.get("target_column", "cogn_global"),
+            pathology_columns=list(data_cfg.get("pathology_columns", [])),
+        )
+        val_ds = PrecomputedDataset(
+            feature_dir=args.precomputed_dir,
+            subject_ids=val_subjects,
+            metadata=metadata,
+            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
+            target_column=data_cfg.get("target_column", "cogn_global"),
+            pathology_columns=list(data_cfg.get("pathology_columns", [])),
+        )
+    else:
+        if adata is None:
+            import scanpy as sc
+            adata = sc.read_h5ad(data_cfg.adata_path)
+
+        train_ds = CognitiveResilienceDataset(
+            adata, metadata, train_subjects,
+            cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
+            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
+            target_column=data_cfg.get("target_column", "cogn_global"),
+            pathology_columns=list(data_cfg.get("pathology_columns", [])),
+            max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
+            min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
+        )
+        val_ds = CognitiveResilienceDataset(
+            adata, metadata, val_subjects,
+            cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
+            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
+            target_column=data_cfg.get("target_column", "cogn_global"),
+            pathology_columns=list(data_cfg.get("pathology_columns", [])),
+            max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
+            min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
+        )
+
+    # Create dataloaders
+    train_loader = create_dataloader(
+        train_ds, batch_size=dl_cfg.batch_size, shuffle=True,
+        num_workers=dl_cfg.get("num_workers", 4),
+        pin_memory=dl_cfg.get("pin_memory", True),
+        multiregion=True, use_hgt_format=True,
+    )
+    val_loader = create_dataloader(
+        val_ds, batch_size=dl_cfg.batch_size, shuffle=False,
+        num_workers=dl_cfg.get("num_workers", 4),
+        pin_memory=dl_cfg.get("pin_memory", True),
+        multiregion=True, use_hgt_format=True,
+    )
+
+    # Train
+    trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    logger.info("Training complete.")
 
 
 if __name__ == "__main__":
