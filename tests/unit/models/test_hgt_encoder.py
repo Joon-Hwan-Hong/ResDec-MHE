@@ -14,7 +14,7 @@ Tests cover:
 import pytest
 import torch
 
-from src.data.constants import ALL_EDGE_TYPES, CELL_TYPE_ORDER
+from src.data.constants import ALL_EDGE_TYPES, CELL_TYPE_ORDER, N_CELL_TYPES
 from src.models.branches.hgt_encoder import HGTEncoder, HGTEncoderBatched
 from src.models.components.hgt_conv import HGTConvWithEdgeAttr
 
@@ -240,7 +240,7 @@ class TestBasicFunctionality:
         """Test default node types are 31 cell types."""
         encoder = HGTEncoder(**encoder_config)
         assert encoder.node_types == list(CELL_TYPE_ORDER)
-        assert encoder.n_node_types == 31
+        assert encoder.n_node_types == N_CELL_TYPES
 
     def test_default_edge_categories(self, encoder_config):
         """Test default edge categories are CellChatDB types."""
@@ -579,6 +579,154 @@ class TestBatchedEncoder:
         # but the output should exist and have the right shape
         assert output_dict[missing_type].shape[0] == 2  # batch size
 
+    def test_batched_return_attention(
+        self, batched_encoder, small_encoder_config, mini_node_types, mini_edge_categories
+    ):
+        """Test that return_attention=True returns attention weights per sample."""
+        batch_size = 3
+        d_input = small_encoder_config["d_input"]
+
+        # Create batch of graphs with edges so attention is non-trivial
+        x_dict_list = [
+            {nt: torch.randn(1, d_input) for nt in mini_node_types}
+            for _ in range(batch_size)
+        ]
+
+        edge_type = (mini_node_types[0], mini_edge_categories[0], mini_node_types[1])
+        edge_index_dict_list = [
+            {edge_type: torch.tensor([[0], [0]])}
+            for _ in range(batch_size)
+        ]
+
+        edge_attr_dict_list = [
+            {edge_type: torch.rand(1, 1)}
+            for _ in range(batch_size)
+        ]
+
+        output_dict, all_attention = batched_encoder(
+            x_dict_list, edge_index_dict_list, edge_attr_dict_list,
+            return_attention=True,
+        )
+
+        # all_attention should be a list with one entry per sample
+        assert all_attention is not None
+        assert isinstance(all_attention, list)
+        assert len(all_attention) == batch_size
+
+        # Each sample's attention should be a list of layer attention dicts
+        n_layers = small_encoder_config["n_layers"]
+        for sample_attn in all_attention:
+            assert isinstance(sample_attn, list)
+            assert len(sample_attn) == n_layers
+
+            # Each layer's attention is a dict mapping edge_type -> weights
+            for layer_attn in sample_attn:
+                assert isinstance(layer_attn, dict)
+                assert edge_type in layer_attn
+                # Attention weights shape: [n_edges, n_heads]
+                attn_weights = layer_attn[edge_type]
+                assert attn_weights.shape == (1, small_encoder_config["n_heads"])
+                # Attention values should be valid probabilities
+                assert (attn_weights >= 0).all()
+                assert (attn_weights <= 1 + 1e-5).all()
+
+    def test_batched_return_attention_default_none(
+        self, batched_encoder, small_encoder_config, mini_node_types, mini_edge_categories
+    ):
+        """Test that attention is None when return_attention is not set."""
+        batch_size = 2
+        d_input = small_encoder_config["d_input"]
+
+        x_dict_list = [
+            {nt: torch.randn(1, d_input) for nt in mini_node_types}
+            for _ in range(batch_size)
+        ]
+        edge_index_dict_list = [{} for _ in range(batch_size)]
+
+        output_dict, all_attention = batched_encoder(
+            x_dict_list, edge_index_dict_list,
+        )
+
+        assert all_attention is None
+
+
+# ============================================================================
+# Batched Proxy Property Tests (HGT-A3)
+# ============================================================================
+
+
+class TestBatchedProxyProperties:
+    """Test that HGTEncoderBatched proxy properties correctly delegate to inner encoder.
+
+    Covers HGT-A3: the 4 proxy @property decorators and the get_edge_type_index
+    method had zero test coverage.
+    """
+
+    def test_n_edge_types_delegates(
+        self, batched_encoder, mini_edge_categories
+    ):
+        """n_edge_types property should return same value as inner encoder."""
+        assert batched_encoder.n_edge_types == batched_encoder.encoder.n_edge_types
+        assert batched_encoder.n_edge_types == len(mini_edge_categories)
+
+    def test_n_node_types_delegates(
+        self, batched_encoder, mini_node_types
+    ):
+        """n_node_types property should return same value as inner encoder."""
+        assert batched_encoder.n_node_types == batched_encoder.encoder.n_node_types
+        assert batched_encoder.n_node_types == len(mini_node_types)
+
+    def test_node_types_delegates(
+        self, batched_encoder, mini_node_types
+    ):
+        """node_types property should return same list as inner encoder."""
+        result = batched_encoder.node_types
+        assert result == batched_encoder.encoder.node_types
+        assert result == mini_node_types
+        assert isinstance(result, list)
+        assert all(isinstance(nt, str) for nt in result)
+
+    def test_edge_categories_delegates(
+        self, batched_encoder, mini_edge_categories
+    ):
+        """edge_categories property should return same list as inner encoder."""
+        result = batched_encoder.edge_categories
+        assert result == batched_encoder.encoder.edge_categories
+        assert result == mini_edge_categories
+        assert isinstance(result, list)
+        assert all(isinstance(ec, str) for ec in result)
+
+    def test_get_edge_type_index_delegates(
+        self, batched_encoder, mini_edge_categories
+    ):
+        """get_edge_type_index() should return same index as inner encoder."""
+        for i, cat in enumerate(mini_edge_categories):
+            batched_result = batched_encoder.get_edge_type_index(cat)
+            inner_result = batched_encoder.encoder.get_edge_type_index(cat)
+            assert batched_result == inner_result
+            assert batched_result == i
+
+    def test_get_edge_type_index_invalid_category(self, batched_encoder):
+        """get_edge_type_index() with invalid category should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown edge category"):
+            batched_encoder.get_edge_type_index("Nonexistent_Category")
+
+    def test_proxy_properties_with_default_types(self, small_encoder_config):
+        """Proxy properties should work when using default node/edge types."""
+        batched = HGTEncoderBatched(**small_encoder_config)
+
+        # Should delegate to inner encoder which uses defaults
+        assert batched.n_node_types == batched.encoder.n_node_types
+        assert batched.n_edge_types == batched.encoder.n_edge_types
+        assert batched.node_types == batched.encoder.node_types
+        assert batched.edge_categories == batched.encoder.edge_categories
+
+        # Verify types are correct
+        assert batched.n_node_types == len(CELL_TYPE_ORDER)
+        assert batched.n_edge_types == len(ALL_EDGE_TYPES)
+        assert batched.node_types == list(CELL_TYPE_ORDER)
+        assert batched.edge_categories == ALL_EDGE_TYPES
+
 
 # ============================================================================
 # Edge Cases and Error Handling Tests
@@ -757,7 +905,7 @@ class TestFullCellTypes:
         """Test encoder works with all 31 cell types."""
         encoder = HGTEncoder(**encoder_config)
 
-        assert encoder.n_node_types == 31
+        assert encoder.n_node_types == N_CELL_TYPES
 
         # Create input with all 31 cell types
         x_dict = {
@@ -780,7 +928,7 @@ class TestFullCellTypes:
         )
 
         # All 31 cell types should have outputs
-        assert len(output_dict) == 31
+        assert len(output_dict) == N_CELL_TYPES
         for ct in CELL_TYPE_ORDER:
             assert ct in output_dict
             assert output_dict[ct].shape == (1, encoder_config["d_output"])
@@ -818,31 +966,22 @@ class TestNegativeInputs:
                 edge_categories=[],
             )
 
-    def test_edge_index_out_of_bounds_handled(
+    def test_edge_index_out_of_bounds_raises(
         self, small_encoder, mini_node_types, small_encoder_config
     ):
-        """Edge indices exceeding node count should be handled gracefully.
+        """Edge indices exceeding node count should raise IndexError.
 
-        PyTorch scatter operations with out-of-bounds indices can cause
-        silent errors or crashes. Verify behavior is defined.
+        PyTorch indexing (e.g., q[dst_idx]) with out-of-bounds indices raises
+        IndexError. This is the correct behavior — silent corruption would be worse.
         """
         x_dict = {nt: torch.randn(1, small_encoder_config["d_input"]) for nt in mini_node_types}
 
-        # Edge index points to node 5, but only 1 node exists
+        # Edge index points to node 5, but only 1 node exists per type
         edge_type = (mini_node_types[0], "Secreted_Signaling", mini_node_types[1])
         edge_index_dict = {edge_type: torch.tensor([[5], [0]])}  # src=5 out of bounds
 
-        # Should either raise or handle gracefully (not crash silently)
-        # Current implementation skips if src_type not in x_dict, but indices are within type
-        # This tests the scatter behavior with bad indices
-        try:
-            output_dict, _ = small_encoder(x_dict, edge_index_dict)
-            # If it doesn't crash, outputs should still be valid
-            for out in output_dict.values():
-                assert not torch.isnan(out).any()
-        except (IndexError, RuntimeError):
-            # Acceptable to raise an error for invalid indices
-            pass
+        with pytest.raises((IndexError, RuntimeError)):
+            small_encoder(x_dict, edge_index_dict)
 
     def test_mismatched_edge_attr_dimension(
         self, mini_node_types, mini_edge_categories
@@ -1672,3 +1811,240 @@ class TestReproducibility:
         # Gradients should be identical
         for nt in mini_node_types:
             assert torch.allclose(grads_1[nt], grads_2[nt])
+
+
+# ============================================================================
+# LayerScale Interpretability API Tests (HGT-A1, HGT-A2)
+# ============================================================================
+
+
+class TestLayerScales:
+    """Test get_layer_scales() and get_mean_layer_scales() interpretability APIs.
+
+    Covers findings HGT-A1 and HGT-A2: these public interpretability methods
+    had zero test coverage.
+    """
+
+    # --- HGT-A1: get_layer_scales() ---
+
+    def test_get_layer_scales_returns_expected_keys(self, small_encoder):
+        """get_layer_scales() should return dict with 'scales', 'cell_types', 'per_cell_type'."""
+        result = small_encoder.get_layer_scales()
+
+        assert isinstance(result, dict)
+        assert "scales" in result
+        assert "cell_types" in result
+        assert "per_cell_type" in result
+
+    def test_get_layer_scales_scales_shape(
+        self, small_encoder, mini_node_types, small_encoder_config
+    ):
+        """'scales' tensor should have shape [n_layers, n_node_types]."""
+        result = small_encoder.get_layer_scales()
+        scales = result["scales"]
+
+        n_layers = small_encoder_config["n_layers"]
+        n_node_types = len(mini_node_types)
+
+        assert isinstance(scales, torch.Tensor)
+        assert scales.shape == (n_layers, n_node_types)
+
+    def test_get_layer_scales_cell_types_matches_encoder(
+        self, small_encoder, mini_node_types
+    ):
+        """'cell_types' list should match the encoder's node_types."""
+        result = small_encoder.get_layer_scales()
+
+        assert result["cell_types"] == mini_node_types
+
+    def test_get_layer_scales_per_cell_type_structure(
+        self, small_encoder, mini_node_types, small_encoder_config
+    ):
+        """'per_cell_type' should map each cell type to a [n_layers] tensor."""
+        result = small_encoder.get_layer_scales()
+        per_cell_type = result["per_cell_type"]
+        n_layers = small_encoder_config["n_layers"]
+
+        assert isinstance(per_cell_type, dict)
+        assert set(per_cell_type.keys()) == set(mini_node_types)
+
+        for cell_type in mini_node_types:
+            tensor = per_cell_type[cell_type]
+            assert isinstance(tensor, torch.Tensor)
+            assert tensor.shape == (n_layers,)
+
+    def test_get_layer_scales_values_finite(self, small_encoder):
+        """All scale values should be finite (no NaN or Inf)."""
+        result = small_encoder.get_layer_scales()
+        scales = result["scales"]
+
+        assert torch.isfinite(scales).all(), "Scale values contain NaN or Inf"
+
+    def test_get_layer_scales_values_non_negative_at_init(self, small_encoder):
+        """At initialization (layer_scale_init=1.0), all scales should be non-negative."""
+        result = small_encoder.get_layer_scales()
+        scales = result["scales"]
+
+        assert (scales >= 0).all(), "Initial scale values should be non-negative"
+
+    def test_get_layer_scales_init_value(
+        self, small_encoder_config, mini_node_types, mini_edge_categories
+    ):
+        """Scale values should match layer_scale_init at initialization."""
+        init_val = 0.5
+        encoder = HGTEncoder(
+            **small_encoder_config,
+            node_types=mini_node_types,
+            edge_categories=mini_edge_categories,
+            layer_scale_init=init_val,
+        )
+
+        result = encoder.get_layer_scales()
+        scales = result["scales"]
+
+        expected = torch.full_like(scales, init_val)
+        assert torch.allclose(scales, expected), (
+            f"Expected all scales to be {init_val}, got {scales}"
+        )
+
+    def test_get_layer_scales_per_cell_type_consistent_with_scales(
+        self, small_encoder, mini_node_types
+    ):
+        """'per_cell_type' values should match corresponding columns of 'scales'."""
+        result = small_encoder.get_layer_scales()
+        scales = result["scales"]
+        per_cell_type = result["per_cell_type"]
+
+        for idx, cell_type in enumerate(mini_node_types):
+            expected = scales[:, idx]
+            actual = per_cell_type[cell_type]
+            assert torch.allclose(actual, expected), (
+                f"per_cell_type[{cell_type}] does not match scales[:, {idx}]"
+            )
+
+    def test_get_layer_scales_detached(self, small_encoder):
+        """Returned scales should be detached (no grad tracking)."""
+        result = small_encoder.get_layer_scales()
+        scales = result["scales"]
+
+        assert not scales.requires_grad, "Returned scales should be detached from graph"
+
+    # --- HGT-A2: get_mean_layer_scales() ---
+
+    def test_get_mean_layer_scales_returns_dict_of_floats(
+        self, small_encoder, mini_node_types
+    ):
+        """get_mean_layer_scales() should return dict mapping cell type to float."""
+        result = small_encoder.get_mean_layer_scales()
+
+        assert isinstance(result, dict)
+        assert set(result.keys()) == set(mini_node_types)
+
+        for cell_type, value in result.items():
+            assert isinstance(value, float), (
+                f"Expected float for {cell_type}, got {type(value)}"
+            )
+
+    def test_get_mean_layer_scales_values_finite(self, small_encoder):
+        """All mean scale values should be finite."""
+        result = small_encoder.get_mean_layer_scales()
+
+        for cell_type, value in result.items():
+            assert not (value != value), f"NaN mean scale for {cell_type}"  # NaN check
+            assert abs(value) != float("inf"), f"Inf mean scale for {cell_type}"
+
+    def test_get_mean_layer_scales_values_non_negative_at_init(self, small_encoder):
+        """At initialization, mean scales should be non-negative."""
+        result = small_encoder.get_mean_layer_scales()
+
+        for cell_type, value in result.items():
+            assert value >= 0, f"Negative mean scale for {cell_type}: {value}"
+
+    def test_get_mean_layer_scales_consistent_with_get_layer_scales(
+        self, small_encoder, mini_node_types
+    ):
+        """Mean scales should equal the mean across layers from get_layer_scales()."""
+        scales_info = small_encoder.get_layer_scales()
+        mean_scales = small_encoder.get_mean_layer_scales()
+
+        scales_tensor = scales_info["scales"]  # [n_layers, n_node_types]
+        expected_means = scales_tensor.mean(dim=0)  # [n_node_types]
+
+        for idx, cell_type in enumerate(mini_node_types):
+            assert abs(mean_scales[cell_type] - expected_means[idx].item()) < 1e-6, (
+                f"Mean scale mismatch for {cell_type}: "
+                f"got {mean_scales[cell_type]}, expected {expected_means[idx].item()}"
+            )
+
+    def test_get_mean_layer_scales_init_value(
+        self, small_encoder_config, mini_node_types, mini_edge_categories
+    ):
+        """At initialization, mean scales should equal layer_scale_init."""
+        init_val = 0.7
+        encoder = HGTEncoder(
+            **small_encoder_config,
+            node_types=mini_node_types,
+            edge_categories=mini_edge_categories,
+            layer_scale_init=init_val,
+        )
+
+        result = encoder.get_mean_layer_scales()
+
+        for cell_type, value in result.items():
+            assert abs(value - init_val) < 1e-6, (
+                f"Expected mean scale {init_val} for {cell_type}, got {value}"
+            )
+
+    # --- Batched encoder delegates correctly ---
+
+    def test_batched_encoder_get_layer_scales(
+        self, batched_encoder, mini_node_types, small_encoder_config
+    ):
+        """HGTEncoderBatched.get_layer_scales() should delegate to inner encoder."""
+        result = batched_encoder.get_layer_scales()
+
+        assert isinstance(result, dict)
+        assert "scales" in result
+        assert "cell_types" in result
+        assert "per_cell_type" in result
+        assert result["cell_types"] == mini_node_types
+        assert result["scales"].shape == (
+            small_encoder_config["n_layers"],
+            len(mini_node_types),
+        )
+
+    def test_batched_encoder_get_mean_layer_scales(
+        self, batched_encoder, mini_node_types
+    ):
+        """HGTEncoderBatched.get_mean_layer_scales() should delegate to inner encoder."""
+        result = batched_encoder.get_mean_layer_scales()
+
+        assert isinstance(result, dict)
+        assert set(result.keys()) == set(mini_node_types)
+        for value in result.values():
+            assert isinstance(value, float)
+
+    # --- Scales change after training step ---
+
+    def test_layer_scales_change_after_backward(
+        self, small_encoder, sample_graph_dict
+    ):
+        """LayerScale values should change after a training step."""
+        scales_before = small_encoder.get_layer_scales()["scales"].clone()
+
+        x_dict, edge_index_dict, edge_attr_dict = sample_graph_dict
+        output_dict, _ = small_encoder(x_dict, edge_index_dict, edge_attr_dict)
+        loss = sum(out.sum() for out in output_dict.values())
+        loss.backward()
+
+        # Simulate optimizer step on layer_scales
+        with torch.no_grad():
+            for param in small_encoder.layer_scales:
+                if param.grad is not None:
+                    param -= 0.01 * param.grad
+
+        scales_after = small_encoder.get_layer_scales()["scales"]
+
+        assert not torch.allclose(scales_before, scales_after), (
+            "LayerScale values should change after a training step"
+        )

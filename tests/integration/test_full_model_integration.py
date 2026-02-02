@@ -14,25 +14,7 @@ import torch
 import torch.nn as nn
 
 from src.models.full_model import CognitiveResilienceModel
-from src.data.constants import N_CELL_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
-
-def _make_edge_dicts(batch_size, n_edges=5):
-    """Create edge_index_dict_list and edge_attr_dict_list for testing."""
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(batch_size):
-        edge_index_dict = {}
-        edge_attr_dict = {}
-        for src_ct in CELL_TYPE_ORDER[:3]:
-            for dst_ct in CELL_TYPE_ORDER[:3]:
-                for et in ALL_EDGE_TYPES[:2]:
-                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                    edge_index_dict[key] = torch.zeros(2, n_edges, dtype=torch.long)
-                    edge_attr_dict[key] = torch.rand(n_edges, 1)
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
-    return edge_index_dict_list, edge_attr_dict_list
+from src.data.constants import N_CELL_TYPES, N_REGIONS
 
 
 # =============================================================================
@@ -41,7 +23,7 @@ def _make_edge_dicts(batch_size, n_edges=5):
 
 
 @pytest.fixture
-def sample_batch():
+def sample_batch(make_edge_dicts):
     """Create a sample batch for testing.
 
     Returns a dict with all required inputs for CognitiveResilienceModel.forward().
@@ -49,11 +31,11 @@ def sample_batch():
     """
     B = 2
     n_genes = 50
-    n_cell_types = 31
+    n_cell_types = N_CELL_TYPES
     max_cells = 10
-    n_regions = 6
+    n_regions = N_REGIONS
 
-    edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+    edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
@@ -68,26 +50,18 @@ def sample_batch():
 
 
 @pytest.fixture
-def model_kwargs():
+def model_kwargs(small_model_config):
     """Minimal kwargs for integration testing.
 
     Returns configuration that creates a small but complete model
-    with all required components.
+    with all required components. Based on shared small_model_config
+    with overrides for integration-specific values.
     """
     return {
-        'n_genes': 50,
-        'n_cell_types': 31,
-        'd_embed': 32,
-        'd_fused': 32,
-        'd_cond': 16,
-        'n_regions': 6,
-        'n_hgt_layers': 1,
+        **small_model_config,
         'n_hgt_heads': 2,
-        'n_isab_layers': 1,
         'n_inducing_points': 8,
         'n_attention_heads': 2,
-        'd_head_hidden': 16,
-        'dropout': 0.0,  # Disable dropout for deterministic testing
     }
 
 
@@ -144,7 +118,12 @@ class TestEndToEndForward:
         assert output['std'].shape == (B, 1)
 
     def test_single_region_subject(self, model_kwargs, sample_batch):
-        """Works with only PFC available (single region)."""
+        """Works with only PFC available (single region).
+
+        # Canonical test for single-region forward pass — see also
+        # test_data_to_full_model.py::TestSingleRegionBatchThroughModel
+        # for data-pipeline coverage.
+        """
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
         # Create mask with only first region available (PFC)
@@ -228,12 +207,12 @@ class TestEndToEndForward:
         assert 'mean' in output
         assert torch.isfinite(output['mean']).all()
 
-    def test_varying_batch_sizes(self, model_kwargs):
+    def test_varying_batch_sizes(self, model_kwargs, make_edge_dicts):
         """Forward pass handles different batch sizes correctly."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
         for batch_size in [1, 4, 8]:
-            edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(batch_size)
+            edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(batch_size)
             batch = {
                 'region_pseudobulk': torch.randn(batch_size, N_REGIONS, N_CELL_TYPES, model_kwargs['n_genes']),
                 'region_mask': torch.ones(batch_size, N_REGIONS, dtype=torch.bool),
@@ -456,7 +435,7 @@ class TestAttentionInterpretability:
         assert attention_weights.shape == expected_shape, \
             f"Expected attention shape {expected_shape}, got {attention_weights.shape}"
 
-    def test_attention_weights_vary_across_batch(self, model_kwargs):
+    def test_attention_weights_vary_across_batch(self, model_kwargs, make_edge_dicts):
         """Attention weights vary across batch items with different inputs."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
         model.eval()
@@ -464,7 +443,7 @@ class TestAttentionInterpretability:
         B = 4
         n_genes = model_kwargs['n_genes']
 
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
 
         # Create batch with deliberately different pathology per sample
         batch = {
@@ -548,7 +527,12 @@ class TestNumericalStability:
             "NaN in attention weights with small inputs"
 
     def test_sparse_cell_masks(self, model_kwargs, sample_batch):
-        """Model handles sparse cell masks without NaN."""
+        """Model handles sparse cell masks without NaN.
+
+        # Canonical test for sparse cell masks — see also
+        # test_data_to_model.py::TestEndToEndPipeline::test_pipeline_with_sparse_data
+        # for CellTransformer-only coverage.
+        """
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
         # Make cell mask very sparse (only 2 valid cells per type)
@@ -637,18 +621,8 @@ class TestDeterminism:
 class TestEdgeCases:
     """Test edge cases in the full model pipeline."""
 
-    def test_empty_ccc_graph(self, model_kwargs, sample_batch):
-        """Model handles empty CCC graph (no edges)."""
-        model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
-
-        # Empty edge dicts
-        B = sample_batch['region_pseudobulk'].size(0)
-        sample_batch['edge_index_dict_list'] = [{} for _ in range(B)]
-        sample_batch['edge_attr_dict_list'] = [{} for _ in range(B)]
-
-        output = model(**sample_batch)
-
-        assert torch.isfinite(output['mean']).all(), "NaN with empty CCC graph"
+    # Empty CCC edges: canonical test in
+    # test_data_to_full_model.py::TestEdgeCasesWithFullModel::test_empty_ccc_edges
 
     def test_all_regions_masked(self, model_kwargs, sample_batch):
         """Model behavior with only minimum regions available."""
@@ -691,14 +665,14 @@ class TestEdgeCases:
 class TestBayesianSpecific:
     """Tests specific to Bayesian model behavior."""
 
-    def test_bayesian_uncertainty_increases_with_input_variation(self, model_kwargs):
+    def test_bayesian_uncertainty_increases_with_input_variation(self, model_kwargs, make_edge_dicts):
         """Bayesian model uncertainty reflects input diversity."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=True)
         model.eval()
 
         n_genes = model_kwargs['n_genes']
 
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(4)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(4)
 
         # Batch with similar inputs
         uniform_batch = {
@@ -760,15 +734,43 @@ class TestComponentInteraction:
     """Test interactions between model components."""
 
     def test_region_handler_output_feeds_correctly(self, model_kwargs, sample_batch):
-        """RegionHandler output correctly feeds into subsequent components."""
+        """RegionHandler output correctly feeds into subsequent components.
+
+        Verifies that:
+        1. Region importance weights are accessible and valid
+        2. Different region masks produce different model outputs
+        """
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
 
-        # Run forward pass - if dimensions are wrong, this will fail
-        output = model(**sample_batch)
+        B = sample_batch['region_pseudobulk'].size(0)
 
-        # Verify region context is used in pathology encoder
-        # (Indirectly tested by checking the model runs without errors)
-        assert 'mean' in output
+        # Check region importance weights are accessible and normalized
+        importance = model.region_handler.get_region_weights()
+        assert importance.shape == (model_kwargs['n_regions'],)
+        assert torch.allclose(importance.sum(), torch.tensor(1.0), atol=1e-5), (
+            "Region weights should be normalized via softmax"
+        )
+
+        # Different region masks should produce different outputs
+        with torch.no_grad():
+            # All regions active
+            batch_all = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                         for k, v in sample_batch.items()}
+            batch_all['region_mask'] = torch.ones(B, model_kwargs['n_regions'], dtype=torch.bool)
+            output_all = model(**batch_all)
+
+            # Only first region active
+            batch_one = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                         for k, v in sample_batch.items()}
+            batch_one['region_mask'] = torch.zeros(B, model_kwargs['n_regions'], dtype=torch.bool)
+            batch_one['region_mask'][:, 0] = True
+            output_one = model(**batch_one)
+
+        assert not torch.allclose(output_all['mean'], output_one['mean'], atol=1e-5), (
+            "Different region masks should produce different outputs, proving "
+            "region handler output feeds into downstream components"
+        )
 
     def test_fusion_receives_all_branch_outputs(self, model_kwargs, sample_batch):
         """FusionLayer receives outputs from all three branches."""
@@ -798,6 +800,38 @@ class TestComponentInteraction:
                     f"Branch {i} has unexpected shape: {inp.shape}"
         finally:
             hook.remove()
+
+    def test_training_loop_loss_decreases(self, model_kwargs, sample_batch):
+        """Training loop on fixed data should reduce loss over ~10 steps.
+
+        This verifies that the model can learn (gradients are meaningful) on a
+        small synthetic dataset.  We use dropout=0 and a fixed batch so the
+        only source of stochasticity is weight initialisation.
+        """
+        torch.manual_seed(0)
+        model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.train()
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        target = sample_batch['cognition']
+
+        losses = []
+        for _ in range(10):
+            optimizer.zero_grad()
+            output = model(**sample_batch)
+            loss = nn.functional.mse_loss(output['mean'], target)
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.item())
+
+        # Verify all losses are finite
+        assert all(not (l != l) for l in losses), "Found NaN loss during training"
+
+        # Final loss should be lower than initial loss
+        assert losses[-1] < losses[0], (
+            f"Loss did not decrease over 10 training steps: "
+            f"initial={losses[0]:.6f}, final={losses[-1]:.6f}"
+        )
 
     def test_pathology_attention_receives_correct_inputs(self, model_kwargs, sample_batch):
         """PathologyStratifiedAttention receives fused embeddings and pathology."""

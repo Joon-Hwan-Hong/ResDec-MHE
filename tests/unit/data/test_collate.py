@@ -119,7 +119,7 @@ class TestCollateOutputSchema:
 
 
 def create_mock_sample(
-    n_cell_types: int = 31,
+    n_cell_types: int = N_CELL_TYPES,
     n_genes: int = 100,
     max_cells: int = 50,
     n_edges: int = 20,
@@ -158,7 +158,7 @@ class TestCollateFn:
 
         batch_size = 4
         n_genes = 100
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
 
         batch = [create_mock_sample(n_genes=n_genes, n_cell_types=n_cell_types)
                  for _ in range(batch_size)]
@@ -174,7 +174,7 @@ class TestCollateFn:
         """Edges should be offset by node count for batching."""
         from src.data.collate import collate_fn
 
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         batch = [create_mock_sample(n_cell_types=n_cell_types, n_edges=10)
                  for _ in range(3)]
 
@@ -194,7 +194,7 @@ class TestCollateFn:
         """Batch vector maps each node to its graph."""
         from src.data.collate import collate_fn
 
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         batch_size = 4
         batch = [create_mock_sample(n_cell_types=n_cell_types) for _ in range(batch_size)]
 
@@ -263,7 +263,7 @@ class TestCollateForHgt:
 
         assert "node_types" in result
         assert "edge_types" in result
-        assert len(result["node_types"]) == 31  # Cell types
+        assert len(result["node_types"]) == N_CELL_TYPES  # Cell types
         assert len(result["edge_types"]) == 5   # CellChatDB categories
 
     def test_sanitizes_names(self):
@@ -304,7 +304,7 @@ class TestCollateForHgt:
         assert len(x_dict_list) == 2
         for x_dict in x_dict_list:
             # Should have 31 cell types
-            assert len(x_dict) == 31
+            assert len(x_dict) == N_CELL_TYPES
             # Each value should be (1, n_genes)
             for ct_name, tensor in x_dict.items():
                 assert tensor.shape[0] == 1  # Single node per type per subject
@@ -411,7 +411,7 @@ class TestBuildXDictListFromEmbeddings:
         from src.data.collate import build_x_dict_list_from_embeddings
 
         batch_size = 3
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         d_embed = 128
         node_types = [f"CellType_{i}" for i in range(n_cell_types)]
 
@@ -545,7 +545,7 @@ class TestCollateForHgtMultiregion:
         from src.data.collate import collate_for_hgt_multiregion
 
         n_genes = 100
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
 
         sample = create_mock_sample()
         sample["region_pseudobulk"] = torch.randn(n_cell_types, n_genes)
@@ -560,8 +560,8 @@ class TestCollateForHgtMultiregion:
         assert "region_mask" in result
 
         # Check shapes
-        assert result["region_pseudobulk"].shape == (1, 6, n_cell_types, n_genes)
-        assert result["region_mask"].shape == (1, 6)
+        assert result["region_pseudobulk"].shape == (1, N_REGIONS, n_cell_types, n_genes)
+        assert result["region_mask"].shape == (1, N_REGIONS)
 
         # Regions 0 and 2 should be available (computed from actual data presence)
         assert result["region_mask"][0, 0] == True
@@ -592,7 +592,7 @@ class TestMoveBatchToDevice:
         from src.utils.device import move_batch_to_device
 
         batch = {
-            "pseudobulk": torch.randn(2, 31, 100),
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
             "cognition": torch.randn(2, 1),
             "subject_ids": ["A", "B"],
             "batch_size": 2,
@@ -665,7 +665,7 @@ class TestMoveBatchToDevice:
         from src.utils.device import move_batch_to_device
 
         batch = {
-            "pseudobulk": torch.randn(2, 31, 100),
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
             "subject_ids": ["A", "B"],
             "batch_size": 2,
             "node_types": ["TypeA", "TypeB"],
@@ -724,7 +724,7 @@ class TestOutputSchemaKeys:
         sample = create_mock_sample()
         assert set(sample.keys()) == expected_keys
 
-    def test_collate_fn_output_keys(self):
+    def test_collate_fn_uses_renamed_keys(self):
         """collate_fn output should use renamed keys."""
         from src.data.collate import collate_fn
 
@@ -801,10 +801,10 @@ class TestDeriveAvailableRegionsFromKeys:
         from src.data.collate import _derive_available_regions_from_keys
 
         sample = {
-            'region_0_pseudobulk': torch.randn(31, 50),
-            'region_2_pseudobulk': torch.randn(31, 50),
-            'region_5_pseudobulk': torch.randn(31, 50),
-            'pseudobulk': torch.randn(31, 50),
+            'region_0_pseudobulk': torch.randn(N_CELL_TYPES, 50),
+            'region_2_pseudobulk': torch.randn(N_CELL_TYPES, 50),
+            'region_5_pseudobulk': torch.randn(N_CELL_TYPES, 50),
+            'pseudobulk': torch.randn(N_CELL_TYPES, 50),
         }
         regions = _derive_available_regions_from_keys(sample)
         assert regions == [0, 2, 5]
@@ -813,7 +813,7 @@ class TestDeriveAvailableRegionsFromKeys:
         """Should return empty list when no region_*_pseudobulk keys exist."""
         from src.data.collate import _derive_available_regions_from_keys
 
-        sample = {'pseudobulk': torch.randn(31, 50)}
+        sample = {'pseudobulk': torch.randn(N_CELL_TYPES, 50)}
         regions = _derive_available_regions_from_keys(sample)
         assert regions == []
 
@@ -1008,9 +1008,9 @@ class TestMultiregionAvailableRegionsDerivation:
             warnings.simplefilter("always")
             result = collate_for_hgt_multiregion([sample1, sample2])
 
-        # Should have region_pseudobulk with shape [2, 6, n_cell_types, n_genes]
+        # Should have region_pseudobulk with shape [2, N_REGIONS, n_cell_types, n_genes]
         assert result["region_pseudobulk"].shape[0] == 2
-        assert result["region_pseudobulk"].shape[1] == 6
+        assert result["region_pseudobulk"].shape[1] == N_REGIONS
 
         # Sample 1: regions 0 and 2 available
         assert result["region_mask"][0, 0].item() is True
@@ -1021,3 +1021,189 @@ class TestMultiregionAvailableRegionsDerivation:
         assert result["region_mask"][1, 0].item() is True
         assert result["region_mask"][1, 1].item() is False
         assert result["region_mask"][1, 2].item() is False
+
+
+class TestCollateMultiregionWithSentinel:
+    """Tests for collate_multiregion() with the region_pseudobulk sentinel key.
+
+    Covers C-A1: collate_multiregion() was never tested with the
+    region_pseudobulk sentinel that activates its multi-region path
+    (as opposed to collate_for_hgt_multiregion which has separate tests).
+    """
+
+    @staticmethod
+    def _make_sample(
+        n_genes: int = 50,
+        max_cells: int = 20,
+        n_edges: int = 10,
+        region_indices: list[int] | None = None,
+    ) -> dict:
+        """Create a sample with the region_pseudobulk sentinel and per-region keys.
+
+        Args:
+            n_genes: Number of genes per pseudobulk profile.
+            max_cells: Max cells per cell type.
+            n_edges: Number of CCC edges.
+            region_indices: Which region_{idx}_pseudobulk keys to include.
+                If None, defaults to [0, 2] (PFC and region 2).
+        """
+        if region_indices is None:
+            region_indices = [0, 2]
+
+        sample = {
+            "subject_id": "multiregion_subj",
+            "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
+            "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
+            "cell_counts": torch.randint(1, 100, (N_CELL_TYPES,)),
+            "cells": torch.randn(N_CELL_TYPES, max_cells, n_genes),
+            "cell_mask": torch.ones(N_CELL_TYPES, max_cells, dtype=torch.bool),
+            "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, n_edges)),
+            "ccc_edge_type": torch.randint(0, 5, (n_edges,)),
+            "ccc_edge_attr": torch.rand(n_edges, 1),
+            "pathology": torch.rand(3),
+            "cognition": torch.rand(1),
+            "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
+            # Sentinel key that activates multi-region path
+            "region_pseudobulk": True,
+            # Explicit list so _assemble_region_tensors knows which regions
+            "available_regions": region_indices,
+        }
+
+        # Per-region pseudobulk tensors
+        for idx in region_indices:
+            sample[f"region_{idx}_pseudobulk"] = torch.randn(N_CELL_TYPES, n_genes)
+
+        return sample
+
+    def test_multiregion_output_shapes(self):
+        """region_pseudobulk should be [B, n_regions, n_cell_types, n_genes]
+        and region_mask should be [B, n_regions]."""
+        from src.data.collate import collate_multiregion
+
+        n_genes = 50
+        batch_size = 3
+        region_indices = [0, 2, 4]
+
+        batch = [
+            self._make_sample(n_genes=n_genes, region_indices=region_indices)
+            for _ in range(batch_size)
+        ]
+
+        result = collate_multiregion(batch)
+
+        assert "region_pseudobulk" in result
+        assert "region_mask" in result
+        assert result["region_pseudobulk"].shape == (
+            batch_size, N_REGIONS, N_CELL_TYPES, n_genes,
+        )
+        assert result["region_mask"].shape == (batch_size, N_REGIONS)
+
+    def test_multiregion_mask_reflects_available_regions(self):
+        """region_mask should be True only for regions that have data."""
+        from src.data.collate import collate_multiregion
+
+        n_genes = 50
+        region_indices = [0, 3]
+
+        batch = [self._make_sample(n_genes=n_genes, region_indices=region_indices)]
+        result = collate_multiregion(batch)
+
+        mask = result["region_mask"][0]
+        for r in range(N_REGIONS):
+            if r in region_indices:
+                assert mask[r].item() is True, f"Expected region {r} mask True"
+            else:
+                assert mask[r].item() is False, f"Expected region {r} mask False"
+
+    def test_multiregion_data_is_populated(self):
+        """Populated regions should contain non-zero data matching the source tensors."""
+        from src.data.collate import collate_multiregion
+
+        n_genes = 50
+        region_indices = [0, 1]
+
+        sample = self._make_sample(n_genes=n_genes, region_indices=region_indices)
+        result = collate_multiregion([sample])
+
+        for idx in region_indices:
+            expected = sample[f"region_{idx}_pseudobulk"]
+            actual = result["region_pseudobulk"][0, idx]
+            assert torch.allclose(actual, expected), (
+                f"Region {idx} data mismatch"
+            )
+
+    def test_multiregion_unpopulated_regions_are_zero(self):
+        """Regions without data should remain zero-filled."""
+        from src.data.collate import collate_multiregion
+
+        n_genes = 50
+        region_indices = [0]
+
+        batch = [self._make_sample(n_genes=n_genes, region_indices=region_indices)]
+        result = collate_multiregion(batch)
+
+        for r in range(N_REGIONS):
+            if r not in region_indices:
+                assert (result["region_pseudobulk"][0, r] == 0).all(), (
+                    f"Region {r} should be zero-filled"
+                )
+
+    def test_multiregion_preserves_base_collate_keys(self):
+        """collate_multiregion should include all base collate_fn keys."""
+        from src.data.collate import collate_multiregion
+
+        batch = [self._make_sample()]
+        result = collate_multiregion(batch)
+
+        base_keys = {
+            "pseudobulk", "cell_type_mask", "cell_counts",
+            "cells", "cell_mask",
+            "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr",
+            "pathology", "cognition",
+            "graph_batch", "graph_ptr", "n_nodes_per_graph",
+            "subject_ids", "batch_size",
+        }
+        assert base_keys.issubset(set(result.keys())), (
+            f"Missing base keys: {base_keys - set(result.keys())}"
+        )
+
+    def test_multiregion_falls_back_without_sentinel(self):
+        """Without the region_pseudobulk sentinel, should fall back to collate_fn
+        and NOT produce a region_pseudobulk tensor in the output."""
+        from src.data.collate import collate_multiregion
+
+        # Create a sample without the sentinel key
+        sample = create_mock_sample()
+        assert "region_pseudobulk" not in sample
+
+        result = collate_multiregion([sample])
+
+        # Should have base keys but no region_pseudobulk tensor
+        assert "pseudobulk" in result
+        assert "region_pseudobulk" not in result
+
+    def test_multiregion_batch_of_two_different_regions(self):
+        """Batch with samples having different available regions."""
+        from src.data.collate import collate_multiregion
+
+        n_genes = 50
+
+        sample_a = self._make_sample(n_genes=n_genes, region_indices=[0, 1])
+        sample_b = self._make_sample(n_genes=n_genes, region_indices=[0, 4])
+
+        result = collate_multiregion([sample_a, sample_b])
+
+        assert result["region_pseudobulk"].shape == (
+            2, N_REGIONS, N_CELL_TYPES, n_genes,
+        )
+        assert result["region_mask"].shape == (2, N_REGIONS)
+
+        # Sample A: regions 0, 1
+        assert result["region_mask"][0, 0].item() is True
+        assert result["region_mask"][0, 1].item() is True
+        assert result["region_mask"][0, 4].item() is False
+
+        # Sample B: regions 0, 4
+        assert result["region_mask"][1, 0].item() is True
+        assert result["region_mask"][1, 1].item() is False
+        assert result["region_mask"][1, 4].item() is True

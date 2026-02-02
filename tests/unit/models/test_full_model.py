@@ -11,26 +11,8 @@ Note: Full gradient flow and integration tests are in Task 8.
 import pytest
 import torch
 
-from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key, N_CELL_TYPES, N_REGIONS
+from src.data.constants import N_CELL_TYPES, N_REGIONS
 from src.models.full_model import CognitiveResilienceModel
-
-
-def _make_edge_dicts(batch_size, n_edges=5):
-    """Create edge_index_dict_list and edge_attr_dict_list for testing."""
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(batch_size):
-        edge_index_dict = {}
-        edge_attr_dict = {}
-        for src_ct in CELL_TYPE_ORDER[:3]:
-            for dst_ct in CELL_TYPE_ORDER[:3]:
-                for et in ALL_EDGE_TYPES[:2]:
-                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                    edge_index_dict[key] = torch.zeros(2, n_edges, dtype=torch.long)
-                    edge_attr_dict[key] = torch.rand(n_edges, 1)
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
-    return edge_index_dict_list, edge_attr_dict_list
 
 
 class TestInitialization:
@@ -196,7 +178,7 @@ class TestForwardPass:
         )
 
     @pytest.fixture
-    def sample_inputs(self):
+    def sample_inputs(self, make_edge_dicts):
         """Create sample inputs for forward pass."""
         B = 2  # Batch size
         n_regions = N_REGIONS
@@ -204,7 +186,7 @@ class TestForwardPass:
         n_genes = 50
         max_cells = 10
 
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
 
         return {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
@@ -429,32 +411,6 @@ class TestEdgeCases:
             dropout=0.0,
         )
 
-    def test_single_region_available(self, small_model):
-        """Test forward pass with only one region available."""
-        B = 2
-        n_cell_types = N_CELL_TYPES
-        n_genes = 50
-        max_cells = 10
-
-        # Only first region available
-        region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
-        region_mask[:, 0] = True
-
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
-
-        inputs = {
-            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
-            'region_mask': region_mask,
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
-            'pathology': torch.randn(B, 3),
-        }
-
-        output = small_model(**inputs)
-        assert output['mean'].shape == (B, 1)
-
     def test_empty_edges(self, small_model):
         """Test forward pass with no CCC edges (empty edge dicts)."""
         B = 2
@@ -475,7 +431,7 @@ class TestEdgeCases:
         output = small_model(**inputs)
         assert output['mean'].shape == (B, 1)
 
-    def test_partial_cell_mask(self, small_model):
+    def test_partial_cell_mask(self, small_model, make_edge_dicts):
         """Test forward pass with some cells masked out."""
         B = 2
         n_cell_types = N_CELL_TYPES
@@ -486,7 +442,7 @@ class TestEdgeCases:
         cell_mask = torch.ones(B, n_cell_types, max_cells, dtype=torch.bool)
         cell_mask[:, :, max_cells//2:] = False
 
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
 
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
@@ -501,7 +457,7 @@ class TestEdgeCases:
         output = small_model(**inputs)
         assert output['mean'].shape == (B, 1)
 
-    def test_single_region_pseudobulk_only_fallback(self, small_model):
+    def test_single_region_pseudobulk_only_fallback(self, small_model, make_edge_dicts):
         """Test forward pass using pseudobulk (not region_pseudobulk) auto-expansion.
 
         The model should auto-expand [B, C, G] to [B, n_regions, C, G] with only PFC
@@ -512,7 +468,7 @@ class TestEdgeCases:
         n_genes = 50
         max_cells = 10
 
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
 
         inputs = {
             'pseudobulk': torch.randn(B, n_cell_types, n_genes),
@@ -529,14 +485,14 @@ class TestEdgeCases:
         assert 'attention_weights' in output
         assert output['attention_weights'].shape == (B, 4, n_cell_types)
 
-    def test_batch_size_one(self, small_model):
+    def test_batch_size_one(self, small_model, make_edge_dicts):
         """Test forward pass with batch size of 1."""
         B = 1
         n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
 
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
@@ -551,14 +507,14 @@ class TestEdgeCases:
         output = small_model(**inputs)
         assert output['mean'].shape == (1, 1)
 
-    def test_invalid_cell_type_mask_shape_raises_error(self, small_model):
+    def test_invalid_cell_type_mask_shape_raises_error(self, small_model, make_edge_dicts):
         """Test that wrong cell_type_mask shape raises ValueError early."""
         B = 2
         n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
 
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
 
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
@@ -600,6 +556,27 @@ class TestEdgeCases:
         # Original lists should still contain empty dicts
         assert edge_index_dict_list == [{}, {}]
         assert edge_attr_dict_list == [{}, {}]
+
+    def test_forward_without_any_pseudobulk_raises_error(self, small_model, make_edge_dicts):
+        """A-14: forward() with neither region_pseudobulk nor pseudobulk raises ValueError."""
+        B = 2
+        n_cell_types = N_CELL_TYPES
+        n_genes = 50
+        max_cells = 10
+
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
+
+        inputs = {
+            # Neither region_pseudobulk nor pseudobulk provided
+            'edge_index_dict_list': edge_index_dict_list,
+            'edge_attr_dict_list': edge_attr_dict_list,
+            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
+            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'pathology': torch.randn(B, 3),
+        }
+
+        with pytest.raises(ValueError, match="Must provide either region_pseudobulk or pseudobulk"):
+            small_model(**inputs)
 
     def test_convert_hgt_ignores_unknown_node_types(self, small_model):
         """Unknown node types in HGT output should be silently skipped."""

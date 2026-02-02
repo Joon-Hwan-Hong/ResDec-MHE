@@ -13,29 +13,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+from src.data.constants import N_CELL_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
 from src.models.full_model import CognitiveResilienceModel
 from src.models.fusion import FusionLayer, PathologyEncoder, PathologyStratifiedAttention
 from src.models.components import RegionHandler
 from src.models.heads import BayesianPredictionHead
-
-
-def _make_edge_dicts(batch_size, n_edges=5):
-    """Create edge_index_dict_list and edge_attr_dict_list for testing."""
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(batch_size):
-        edge_index_dict = {}
-        edge_attr_dict = {}
-        for src_ct in CELL_TYPE_ORDER[:3]:
-            for dst_ct in CELL_TYPE_ORDER[:3]:
-                for et in ALL_EDGE_TYPES[:2]:
-                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                    edge_index_dict[key] = torch.zeros(2, n_edges, dtype=torch.long)
-                    edge_attr_dict[key] = torch.rand(n_edges, 1)
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
-    return edge_index_dict_list, edge_attr_dict_list
 
 
 class TestHGTEmptyGraphHandling:
@@ -45,7 +27,7 @@ class TestHGTEmptyGraphHandling:
     def model(self):
         return CognitiveResilienceModel(
             n_genes=50,
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             d_embed=32,
             d_fused=32,
             use_bayesian_head=False,
@@ -55,10 +37,10 @@ class TestHGTEmptyGraphHandling:
     def base_inputs(self):
         B = 2
         return {
-            'region_pseudobulk': torch.randn(B, 6, 31, 50),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
-            'cells': torch.randn(B, 31, 10, 50),
-            'cell_mask': torch.ones(B, 31, 10, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
+            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
+            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
         }
 
@@ -119,73 +101,73 @@ class TestMixedDtypeInputs:
     def model(self):
         return CognitiveResilienceModel(
             n_genes=50,
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             d_embed=32,
             d_fused=32,
             use_bayesian_head=False,
         )
 
-    def test_float64_pathology_requires_conversion(self, model):
+    def test_float64_pathology_requires_conversion(self, model, make_edge_dicts):
         """Float64 pathology with float32 model requires explicit conversion."""
         B = 2
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B, n_edges=1)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B, n_edges=1)
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, 31, 50, dtype=torch.float32),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50, dtype=torch.float32),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
-            'cells': torch.randn(B, 31, 10, 50, dtype=torch.float32),
-            'cell_mask': torch.ones(B, 31, 10, dtype=torch.bool),
+            'cells': torch.randn(B, N_CELL_TYPES, 10, 50, dtype=torch.float32),
+            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3, dtype=torch.float64),  # Different dtype
         }
         # PyTorch doesn't auto-convert dtypes - this will fail
         with pytest.raises(RuntimeError, match="dtype"):
             model(**inputs)
 
-    def test_consistent_dtypes_work(self, model):
+    def test_consistent_dtypes_work(self, model, make_edge_dicts):
         """Consistent dtypes should work correctly."""
         B = 2
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B, n_edges=1)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B, n_edges=1)
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, 31, 50, dtype=torch.float32),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50, dtype=torch.float32),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
-            'cells': torch.randn(B, 31, 10, 50, dtype=torch.float32),
-            'cell_mask': torch.ones(B, 31, 10, dtype=torch.bool),
+            'cells': torch.randn(B, N_CELL_TYPES, 10, 50, dtype=torch.float32),
+            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3, dtype=torch.float32),  # Same dtype
         }
         output = model(**inputs)
         assert 'mean' in output
 
-    def test_bool_mask_required(self, model):
+    def test_bool_mask_required(self, model, make_edge_dicts):
         """Cell mask must be bool (for transformer attention)."""
         B = 2
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B, n_edges=1)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B, n_edges=1)
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, 31, 50),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
-            'cells': torch.randn(B, 31, 10, 50),
-            'cell_mask': torch.ones(B, 31, 10, dtype=torch.int32),  # int instead of bool
+            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
+            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.int32),  # int instead of bool
             'pathology': torch.randn(B, 3),
         }
         # Int masks cause issues with attention mask handling
         with pytest.raises((RuntimeError, AssertionError)):
             model(**inputs)
 
-    def test_region_mask_float_works(self, model):
+    def test_region_mask_float_works(self, model, make_edge_dicts):
         """Region mask can be float (RegionHandler converts to float internally)."""
         B = 2
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B, n_edges=1)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B, n_edges=1)
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, 31, 50),
-            'region_mask': torch.ones(B, 6, dtype=torch.float32),  # Float mask
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.float32),  # Float mask
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
-            'cells': torch.randn(B, 31, 10, 50),
-            'cell_mask': torch.ones(B, 31, 10, dtype=torch.bool),
+            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
+            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
         }
         output = model(**inputs)
@@ -211,12 +193,12 @@ class TestRegionContextGradientFlow:
 
     def test_region_context_gradient_flows_to_handler(self):
         """Gradient should flow from pathology encoder back to region handler parameters."""
-        handler = RegionHandler(d_model=64, n_regions=6)
+        handler = RegionHandler(d_model=64, n_regions=N_REGIONS)
         encoder = PathologyEncoder(n_pathology_features=3, d_region=64, d_cond=32)
 
         # Inputs (region_context comes from handler.region_embedding, not x)
-        x = torch.randn(2, 6, 31, 64)
-        mask = torch.ones(2, 6, dtype=torch.bool)
+        x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 64)
+        mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
         pathology = torch.randn(2, 3)
 
         # Forward through handler and encoder
@@ -236,11 +218,11 @@ class TestRegionContextGradientFlow:
 
     def test_region_embedding_receives_gradient(self):
         """Region embedding parameters should receive gradients."""
-        handler = RegionHandler(d_model=64, n_regions=6)
+        handler = RegionHandler(d_model=64, n_regions=N_REGIONS)
         encoder = PathologyEncoder(n_pathology_features=3, d_region=64, d_cond=32)
 
-        x = torch.randn(2, 6, 31, 64)
-        mask = torch.ones(2, 6, dtype=torch.bool)
+        x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 64)
+        mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
         pathology = torch.randn(2, 3)
 
         pooled, region_context = handler(x, mask)
@@ -259,25 +241,25 @@ class TestAllRegionsMaskedEdgeCase:
 
     def test_all_regions_masked_produces_output(self):
         """When all regions masked, output should still be valid (clamped)."""
-        handler = RegionHandler(d_model=64, n_regions=6)
+        handler = RegionHandler(d_model=64, n_regions=N_REGIONS)
 
-        x = torch.randn(2, 6, 31, 64)
-        mask = torch.zeros(2, 6, dtype=torch.bool)  # All masked!
+        x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 64)
+        mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)  # All masked!
 
         pooled, region_context = handler(x, mask)
 
         # Should produce output (even if near-zero due to clamping)
-        assert pooled.shape == (2, 31, 64)
+        assert pooled.shape == (2, N_CELL_TYPES, 64)
         assert region_context.shape == (2, 64)
         assert torch.isfinite(pooled).all()
         assert torch.isfinite(region_context).all()
 
     def test_all_regions_masked_output_is_near_zero(self):
         """With all regions masked, output should be near zero."""
-        handler = RegionHandler(d_model=64, n_regions=6)
+        handler = RegionHandler(d_model=64, n_regions=N_REGIONS)
 
-        x = torch.randn(2, 6, 31, 64)
-        mask = torch.zeros(2, 6, dtype=torch.bool)  # All masked!
+        x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 64)
+        mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)  # All masked!
 
         pooled, region_context = handler(x, mask)
 
@@ -288,9 +270,9 @@ class TestAllRegionsMaskedEdgeCase:
 
     def test_partial_batch_all_masked(self):
         """Mixed batch where some samples have all regions masked."""
-        handler = RegionHandler(d_model=64, n_regions=6)
+        handler = RegionHandler(d_model=64, n_regions=N_REGIONS)
 
-        x = torch.randn(3, 6, 31, 64)
+        x = torch.randn(3, N_REGIONS, N_CELL_TYPES, 64)
         mask = torch.tensor([
             [True, True, False, False, False, False],  # Normal
             [False, False, False, False, False, False],  # All masked
@@ -312,33 +294,33 @@ class TestFusionLayerDimensionValidation:
 
     def test_mismatched_pseudobulk_d_embed_raises(self):
         """Mismatched pseudobulk embedding dimension should raise."""
-        layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=31)
+        layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=N_CELL_TYPES)
 
-        pseudobulk = torch.randn(2, 31, 32)  # Wrong: 32 instead of 64
-        hgt = torch.randn(2, 31, 64)
-        cell = torch.randn(2, 31, 64)
+        pseudobulk = torch.randn(2, N_CELL_TYPES, 32)  # Wrong: 32 instead of 64
+        hgt = torch.randn(2, N_CELL_TYPES, 64)
+        cell = torch.randn(2, N_CELL_TYPES, 64)
 
         with pytest.raises(ValueError, match="d_embed=64"):
             layer(pseudobulk, hgt, cell)
 
     def test_mismatched_hgt_d_embed_raises(self):
         """Mismatched HGT embedding dimension should raise."""
-        layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=31)
+        layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=N_CELL_TYPES)
 
-        pseudobulk = torch.randn(2, 31, 64)
-        hgt = torch.randn(2, 31, 32)  # Wrong: 32 instead of 64
-        cell = torch.randn(2, 31, 64)
+        pseudobulk = torch.randn(2, N_CELL_TYPES, 64)
+        hgt = torch.randn(2, N_CELL_TYPES, 32)  # Wrong: 32 instead of 64
+        cell = torch.randn(2, N_CELL_TYPES, 64)
 
         with pytest.raises(ValueError, match="d_embed=64 for hgt_emb"):
             layer(pseudobulk, hgt, cell)
 
     def test_mismatched_cell_d_embed_raises(self):
         """Mismatched cell embedding dimension should raise."""
-        layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=31)
+        layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=N_CELL_TYPES)
 
-        pseudobulk = torch.randn(2, 31, 64)
-        hgt = torch.randn(2, 31, 64)
-        cell = torch.randn(2, 31, 32)  # Wrong: 32 instead of 64
+        pseudobulk = torch.randn(2, N_CELL_TYPES, 64)
+        hgt = torch.randn(2, N_CELL_TYPES, 64)
+        cell = torch.randn(2, N_CELL_TYPES, 32)  # Wrong: 32 instead of 64
 
         with pytest.raises(ValueError, match="d_embed=64 for cell_emb"):
             layer(pseudobulk, hgt, cell)
@@ -422,10 +404,10 @@ class TestPathologyModulationBehavior:
     def test_modulation_suppresses_attention(self):
         """High pathology should modulate (suppress/enhance) attention differently."""
         attention = PathologyStratifiedAttention(
-            d_fused=32, d_cond=16, n_heads=2, n_cell_types=31
+            d_fused=32, d_cond=16, n_heads=2, n_cell_types=N_CELL_TYPES
         )
 
-        cell_emb = torch.randn(2, 31, 32)
+        cell_emb = torch.randn(2, N_CELL_TYPES, 32)
 
         # Low pathology embedding
         low_path = torch.zeros(2, 16)
@@ -441,23 +423,23 @@ class TestPathologyModulationBehavior:
     def test_bias_is_unbounded(self):
         """Additive pathology bias should be unbounded (no sigmoid activation)."""
         attention = PathologyStratifiedAttention(
-            d_fused=32, d_cond=16, n_heads=2, n_cell_types=31
+            d_fused=32, d_cond=16, n_heads=2, n_cell_types=N_CELL_TYPES
         )
 
         # Use large-magnitude inputs so the linear layer is likely to produce
         # values outside [0, 1], confirming no sigmoid constrains the output.
-        cell_emb = torch.randn(2, 31, 32) * 10
+        cell_emb = torch.randn(2, N_CELL_TYPES, 32) * 10
         path_emb = torch.randn(2, 16) * 10
 
         # Access bias output directly
         B = cell_emb.size(0)
-        path_emb_expanded = path_emb.unsqueeze(1).expand(-1, 31, -1)
+        path_emb_expanded = path_emb.unsqueeze(1).expand(-1, N_CELL_TYPES, -1)
         bias_input = torch.cat([path_emb_expanded, cell_emb], dim=-1)
         bias = attention.pathology_bias(bias_input)
 
         # Bias is a real-valued (unbounded) tensor — it may contain negative
         # values or values > 1, unlike the old sigmoid-based modulation.
-        assert bias.shape == (2, 31, 2)  # [B, n_cell_types, n_heads]
+        assert bias.shape == (2, N_CELL_TYPES, 2)  # [B, n_cell_types, n_heads]
 
 
 class TestFullModelGradientFlowEndToEnd:
@@ -467,23 +449,23 @@ class TestFullModelGradientFlowEndToEnd:
     def model(self):
         return CognitiveResilienceModel(
             n_genes=50,
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             d_embed=32,
             d_fused=32,
             use_bayesian_head=False,
         )
 
-    def test_all_parameters_receive_gradients(self, model):
+    def test_all_parameters_receive_gradients(self, model, make_edge_dicts):
         """All trainable parameters should receive gradients."""
         B = 2
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, 31, 50),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
-            'cells': torch.randn(B, 31, 10, 50),
-            'cell_mask': torch.ones(B, 31, 10, dtype=torch.bool),
+            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
+            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
         }
 
@@ -509,17 +491,17 @@ class TestFullModelGradientFlowEndToEnd:
             )
             assert has_grad, f"{name} should receive gradients"
 
-    def test_region_weights_receive_gradient_multi_region(self, model):
+    def test_region_weights_receive_gradient_multi_region(self, model, make_edge_dicts):
         """Region weights should receive gradients with multi-region input."""
         B = 2
-        edge_index_dict_list, edge_attr_dict_list = _make_edge_dicts(B)
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, 31, 50),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool),  # All regions available
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),  # All regions available
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
-            'cells': torch.randn(B, 31, 10, 50),
-            'cell_mask': torch.ones(B, 31, 10, dtype=torch.bool),
+            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
+            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
         }
 
@@ -541,7 +523,7 @@ class TestCellTransformerEdgeCases:
         from src.models.branches.cell_transformer import CellTransformer
         return CellTransformer(
             n_genes=50,
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             d_model=32,
             n_heads=2,
             n_isab_layers=1,
@@ -552,7 +534,7 @@ class TestCellTransformerEdgeCases:
     def test_cell_transformer_all_cells_masked(self, transformer):
         """CellTransformer with all cells masked should produce finite output."""
         B = 2
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         max_cells = 10
         n_genes = 50
 
@@ -572,7 +554,7 @@ class TestCellTransformerEdgeCases:
     def test_cell_transformer_single_cell_per_type(self, transformer):
         """CellTransformer with 1 cell per type should work."""
         B = 2
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         max_cells = 1  # Only 1 cell per type
         n_genes = 50
 

@@ -12,6 +12,8 @@ Test organization:
 import pytest
 import torch
 
+from src.data.constants import N_CELL_TYPES
+
 
 class TestInitialization:
     """Tests for PathologyStratifiedAttention initialization."""
@@ -82,9 +84,9 @@ class TestInitialization:
         """Should store n_cell_types attribute."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        assert attn.n_cell_types == 31
+        assert attn.n_cell_types == N_CELL_TYPES
 
     def test_creates_output_projection(self):
         """Should create output projection layer."""
@@ -104,24 +106,24 @@ class TestForwardPass:
         """Forward should return attended [B, d_fused] and weights [B, n_heads, n_cell_types]."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(4, 31, 64)
+        cell_type_embs = torch.randn(4, N_CELL_TYPES, 64)
         path_emb = torch.randn(4, 32)
 
         attended, weights = attn(cell_type_embs, path_emb)
 
         assert attended.shape == (4, 64)
-        assert weights.shape == (4, 4, 31)  # [B, n_heads, n_cell_types]
+        assert weights.shape == (4, 4, N_CELL_TYPES)  # [B, n_heads, n_cell_types]
 
     def test_attention_weights_sum_to_one(self):
         """Attention weights should sum to 1 across cell types for each head."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
         attn.eval()
 
-        cell_type_embs = torch.randn(4, 31, 64)
+        cell_type_embs = torch.randn(4, N_CELL_TYPES, 64)
         path_emb = torch.randn(4, 32)
 
         with torch.no_grad():
@@ -136,22 +138,22 @@ class TestForwardPass:
         """Should work with various batch sizes."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
         for B in [1, 2, 8, 16]:
-            cell_type_embs = torch.randn(B, 31, 64)
+            cell_type_embs = torch.randn(B, N_CELL_TYPES, 64)
             path_emb = torch.randn(B, 32)
 
             attended, weights = attn(cell_type_embs, path_emb)
 
             assert attended.shape == (B, 64)
-            assert weights.shape == (B, 4, 31)
+            assert weights.shape == (B, 4, N_CELL_TYPES)
 
     def test_different_n_cell_types(self):
         """Should work with different n_cell_types configurations."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        for n_cell_types in [10, 20, 31, 50]:
+        for n_cell_types in [10, 20, N_CELL_TYPES, 50]:
             attn = PathologyStratifiedAttention(
                 d_fused=64, d_cond=32, n_heads=4, n_cell_types=n_cell_types
             )
@@ -168,10 +170,10 @@ class TestForwardPass:
         """Attention weights should be non-negative (softmax output)."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
         attn.eval()
 
-        cell_type_embs = torch.randn(4, 31, 64)
+        cell_type_embs = torch.randn(4, N_CELL_TYPES, 64)
         path_emb = torch.randn(4, 32)
 
         with torch.no_grad():
@@ -187,10 +189,10 @@ class TestPathologyBias:
         """Different pathology embeddings should produce different attention patterns."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
         attn.eval()
 
-        cell_type_embs = torch.randn(1, 31, 64)
+        cell_type_embs = torch.randn(1, N_CELL_TYPES, 64)
         path_low = torch.zeros(1, 32)
         path_high = torch.ones(1, 32)
 
@@ -204,10 +206,10 @@ class TestPathologyBias:
         """Same inputs should produce same outputs (deterministic)."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
         attn.eval()
 
-        cell_type_embs = torch.randn(2, 31, 64)
+        cell_type_embs = torch.randn(2, N_CELL_TYPES, 64)
         path_emb = torch.randn(2, 32)
 
         with torch.no_grad():
@@ -223,10 +225,10 @@ class TestPathologyBias:
 
         # Create with known seed for reproducibility
         torch.manual_seed(42)
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
         attn.eval()
 
-        cell_type_embs = torch.randn(1, 31, 64)
+        cell_type_embs = torch.randn(1, N_CELL_TYPES, 64)
         # Create very different pathology embeddings
         path_emb1 = torch.randn(1, 32) * 5
         path_emb2 = -path_emb1
@@ -246,9 +248,9 @@ class TestGradientFlow:
         """Gradients should reach cell type embeddings input."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(2, 31, 64, requires_grad=True)
+        cell_type_embs = torch.randn(2, N_CELL_TYPES, 64, requires_grad=True)
         path_emb = torch.randn(2, 32)
 
         attended, weights = attn(cell_type_embs, path_emb)
@@ -262,9 +264,9 @@ class TestGradientFlow:
         """Gradients should reach pathology embedding input."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(2, 31, 64)
+        cell_type_embs = torch.randn(2, N_CELL_TYPES, 64)
         path_emb = torch.randn(2, 32, requires_grad=True)
 
         attended, weights = attn(cell_type_embs, path_emb)
@@ -278,9 +280,9 @@ class TestGradientFlow:
         """Gradients should reach pathology bias parameters."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(2, 31, 64)
+        cell_type_embs = torch.randn(2, N_CELL_TYPES, 64)
         path_emb = torch.randn(2, 32)
 
         attended, weights = attn(cell_type_embs, path_emb)
@@ -296,9 +298,9 @@ class TestGradientFlow:
         """Gradients should reach all module parameters."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(2, 31, 64, requires_grad=True)
+        cell_type_embs = torch.randn(2, N_CELL_TYPES, 64, requires_grad=True)
         path_emb = torch.randn(2, 32, requires_grad=True)
 
         attended, weights = attn(cell_type_embs, path_emb)
@@ -369,17 +371,17 @@ class TestValidation:
         """Should reject cell_type_embeddings with wrong number of dimensions."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
         # 2D tensor (missing batch dimension)
-        cell_type_embs_2d = torch.randn(31, 64)
+        cell_type_embs_2d = torch.randn(N_CELL_TYPES, 64)
         path_emb = torch.randn(2, 32)
 
         with pytest.raises(ValueError, match="Expected 3D cell_type_embeddings"):
             attn(cell_type_embs_2d, path_emb)
 
         # 4D tensor
-        cell_type_embs_4d = torch.randn(2, 31, 64, 1)
+        cell_type_embs_4d = torch.randn(2, N_CELL_TYPES, 64, 1)
         with pytest.raises(ValueError, match="Expected 3D cell_type_embeddings"):
             attn(cell_type_embs_4d, path_emb)
 
@@ -387,9 +389,9 @@ class TestValidation:
         """Should reject path_emb with wrong number of dimensions."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(2, 31, 64)
+        cell_type_embs = torch.randn(2, N_CELL_TYPES, 64)
 
         # 1D tensor (missing batch dimension)
         path_emb_1d = torch.randn(32)
@@ -405,21 +407,21 @@ class TestValidation:
         """Should reject cell_type_embeddings with wrong n_cell_types."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
         cell_type_embs = torch.randn(2, 20, 64)  # Wrong: 20 instead of 31
         path_emb = torch.randn(2, 32)
 
-        with pytest.raises(ValueError, match="Expected 31 cell types"):
+        with pytest.raises(ValueError, match=f"Expected {N_CELL_TYPES} cell types"):
             attn(cell_type_embs, path_emb)
 
     def test_rejects_wrong_d_fused(self):
         """Should reject cell_type_embeddings with wrong d_fused."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(2, 31, 128)  # Wrong: 128 instead of 64
+        cell_type_embs = torch.randn(2, N_CELL_TYPES, 128)  # Wrong: 128 instead of 64
         path_emb = torch.randn(2, 32)
 
         with pytest.raises(ValueError, match="Expected d_fused=64"):
@@ -429,9 +431,9 @@ class TestValidation:
         """Should reject path_emb with wrong d_cond."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(2, 31, 64)
+        cell_type_embs = torch.randn(2, N_CELL_TYPES, 64)
         path_emb = torch.randn(2, 64)  # Wrong: 64 instead of 32
 
         with pytest.raises(ValueError, match="Expected d_cond=32"):
@@ -441,9 +443,9 @@ class TestValidation:
         """Should reject mismatched batch sizes."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
 
-        cell_type_embs = torch.randn(4, 31, 64)
+        cell_type_embs = torch.randn(4, N_CELL_TYPES, 64)
         path_emb = torch.randn(8, 32)  # Different batch size
 
         with pytest.raises(ValueError, match="Batch size mismatch"):
@@ -453,31 +455,23 @@ class TestValidation:
 class TestExtraRepr:
     """Tests for extra_repr method."""
 
-    def test_extra_repr_contains_parameters(self):
-        """extra_repr should show key parameters."""
+    def test_repr_contains_parameters(self):
+        """extra_repr and str should show key parameters."""
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
-        attn = PathologyStratifiedAttention(d_fused=128, d_cond=64, n_heads=8, n_cell_types=31)
+        attn = PathologyStratifiedAttention(d_fused=128, d_cond=64, n_heads=8, n_cell_types=N_CELL_TYPES)
 
         repr_str = attn.extra_repr()
-
         assert "d_fused=128" in repr_str
         assert "d_cond=64" in repr_str
         assert "n_heads=8" in repr_str
-        assert "n_cell_types=31" in repr_str
-
-    def test_str_contains_extra_repr(self):
-        """String representation should include extra_repr info."""
-        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
-
-        attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=31)
+        assert f"n_cell_types={N_CELL_TYPES}" in repr_str
 
         str_repr = str(attn)
-
-        assert "d_fused=64" in str_repr
-        assert "d_cond=32" in str_repr
-        assert "n_heads=4" in str_repr
-        assert "n_cell_types=31" in str_repr
+        assert "d_fused=128" in str_repr
+        assert "d_cond=64" in str_repr
+        assert "n_heads=8" in str_repr
+        assert f"n_cell_types={N_CELL_TYPES}" in str_repr
 
 
 class TestCellTypeMasking:

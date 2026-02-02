@@ -1349,3 +1349,115 @@ class TestPrecomputedMultiRegionRoundtrip:
                     assert region_pb[i, r].abs().sum() > 0, (
                         f"Subject {i}, region {r} is active but has zero pseudobulk"
                     )
+
+
+class TestRuntimeErrorPaths:
+    """D-A1, D-A2, D-A3: Tests for RuntimeError defensive checks in _get_pathology / _get_target.
+
+    These RuntimeErrors are safety nets that should never trigger in normal use
+    because _validate_subjects() catches the problems at __init__ time. To reach
+    these code paths we construct a valid dataset and then mutate its internal
+    state (metadata / subject_ids) after construction, simulating a scenario
+    where the data was corrupted between init-time validation and access time.
+    """
+
+    @staticmethod
+    def _make_valid_dataset():
+        """Build a minimal valid CognitiveResilienceDataset."""
+        from src.data.datasets import CognitiveResilienceDataset
+        from src.data.constants import CELL_TYPE_ORDER
+        import anndata
+
+        n_cells = 100
+        n_genes = 50
+        X = np.random.rand(n_cells, n_genes).astype(np.float32)
+        obs = pd.DataFrame({
+            "ROSMAP_IndividualID": ["subj_001"] * n_cells,
+            "supercluster_name": np.random.choice(CELL_TYPE_ORDER[:5], n_cells),
+            "BrainRegion": ["PFC"] * n_cells,
+        })
+        var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+        adata = anndata.AnnData(X=X, obs=obs, var=var)
+
+        metadata = pd.DataFrame({
+            "ROSMAP_IndividualID": ["subj_001"],
+            "gpath": [0.5],
+            "amylsqrt": [0.3],
+            "tangsqrt": [0.2],
+            "cogn_global": [0.8],
+        })
+
+        return CognitiveResilienceDataset(
+            adata=adata,
+            metadata=metadata,
+            subject_ids=["subj_001"],
+        )
+
+    def test_da1_get_pathology_nan_raises_runtime_error(self):
+        """D-A1: _get_pathology raises RuntimeError when a pathology column is NaN.
+
+        We inject NaN into the metadata *after* init validation to reach
+        the defensive RuntimeError inside _get_pathology().
+        """
+        ds = self._make_valid_dataset()
+
+        # Mutate metadata after construction: set gpath to NaN for subj_001
+        ds.metadata.loc["subj_001", "gpath"] = np.nan
+
+        with pytest.raises(RuntimeError, match="NaN in pathology column 'gpath' for subject 'subj_001'"):
+            ds[0]
+
+    def test_da2_get_target_nan_raises_runtime_error(self):
+        """D-A2: _get_target raises RuntimeError when target column is NaN.
+
+        We inject NaN into the metadata *after* init validation to reach
+        the defensive RuntimeError inside _get_target().
+        """
+        ds = self._make_valid_dataset()
+
+        # Mutate metadata after construction: set cogn_global to NaN for subj_001
+        ds.metadata.loc["subj_001", "cogn_global"] = np.nan
+
+        with pytest.raises(RuntimeError, match="NaN in target column 'cogn_global' for subject 'subj_001'"):
+            ds[0]
+
+    def test_da3_get_target_subject_not_found_raises_runtime_error(self):
+        """D-A3: _get_target raises RuntimeError when subject is missing from metadata.
+
+        We append a phantom subject ID to subject_ids *after* init validation
+        to reach the defensive RuntimeError inside _get_target().
+        """
+        ds = self._make_valid_dataset()
+
+        # Inject a subject that passed init validation but is absent from metadata.
+        # Also need cells in adata for this subject so __getitem__ can proceed
+        # past pseudobulk/cell-level computation. Since _get_target is called
+        # after those steps, we add a fake subject_id that has cells in adata
+        # but NOT in metadata.
+        from src.data.constants import CELL_TYPE_ORDER
+        import anndata
+
+        # Add cells for the phantom subject to adata
+        n_new = 50
+        n_genes = ds.n_genes
+        X_new = np.random.rand(n_new, n_genes).astype(np.float32)
+        obs_new = pd.DataFrame({
+            "ROSMAP_IndividualID": ["phantom_subj"] * n_new,
+            "supercluster_name": np.random.choice(CELL_TYPE_ORDER[:5], n_new),
+            "BrainRegion": ["PFC"] * n_new,
+        })
+        var = pd.DataFrame(index=list(ds.adata.var_names))
+
+        adata_new = anndata.AnnData(X=X_new, obs=obs_new, var=var)
+
+        # Concatenate adata
+        import anndata as ad
+        ds.adata = ad.concat([ds.adata, adata_new])
+
+        # Append phantom subject_id (bypassing _validate_subjects)
+        ds.subject_ids.append("phantom_subj")
+
+        # Access the phantom subject (last index)
+        idx = len(ds) - 1
+        with pytest.raises(RuntimeError, match="Subject 'phantom_subj' not found in metadata"):
+            ds[idx]

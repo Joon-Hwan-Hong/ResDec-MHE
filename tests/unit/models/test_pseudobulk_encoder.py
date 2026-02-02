@@ -13,6 +13,8 @@ Test organization:
 import pytest
 import torch
 
+from src.data.constants import N_CELL_TYPES
+
 
 # =============================================================================
 # FIXTURES
@@ -33,7 +35,7 @@ def production_encoder():
     """Production-sized encoder (31 types, 3000 genes)."""
     from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
     return PseudobulkEncoder(
-        n_cell_types=31, n_genes=3000, d_embed=128,
+        n_cell_types=N_CELL_TYPES, n_genes=3000, d_embed=128,
         mlp_hidden=[512, 256], dropout=0.1, temperature=2.0,
     )
 
@@ -162,9 +164,9 @@ class TestForwardPass:
     def test_production_shape(self, production_encoder):
         """Production-sized encoder should produce correct shape."""
         production_encoder.eval()
-        x = torch.randn(2, 31, 3000)
+        x = torch.randn(2, N_CELL_TYPES, 3000)
         out = production_encoder(x)
-        assert out.shape == (2, 31, 128)
+        assert out.shape == (2, N_CELL_TYPES, 128)
 
 
 # =============================================================================

@@ -17,6 +17,8 @@ Test organization:
 import pytest
 import torch
 
+from src.data.constants import N_CELL_TYPES
+
 
 # =============================================================================
 # FIXTURES
@@ -33,7 +35,7 @@ def small_gate():
 def production_gate():
     """Production-sized gate (31 cell types, 3000 genes)."""
     from src.models.components.gene_attention_gate import GeneAttentionGate
-    return GeneAttentionGate(n_cell_types=31, n_genes=3000)
+    return GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=3000)
 
 
 # =============================================================================
@@ -47,8 +49,8 @@ class TestInitialization:
         """Gate logits should have shape (n_cell_types, n_genes)."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        gate = GeneAttentionGate(n_cell_types=31, n_genes=3000)
-        assert gate.gate_logits.shape == (31, 3000)
+        gate = GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=3000)
+        assert gate.gate_logits.shape == (N_CELL_TYPES, 3000)
 
     def test_uniform_init_starts_at_zero(self):
         """Uniform initialization should start with zero logits."""
@@ -92,21 +94,21 @@ class TestInitialization:
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         with pytest.raises(ValueError, match="n_genes must be positive"):
-            GeneAttentionGate(n_cell_types=31, n_genes=0)
+            GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=0)
 
     def test_rejects_zero_temperature(self):
         """Should reject temperature=0."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         with pytest.raises(ValueError, match="temperature must be positive"):
-            GeneAttentionGate(n_cell_types=31, n_genes=100, temperature=0)
+            GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=100, temperature=0)
 
     def test_rejects_negative_temperature(self):
         """Should reject negative temperature."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         with pytest.raises(ValueError, match="temperature must be positive"):
-            GeneAttentionGate(n_cell_types=31, n_genes=100, temperature=-1.0)
+            GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=100, temperature=-1.0)
 
 
 # =============================================================================
@@ -182,7 +184,7 @@ class TestWeightProperties:
         """Gate weights should sum to 1 for each cell type."""
         weights = production_gate.get_gate_weights()
         sums = weights.sum(dim=-1)
-        assert torch.allclose(sums, torch.ones(31), atol=1e-5)
+        assert torch.allclose(sums, torch.ones(N_CELL_TYPES), atol=1e-5)
 
     def test_weights_are_non_negative(self):
         """All gate weights should be >= 0."""
@@ -316,8 +318,8 @@ class TestTemperature:
         """
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        gate = GeneAttentionGate(n_cell_types=31, n_genes=100)
-        gate.gate_logits.data = torch.randn(31, 100)
+        gate = GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=100)
+        gate.gate_logits.data = torch.randn(N_CELL_TYPES, 100)
 
         for tau in [2.0, 1.0, 0.5, 0.1]:
             gate.temperature = tau
@@ -325,7 +327,7 @@ class TestTemperature:
 
             # Critical: weights must sum to 1 with high precision
             sums = weights.sum(dim=-1)
-            assert torch.allclose(sums, torch.ones(31), atol=1e-6), \
+            assert torch.allclose(sums, torch.ones(N_CELL_TYPES), atol=1e-6), \
                 f"Weights don't sum to 1 at τ={tau}: max deviation {(sums - 1).abs().max()}"
 
             # No NaN or Inf

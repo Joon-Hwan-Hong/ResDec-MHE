@@ -132,13 +132,30 @@ class TestFullModelGradientFlow:
     def test_key_parameters_receive_gradients(self, model):
         """Key model parameters should receive gradients during training.
 
+        Uses multi-region inputs (region_pseudobulk + region_mask) to test the
+        full multi-region path rather than the single-region fallback.
+
         Note: HGT has per-node-type and per-edge-type parameters. Parameters for
         types not involved in any edges won't receive gradients - this is expected.
         This test verifies that core model components receive gradients.
         """
         B = 2
+
+        # Build edge dicts for HGT
+        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
+        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
+        edge_index_dict_list = []
+        edge_attr_dict_list = []
+        for _ in range(B):
+            edge_key = (sanitized_types[0], sanitized_edges[0], sanitized_types[1])
+            edge_index_dict_list.append({edge_key: torch.tensor([[0], [0]])})
+            edge_attr_dict_list.append({edge_key: torch.rand(1, 1)})
+
         inputs = {
-            'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
+            'edge_index_dict_list': edge_index_dict_list,
+            'edge_attr_dict_list': edge_attr_dict_list,
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -173,8 +190,22 @@ class TestFullModelGradientFlow:
     def test_gradients_flow_through_all_branches(self, model):
         """Gradients should flow through pseudobulk, HGT, and cell transformer branches."""
         B = 2
+
+        # Build edge dicts so HGT branch actually processes edges
+        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
+        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
+        edge_index_dict_list = []
+        edge_attr_dict_list = []
+        for _ in range(B):
+            edge_key = (sanitized_types[0], sanitized_edges[0], sanitized_types[1])
+            edge_index_dict_list.append({edge_key: torch.tensor([[0], [0]])})
+            edge_attr_dict_list.append({edge_key: torch.rand(1, 1)})
+
         inputs = {
-            'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
+            'edge_index_dict_list': edge_index_dict_list,
+            'edge_attr_dict_list': edge_attr_dict_list,
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -195,6 +226,14 @@ class TestFullModelGradientFlow:
 
         # Check prediction head
         assert model.prediction_head.mlp[0].weight.grad is not None
+
+        # Check HGT encoder - at least one parameter should have received gradients
+        hgt_has_grad = any(
+            p.grad is not None and not torch.all(p.grad == 0)
+            for p in model.hgt_encoder.parameters()
+            if p.requires_grad
+        )
+        assert hgt_has_grad, "No HGT encoder parameters received non-zero gradients"
 
     def test_gradient_flow_with_edge_dicts(self, model):
         """Gradients should flow correctly when using edge_index_dict_list."""
@@ -337,20 +376,8 @@ class TestMultiRegionBehavior:
             use_bayesian_head=False,
         )
 
-    def test_single_region_produces_valid_output(self, model):
-        """Single-region input should produce valid predictions."""
-        B = 4
-        inputs = {
-            'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
-            'pathology': torch.randn(B, 3),
-        }
-
-        output = model(**inputs)
-
-        assert output['mean'].shape == (B, 1)
-        assert torch.isfinite(output['mean']).all()
+    # Single-region forward pass: canonical test in
+    # test_full_model_integration.py::TestEndToEndForward::test_single_region_subject
 
     def test_multi_region_produces_valid_output(self, model):
         """Multi-region input should produce valid predictions."""
@@ -376,7 +403,7 @@ class TestMultiRegionBehavior:
         region_mask[0, :2] = True  # 2 regions
         region_mask[1, :3] = True  # 3 regions
         region_mask[2, :1] = True  # 1 region (PFC only)
-        region_mask[3, :6] = True  # All 6 regions
+        region_mask[3, :N_REGIONS] = True  # All regions
 
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),

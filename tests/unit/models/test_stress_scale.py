@@ -28,7 +28,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES
+from src.data.constants import N_CELL_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES
 
 
 # ============================================================================
@@ -105,11 +105,11 @@ def small_model_config():
     """Small model configuration for stress tests."""
     return {
         'n_genes': 100,
-        'n_cell_types': 31,
+        'n_cell_types': N_CELL_TYPES,
         'd_embed': 32,
         'd_fused': 32,
         'd_cond': 16,
-        'n_regions': 6,
+        'n_regions': N_REGIONS,
         'n_hgt_layers': 1,
         'n_hgt_heads': 4,
         'n_isab_layers': 1,
@@ -123,11 +123,10 @@ def small_model_config():
 def create_sample_inputs(
     batch_size: int,
     n_genes: int = 100,
-    n_cell_types: int = 31,
+    n_cell_types: int = N_CELL_TYPES,
     max_cells: int = 10,
     n_edges: int = 20,
-    n_edge_types: int = 5,
-    n_regions: int = 6,
+    n_regions: int = N_REGIONS,
     device: torch.device = torch.device("cpu"),
 ) -> dict:
     """Create sample inputs for the full model."""
@@ -176,8 +175,9 @@ def create_sample_inputs(
 class TestBatchSizeScaling:
     """Test model behavior with various batch sizes."""
 
-    def test_batch_size_1(self, small_model_config, cpu_device):
-        """Batch size of 1 works correctly."""
+    @pytest.mark.parametrize("batch_size", [1, 16])
+    def test_batch_size_cpu(self, small_model_config, cpu_device, batch_size):
+        """Batch size of {batch_size} works correctly on CPU."""
         from src.models.full_model import CognitiveResilienceModel
 
         model = CognitiveResilienceModel(**small_model_config, use_bayesian_head=False)
@@ -185,7 +185,7 @@ class TestBatchSizeScaling:
         model.eval()
 
         inputs = create_sample_inputs(
-            batch_size=1,
+            batch_size=batch_size,
             n_genes=small_model_config['n_genes'],
             device=cpu_device,
         )
@@ -193,28 +193,7 @@ class TestBatchSizeScaling:
         with torch.no_grad():
             output = model(**inputs)
 
-        assert output['mean'].shape == (1, 1)
-        assert not torch.isnan(output['mean']).any()
-        assert not torch.isinf(output['mean']).any()
-
-    def test_batch_size_16(self, small_model_config, cpu_device):
-        """Batch size of 16 works correctly."""
-        from src.models.full_model import CognitiveResilienceModel
-
-        model = CognitiveResilienceModel(**small_model_config, use_bayesian_head=False)
-        model = model.to(cpu_device)
-        model.eval()
-
-        inputs = create_sample_inputs(
-            batch_size=16,
-            n_genes=small_model_config['n_genes'],
-            device=cpu_device,
-        )
-
-        with torch.no_grad():
-            output = model(**inputs)
-
-        assert output['mean'].shape == (16, 1)
+        assert output['mean'].shape == (batch_size, 1)
         assert not torch.isnan(output['mean']).any()
         assert not torch.isinf(output['mean']).any()
 
@@ -373,37 +352,12 @@ class TestCellCountScaling:
 class TestGeneCountScaling:
     """Test model behavior with varying gene counts."""
 
-    def test_n_genes_1000(self, cpu_device):
-        """1000 genes works correctly."""
+    @pytest.mark.parametrize("n_genes", [1000, 3000])
+    def test_n_genes_cpu(self, cpu_device, n_genes):
+        """PseudobulkEncoder works correctly with {n_genes} genes on CPU."""
         from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
 
-        n_genes = 1000
-        n_cell_types = 31
-        d_embed = 64
-
-        encoder = PseudobulkEncoder(
-            n_cell_types=n_cell_types,
-            n_genes=n_genes,
-            d_embed=d_embed,
-            dropout=0.0,
-        ).to(cpu_device)
-        encoder.eval()
-
-        B = 4
-        x = torch.randn(B, n_cell_types, n_genes, device=cpu_device)
-
-        with torch.no_grad():
-            output = encoder(x)
-
-        assert output.shape == (B, n_cell_types, d_embed)
-        assert not torch.isnan(output).any()
-
-    def test_n_genes_3000(self, cpu_device):
-        """3000 genes (expected) works correctly."""
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
-
-        n_genes = 3000
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         d_embed = 64
 
         encoder = PseudobulkEncoder(
@@ -429,7 +383,7 @@ class TestGeneCountScaling:
         from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
 
         n_genes = 5000
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         d_embed = 64
 
         encoder = PseudobulkEncoder(
@@ -941,7 +895,7 @@ class TestComponentScale:
         from src.models.fusion.fusion_layer import FusionLayer
 
         B = 16
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         d_embed = 128
         d_fused = 128
 
@@ -967,7 +921,7 @@ class TestComponentScale:
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
         B = 16
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         d_fused = 128
         d_cond = 64
         n_heads = 8
@@ -1024,8 +978,8 @@ class TestComponentScale:
         from src.models.components.region_handler import RegionHandler
 
         B = 16
-        n_regions = 6
-        n_cell_types = 31
+        n_regions = N_REGIONS
+        n_cell_types = N_CELL_TYPES
         d_model = 128
 
         handler = RegionHandler(d_model=d_model, n_regions=n_regions).to(cpu_device)

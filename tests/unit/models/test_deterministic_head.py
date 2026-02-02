@@ -177,20 +177,6 @@ class TestForwardPass:
 
             assert output.shape == (B, 1)
 
-    def test_deterministic(self):
-        """Same input should produce same output (deterministic)."""
-        from src.models.heads.deterministic_head import DeterministicPredictionHead
-
-        head = DeterministicPredictionHead(d_input=64, d_hidden=32)
-        head.eval()  # Set to eval mode to be sure
-
-        x = torch.randn(8, 64)
-
-        output1 = head(x)
-        output2 = head(x)
-
-        assert torch.allclose(output1, output2), "Outputs should be identical for same input"
-
     def test_output_dtype(self):
         """Output should have same dtype as input."""
         from src.models.heads.deterministic_head import DeterministicPredictionHead
@@ -385,29 +371,21 @@ class TestValidation:
 class TestExtraRepr:
     """Tests for extra_repr method."""
 
-    def test_extra_repr_contains_parameters(self):
-        """extra_repr should show key parameters."""
+    def test_repr_contains_parameters(self):
+        """extra_repr and str should show key parameters."""
         from src.models.heads.deterministic_head import DeterministicPredictionHead
 
         head = DeterministicPredictionHead(d_input=128, d_hidden=256, dropout=0.2)
 
         repr_str = head.extra_repr()
-
         assert "d_input=128" in repr_str
         assert "d_hidden=256" in repr_str
         assert "dropout=0.2" in repr_str
 
-    def test_str_contains_extra_repr(self):
-        """String representation should include extra_repr info."""
-        from src.models.heads.deterministic_head import DeterministicPredictionHead
-
-        head = DeterministicPredictionHead(d_input=64, d_hidden=32)
-
         str_repr = str(head)
-
-        assert "d_input=64" in str_repr
-        assert "d_hidden=32" in str_repr
-        assert "dropout=0.1" in str_repr
+        assert "d_input=128" in str_repr
+        assert "d_hidden=256" in str_repr
+        assert "dropout=0.2" in str_repr
 
 
 class TestNumericalStability:

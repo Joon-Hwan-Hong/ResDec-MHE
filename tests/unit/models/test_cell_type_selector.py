@@ -12,6 +12,8 @@ Tests cover:
 import pytest
 import torch
 
+from src.data.constants import N_CELL_TYPES, N_REGIONS
+
 
 class TestCellTypeSelectorInit:
     """Tests for CellTypeSelector initialization."""
@@ -20,9 +22,9 @@ class TestCellTypeSelectorInit:
         """Selection logits should have shape (n_cell_types,)."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
-        selector = CellTypeSelector(n_cell_types=31)
+        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
 
-        assert selector.selection_logits.shape == (31,)
+        assert selector.selection_logits.shape == (N_CELL_TYPES,)
 
     def test_uniform_init_starts_at_zero(self):
         """Uniform initialization should start with zero logits."""
@@ -36,7 +38,7 @@ class TestCellTypeSelectorInit:
         """Default temperature should be 1.0."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
-        selector = CellTypeSelector(n_cell_types=31)
+        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
 
         assert selector.temperature == 1.0
 
@@ -55,10 +57,10 @@ class TestCellTypeSelectorInit:
         from src.models.components.cell_type_selector import CellTypeSelector
 
         with pytest.raises(ValueError, match="temperature must be positive"):
-            CellTypeSelector(n_cell_types=31, temperature=0)
+            CellTypeSelector(n_cell_types=N_CELL_TYPES, temperature=0)
 
         with pytest.raises(ValueError, match="temperature must be positive"):
-            CellTypeSelector(n_cell_types=31, temperature=-1.0)
+            CellTypeSelector(n_cell_types=N_CELL_TYPES, temperature=-1.0)
 
 
 class TestSelectionWeights:
@@ -68,7 +70,7 @@ class TestSelectionWeights:
         """Selection weights should sum to 1."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
-        selector = CellTypeSelector(n_cell_types=31)
+        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
         weights = selector.get_selection_weights()
 
         assert torch.allclose(weights.sum(), torch.tensor(1.0), atol=1e-5)
@@ -112,8 +114,8 @@ class TestTopKSelection:
         """Should return exactly k indices."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
-        selector = CellTypeSelector(n_cell_types=31)
-        selector.selection_logits.data = torch.randn(31)
+        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
+        selector.selection_logits.data = torch.randn(N_CELL_TYPES)
 
         selected = selector.get_selected_types(k=8)
 
@@ -174,10 +176,10 @@ class TestSelectionMask:
         """Mask should have shape (n_cell_types,)."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
-        selector = CellTypeSelector(n_cell_types=31)
+        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
         mask = selector.get_selection_mask(k=8)
 
-        assert mask.shape == (31,)
+        assert mask.shape == (N_CELL_TYPES,)
 
     def test_mask_has_k_true_values(self):
         """Mask should have exactly k True values."""
@@ -290,7 +292,6 @@ class TestTemperatureEffects:
 
     def test_extra_repr_contains_parameters(self):
         from src.models.components.cell_type_selector import CellTypeSelector
-        from src.data.constants import N_CELL_TYPES
         selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
         repr_str = selector.extra_repr()
         assert f"n_cell_types={N_CELL_TYPES}" in repr_str
@@ -457,7 +458,6 @@ class TestNumericalStability:
 
     def test_near_zero_temperature_numerical_stability(self):
         from src.models.components.cell_type_selector import CellTypeSelector
-        from src.data.constants import N_CELL_TYPES
         selector = CellTypeSelector(n_cell_types=N_CELL_TYPES, temperature=1e-6)
         # Set non-uniform logits to test near-zero temperature behavior
         selector.selection_logits.data = torch.randn(N_CELL_TYPES)

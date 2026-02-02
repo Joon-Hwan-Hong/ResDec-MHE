@@ -22,6 +22,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+from src.data.constants import N_CELL_TYPES, N_REGIONS
+
 # Skip entire module if CUDA is not available
 pytestmark = [pytest.mark.mixed_precision, pytest.mark.cuda]
 
@@ -44,11 +46,11 @@ def small_model_config():
     """Small model configuration for fast testing."""
     return {
         'n_genes': 50,
-        'n_cell_types': 31,
+        'n_cell_types': N_CELL_TYPES,
         'd_embed': 32,
         'd_fused': 32,
         'd_cond': 16,
-        'n_regions': 6,
+        'n_regions': N_REGIONS,
         'n_hgt_layers': 1,
         'n_hgt_heads': 4,
         'n_isab_layers': 1,
@@ -60,29 +62,15 @@ def small_model_config():
 
 
 @pytest.fixture
-def sample_inputs(cuda_device):
+def sample_inputs(cuda_device, make_edge_dicts):
     """Create sample inputs on CUDA device."""
-    from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
     B = 2
-    n_regions = 6
-    n_cell_types = 31
+    n_regions = N_REGIONS
+    n_cell_types = N_CELL_TYPES
     n_genes = 50
     max_cells = 10
 
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(B):
-        edge_index_dict = {}
-        edge_attr_dict = {}
-        for src_ct in CELL_TYPE_ORDER[:3]:
-            for dst_ct in CELL_TYPE_ORDER[:3]:
-                for et in ALL_EDGE_TYPES[:2]:
-                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                    edge_index_dict[key] = torch.zeros(2, 5, dtype=torch.long, device=cuda_device)
-                    edge_attr_dict[key] = torch.rand(5, 1, device=cuda_device)
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
+    edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B, device=cuda_device)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
@@ -127,7 +115,7 @@ class TestAutocastForward:
 
         # Verify outputs
         assert output['mean'].shape == (2, 1)
-        assert output['attention_weights'].shape == (2, 4, 31)
+        assert output['attention_weights'].shape == (2, 4, N_CELL_TYPES)
         assert output['mean'].device.type == "cuda"
 
         # Verify no NaN/inf
@@ -140,17 +128,17 @@ class TestAutocastForward:
         """Test each model component individually with autocast."""
         # Test FusionLayer
         from src.models.fusion.fusion_layer import FusionLayer
-        fusion = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31).to(cuda_device)
+        fusion = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES).to(cuda_device)
         fusion.eval()
 
         with torch.no_grad():
             with torch.amp.autocast('cuda'):
-                pb = torch.randn(4, 31, 64, device=cuda_device)
-                hgt = torch.randn(4, 31, 64, device=cuda_device)
-                cell = torch.randn(4, 31, 64, device=cuda_device)
+                pb = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device)
+                hgt = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device)
+                cell = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device)
                 fusion_out = fusion(pb, hgt, cell)
 
-        assert fusion_out.shape == (4, 31, 128)
+        assert fusion_out.shape == (4, N_CELL_TYPES, 128)
         assert not torch.isnan(fusion_out).any()
 
         # Test PathologyEncoder
@@ -170,18 +158,18 @@ class TestAutocastForward:
         # Test PathologyStratifiedAttention
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
         path_attn = PathologyStratifiedAttention(
-            d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES
         ).to(cuda_device)
         path_attn.eval()
 
         with torch.no_grad():
             with torch.amp.autocast('cuda'):
-                cell_emb = torch.randn(4, 31, 64, device=cuda_device)
+                cell_emb = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device)
                 path_emb = torch.randn(4, 32, device=cuda_device)
                 attended, weights = path_attn(cell_emb, path_emb)
 
         assert attended.shape == (4, 64)
-        assert weights.shape == (4, 4, 31)
+        assert weights.shape == (4, 4, N_CELL_TYPES)
         assert not torch.isnan(attended).any()
         assert not torch.isnan(weights).any()
 
@@ -201,30 +189,30 @@ class TestAutocastForward:
         # Test PseudobulkEncoder
         from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
         pb_enc = PseudobulkEncoder(
-            n_cell_types=31, n_genes=50, d_embed=64, dropout=0.0
+            n_cell_types=N_CELL_TYPES, n_genes=50, d_embed=64, dropout=0.0
         ).to(cuda_device)
         pb_enc.eval()
 
         with torch.no_grad():
             with torch.amp.autocast('cuda'):
-                pb_input = torch.randn(4, 31, 50, device=cuda_device)
+                pb_input = torch.randn(4, N_CELL_TYPES, 50, device=cuda_device)
                 pb_out = pb_enc(pb_input)
 
-        assert pb_out.shape == (4, 31, 64)
+        assert pb_out.shape == (4, N_CELL_TYPES, 64)
         assert not torch.isnan(pb_out).any()
 
         # Test RegionHandler
         from src.models.components.region_handler import RegionHandler
-        region = RegionHandler(d_model=64, n_regions=6).to(cuda_device)
+        region = RegionHandler(d_model=64, n_regions=N_REGIONS).to(cuda_device)
         region.eval()
 
         with torch.no_grad():
             with torch.amp.autocast('cuda'):
-                x = torch.randn(4, 6, 31, 64, device=cuda_device)
-                mask = torch.ones(4, 6, dtype=torch.bool, device=cuda_device)
+                x = torch.randn(4, N_REGIONS, N_CELL_TYPES, 64, device=cuda_device)
+                mask = torch.ones(4, N_REGIONS, dtype=torch.bool, device=cuda_device)
                 pooled, ctx = region(x, mask)
 
-        assert pooled.shape == (4, 31, 64)
+        assert pooled.shape == (4, N_CELL_TYPES, 64)
         assert ctx.shape == (4, 64)
         assert not torch.isnan(pooled).any()
         assert not torch.isnan(ctx).any()
@@ -406,12 +394,12 @@ class TestDtypeConversion:
 
         # Test FusionLayer with .half()
         from src.models.fusion.fusion_layer import FusionLayer
-        fusion = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31).to(cuda_device).half()
+        fusion = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES).to(cuda_device).half()
         fusion.eval()
 
-        pb = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16)
-        hgt = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16)
-        cell = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16)
+        pb = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device, dtype=torch.float16)
+        hgt = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device, dtype=torch.float16)
+        cell = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device, dtype=torch.float16)
 
         with torch.no_grad():
             output = fusion(pb, hgt, cell)
@@ -423,11 +411,11 @@ class TestDtypeConversion:
         # Test PathologyStratifiedAttention with .half()
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
         attn = PathologyStratifiedAttention(
-            d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES
         ).to(cuda_device).half()
         attn.eval()
 
-        cell_emb = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16)
+        cell_emb = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device, dtype=torch.float16)
         path_emb = torch.randn(4, 32, device=cuda_device, dtype=torch.float16)
 
         with torch.no_grad():
@@ -505,7 +493,7 @@ class TestDtypeConversion:
 class TestAMPTrainingLoop:
     """Test AMP training loop behavior over multiple batches."""
 
-    def test_amp_training_loop_multiple_batches(self, small_model_config, cuda_device):
+    def test_amp_training_loop_multiple_batches(self, small_model_config, cuda_device, make_edge_dicts):
         """Test multiple training batches with AMP."""
         from src.models.full_model import CognitiveResilienceModel
 
@@ -516,33 +504,17 @@ class TestAMPTrainingLoop:
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         scaler = torch.amp.GradScaler('cuda')
 
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
         n_batches = 5
         B = 2
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         max_cells = 10
-        n_regions = 6
-
-        def _make_edge_dicts(batch_size, device):
-            eidl, eadl = [], []
-            for _ in range(batch_size):
-                eid, ead = {}, {}
-                for src_ct in CELL_TYPE_ORDER[:3]:
-                    for dst_ct in CELL_TYPE_ORDER[:3]:
-                        for et in ALL_EDGE_TYPES[:2]:
-                            key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                            eid[key] = torch.zeros(2, 5, dtype=torch.long, device=device)
-                            ead[key] = torch.rand(5, 1, device=device)
-                eidl.append(eid)
-                eadl.append(ead)
-            return eidl, eadl
+        n_regions = N_REGIONS
 
         losses = []
         for batch_idx in range(n_batches):
             # Create new batch
-            eidl, eadl = _make_edge_dicts(B, cuda_device)
+            eidl, eadl = make_edge_dicts(B, device=cuda_device)
             inputs = {
                 'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
                 'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
@@ -592,9 +564,9 @@ class TestAMPTrainingLoop:
         # Fixed inputs for overfitting test
         B = 4
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         max_cells = 10
-        n_regions = 6
+        n_regions = N_REGIONS
 
         edge_index_dict_list = []
         edge_attr_dict_list = []
@@ -764,9 +736,9 @@ class TestNumericalStability:
 
         B = 2
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         max_cells = 10
-        n_regions = 6
+        n_regions = N_REGIONS
 
         edge_index_dict_list = []
         edge_attr_dict_list = []
@@ -810,9 +782,9 @@ class TestNumericalStability:
 
         B = 2
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         max_cells = 10
-        n_regions = 6
+        n_regions = N_REGIONS
 
         edge_index_dict_list = []
         edge_attr_dict_list = []
@@ -853,78 +825,76 @@ class TestNumericalStability:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 class TestComponentHalfPrecision:
-    """Test individual components with half precision."""
+    """Test individual components with half precision backward pass."""
 
-    def test_fusion_layer_half_backward(self, cuda_device):
-        """FusionLayer backward pass in half precision."""
-        from src.models.fusion.fusion_layer import FusionLayer
+    @staticmethod
+    def _make_component(name, device):
+        """Factory: build component + inputs for parametrized half-precision test."""
+        if name == "FusionLayer":
+            from src.models.fusion.fusion_layer import FusionLayer
+            module = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES).to(device).half()
+            inputs = [
+                torch.randn(4, N_CELL_TYPES, 64, device=device, dtype=torch.float16, requires_grad=True),
+                torch.randn(4, N_CELL_TYPES, 64, device=device, dtype=torch.float16, requires_grad=True),
+                torch.randn(4, N_CELL_TYPES, 64, device=device, dtype=torch.float16, requires_grad=True),
+            ]
+            return module, inputs
+        elif name == "PathologyStratifiedAttention":
+            from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+            module = PathologyStratifiedAttention(
+                d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES
+            ).to(device).half()
+            inputs = [
+                torch.randn(4, N_CELL_TYPES, 64, device=device, dtype=torch.float16, requires_grad=True),
+                torch.randn(4, 32, device=device, dtype=torch.float16, requires_grad=True),
+            ]
+            return module, inputs
+        elif name == "DeterministicPredictionHead":
+            from src.models.heads.deterministic_head import DeterministicPredictionHead
+            module = DeterministicPredictionHead(d_input=128, d_hidden=64).to(device).half()
+            inputs = [
+                torch.randn(4, 128, device=device, dtype=torch.float16, requires_grad=True),
+            ]
+            return module, inputs
+        elif name == "SetTransformerEncoder":
+            from src.models.components.set_transformer import SetTransformerEncoder
+            module = SetTransformerEncoder(
+                d_input=50, d_model=64, n_heads=4, n_isab_layers=1, n_inducing=8, dropout=0.0
+            ).to(device).half()
+            inputs = [
+                torch.randn(4, 20, 50, device=device, dtype=torch.float16, requires_grad=True),
+                torch.ones(4, 20, dtype=torch.bool, device=device),
+            ]
+            return module, inputs
+        else:
+            raise ValueError(f"Unknown component: {name}")
 
-        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31).to(cuda_device).half()
+    @pytest.mark.parametrize("component_name", [
+        "FusionLayer",
+        "PathologyStratifiedAttention",
+        "DeterministicPredictionHead",
+        "SetTransformerEncoder",
+    ])
+    def test_component_half_backward(self, cuda_device, component_name):
+        """Half-precision backward pass produces finite gradients for {component_name}."""
+        module, inputs = self._make_component(component_name, cuda_device)
 
-        pb = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16, requires_grad=True)
-        hgt = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16, requires_grad=True)
-        cell = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16, requires_grad=True)
-
-        output = layer(pb, hgt, cell)
+        output = module(*inputs)
+        # handle tuple returns (PathologyStratifiedAttention, SetTransformerEncoder)
+        if isinstance(output, tuple):
+            output = output[0]
         loss = output.sum()
         loss.backward()
 
-        assert pb.grad is not None
-        assert hgt.grad is not None
-        assert cell.grad is not None
-        assert not torch.isnan(pb.grad).any()
-
-    def test_pathology_attention_half_backward(self, cuda_device):
-        """PathologyStratifiedAttention backward pass in half precision."""
-        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
-
-        attn = PathologyStratifiedAttention(
-            d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
-        ).to(cuda_device).half()
-
-        cell_emb = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16, requires_grad=True)
-        path_emb = torch.randn(4, 32, device=cuda_device, dtype=torch.float16, requires_grad=True)
-
-        attended, weights = attn(cell_emb, path_emb)
-        loss = attended.sum()
-        loss.backward()
-
-        assert cell_emb.grad is not None
-        assert path_emb.grad is not None
-        assert not torch.isnan(cell_emb.grad).any()
-
-    def test_deterministic_head_half_backward(self, cuda_device):
-        """DeterministicPredictionHead backward pass in half precision."""
-        from src.models.heads.deterministic_head import DeterministicPredictionHead
-
-        head = DeterministicPredictionHead(d_input=128, d_hidden=64).to(cuda_device).half()
-
-        x = torch.randn(4, 128, device=cuda_device, dtype=torch.float16, requires_grad=True)
-
-        output = head(x)
-        loss = output.sum()
-        loss.backward()
-
-        assert x.grad is not None
-        assert not torch.isnan(x.grad).any()
-
-    def test_set_transformer_half_backward(self, cuda_device):
-        """SetTransformerEncoder backward pass in half precision."""
-        from src.models.components.set_transformer import SetTransformerEncoder
-
-        encoder = SetTransformerEncoder(
-            d_input=50, d_model=64, n_heads=4, n_isab_layers=1, n_inducing=8, dropout=0.0
-        ).to(cuda_device).half()
-
-        x = torch.randn(4, 20, 50, device=cuda_device, dtype=torch.float16, requires_grad=True)
-        mask = torch.ones(4, 20, dtype=torch.bool, device=cuda_device)
-
-        output, _ = encoder(x, mask)
-        loss = output.sum()
-        loss.backward()
-
-        assert x.grad is not None
-        assert not torch.isnan(x.grad).any()
+        # Every requires_grad input should have a gradient
+        for inp in inputs:
+            if inp.requires_grad:
+                assert inp.grad is not None, (
+                    f"{component_name}: input with requires_grad=True has no gradient"
+                )
+                assert not torch.isnan(inp.grad).any(), (
+                    f"{component_name}: NaN detected in input gradient"
+                )
 
 
 # -----------------------------------------------------------------------------

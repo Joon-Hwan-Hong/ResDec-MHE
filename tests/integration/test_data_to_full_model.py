@@ -895,7 +895,12 @@ class TestEdgeCasesWithFullModel:
         assert torch.isfinite(output["mean"]).all()
 
     def test_empty_ccc_edges(self, model, n_genes, max_cells):
-        """Samples with no CCC edges should work."""
+        """Samples with no CCC edges should work.
+
+        # Canonical test for empty CCC edges — see also
+        # test_data_to_model.py::TestPipelineEdgeCases::test_pipeline_with_empty_graphs
+        # for collate-only coverage.
+        """
         sample = create_mock_dataset_sample(n_genes=n_genes, max_cells=max_cells)
         sample["ccc_edge_index"] = torch.zeros(2, 0, dtype=torch.long)
         sample["ccc_edge_type"] = torch.zeros(0, dtype=torch.long)
@@ -909,22 +914,10 @@ class TestEdgeCasesWithFullModel:
 
         assert torch.isfinite(output["mean"]).all()
 
-    def test_sparse_cell_masks(self, model, n_genes, max_cells):
-        """Sparse cell masks (few valid cells) should work."""
-        batch = []
-        for i in range(4):
-            sample = create_mock_dataset_sample(n_genes=n_genes, max_cells=max_cells)
-            # Make cell mask very sparse - only 5 valid cells per type
-            sample["cell_mask"] = torch.zeros(N_CELL_TYPES, max_cells, dtype=torch.bool)
-            sample["cell_mask"][:, :5] = True
-            batch.append(sample)
-
-        collated = collate_fn(batch)
-        model_input = convert_collated_batch_to_model_input(collated, n_genes)
-
-        output = model(**model_input)
-
-        assert torch.isfinite(output["mean"]).all()
+    # Sparse cell masks: canonical test in
+    # test_full_model_integration.py::TestNumericalStability::test_sparse_cell_masks
+    # See also test_data_to_model.py::TestEndToEndPipeline::test_pipeline_with_sparse_data
+    # for CellTransformer-only coverage.
 
     def test_only_one_region_available_in_multi_region_format(self, model, n_genes, max_cells):
         """Multi-region collate with only one region available should work."""

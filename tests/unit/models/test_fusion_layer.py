@@ -10,6 +10,8 @@ Test organization:
 import pytest
 import torch
 
+from src.data.constants import N_CELL_TYPES
+
 
 class TestInitialization:
     """Tests for FusionLayer initialization."""
@@ -35,27 +37,27 @@ class TestInitialization:
         """Should store n_cell_types attribute."""
         from src.models.fusion.fusion_layer import FusionLayer
 
-        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
-        assert layer.n_cell_types == 31
+        assert layer.n_cell_types == N_CELL_TYPES
 
 
 class TestForwardPass:
     """Tests for FusionLayer forward pass."""
 
     def test_output_shape(self):
-        """Forward should return [B, 31, d_fused]."""
+        """Forward should return [B, N_CELL_TYPES, d_fused]."""
         from src.models.fusion.fusion_layer import FusionLayer
 
-        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
-        pseudobulk = torch.randn(4, 31, 64)
-        hgt = torch.randn(4, 31, 64)
-        cell = torch.randn(4, 31, 64)
+        pseudobulk = torch.randn(4, N_CELL_TYPES, 64)
+        hgt = torch.randn(4, N_CELL_TYPES, 64)
+        cell = torch.randn(4, N_CELL_TYPES, 64)
 
         output = layer(pseudobulk, hgt, cell)
 
-        assert output.shape == (4, 31, 128)
+        assert output.shape == (4, N_CELL_TYPES, 128)
 
     def test_different_batch_sizes(self):
         """Should work with various batch sizes."""
@@ -64,12 +66,12 @@ class TestForwardPass:
         layer = FusionLayer(d_embed=32, d_fused=64)
 
         for B in [1, 2, 8, 16]:
-            pb = torch.randn(B, 31, 32)
-            hgt = torch.randn(B, 31, 32)
-            cell = torch.randn(B, 31, 32)
+            pb = torch.randn(B, N_CELL_TYPES, 32)
+            hgt = torch.randn(B, N_CELL_TYPES, 32)
+            cell = torch.randn(B, N_CELL_TYPES, 32)
 
             output = layer(pb, hgt, cell)
-            assert output.shape == (B, 31, 64)
+            assert output.shape == (B, N_CELL_TYPES, 64)
 
     def test_output_is_normalized(self):
         """Output should have approximately zero mean and unit variance per feature."""
@@ -77,9 +79,9 @@ class TestForwardPass:
 
         layer = FusionLayer(d_embed=64, d_fused=128)
 
-        pb = torch.randn(32, 31, 64)
-        hgt = torch.randn(32, 31, 64)
-        cell = torch.randn(32, 31, 64)
+        pb = torch.randn(32, N_CELL_TYPES, 64)
+        hgt = torch.randn(32, N_CELL_TYPES, 64)
+        cell = torch.randn(32, N_CELL_TYPES, 64)
 
         output = layer(pb, hgt, cell)
 
@@ -100,9 +102,9 @@ class TestGradientFlow:
 
         layer = FusionLayer(d_embed=32, d_fused=64)
 
-        pb = torch.randn(2, 31, 32, requires_grad=True)
-        hgt = torch.randn(2, 31, 32, requires_grad=True)
-        cell = torch.randn(2, 31, 32, requires_grad=True)
+        pb = torch.randn(2, N_CELL_TYPES, 32, requires_grad=True)
+        hgt = torch.randn(2, N_CELL_TYPES, 32, requires_grad=True)
+        cell = torch.randn(2, N_CELL_TYPES, 32, requires_grad=True)
 
         output = layer(pb, hgt, cell)
         loss = output.sum()
@@ -121,9 +123,9 @@ class TestGradientFlow:
 
         layer = FusionLayer(d_embed=32, d_fused=64)
 
-        pb = torch.randn(2, 31, 32)
-        hgt = torch.randn(2, 31, 32)
-        cell = torch.randn(2, 31, 32)
+        pb = torch.randn(2, N_CELL_TYPES, 32)
+        hgt = torch.randn(2, N_CELL_TYPES, 32)
+        cell = torch.randn(2, N_CELL_TYPES, 32)
 
         output = layer(pb, hgt, cell)
         loss = output.sum()
@@ -135,7 +137,6 @@ class TestGradientFlow:
     def test_mismatched_d_embed_raises_error(self):
         """Inputs with wrong feature dimension should raise RuntimeError."""
         from src.models.fusion.fusion_layer import FusionLayer
-        from src.data.constants import N_CELL_TYPES
 
         layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
@@ -148,7 +149,6 @@ class TestGradientFlow:
     def test_all_three_branches_contribute_to_output(self):
         """Changing any single branch input should change the output."""
         from src.models.fusion.fusion_layer import FusionLayer
-        from src.data.constants import N_CELL_TYPES
 
         layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
@@ -209,11 +209,11 @@ class TestValidation:
 
         # 2D input for pseudobulk
         with pytest.raises(ValueError, match="Expected 3D input for pseudobulk_emb"):
-            layer(torch.randn(31, 32), torch.randn(2, 31, 32), torch.randn(2, 31, 32))
+            layer(torch.randn(N_CELL_TYPES, 32), torch.randn(2, N_CELL_TYPES, 32), torch.randn(2, N_CELL_TYPES, 32))
 
         # 4D input for pseudobulk
         with pytest.raises(ValueError, match="Expected 3D input for pseudobulk_emb"):
-            layer(torch.randn(2, 1, 31, 32), torch.randn(2, 31, 32), torch.randn(2, 31, 32))
+            layer(torch.randn(2, 1, N_CELL_TYPES, 32), torch.randn(2, N_CELL_TYPES, 32), torch.randn(2, N_CELL_TYPES, 32))
 
     def test_invalid_input_dimension_hgt(self):
         """Should raise ValueError for non-3D hgt_emb input."""
@@ -223,7 +223,7 @@ class TestValidation:
 
         # 2D input for hgt
         with pytest.raises(ValueError, match="Expected 3D input for hgt_emb"):
-            layer(torch.randn(2, 31, 32), torch.randn(31, 32), torch.randn(2, 31, 32))
+            layer(torch.randn(2, N_CELL_TYPES, 32), torch.randn(N_CELL_TYPES, 32), torch.randn(2, N_CELL_TYPES, 32))
 
     def test_invalid_input_dimension_cell(self):
         """Should raise ValueError for non-3D cell_emb input."""
@@ -233,16 +233,16 @@ class TestValidation:
 
         # 2D input for cell
         with pytest.raises(ValueError, match="Expected 3D input for cell_emb"):
-            layer(torch.randn(2, 31, 32), torch.randn(2, 31, 32), torch.randn(31, 32))
+            layer(torch.randn(2, N_CELL_TYPES, 32), torch.randn(2, N_CELL_TYPES, 32), torch.randn(N_CELL_TYPES, 32))
 
     def test_invalid_cell_type_count(self):
         """Should raise ValueError when n_cell_types doesn't match input."""
         from src.models.fusion.fusion_layer import FusionLayer
 
-        layer = FusionLayer(d_embed=32, d_fused=64, n_cell_types=31)
+        layer = FusionLayer(d_embed=32, d_fused=64, n_cell_types=N_CELL_TYPES)
 
         # Wrong number of cell types
-        with pytest.raises(ValueError, match="Expected 31 cell types"):
+        with pytest.raises(ValueError, match=f"Expected {N_CELL_TYPES} cell types"):
             layer(torch.randn(2, 20, 32), torch.randn(2, 20, 32), torch.randn(2, 20, 32))
 
 
@@ -253,20 +253,20 @@ class TestExtraRepr:
         """Should return informative string representation."""
         from src.models.fusion.fusion_layer import FusionLayer
 
-        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
         repr_str = layer.extra_repr()
 
         assert "d_embed=64" in repr_str
         assert "d_fused=128" in repr_str
-        assert "n_cell_types=31" in repr_str
+        assert f"n_cell_types={N_CELL_TYPES}" in repr_str
 
     def test_stored_attributes(self):
         """Should store d_embed and d_fused as attributes for debugging."""
         from src.models.fusion.fusion_layer import FusionLayer
 
-        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
         assert layer.d_embed == 64
         assert layer.d_fused == 128
-        assert layer.n_cell_types == 31
+        assert layer.n_cell_types == N_CELL_TYPES

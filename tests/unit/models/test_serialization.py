@@ -24,6 +24,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from src.data.constants import N_CELL_TYPES, N_REGIONS
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -31,50 +33,15 @@ import torch.optim as optim
 
 
 @pytest.fixture
-def small_model_config():
-    """Small model configuration for fast serialization testing."""
-    return {
-        'n_genes': 50,
-        'n_cell_types': 31,
-        'd_embed': 32,
-        'd_fused': 32,
-        'd_cond': 16,
-        'n_regions': 6,
-        'n_hgt_layers': 1,
-        'n_hgt_heads': 4,
-        'n_isab_layers': 1,
-        'n_inducing_points': 4,
-        'n_attention_heads': 4,
-        'd_head_hidden': 16,
-        'dropout': 0.0,
-    }
-
-
-@pytest.fixture
-def sample_inputs():
+def sample_inputs(make_edge_dicts):
     """Create sample inputs for forward pass testing."""
-    from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
     B = 2
-    n_regions = 6
-    n_cell_types = 31
+    n_regions = N_REGIONS
+    n_cell_types = N_CELL_TYPES
     n_genes = 50
     max_cells = 10
 
-    # Build edge_index_dict_list and edge_attr_dict_list
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(B):
-        edge_index_dict = {}
-        edge_attr_dict = {}
-        for src_ct in CELL_TYPE_ORDER[:3]:
-            for dst_ct in CELL_TYPE_ORDER[:3]:
-                for et in ALL_EDGE_TYPES[:2]:
-                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                    edge_index_dict[key] = torch.zeros(2, 5, dtype=torch.long)
-                    edge_attr_dict[key] = torch.rand(5, 1)
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
+    edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
@@ -279,7 +246,7 @@ class TestModelStateDictShapes:
 def _make_fusion_layer():
     """Create a FusionLayer for serialization testing."""
     from src.models.fusion.fusion_layer import FusionLayer
-    return FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+    return FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
 
 def _make_pathology_encoder():
@@ -292,7 +259,7 @@ def _make_pathology_attention():
     """Create a PathologyStratifiedAttention for serialization testing."""
     from src.models.fusion.pathology_attention import PathologyStratifiedAttention
     return PathologyStratifiedAttention(
-        d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
+        d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES
     )
 
 
@@ -385,10 +352,10 @@ class TestRegionHandlerSerialization:
         """RegionHandler state_dict save/load."""
         from src.models.components.region_handler import RegionHandler
 
-        handler1 = RegionHandler(d_model=128, n_regions=6)
+        handler1 = RegionHandler(d_model=128, n_regions=N_REGIONS)
         state_dict = handler1.state_dict()
 
-        handler2 = RegionHandler(d_model=128, n_regions=6)
+        handler2 = RegionHandler(d_model=128, n_regions=N_REGIONS)
         handler2.load_state_dict(state_dict)
 
         for (name1, param1), (name2, param2) in zip(
@@ -401,7 +368,7 @@ class TestRegionHandlerSerialization:
         """RegionHandler state_dict contains expected keys."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=128, n_regions=6)
+        handler = RegionHandler(d_model=128, n_regions=N_REGIONS)
         state_dict = handler.state_dict()
 
         # Should have region_weights and region_embedding.weight
@@ -412,7 +379,7 @@ class TestRegionHandlerSerialization:
         """RegionHandler learned region weights are preserved."""
         from src.models.components.region_handler import RegionHandler
 
-        handler1 = RegionHandler(d_model=128, n_regions=6)
+        handler1 = RegionHandler(d_model=128, n_regions=N_REGIONS)
 
         # Modify weights
         with torch.no_grad():
@@ -420,7 +387,7 @@ class TestRegionHandlerSerialization:
 
         state_dict = handler1.state_dict()
 
-        handler2 = RegionHandler(d_model=128, n_regions=6)
+        handler2 = RegionHandler(d_model=128, n_regions=N_REGIONS)
         handler2.load_state_dict(state_dict)
 
         assert torch.equal(handler1.region_weights, handler2.region_weights)
@@ -834,7 +801,7 @@ class TestSaveCUDALoadCPU:
         """Save component on GPU, load on CPU."""
         from src.models.fusion.fusion_layer import FusionLayer
 
-        layer1 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31).to(cuda_device)
+        layer1 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES).to(cuda_device)
 
         with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
             temp_path = Path(f.name)
@@ -842,7 +809,7 @@ class TestSaveCUDALoadCPU:
         try:
             torch.save(layer1.state_dict(), temp_path)
 
-            layer2 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+            layer2 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
             layer2.load_state_dict(
                 torch.load(temp_path, map_location='cpu', weights_only=True)
             )
@@ -1002,7 +969,7 @@ class TestLoadedModelSameOutput:
         """Loaded component produces same output as original."""
         from src.models.fusion.fusion_layer import FusionLayer
 
-        layer1 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+        layer1 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
         layer1.eval()
 
         with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
@@ -1012,16 +979,16 @@ class TestLoadedModelSameOutput:
             torch.save(layer1.state_dict(), temp_path)
 
             # Create inputs
-            pb = torch.randn(4, 31, 64)
-            hgt = torch.randn(4, 31, 64)
-            cell = torch.randn(4, 31, 64)
+            pb = torch.randn(4, N_CELL_TYPES, 64)
+            hgt = torch.randn(4, N_CELL_TYPES, 64)
+            cell = torch.randn(4, N_CELL_TYPES, 64)
 
             # Get original output
             with torch.no_grad():
                 output1 = layer1(pb, hgt, cell)
 
             # Load and get output
-            layer2 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+            layer2 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
             layer2.load_state_dict(torch.load(temp_path, weights_only=True))
             layer2.eval()
 
@@ -1151,7 +1118,7 @@ class TestSerializationEdgeCases:
         """Test serialization preserves buffers (non-parameter tensors)."""
         from src.models.components.region_handler import RegionHandler
 
-        handler1 = RegionHandler(d_model=128, n_regions=6)
+        handler1 = RegionHandler(d_model=128, n_regions=N_REGIONS)
 
         # RegionHandler has region_embedding which uses Embedding (has weight buffer)
         state_dict = handler1.state_dict()
@@ -1159,7 +1126,7 @@ class TestSerializationEdgeCases:
         # Should include embedding weight
         assert 'region_embedding.weight' in state_dict
 
-        handler2 = RegionHandler(d_model=128, n_regions=6)
+        handler2 = RegionHandler(d_model=128, n_regions=N_REGIONS)
         handler2.load_state_dict(state_dict)
 
         # Embedding should match

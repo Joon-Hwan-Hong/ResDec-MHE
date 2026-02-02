@@ -354,26 +354,18 @@ class TestEdgeCasesExtended:
 class TestExtraRepr:
     """Tests for extra_repr method."""
 
-    def test_extra_repr_contains_parameters(self):
-        """extra_repr should show key parameters."""
+    def test_repr_contains_parameters(self):
+        """extra_repr and str should show key parameters."""
         from src.models.fusion.pathology_encoder import PathologyEncoder
 
         encoder = PathologyEncoder(n_pathology_features=5, d_region=256, d_cond=128)
 
         repr_str = encoder.extra_repr()
-
         assert "n_pathology_features=5" in repr_str
         assert "d_region=256" in repr_str
         assert "d_cond=128" in repr_str
 
-    def test_str_contains_extra_repr(self):
-        """String representation should include extra_repr info."""
-        from src.models.fusion.pathology_encoder import PathologyEncoder
-
-        encoder = PathologyEncoder(n_pathology_features=3, d_region=128, d_cond=64)
-
         str_repr = str(encoder)
-
-        assert "n_pathology_features=3" in str_repr
-        assert "d_region=128" in str_repr
-        assert "d_cond=64" in str_repr
+        assert "n_pathology_features=5" in str_repr
+        assert "d_region=256" in str_repr
+        assert "d_cond=128" in str_repr

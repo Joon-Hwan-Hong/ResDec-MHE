@@ -20,6 +20,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+from src.data.constants import N_CELL_TYPES, N_REGIONS
+
 
 # =============================================================================
 # FIXTURES
@@ -30,7 +32,7 @@ import torch.nn as nn
 def small_handler():
     """Small handler for fast tests."""
     from src.models.components.region_handler import RegionHandler
-    return RegionHandler(d_model=32, n_regions=6)
+    return RegionHandler(d_model=32, n_regions=N_REGIONS)
 
 
 @pytest.fixture
@@ -38,7 +40,7 @@ def handler_for_training():
     """Handler configured for training tests."""
     from src.models.components.region_handler import RegionHandler
     torch.manual_seed(42)
-    return RegionHandler(d_model=64, n_regions=6)
+    return RegionHandler(d_model=64, n_regions=N_REGIONS)
 
 
 # =============================================================================
@@ -49,37 +51,15 @@ def handler_for_training():
 class TestWeightInitialization:
     """Tests for RegionHandler weight initialization."""
 
-    def test_uniform_initial_weights(self):
-        """All weights should start equal (1/6 for 6 regions)."""
-        from src.models.components.region_handler import RegionHandler
-
-        handler = RegionHandler(d_model=32, n_regions=6)
-        weights = handler.get_region_weights()
-
-        expected = torch.ones(6) / 6
-        assert torch.allclose(weights, expected, atol=1e-6), (
-            f"Initial weights should be uniform 1/6, got {weights.tolist()}"
-        )
-
     def test_initial_weights_sum_to_one(self):
         """Initial softmax weights should sum to 1."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=64, n_regions=6)
+        handler = RegionHandler(d_model=64, n_regions=N_REGIONS)
         weights = handler.get_region_weights()
 
         assert torch.allclose(weights.sum(), torch.tensor(1.0), atol=1e-6), (
             f"Weights should sum to 1.0, got {weights.sum().item()}"
-        )
-
-    def test_raw_weights_initialized_to_zeros(self):
-        """Raw region_weights parameter should be zeros (giving uniform softmax)."""
-        from src.models.components.region_handler import RegionHandler
-
-        handler = RegionHandler(d_model=32, n_regions=6)
-
-        assert torch.allclose(handler.region_weights, torch.zeros(6)), (
-            f"Raw weights should be zeros, got {handler.region_weights.tolist()}"
         )
 
     def test_uniform_init_different_n_regions(self):
@@ -108,15 +88,15 @@ class TestGradientFlow:
         """With multiple regions active, gradients should flow to region_weights."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
 
         # Create input where different regions have different values
         # This ensures gradients will differ per region
-        x = torch.zeros(2, 6, 5, 32)
-        for r in range(6):
+        x = torch.zeros(2, N_REGIONS, 5, 32)
+        for r in range(N_REGIONS):
             x[:, r, :, :] = r * 0.5  # Different value per region
 
-        region_mask = torch.ones(2, 6, dtype=torch.bool)  # All regions active
+        region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)  # All regions active
 
         pooled, _ = handler(x, region_mask)
         loss = pooled.sum()
@@ -124,7 +104,7 @@ class TestGradientFlow:
 
         # Gradient should exist and be non-zero
         assert handler.region_weights.grad is not None, "region_weights.grad is None"
-        assert not torch.allclose(handler.region_weights.grad, torch.zeros(6)), (
+        assert not torch.allclose(handler.region_weights.grad, torch.zeros(N_REGIONS)), (
             "Gradient should be non-zero when multiple regions have different values"
         )
 
@@ -132,11 +112,11 @@ class TestGradientFlow:
         """With single region, gradient to weights is degenerate (all contribute equally post-softmax)."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
 
         # Create input with only one region active
-        x = torch.randn(2, 6, 5, 32)
-        region_mask = torch.zeros(2, 6, dtype=torch.bool)
+        x = torch.randn(2, N_REGIONS, 5, 32)
+        region_mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)
         region_mask[:, 0] = True  # Only region 0 active
 
         pooled, _ = handler(x, region_mask)
@@ -146,28 +126,27 @@ class TestGradientFlow:
         # Gradient should exist (flows through softmax)
         assert handler.region_weights.grad is not None, "region_weights.grad is None"
 
-        # With single region, the output is just x[:, 0] regardless of weight value
-        # The normalized weight is always 1.0 for the active region
-        # So gradient w.r.t. region_weights should be zero (no influence on output)
-        # Note: softmax still produces gradients but they should effectively be zero
-        # because changing the weight doesn't change the normalized result
+        # With single region, the output is just x[:, 0] regardless of weight value.
+        # The normalized weight is always 1.0 for the active region, so gradient
+        # w.r.t. region_weights should be effectively zero (no influence on output).
         grad = handler.region_weights.grad
-        # The gradient exists but is effectively useless for learning when only 1 region
-        # This is expected behavior - single region gives degenerate case
+        assert torch.allclose(grad, torch.zeros_like(grad), atol=1e-6), (
+            f"Expected near-zero gradients for single-region case, got max |grad|={grad.abs().max().item()}"
+        )
 
     def test_partial_region_mask_gradient_selective(self):
         """With partial mask, only active regions' weights should effectively contribute."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
 
         # Create input where only some regions are active
-        x = torch.zeros(2, 6, 5, 32)
-        for r in range(6):
+        x = torch.zeros(2, N_REGIONS, 5, 32)
+        for r in range(N_REGIONS):
             x[:, r, :, :] = r * 0.5
 
         # Only first 3 regions active
-        region_mask = torch.zeros(2, 6, dtype=torch.bool)
+        region_mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)
         region_mask[:, :3] = True
 
         pooled, _ = handler(x, region_mask)
@@ -192,10 +171,10 @@ class TestGradientFlow:
         """Gradient flow should work with various input patterns."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=16, n_regions=6)
+        handler = RegionHandler(d_model=16, n_regions=N_REGIONS)
 
         # Pattern 1: Alternating regions
-        x = torch.randn(4, 6, 3, 16)
+        x = torch.randn(4, N_REGIONS, 3, 16)
         region_mask = torch.tensor([
             [True, False, True, False, True, False],
             [False, True, False, True, False, True],
@@ -223,7 +202,7 @@ class TestWeightEvolutionDuringTraining:
         from src.models.components.region_handler import RegionHandler
 
         torch.manual_seed(42)
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.SGD(handler.parameters(), lr=0.1)
 
         # Store initial weights
@@ -231,11 +210,11 @@ class TestWeightEvolutionDuringTraining:
 
         # Create input with region-dependent signal
         # Region 0 has large positive values, region 5 has large negative
-        x = torch.zeros(4, 6, 5, 32)
-        for r in range(6):
+        x = torch.zeros(4, N_REGIONS, 5, 32)
+        for r in range(N_REGIONS):
             x[:, r, :, :] = (r - 2.5) * 2.0  # Values: -5, -3, -1, 1, 3, 5
 
-        region_mask = torch.ones(4, 6, dtype=torch.bool)
+        region_mask = torch.ones(4, N_REGIONS, dtype=torch.bool)
 
         # Training steps - minimize pooled sum (should increase weight on negative regions)
         for _ in range(10):
@@ -259,11 +238,11 @@ class TestWeightEvolutionDuringTraining:
         from src.models.components.region_handler import RegionHandler
 
         torch.manual_seed(42)
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.Adam(handler.parameters(), lr=0.01)
 
-        x = torch.randn(4, 6, 5, 32)
-        region_mask = torch.ones(4, 6, dtype=torch.bool)
+        x = torch.randn(4, N_REGIONS, 5, 32)
+        region_mask = torch.ones(4, N_REGIONS, dtype=torch.bool)
 
         # Multiple training steps
         for step in range(20):
@@ -287,14 +266,14 @@ class TestWeightEvolutionDuringTraining:
         from src.models.components.region_handler import RegionHandler
 
         torch.manual_seed(123)
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.Adam(handler.parameters(), lr=0.05)
 
         # Create consistent data pattern: region 2 has the "best" signal
         # Target: minimize MSE to target value
         target = torch.ones(4, 5, 32) * 2.0  # Target is 2.0
 
-        x = torch.zeros(4, 6, 5, 32)
+        x = torch.zeros(4, N_REGIONS, 5, 32)
         x[:, 0, :, :] = 0.0   # Region 0: value 0
         x[:, 1, :, :] = 1.0   # Region 1: value 1
         x[:, 2, :, :] = 2.0   # Region 2: value 2 (matches target!)
@@ -302,7 +281,7 @@ class TestWeightEvolutionDuringTraining:
         x[:, 4, :, :] = 4.0   # Region 4: value 4
         x[:, 5, :, :] = 5.0   # Region 5: value 5
 
-        region_mask = torch.ones(4, 6, dtype=torch.bool)
+        region_mask = torch.ones(4, N_REGIONS, dtype=torch.bool)
 
         losses = []
         weight_history = []
@@ -335,12 +314,12 @@ class TestWeightEvolutionDuringTraining:
         from src.models.components.region_handler import RegionHandler
 
         torch.manual_seed(42)
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.Adam(handler.parameters(), lr=0.01)
 
         # Fixed input pattern
-        x = torch.randn(4, 6, 5, 32)
-        region_mask = torch.ones(4, 6, dtype=torch.bool)
+        x = torch.randn(4, N_REGIONS, 5, 32)
+        region_mask = torch.ones(4, N_REGIONS, dtype=torch.bool)
         target = x[:, 0].clone()  # Target is region 0's embedding
 
         # Train for many steps
@@ -382,7 +361,7 @@ class TestRegionImportanceExtraction:
         """Dict should have correct keys (region names)."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         importance = handler.get_region_importance_dict()
 
         # Check type
@@ -398,7 +377,7 @@ class TestRegionImportanceExtraction:
         """Values should sum to 1 and all be positive."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
 
         # Modify weights to non-uniform
         with torch.no_grad():
@@ -418,7 +397,7 @@ class TestRegionImportanceExtraction:
         """Dict values should reflect the current learned weights."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
 
         # Set known weights
         with torch.no_grad():
@@ -435,7 +414,7 @@ class TestRegionImportanceExtraction:
         """Returned dict values should be Python floats (detached from graph)."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         importance = handler.get_region_importance_dict()
 
         for name, value in importance.items():
@@ -461,9 +440,9 @@ class TestIntegrationWithFullModel:
 
         # Setup
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         d_embed = 32
-        n_regions = 6
+        n_regions = N_REGIONS
 
         encoder = PseudobulkEncoder(
             n_cell_types=n_cell_types,
@@ -518,20 +497,20 @@ class TestIntegrationWithFullModel:
         """region_context should differ based on which regions are available."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
 
-        x = torch.randn(2, 6, 5, 32)
+        x = torch.randn(2, N_REGIONS, 5, 32)
 
         # Mask 1: Only region 0
-        mask1 = torch.zeros(2, 6, dtype=torch.bool)
+        mask1 = torch.zeros(2, N_REGIONS, dtype=torch.bool)
         mask1[:, 0] = True
 
         # Mask 2: Only region 5
-        mask2 = torch.zeros(2, 6, dtype=torch.bool)
+        mask2 = torch.zeros(2, N_REGIONS, dtype=torch.bool)
         mask2[:, 5] = True
 
         # Mask 3: All regions
-        mask3 = torch.ones(2, 6, dtype=torch.bool)
+        mask3 = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
         _, context1 = handler(x, mask1)
         _, context2 = handler(x, mask2)
@@ -552,8 +531,8 @@ class TestIntegrationWithFullModel:
         """Changing region weights should change the pooled output."""
         from src.models.components.region_handler import RegionHandler
 
-        handler1 = RegionHandler(d_model=32, n_regions=6)
-        handler2 = RegionHandler(d_model=32, n_regions=6)
+        handler1 = RegionHandler(d_model=32, n_regions=N_REGIONS)
+        handler2 = RegionHandler(d_model=32, n_regions=N_REGIONS)
 
         # Set very different weights using large values to ensure dominance
         # With weight=10.0, softmax gives ~0.9999 to dominant region
@@ -562,8 +541,8 @@ class TestIntegrationWithFullModel:
             handler2.region_weights.copy_(torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 10.0]))
 
         # Same input
-        x = torch.randn(2, 6, 5, 32)
-        region_mask = torch.ones(2, 6, dtype=torch.bool)
+        x = torch.randn(2, N_REGIONS, 5, 32)
+        region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
         pooled1, _ = handler1(x, region_mask)
         pooled2, _ = handler2(x, region_mask)
@@ -590,7 +569,7 @@ class TestIntegrationWithFullModel:
         from src.models.components.region_handler import RegionHandler
 
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
         d_embed = 32
 
         encoder = PseudobulkEncoder(
@@ -598,11 +577,11 @@ class TestIntegrationWithFullModel:
             n_genes=n_genes,
             d_embed=d_embed,
         )
-        region_handler = RegionHandler(d_model=d_embed, n_regions=6)
+        region_handler = RegionHandler(d_model=d_embed, n_regions=N_REGIONS)
 
         # Forward pass
-        region_pseudobulk = torch.randn(2, 6, n_cell_types, n_genes)
-        region_mask = torch.ones(2, 6, dtype=torch.bool)
+        region_pseudobulk = torch.randn(2, N_REGIONS, n_cell_types, n_genes)
+        region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
         B, R, C, G = region_pseudobulk.shape
         encoded = encoder(region_pseudobulk.view(B * R, C, G))
@@ -631,15 +610,15 @@ class TestEdgeCasesLearning:
         """Training should remain stable even with extreme learned weights."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.Adam(handler.parameters(), lr=0.01)
 
         # Set extreme initial weights
         with torch.no_grad():
             handler.region_weights.copy_(torch.tensor([10.0, -10.0, 5.0, -5.0, 0.0, 3.0]))
 
-        x = torch.randn(4, 6, 5, 32)
-        region_mask = torch.ones(4, 6, dtype=torch.bool)
+        x = torch.randn(4, N_REGIONS, 5, 32)
+        region_mask = torch.ones(4, N_REGIONS, dtype=torch.bool)
 
         # Should not crash or produce NaN
         for _ in range(10):
@@ -659,15 +638,15 @@ class TestEdgeCasesLearning:
         from src.models.components.region_handler import RegionHandler
 
         torch.manual_seed(42)
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.Adam(handler.parameters(), lr=0.01)
 
         initial_weights = handler.get_region_weights().detach().clone()
 
-        x = torch.randn(8, 6, 5, 32)
+        x = torch.randn(8, N_REGIONS, 5, 32)
 
         # Varying masks: each sample has different active regions
-        region_mask = torch.zeros(8, 6, dtype=torch.bool)
+        region_mask = torch.zeros(8, N_REGIONS, dtype=torch.bool)
         region_mask[0, [0, 1, 2]] = True      # First 3 regions
         region_mask[1, [3, 4, 5]] = True      # Last 3 regions
         region_mask[2, [0, 2, 4]] = True      # Even regions
@@ -700,11 +679,11 @@ class TestEdgeCasesLearning:
         """Multiple forward passes before backward should work correctly."""
         from src.models.components.region_handler import RegionHandler
 
-        handler = RegionHandler(d_model=32, n_regions=6)
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.SGD(handler.parameters(), lr=0.1)
 
-        x = torch.randn(4, 6, 5, 32)
-        region_mask = torch.ones(4, 6, dtype=torch.bool)
+        x = torch.randn(4, N_REGIONS, 5, 32)
+        region_mask = torch.ones(4, N_REGIONS, dtype=torch.bool)
 
         initial_weights = handler.get_region_weights().detach().clone()
 

@@ -7,6 +7,59 @@ import torch
 import numpy as np
 from pathlib import Path
 
+from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key, N_CELL_TYPES, N_REGIONS
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Factory Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_edge_dicts(batch_size, n_edges=5, device=None):
+    """Create edge_index_dict_list and edge_attr_dict_list for testing."""
+    edge_index_dict_list = []
+    edge_attr_dict_list = []
+    for _ in range(batch_size):
+        edge_index_dict = {}
+        edge_attr_dict = {}
+        for src_ct in CELL_TYPE_ORDER[:3]:
+            for dst_ct in CELL_TYPE_ORDER[:3]:
+                for et in ALL_EDGE_TYPES[:2]:
+                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
+                    idx = torch.zeros(2, n_edges, dtype=torch.long)
+                    attr = torch.rand(n_edges, 1)
+                    if device is not None:
+                        idx = idx.to(device)
+                        attr = attr.to(device)
+                    edge_index_dict[key] = idx
+                    edge_attr_dict[key] = attr
+        edge_index_dict_list.append(edge_index_dict)
+        edge_attr_dict_list.append(edge_attr_dict)
+    return edge_index_dict_list, edge_attr_dict_list
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Factory Fixtures
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def make_edge_dicts():
+    """Factory fixture: returns _make_edge_dicts callable."""
+    return _make_edge_dicts
+
+
+@pytest.fixture
+def small_model_config():
+    """Small model configuration for testing."""
+    return {
+        'n_genes': 50, 'n_cell_types': N_CELL_TYPES, 'd_embed': 32,
+        'd_fused': 32, 'd_cond': 16, 'n_regions': N_REGIONS,
+        'n_hgt_layers': 1, 'n_hgt_heads': 4, 'n_isab_layers': 1,
+        'n_inducing_points': 4, 'n_attention_heads': 4,
+        'd_head_hidden': 16, 'dropout': 0.0,
+    }
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Device and Hardware Fixtures
@@ -45,7 +98,7 @@ def n_genes():
 @pytest.fixture
 def n_cell_types():
     """Number of Allen ABC cell types."""
-    return 31
+    return N_CELL_TYPES
 
 
 @pytest.fixture
@@ -92,7 +145,7 @@ def dummy_cognition(batch_size):
 @pytest.fixture
 def dummy_region_mask(batch_size):
     """Dummy region mask (only PFC available)."""
-    mask = torch.zeros(batch_size, 6, dtype=torch.bool)
+    mask = torch.zeros(batch_size, N_REGIONS, dtype=torch.bool)
     mask[:, 0] = True  # PFC always available
     return mask
 

@@ -12,6 +12,7 @@ Tests cover:
 import pytest
 import torch
 
+from src.data.constants import N_CELL_TYPES
 from src.models.branches.cell_transformer import CellTransformer
 
 
@@ -25,7 +26,7 @@ def transformer_config():
     """Standard transformer configuration."""
     return {
         "n_genes": 100,
-        "n_cell_types": 31,
+        "n_cell_types": N_CELL_TYPES,
         "d_model": 64,
         "n_heads": 4,
         "n_isab_layers": 2,
@@ -325,7 +326,7 @@ class TestEdgeCases:
     def test_invalid_n_genes(self):
         """Test error on invalid n_genes."""
         with pytest.raises(ValueError, match="n_genes must be positive"):
-            CellTransformer(n_genes=0, n_cell_types=31)
+            CellTransformer(n_genes=0, n_cell_types=N_CELL_TYPES)
 
     def test_invalid_n_cell_types(self):
         """Test error on invalid n_cell_types."""
@@ -445,8 +446,6 @@ class TestDeterminism:
 
     def test_dropout_train_vs_eval_differs(self):
         """Outputs should differ between train/eval with dropout > 0."""
-        from src.data.constants import N_CELL_TYPES
-
         ct = CellTransformer(
             n_genes=50,
             n_cell_types=N_CELL_TYPES,
@@ -482,3 +481,98 @@ class TestExtraRepr:
         assert str(small_config["n_genes"]) in repr_str
         assert str(small_config["n_cell_types"]) in repr_str
         assert "temperature" in repr_str
+
+
+# ============================================================================
+# CT-A2: apply_selection_weights gradient blocking contract
+# ============================================================================
+
+
+class TestSelectionWeightGradientBlocking:
+    """
+    CT-A2: Verify that apply_selection_weights controls gradient flow to
+    CellTypeSelector.selection_logits.
+
+    Design contract:
+        - apply_selection_weights=True  -> selection_logits receive gradients
+        - apply_selection_weights=False -> selection_logits do NOT receive gradients
+
+    This ensures ablation studies can disable cell-type selection learning
+    without affecting the rest of the model.
+    """
+
+    def test_selection_weights_true_grads_flow_to_selector(self, small_config):
+        """With apply_selection_weights=True, selector.selection_logits must receive gradients."""
+        transformer = CellTransformer(**small_config)
+        transformer.train()
+
+        cells = torch.randn(2, small_config["n_cell_types"], 20, small_config["n_genes"])
+        mask = torch.ones(2, small_config["n_cell_types"], 20, dtype=torch.bool)
+
+        embeddings, _, _ = transformer(cells, mask, apply_selection_weights=True)
+        loss = embeddings.sum()
+        loss.backward()
+
+        logits_grad = transformer.selector.selection_logits.grad
+        assert logits_grad is not None, (
+            "selection_logits.grad is None when apply_selection_weights=True — "
+            "gradient must flow to CellTypeSelector"
+        )
+        assert not torch.all(logits_grad == 0), (
+            "selection_logits.grad is all zeros when apply_selection_weights=True — "
+            "gradient must be non-trivial"
+        )
+
+    def test_selection_weights_false_blocks_grads_to_selector(self, small_config):
+        """With apply_selection_weights=False, selector.selection_logits must NOT receive gradients."""
+        transformer = CellTransformer(**small_config)
+        transformer.train()
+
+        cells = torch.randn(2, small_config["n_cell_types"], 20, small_config["n_genes"])
+        mask = torch.ones(2, small_config["n_cell_types"], 20, dtype=torch.bool)
+
+        embeddings, _, _ = transformer(cells, mask, apply_selection_weights=False)
+        loss = embeddings.sum()
+        loss.backward()
+
+        logits_grad = transformer.selector.selection_logits.grad
+        assert logits_grad is None or torch.all(logits_grad == 0), (
+            f"selection_logits received non-zero gradient when apply_selection_weights=False — "
+            f"this violates the CT-A2 design contract (grad={logits_grad})"
+        )
+
+    def test_selection_weight_gradient_blocking_same_model(self, small_config):
+        """
+        Both modes on the same model instance: first with=False (no grad),
+        then with=True (grad flows). Confirms the flag is the sole control.
+        """
+        transformer = CellTransformer(**small_config)
+        transformer.train()
+
+        cells = torch.randn(2, small_config["n_cell_types"], 20, small_config["n_genes"])
+        mask = torch.ones(2, small_config["n_cell_types"], 20, dtype=torch.bool)
+
+        # --- Pass 1: apply_selection_weights=False ---
+        transformer.zero_grad()
+        embeddings_off, _, _ = transformer(cells, mask, apply_selection_weights=False)
+        loss_off = embeddings_off.sum()
+        loss_off.backward()
+
+        grad_off = transformer.selector.selection_logits.grad
+        assert grad_off is None or torch.all(grad_off == 0), (
+            "selection_logits should have no gradient with apply_selection_weights=False"
+        )
+
+        # --- Pass 2: apply_selection_weights=True ---
+        transformer.zero_grad()
+        embeddings_on, _, _ = transformer(cells, mask, apply_selection_weights=True)
+        loss_on = embeddings_on.sum()
+        loss_on.backward()
+
+        grad_on = transformer.selector.selection_logits.grad
+        assert grad_on is not None, (
+            "selection_logits.grad is None with apply_selection_weights=True"
+        )
+        assert not torch.all(grad_on == 0), (
+            "selection_logits.grad is all zeros with apply_selection_weights=True"
+        )

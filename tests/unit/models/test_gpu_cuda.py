@@ -26,6 +26,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+from src.data.constants import N_CELL_TYPES, N_REGIONS
+
 # Skip entire module if CUDA is not available
 pytestmark = pytest.mark.cuda
 
@@ -52,49 +54,15 @@ def second_cuda_device():
 
 
 @pytest.fixture
-def small_model_config():
-    """Small model configuration for fast GPU testing."""
-    return {
-        'n_genes': 50,
-        'n_cell_types': 31,
-        'd_embed': 32,
-        'd_fused': 32,
-        'd_cond': 16,
-        'n_regions': 6,
-        'n_hgt_layers': 1,
-        'n_hgt_heads': 4,
-        'n_isab_layers': 1,
-        'n_inducing_points': 4,
-        'n_attention_heads': 4,
-        'd_head_hidden': 16,
-        'dropout': 0.0,
-    }
-
-
-@pytest.fixture
-def sample_inputs(cuda_device):
+def sample_inputs(cuda_device, make_edge_dicts):
     """Create sample inputs on CUDA device."""
-    from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
     B = 2
-    n_regions = 6
-    n_cell_types = 31
+    n_regions = N_REGIONS
+    n_cell_types = N_CELL_TYPES
     n_genes = 50
     max_cells = 10
 
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(B):
-        edge_index_dict = {}
-        edge_attr_dict = {}
-        for src_ct in CELL_TYPE_ORDER[:3]:
-            for dst_ct in CELL_TYPE_ORDER[:3]:
-                for et in ALL_EDGE_TYPES[:2]:
-                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                    edge_index_dict[key] = torch.zeros(2, 5, dtype=torch.long, device=cuda_device)
-                    edge_attr_dict[key] = torch.rand(5, 1, device=cuda_device)
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
+    edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B, device=cuda_device)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
@@ -242,8 +210,8 @@ class TestModelToGPU:
 
 # ── Factory functions for parametrized component CUDA tests ──────────────────
 
-N_CT = 31   # local shorthand matching small_model_config
-N_REG = 6
+N_CT = N_CELL_TYPES   # local shorthand matching small_model_config
+N_REG = N_REGIONS
 
 
 def _make_fusion_layer():
@@ -308,12 +276,80 @@ def _deterministic_head_inputs(device):
     )
 
 
+def _make_pseudobulk_encoder():
+    from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+    return PseudobulkEncoder(n_cell_types=N_CT, n_genes=50, d_embed=64, dropout=0.0)
+
+
+def _pseudobulk_encoder_inputs(device):
+    return (torch.randn(4, N_CT, 50, device=device, requires_grad=True),)
+
+
+def _make_cell_transformer():
+    from src.models.branches.cell_transformer import CellTransformer
+    return CellTransformer(
+        n_genes=50, n_cell_types=N_CT, d_model=64,
+        n_heads=4, n_isab_layers=1, n_inducing=8, dropout=0.0,
+    )
+
+
+def _cell_transformer_inputs(device):
+    return (
+        torch.randn(4, N_CT, 10, 50, device=device, requires_grad=True),
+        torch.ones(4, N_CT, 10, dtype=torch.bool, device=device),
+    )
+
+
+def _make_set_transformer_encoder():
+    from src.models.components.set_transformer import SetTransformerEncoder
+    return SetTransformerEncoder(
+        d_input=50, d_model=64, n_heads=4,
+        n_isab_layers=1, n_inducing=8, dropout=0.0,
+    )
+
+
+def _set_transformer_encoder_inputs(device):
+    return (
+        torch.randn(4, 20, 50, device=device, requires_grad=True),
+        torch.ones(4, 20, dtype=torch.bool, device=device),
+    )
+
+
+def _make_isab():
+    from src.models.components.set_transformer import ISAB
+    return ISAB(d_model=64, n_heads=4, n_inducing=8, dropout=0.0)
+
+
+def _isab_inputs(device):
+    return (
+        torch.randn(4, 20, 64, device=device, requires_grad=True),
+        torch.ones(4, 20, dtype=torch.bool, device=device),
+    )
+
+
+def _make_pma():
+    from src.models.components.set_transformer import PMA
+    return PMA(d_model=64, n_heads=4, n_seeds=1, dropout=0.0)
+
+
+def _pma_inputs(device):
+    return (
+        torch.randn(4, 20, 64, device=device, requires_grad=True),
+        torch.ones(4, 20, dtype=torch.bool, device=device),
+    )
+
+
 COMPONENT_CUDA_CASES = [
     ("FusionLayer", _make_fusion_layer, _fusion_inputs),
     ("PathologyEncoder", _make_pathology_encoder, _pathology_encoder_inputs),
     ("PathologyAttention", _make_pathology_attention, _pathology_attention_inputs),
     ("RegionHandler", _make_region_handler, _region_handler_inputs),
     ("DeterministicHead", _make_deterministic_head, _deterministic_head_inputs),
+    ("PseudobulkEncoder", _make_pseudobulk_encoder, _pseudobulk_encoder_inputs),
+    ("CellTransformer", _make_cell_transformer, _cell_transformer_inputs),
+    ("SetTransformerEncoder", _make_set_transformer_encoder, _set_transformer_encoder_inputs),
+    ("ISAB", _make_isab, _isab_inputs),
+    ("PMA", _make_pma, _pma_inputs),
 ]
 
 
@@ -430,7 +466,7 @@ class TestMultiGPU:
 
         B = 2
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
 
         def create_inputs(device):
             from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
@@ -450,8 +486,8 @@ class TestMultiGPU:
                 edge_attr_dict_list.append(ead)
 
             return {
-                'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes, device=device),
-                'region_mask': torch.ones(B, 6, dtype=torch.bool, device=device),
+                'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=device),
+                'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=device),
                 'edge_index_dict_list': edge_index_dict_list,
                 'edge_attr_dict_list': edge_attr_dict_list,
                 'cells': torch.randn(B, n_cell_types, 10, n_genes, device=device),
@@ -490,21 +526,21 @@ class TestMultiGPU:
         """
         from src.models.fusion.fusion_layer import FusionLayer
 
-        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31).cuda()
+        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES).cuda()
         parallel_layer = nn.DataParallel(layer, device_ids=[0, 1])
 
         # Create inputs with larger batch size for parallelism
         B = 8  # Larger batch to be split across GPUs
-        pseudobulk = torch.randn(B, 31, 64).cuda()
-        hgt = torch.randn(B, 31, 64).cuda()
-        cell = torch.randn(B, 31, 64).cuda()
+        pseudobulk = torch.randn(B, N_CELL_TYPES, 64).cuda()
+        hgt = torch.randn(B, N_CELL_TYPES, 64).cuda()
+        cell = torch.randn(B, N_CELL_TYPES, 64).cuda()
 
         with torch.no_grad():
             output = parallel_layer(pseudobulk, hgt, cell)
 
         # Output should be on cuda:0 (primary device)
         assert output.device.index == 0
-        assert output.shape == (B, 31, 128)
+        assert output.shape == (B, N_CELL_TYPES, 128)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -528,7 +564,7 @@ class TestCUDAMemory:
 
         B = 2
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
 
         from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
 
@@ -547,8 +583,8 @@ class TestCUDAMemory:
             edge_attr_dict_list.append(ead)
 
         inputs = {
-            'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes, device=cuda_device),
-            'region_mask': torch.ones(B, 6, dtype=torch.bool, device=cuda_device),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=cuda_device),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=cuda_device),
             'edge_index_dict_list': edge_index_dict_list,
             'edge_attr_dict_list': edge_attr_dict_list,
             'cells': torch.randn(B, n_cell_types, 10, n_genes, device=cuda_device),
@@ -583,7 +619,7 @@ class TestCUDAMemory:
 
         B = 2
         n_genes = 50
-        n_cell_types = 31
+        n_cell_types = N_CELL_TYPES
 
         from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
 
@@ -603,8 +639,8 @@ class TestCUDAMemory:
                 edge_attr_dict_list.append(ead)
 
             return {
-                'region_pseudobulk': torch.randn(B, 6, n_cell_types, n_genes, device=cuda_device),
-                'region_mask': torch.ones(B, 6, dtype=torch.bool, device=cuda_device),
+                'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=cuda_device),
+                'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=cuda_device),
                 'edge_index_dict_list': edge_index_dict_list,
                 'edge_attr_dict_list': edge_attr_dict_list,
                 'cells': torch.randn(B, n_cell_types, 10, n_genes, device=cuda_device),
@@ -663,150 +699,6 @@ class TestCUDAMemory:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestBranchEncodersCUDA:
-    """Test branch encoders on GPU."""
-
-    def test_pseudobulk_encoder_cuda(self, cuda_device):
-        """PseudobulkEncoder forward and backward on GPU."""
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
-
-        encoder = PseudobulkEncoder(
-            n_cell_types=31,
-            n_genes=50,
-            d_embed=64,
-            dropout=0.0,
-        ).to(cuda_device)
-
-        x = torch.randn(4, 31, 50, device=cuda_device, requires_grad=True)
-
-        output = encoder(x)
-
-        # Verify output on CUDA
-        assert output.device.type == "cuda"
-        assert output.shape == (4, 31, 64)
-
-        # Verify gradients flow
-        loss = output.sum()
-        loss.backward()
-
-        assert x.grad is not None
-
-    def test_cell_transformer_cuda(self, cuda_device):
-        """CellTransformer forward and backward on GPU."""
-        from src.models.branches.cell_transformer import CellTransformer
-
-        transformer = CellTransformer(
-            n_genes=50,
-            n_cell_types=31,
-            d_model=64,
-            n_heads=4,
-            n_isab_layers=1,
-            n_inducing=8,
-            dropout=0.0,
-        ).to(cuda_device)
-
-        cells = torch.randn(4, 31, 10, 50, device=cuda_device, requires_grad=True)
-        cell_mask = torch.ones(4, 31, 10, dtype=torch.bool, device=cuda_device)
-
-        output, selection_weights, _ = transformer(cells, cell_mask)
-
-        # Verify outputs on CUDA
-        assert output.device.type == "cuda"
-        assert output.shape == (4, 31, 64)
-
-        # Verify gradients flow
-        loss = output.sum()
-        loss.backward()
-
-        assert cells.grad is not None
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestSetTransformerCUDA:
-    """Test SetTransformer components on GPU."""
-
-    def test_set_transformer_encoder_cuda(self, cuda_device):
-        """SetTransformerEncoder forward and backward on GPU."""
-        from src.models.components.set_transformer import SetTransformerEncoder
-
-        encoder = SetTransformerEncoder(
-            d_input=50,
-            d_model=64,
-            n_heads=4,
-            n_isab_layers=1,
-            n_inducing=8,
-            dropout=0.0,
-        ).to(cuda_device)
-
-        x = torch.randn(4, 20, 50, device=cuda_device, requires_grad=True)
-        mask = torch.ones(4, 20, dtype=torch.bool, device=cuda_device)
-
-        output, attention = encoder(x, mask)
-
-        # Verify output on CUDA
-        assert output.device.type == "cuda"
-        assert output.shape == (4, 64)
-
-        # Verify gradients flow
-        loss = output.sum()
-        loss.backward()
-
-        assert x.grad is not None
-
-    def test_isab_cuda(self, cuda_device):
-        """ISAB forward and backward on GPU."""
-        from src.models.components.set_transformer import ISAB
-
-        isab = ISAB(
-            d_model=64,
-            n_heads=4,
-            n_inducing=8,
-            dropout=0.0,
-        ).to(cuda_device)
-
-        x = torch.randn(4, 20, 64, device=cuda_device, requires_grad=True)
-        mask = torch.ones(4, 20, dtype=torch.bool, device=cuda_device)
-
-        output = isab(x, mask)
-
-        # Verify output on CUDA
-        assert output.device.type == "cuda"
-        assert output.shape == (4, 20, 64)
-
-        # Verify gradients flow
-        loss = output.sum()
-        loss.backward()
-
-        assert x.grad is not None
-
-    def test_pma_cuda(self, cuda_device):
-        """PMA forward and backward on GPU."""
-        from src.models.components.set_transformer import PMA
-
-        pma = PMA(
-            d_model=64,
-            n_heads=4,
-            n_seeds=1,
-            dropout=0.0,
-        ).to(cuda_device)
-
-        x = torch.randn(4, 20, 64, device=cuda_device, requires_grad=True)
-        mask = torch.ones(4, 20, dtype=torch.bool, device=cuda_device)
-
-        output, attention = pma(x, mask)
-
-        # Verify output on CUDA
-        assert output.device.type == "cuda"
-        assert output.shape == (4, 1, 64)
-
-        # Verify gradients flow
-        loss = output.sum()
-        loss.backward()
-
-        assert x.grad is not None
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 class TestCellTypeSelectorCUDA:
     """Test CellTypeSelector on GPU."""
 
@@ -815,7 +707,7 @@ class TestCellTypeSelectorCUDA:
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             temperature=1.0,
         ).to(cuda_device)
 
@@ -824,7 +716,7 @@ class TestCellTypeSelectorCUDA:
 
         # Verify output on CUDA
         assert weights.device.type == "cuda"
-        assert weights.shape == (31,)
+        assert weights.shape == (N_CELL_TYPES,)
         assert torch.allclose(weights.sum(), torch.tensor(1.0, device=cuda_device), atol=1e-5)
 
     def test_cell_type_selector_gradient_cuda(self, cuda_device):
@@ -832,7 +724,7 @@ class TestCellTypeSelectorCUDA:
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             temperature=1.0,
         ).to(cuda_device)
 
@@ -852,18 +744,18 @@ class TestGeneAttentionGateCUDA:
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             n_genes=50,
             temperature=2.0,
         ).to(cuda_device)
 
-        x = torch.randn(4, 31, 50, device=cuda_device, requires_grad=True)
+        x = torch.randn(4, N_CELL_TYPES, 50, device=cuda_device, requires_grad=True)
 
         output = gate(x)
 
         # Verify outputs on CUDA
         assert output.device.type == "cuda"
-        assert output.shape == (4, 31, 50)
+        assert output.shape == (4, N_CELL_TYPES, 50)
 
         # Verify gradients flow
         loss = output.sum()
@@ -877,7 +769,7 @@ class TestGeneAttentionGateCUDA:
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(
-            n_cell_types=31,
+            n_cell_types=N_CELL_TYPES,
             n_genes=50,
             temperature=2.0,
         ).to(cuda_device)
@@ -886,11 +778,11 @@ class TestGeneAttentionGateCUDA:
 
         # Verify weights on CUDA
         assert weights.device.type == "cuda"
-        assert weights.shape == (31, 50)
+        assert weights.shape == (N_CELL_TYPES, 50)
 
         # Weights should sum to 1 per cell type
         row_sums = weights.sum(dim=1)
-        assert torch.allclose(row_sums, torch.ones(31, device=cuda_device), atol=1e-5)
+        assert torch.allclose(row_sums, torch.ones(N_CELL_TYPES, device=cuda_device), atol=1e-5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -907,16 +799,16 @@ class TestCPUGPUConsistency:
         from src.models.fusion.fusion_layer import FusionLayer
 
         torch.manual_seed(42)
-        layer_cpu = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31)
+        layer_cpu = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
         torch.manual_seed(42)
-        layer_gpu = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31).to(cuda_device)
+        layer_gpu = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES).to(cuda_device)
 
         # Same inputs
         torch.manual_seed(123)
-        pb = torch.randn(4, 31, 64)
-        hgt = torch.randn(4, 31, 64)
-        cell = torch.randn(4, 31, 64)
+        pb = torch.randn(4, N_CELL_TYPES, 64)
+        hgt = torch.randn(4, N_CELL_TYPES, 64)
+        cell = torch.randn(4, N_CELL_TYPES, 64)
 
         # CPU forward
         layer_cpu.eval()
@@ -967,15 +859,15 @@ class TestCPUGPUConsistency:
         from src.models.components.region_handler import RegionHandler
 
         torch.manual_seed(42)
-        handler_cpu = RegionHandler(d_model=64, n_regions=6)
+        handler_cpu = RegionHandler(d_model=64, n_regions=N_REGIONS)
 
         torch.manual_seed(42)
-        handler_gpu = RegionHandler(d_model=64, n_regions=6).to(cuda_device)
+        handler_gpu = RegionHandler(d_model=64, n_regions=N_REGIONS).to(cuda_device)
 
         # Same inputs
         torch.manual_seed(123)
-        x = torch.randn(4, 6, 31, 64)
-        mask = torch.ones(4, 6, dtype=torch.bool)
+        x = torch.randn(4, N_REGIONS, N_CELL_TYPES, 64)
+        mask = torch.ones(4, N_REGIONS, dtype=torch.bool)
 
         # CPU forward
         handler_cpu.eval()
@@ -1003,41 +895,6 @@ class TestCPUGPUConsistency:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 class TestMixedPrecisionBasic:
     """Basic mixed precision tests (more comprehensive tests in test_mixed_precision.py)."""
-
-    def test_model_with_autocast(self, small_model_config, cuda_device, sample_inputs):
-        """Model works with torch.amp.autocast."""
-        from src.models.full_model import CognitiveResilienceModel
-
-        model = CognitiveResilienceModel(**small_model_config, use_bayesian_head=False)
-        model = model.to(cuda_device)
-        model.eval()
-
-        with torch.no_grad():
-            with torch.amp.autocast('cuda'):
-                output = model(**sample_inputs)
-
-        # Verify output exists and has correct shape
-        assert output['mean'].shape == (2, 1)
-        # Output might be float16 or float32 depending on autocast decisions
-        assert output['mean'].device.type == "cuda"
-
-    def test_fusion_layer_half_precision(self, cuda_device):
-        """FusionLayer works with half precision inputs."""
-        from src.models.fusion.fusion_layer import FusionLayer
-
-        layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=31).to(cuda_device)
-        layer = layer.half()  # Convert to float16
-
-        pseudobulk = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16)
-        hgt = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16)
-        cell = torch.randn(4, 31, 64, device=cuda_device, dtype=torch.float16)
-
-        output = layer(pseudobulk, hgt, cell)
-
-        # Verify output
-        assert output.dtype == torch.float16
-        assert output.shape == (4, 31, 128)
-        assert not torch.isnan(output).any()
 
     def test_deterministic_head_half_precision(self, cuda_device):
         """DeterministicPredictionHead works with half precision."""
