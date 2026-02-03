@@ -76,19 +76,3 @@ def set_rng_states(states: dict[str, Any]) -> None:
 
     if "cuda" in states and torch.cuda.is_available():
         torch.cuda.set_rng_state_all(states["cuda"])
-
-
-def worker_init_fn(worker_id: int, base_seed: int = 42) -> None:
-    """
-    Initialization function for DataLoader workers to ensure reproducibility.
-
-    Use as: DataLoader(..., worker_init_fn=lambda w: worker_init_fn(w, seed))
-
-    Args:
-        worker_id: Worker process ID (provided by DataLoader)
-        base_seed: Base seed value
-    """
-    worker_seed = base_seed + worker_id
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-    torch.manual_seed(worker_seed)

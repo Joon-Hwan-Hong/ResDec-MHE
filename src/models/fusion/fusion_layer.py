@@ -23,6 +23,7 @@ class FusionLayer(nn.Module):
         d_embed: int,
         d_fused: int,
         n_cell_types: int = 31,
+        dropout: float = 0.1,
     ):
         super().__init__()
 
@@ -43,6 +44,7 @@ class FusionLayer(nn.Module):
         self.proj = nn.Linear(3 * d_embed, d_fused)
 
         self.layer_norm = nn.LayerNorm(d_fused)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(
         self,
@@ -88,7 +90,7 @@ class FusionLayer(nn.Module):
         # Project to fused dimension: [B, 31, d_fused]
         fused = self.proj(concat)
 
-        return self.layer_norm(fused)
+        return self.dropout(self.layer_norm(fused))
 
     def extra_repr(self) -> str:
         """Return extra representation string for informative repr output."""

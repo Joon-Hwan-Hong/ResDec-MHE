@@ -170,41 +170,199 @@ def load_attention_weights(path: str | Path) -> dict[str, np.ndarray | dict]:
     return result
 
 
-def save_predictions(
+# =============================================================================
+# DataFrame I/O (consolidated utilities)
+# =============================================================================
+
+
+def save_dataframe(
+    df: pd.DataFrame,
     path: str | Path,
-    subject_ids: list[str],
-    means: np.ndarray,
-    stds: np.ndarray,
-    actuals: np.ndarray | None = None,
-    metadata: pd.DataFrame | None = None,
+    fmt: str = "parquet",
 ) -> None:
     """
-    Save model predictions to CSV.
+    Save DataFrame in specified format.
 
     Args:
-        path: Output path for CSV
-        subject_ids: Subject identifiers
-        means: Predicted means [n_subjects]
-        stds: Predicted standard deviations [n_subjects]
-        actuals: Actual values (if available)
-        metadata: Additional metadata columns
+        df: DataFrame to save
+        path: Output path
+        fmt: Format - "parquet" or "csv"
+
+    Raises:
+        ValueError: If format is not supported
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    df = pd.DataFrame({
-        "subject_id": subject_ids,
-        "predicted_mean": means.flatten(),
-        "predicted_std": stds.flatten(),
-    })
+    if fmt == "parquet":
+        df.to_parquet(path, index=False)
+    elif fmt == "csv":
+        df.to_csv(path, index=False)
+    else:
+        raise ValueError(f"Unsupported format: {fmt}. Use 'parquet' or 'csv'.")
 
-    if actuals is not None:
-        df["actual"] = actuals.flatten()
 
-    if metadata is not None:
-        df = pd.concat([df, metadata.reset_index(drop=True)], axis=1)
+def load_dataframe(
+    path: str | Path,
+    fmt: str | None = None,
+) -> pd.DataFrame | None:
+    """
+    Load DataFrame from parquet or CSV file.
 
-    df.to_csv(path, index=False)
+    Supports flexible loading:
+    - If path exists with exact name, load it
+    - If path has no extension, try .parquet then .csv
+    - Returns None if file not found
+
+    Args:
+        path: Path to file (with or without extension)
+        fmt: Optional format override ("parquet" or "csv")
+
+    Returns:
+        DataFrame or None if file not found
+    """
+    path = Path(path)
+
+    # If format specified, use it directly
+    if fmt is not None:
+        target = path.with_suffix(f".{fmt}") if not path.suffix else path
+        if not target.exists():
+            return None
+        return pd.read_parquet(target) if fmt == "parquet" else pd.read_csv(target)
+
+    # Try exact path first
+    if path.exists():
+        if path.suffix == ".parquet":
+            return pd.read_parquet(path)
+        elif path.suffix == ".csv":
+            return pd.read_csv(path)
+        else:
+            # Unknown extension, try to infer
+            try:
+                return pd.read_parquet(path)
+            except Exception:
+                return pd.read_csv(path)
+
+    # Try adding extensions
+    parquet_path = path.with_suffix(".parquet")
+    if parquet_path.exists():
+        return pd.read_parquet(parquet_path)
+
+    csv_path = path.with_suffix(".csv")
+    if csv_path.exists():
+        return pd.read_csv(csv_path)
+
+    return None
+
+
+def save_dataframes_multi_format(
+    df: pd.DataFrame,
+    output_dir: str | Path,
+    name: str,
+    formats: list[str] | None = None,
+) -> dict[str, Path]:
+    """
+    Save DataFrame in multiple formats.
+
+    Args:
+        df: DataFrame to save
+        output_dir: Output directory
+        name: Base filename (without extension)
+        formats: List of formats (default: ["parquet", "csv"])
+
+    Returns:
+        Dict mapping format to saved path
+    """
+    if formats is None:
+        formats = ["parquet", "csv"]
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = {}
+    for fmt in formats:
+        path = output_dir / f"{name}.{fmt}"
+        save_dataframe(df, path, fmt)
+        saved[fmt] = path
+
+    return saved
+
+
+# =============================================================================
+# HDF5 I/O (consolidated utilities)
+# =============================================================================
+
+
+def save_array_hdf5(
+    path: str | Path,
+    arrays: dict[str, np.ndarray],
+    attrs: dict[str, Any] | None = None,
+    compression: str = "gzip",
+    compression_opts: int = 4,
+) -> None:
+    """
+    Save numpy arrays to HDF5 file with compression.
+
+    Args:
+        path: Output path
+        arrays: Dict mapping dataset names to arrays
+        attrs: Optional file-level attributes
+        compression: Compression algorithm
+        compression_opts: Compression level (1-9)
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(path, "w") as f:
+        f.attrs["schema_version"] = "1.0"
+
+        for name, arr in arrays.items():
+            f.create_dataset(
+                name,
+                data=arr,
+                compression=compression,
+                compression_opts=compression_opts,
+            )
+
+        if attrs:
+            for key, value in attrs.items():
+                if isinstance(value, (str, int, float, bool)):
+                    f.attrs[key] = value
+                elif isinstance(value, (list, tuple)) and all(isinstance(x, str) for x in value):
+                    f.attrs[key] = np.array(value, dtype="S64")
+
+
+def load_array_hdf5(path: str | Path) -> dict[str, np.ndarray | dict]:
+    """
+    Load arrays and attributes from HDF5 file.
+
+    Args:
+        path: Path to HDF5 file
+
+    Returns:
+        Dict with arrays and 'attrs' key for file attributes
+    """
+    result = {}
+
+    with h5py.File(path, "r") as f:
+        for key in f.keys():
+            result[key] = f[key][:]
+
+        result["attrs"] = {}
+        for key in f.attrs.keys():
+            val = f.attrs[key]
+            # Decode string arrays
+            if isinstance(val, np.ndarray) and val.dtype.kind == "S":
+                result["attrs"][key] = [x.decode("utf-8") for x in val]
+            else:
+                result["attrs"][key] = val
+
+    return result
+
+
+# =============================================================================
+# JSON I/O
+# =============================================================================
 
 
 def save_json(data: dict | list, path: str | Path) -> None:
