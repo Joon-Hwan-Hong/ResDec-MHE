@@ -361,12 +361,14 @@ def main() -> None:
         num_workers=dl_cfg.get("num_workers", 4),
         pin_memory=dl_cfg.get("pin_memory", True),
         multiregion=True, use_hgt_format=True,
+        prefetch_factor=dl_cfg.get("prefetch_factor", 2),
     )
     val_loader = create_dataloader(
         val_ds, batch_size=dl_cfg.batch_size, shuffle=False,
         num_workers=dl_cfg.get("num_workers", 4),
         pin_memory=dl_cfg.get("pin_memory", True),
         multiregion=True, use_hgt_format=True,
+        prefetch_factor=dl_cfg.get("prefetch_factor", 2),
     )
 
     # Train

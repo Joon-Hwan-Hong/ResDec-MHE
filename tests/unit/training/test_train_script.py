@@ -259,7 +259,7 @@ class TestSetupTrainer:
         train_config.paths.output_dir = str(tmp_path)
         train_config.paths.logs_dir = str(tmp_path / "logs")
         train_config.paths.checkpoint_dir = str(tmp_path / "checkpoints")
-        train_config.reproducibility = {"seed": 42, "deterministic": True, "benchmark": False}
+        train_config.reproducibility = {"deterministic": True, "benchmark": False}
 
         setup_trainer(train_config)
         assert torch.backends.cudnn.benchmark is False

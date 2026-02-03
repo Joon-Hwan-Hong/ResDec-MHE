@@ -30,12 +30,14 @@ def optuna_config():
             "d_fused": 128,
             "n_regions": N_REGIONS,
             "dropout": 0.1,
+            "pseudobulk": {"dropout": 0.1},
             "gene_gate": {"initial_temperature": 2.0},
-            "hgt": {"n_layers": 3, "n_heads": 4},
+            "hgt": {"n_layers": 3, "n_heads": 4, "dropout": 0.1},
             "set_transformer": {
                 "n_isab_layers": 2,
                 "n_inducing_points": 32,
                 "n_heads": 4,
+                "dropout": 0.1,
             },
             "cell_type_selector": {"selection_temperature": 1.0},
             "pathology_attention": {"d_cond": 64, "n_heads": 4},
@@ -295,3 +297,64 @@ class TestBuildTrialConfig:
                   "n_hgt_layers": 2, "beta": 0.9}
         build_trial_config(optuna_config, params)
         assert optuna_config.training.optimizer.lr == original_lr
+
+    def test_build_trial_config_d_embed_updates_both(self, optuna_config):
+        """d_embed compound mapping updates both model.d_embed and model.d_fused."""
+        from scripts.optuna_optimize import build_trial_config
+
+        params = {"d_embed": 256}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.model.d_embed == 256
+        assert trial_config.model.d_fused == 256
+
+    def test_build_trial_config_n_heads_updates_three(self, optuna_config):
+        """n_heads compound mapping updates hgt, pathology_attention, and set_transformer."""
+        from scripts.optuna_optimize import build_trial_config
+
+        params = {"n_heads": 8}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.model.hgt.n_heads == 8
+        assert trial_config.model.pathology_attention.n_heads == 8
+        assert trial_config.model.set_transformer.n_heads == 8
+
+    def test_build_trial_config_dropout_updates_four(self, optuna_config):
+        """dropout compound mapping updates all 4 dropout locations."""
+        from scripts.optuna_optimize import build_trial_config
+
+        params = {"dropout": 0.25}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.model.dropout == 0.25
+        assert trial_config.model.pseudobulk.dropout == 0.25
+        assert trial_config.model.hgt.dropout == 0.25
+        assert trial_config.model.set_transformer.dropout == 0.25
+
+
+class TestCreateStudyPrunerTypes:
+    """Tests for different pruner types in study creation."""
+
+    def test_create_study_uses_median_pruner(self, optuna_config):
+        """Study uses MedianPruner when config specifies median type."""
+        from scripts.optuna_optimize import create_study
+        import optuna
+
+        optuna_config.optuna.pruner = {
+            "type": "median",
+            "n_startup_trials": 5,
+            "n_warmup_steps": 25,
+            "interval_steps": 5,
+        }
+        study = create_study(optuna_config)
+        assert isinstance(study.pruner, optuna.pruners.MedianPruner)
+
+    def test_create_study_median_pruner_warmup_steps(self, optuna_config):
+        """MedianPruner respects n_warmup_steps config."""
+        from scripts.optuna_optimize import create_study
+
+        optuna_config.optuna.pruner = {
+            "type": "median",
+            "n_startup_trials": 5,
+            "n_warmup_steps": 25,
+            "interval_steps": 5,
+        }
+        study = create_study(optuna_config)
+        assert study.pruner._n_warmup_steps == 25

@@ -596,6 +596,7 @@ def create_dataloader(
     drop_last: bool = False,
     multiregion: bool = False,
     use_hgt_format: bool = True,  # Default True - dict format for HGTEncoderBatched
+    prefetch_factor: int | None = 2,
 ) -> torch.utils.data.DataLoader:
     """
     Create DataLoader with appropriate collate function.
@@ -622,6 +623,7 @@ def create_dataloader(
         multiregion: Use multi-region collate function
         use_hgt_format: Use collate_for_hgt which returns dict lists compatible
                         with HGTEncoderBatched (default: True, recommended)
+        prefetch_factor: Number of batches to prefetch per worker (None when num_workers=0)
 
     Returns:
         Configured DataLoader
@@ -636,6 +638,9 @@ def create_dataloader(
     else:
         collate = collate_fn
 
+    # prefetch_factor requires num_workers > 0
+    effective_prefetch = prefetch_factor if num_workers > 0 else None
+
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
@@ -646,6 +651,7 @@ def create_dataloader(
         collate_fn=collate,
         persistent_workers=num_workers > 0,
         worker_init_fn=_worker_init_fn if num_workers > 0 else None,
+        prefetch_factor=effective_prefetch,
     )
 
 

@@ -63,6 +63,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             use_bayesian_head=use_bayesian,
             d_head_hidden=model_cfg.head.d_hidden,
             dropout=model_cfg.get("dropout", 0.1),
+            n_pathology_features=model_cfg.pathology_attention.get("n_pathology_features", 3),
+            n_pma_seeds=model_cfg.set_transformer.get("n_pma_seeds", 1),
         )
 
         # Loss function setup with branching
@@ -81,6 +83,11 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         # Gene gate L1 regularization
         self._gene_gate_l1_lambda = train_cfg.regularization.get("gene_gate_l1", 0.0)
+
+        # NaN handling policy from config
+        error_cfg = config.get("error_handling", {}).get("training", {})
+        self._nan_loss_policy = error_cfg.get("nan_loss", "fail")
+        self._nan_batch_policy = error_cfg.get("nan_batch", "skip")
 
         # Metrics
         self.metrics = ResilienceMetrics()
@@ -115,11 +122,32 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             cognition=batch.get("cognition"),
         )
 
+    def _check_batch_nan(self, batch: dict) -> bool:
+        """Check if batch contains NaN values. Returns True if NaN detected."""
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor) and torch.isnan(value).any():
+                return True
+        return False
+
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
-        """Training step: forward pass + loss computation."""
+        """Training step: forward pass + loss computation with NaN handling."""
+        # Check for NaN in batch inputs
+        if self._nan_batch_policy == "skip" and self._check_batch_nan(batch):
+            logger.warning("NaN detected in batch %d — skipping", batch_idx)
+            return None
+
         output = self._forward_batch(batch)
         loss = self._compute_loss(output, batch["cognition"])
-        self.log("train_loss", loss, prog_bar=True)
+
+        # Check for NaN loss
+        if torch.isnan(loss):
+            if self._nan_loss_policy == "fail":
+                raise ValueError(f"NaN loss detected at batch {batch_idx}")
+            else:
+                logger.warning("NaN loss at batch %d — skipping", batch_idx)
+                return None
+
+        self.log("train_loss", loss, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
@@ -155,14 +183,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             Dict with keys:
             - mean: [B, 1] predicted values
             - std: [B, 1] predicted uncertainty (if Bayesian head)
-            - attention: attention weights dict (if present in model output)
+            - attention_weights: [B, n_heads, n_cell_types] pathology attention (if present)
         """
         output = self._forward_batch(batch)
         result = {"mean": output["mean"]}
         if "std" in output and output["std"] is not None:
             result["std"] = output["std"]
-        if "attention" in output and output["attention"] is not None:
-            result["attention"] = output["attention"]
+        if "attention_weights" in output and output["attention_weights"] is not None:
+            result["attention_weights"] = output["attention_weights"]
         return result
 
     def configure_optimizers(self) -> dict[str, Any]:

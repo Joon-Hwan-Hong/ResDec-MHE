@@ -289,16 +289,16 @@ class TestPredictStep:
         result = module.predict_step(batch, batch_idx=0)
         assert "std" in result
 
-    def test_predict_step_includes_attention_if_present(self, base_config):
-        """predict_step includes attention weights if model provides them."""
+    def test_predict_step_includes_attention_weights(self, base_config):
+        """predict_step includes attention_weights from model output."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         module.eval()
         batch = _make_batch(n_genes=50)
         result = module.predict_step(batch, batch_idx=0)
-        # The model returns attention weights, so they should be in the result
-        if "attention" in result:
-            assert result["attention"] is not None
+        # Model always returns attention_weights
+        assert "attention_weights" in result
+        assert result["attention_weights"] is not None
 
 
 class TestLossBranching:
@@ -410,3 +410,151 @@ class TestGeneGateL1Regularization:
         module = CognitiveResilienceLightningModule(base_config)
         # _gene_gate_l1_lambda should be 0
         assert module._gene_gate_l1_lambda == 0.0
+
+
+class TestBayesianValidationMetrics:
+    """Tests for Bayesian head uncertainty metrics in validation."""
+
+    def test_bayesian_validation_logs_uncertainty_metrics(self, bayesian_config):
+        """Bayesian head validation_step logs uncertainty metrics (mean_std, calibration_error, crps)."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        module.eval()
+
+        logged = {}
+        module.log = lambda name, value, **kwargs: logged.__setitem__(name, value)
+
+        batch = _make_batch(n_genes=50)
+        module.validation_step(batch, batch_idx=0)
+
+        # Bayesian head should produce std, so uncertainty metrics should be logged
+        assert "val_mean_std" in logged
+        assert "val_crps" in logged
+
+
+class TestNaNHandling:
+    """Tests for NaN detection and handling in training_step."""
+
+    def test_nan_loss_policy_fail_raises(self, base_config):
+        """NaN loss with fail policy raises ValueError."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        # nan_batch="fail" so NaN cognition passes through to loss computation
+        base_config.error_handling = {"training": {"nan_loss": "fail", "nan_batch": "fail"}}
+        module = CognitiveResilienceLightningModule(base_config)
+
+        batch = _make_batch(n_genes=50)
+        # Inject NaN into cognition to cause NaN loss
+        batch["cognition"] = torch.full_like(batch["cognition"], float("nan"))
+
+        with pytest.raises(ValueError, match="NaN loss"):
+            module.training_step(batch, batch_idx=0)
+
+    def test_nan_batch_skip_returns_none(self, base_config):
+        """NaN batch with skip policy returns None (skip batch)."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        base_config.error_handling = {"training": {"nan_loss": "fail", "nan_batch": "skip"}}
+        module = CognitiveResilienceLightningModule(base_config)
+
+        batch = _make_batch(n_genes=50)
+        # Inject NaN into input tensor
+        batch["region_pseudobulk"][0, 0, 0, 0] = float("nan")
+
+        result = module.training_step(batch, batch_idx=0)
+        assert result is None
+
+    def test_nan_handling_defaults_without_config(self, base_config):
+        """NaN handling works with defaults when error_handling not in config."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        # base_config has no error_handling section
+        module = CognitiveResilienceLightningModule(base_config)
+        assert module._nan_loss_policy == "fail"
+        assert module._nan_batch_policy == "skip"
+
+
+class TestParameterWiring:
+    """Tests for config-to-model parameter wiring."""
+
+    def test_parameterized_n_pathology_features(self, base_config):
+        """n_pathology_features is wired from config through to model."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        base_config.model.pathology_attention.n_pathology_features = 3
+        module = CognitiveResilienceLightningModule(base_config)
+        assert module.model.pathology_encoder.n_pathology_features == 3
+        # Verify model instantiates and runs with the parameter
+        batch = _make_batch(n_genes=50)
+        loss = module.training_step(batch, batch_idx=0)
+        assert torch.isfinite(loss)
+
+    def test_parameterized_n_pma_seeds(self, base_config):
+        """n_pma_seeds is wired from config through to CellTransformer's SetTransformerEncoder."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        base_config.model.set_transformer.n_pma_seeds = 1
+        module = CognitiveResilienceLightningModule(base_config)
+        assert module.model.cell_transformer.set_encoder.n_pma_seeds == 1
+
+
+class _SyntheticDataset(torch.utils.data.Dataset):
+    """Tiny dataset that returns pre-built batches for integration testing."""
+
+    def __init__(self, n_samples=4, n_genes=50):
+        self.samples = [_make_batch(batch_size=1, n_genes=n_genes) for _ in range(n_samples)]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
+
+def _identity_collate(batch):
+    """Collate that stacks single-sample dicts into a batch."""
+    keys = batch[0].keys()
+    result = {}
+    for key in keys:
+        values = [b[key] for b in batch]
+        if isinstance(values[0], torch.Tensor):
+            result[key] = torch.cat(values, dim=0)
+        elif isinstance(values[0], list):
+            # Flatten list of lists (e.g., edge_index_dict_list)
+            result[key] = [item for sublist in values for item in sublist]
+        else:
+            result[key] = values
+    return result
+
+
+class TestTrainerIntegration:
+    """Integration test: Trainer + LightningModule for 1 epoch."""
+
+    def test_trainer_fit_one_epoch(self, base_config, tmp_path):
+        """Trainer.fit runs 1 epoch with synthetic data without crashing."""
+        import lightning.pytorch as pl
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+
+        module = CognitiveResilienceLightningModule(base_config)
+
+        # Create proper DataLoaders with synthetic data
+        train_ds = _SyntheticDataset(n_samples=4, n_genes=50)
+        val_ds = _SyntheticDataset(n_samples=2, n_genes=50)
+
+        train_loader = torch.utils.data.DataLoader(
+            train_ds, batch_size=2, collate_fn=_identity_collate,
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_ds, batch_size=2, collate_fn=_identity_collate,
+        )
+
+        trainer = pl.Trainer(
+            max_epochs=1,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            enable_checkpointing=False,
+            logger=False,
+            default_root_dir=str(tmp_path),
+        )
+
+        # Should complete without error
+        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+        # Verify training completed
+        assert trainer.current_epoch == 1

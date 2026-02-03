@@ -134,11 +134,11 @@ def build_trial_config(
     - lr -> training.optimizer.lr
     - weight_decay -> training.optimizer.weight_decay
     - d_embed -> model.d_embed + model.d_fused
-    - dropout -> model.dropout
+    - dropout -> model.dropout + model.pseudobulk.dropout + model.hgt.dropout + model.set_transformer.dropout
     - n_hgt_layers -> model.hgt.n_layers
     - beta -> training.loss.beta
     - batch_size -> data.dataloader.batch_size
-    - n_heads -> model.hgt.n_heads + model.pathology_attention.n_heads
+    - n_heads -> model.hgt.n_heads + model.pathology_attention.n_heads + model.set_transformer.n_heads
     - n_inducing -> model.set_transformer.n_inducing_points
     - gene_gate_temp -> model.gene_gate.initial_temperature
 
@@ -151,11 +151,10 @@ def build_trial_config(
     """
     config = OmegaConf.create(OmegaConf.to_container(base_config, resolve=True))
 
-    # Parameter mapping
+    # Parameter mapping (simple 1:1 mappings)
     param_map = {
         "lr": "training.optimizer.lr",
         "weight_decay": "training.optimizer.weight_decay",
-        "dropout": "model.dropout",
         "n_hgt_layers": "model.hgt.n_layers",
         "beta": "training.loss.beta",
         "batch_size": "data.dataloader.batch_size",
@@ -175,6 +174,12 @@ def build_trial_config(
             OmegaConf.update(config, "model.hgt.n_heads", value)
             OmegaConf.update(config, "model.pathology_attention.n_heads", value)
             OmegaConf.update(config, "model.set_transformer.n_heads", value)
+        elif name == "dropout":
+            # Dropout is shared across all branches
+            OmegaConf.update(config, "model.dropout", value)
+            OmegaConf.update(config, "model.pseudobulk.dropout", value)
+            OmegaConf.update(config, "model.hgt.dropout", value)
+            OmegaConf.update(config, "model.set_transformer.dropout", value)
         else:
             logger.warning("Unknown parameter '%s' — skipping", name)
 
@@ -245,7 +250,7 @@ def objective(
             )
         )
 
-        # Trainer for this fold
+        # Trainer for this fold (no checkpointing for trials)
         trainer = pl.Trainer(
             max_epochs=config.training.max_epochs,
             min_epochs=config.training.early_stopping.get("min_epochs", 1),
@@ -256,6 +261,7 @@ def objective(
             callbacks=callbacks,
             enable_progress_bar=False,
             enable_model_summary=False,
+            enable_checkpointing=False,
             logger=False,
             deterministic=config.get("reproducibility", {}).get("deterministic", True),
             benchmark=config.get("reproducibility", {}).get("benchmark", False),
@@ -303,12 +309,14 @@ def objective(
                 num_workers=dl_cfg.get("num_workers", 4),
                 pin_memory=dl_cfg.get("pin_memory", True),
                 multiregion=True, use_hgt_format=True,
+                prefetch_factor=dl_cfg.get("prefetch_factor", 2),
             )
             val_loader = create_dataloader(
                 val_ds, batch_size=dl_cfg.batch_size, shuffle=False,
                 num_workers=dl_cfg.get("num_workers", 4),
                 pin_memory=dl_cfg.get("pin_memory", True),
                 multiregion=True, use_hgt_format=True,
+                prefetch_factor=dl_cfg.get("prefetch_factor", 2),
             )
 
             trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)

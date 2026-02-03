@@ -116,6 +116,8 @@ class CognitiveResilienceModel(nn.Module):
         use_bayesian_head: bool = True,
         d_head_hidden: int = 64,
         dropout: float = 0.1,
+        n_pathology_features: int = 3,
+        n_pma_seeds: int = 1,
         node_types: Optional[list[str]] = None,
         edge_categories: Optional[list[str]] = None,
     ):
@@ -193,6 +195,7 @@ class CognitiveResilienceModel(nn.Module):
             n_heads=n_cell_transformer_heads,
             n_isab_layers=n_isab_layers,
             n_inducing=n_inducing_points,
+            n_pma_seeds=n_pma_seeds,
             dropout=dropout,
             selection_temperature=selection_temperature,
         )
@@ -206,8 +209,8 @@ class CognitiveResilienceModel(nn.Module):
 
         # Pathology Encoder (combines pathology with region context)
         self.pathology_encoder = PathologyEncoder(
-            n_pathology_features=3,  # amyloid, tau, global
-            d_region=d_embed,  # region_context has d_embed dims
+            n_pathology_features=n_pathology_features,
+            d_region=d_embed,
             d_cond=d_cond,
         )
 

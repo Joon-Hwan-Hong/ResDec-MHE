@@ -1207,3 +1207,51 @@ class TestCollateMultiregionWithSentinel:
         assert result["region_mask"][1, 0].item() is True
         assert result["region_mask"][1, 1].item() is False
         assert result["region_mask"][1, 4].item() is True
+
+
+class TestWorkerInitFn:
+    """Tests for DataLoader worker re-seeding."""
+
+    def test_worker_init_fn_seeds_numpy(self):
+        """_worker_init_fn re-seeds numpy RNG for the worker."""
+        from unittest.mock import patch, MagicMock
+        from src.data.collate import _worker_init_fn
+
+        mock_info = MagicMock()
+        mock_info.seed = 12345
+        mock_info.dataset = MagicMock(spec=[])  # no cell_sampler
+
+        with patch("torch.utils.data.get_worker_info", return_value=mock_info):
+            # Should not raise
+            _worker_init_fn(0)
+
+    def test_worker_init_fn_reseeds_cell_sampler(self):
+        """_worker_init_fn re-seeds CellSampler RNG when dataset has one."""
+        from unittest.mock import patch, MagicMock
+        from src.data.collate import _worker_init_fn
+
+        mock_sampler = MagicMock()
+        mock_sampler.rng = None
+
+        mock_dataset = MagicMock()
+        mock_dataset.cell_sampler = mock_sampler
+
+        mock_info = MagicMock()
+        mock_info.seed = 12345
+        mock_info.dataset = mock_dataset
+
+        with patch("torch.utils.data.get_worker_info", return_value=mock_info):
+            _worker_init_fn(0)
+            # RNG should have been replaced
+            assert mock_dataset.cell_sampler.rng is not None
+
+
+class TestCreateDataloaderPrefetch:
+    """Tests for prefetch_factor wiring in create_dataloader."""
+
+    def test_create_dataloader_accepts_prefetch_factor(self):
+        """create_dataloader accepts prefetch_factor parameter."""
+        import inspect
+        from src.data.collate import create_dataloader
+        sig = inspect.signature(create_dataloader)
+        assert "prefetch_factor" in sig.parameters
