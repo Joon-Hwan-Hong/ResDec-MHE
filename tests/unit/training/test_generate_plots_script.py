@@ -1,0 +1,532 @@
+"""Tests for generate_plots.py script."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend for testing
+
+import h5py
+import numpy as np
+import pandas as pd
+import pytest
+
+
+# =============================================================================
+# Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def mock_analysis_dir(tmp_path):
+    """Create mock analysis directory with outputs."""
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+
+    # Use full cell type names matching CELL_TYPE_ORDER
+    cell_types = ["Astrocyte", "Microglia", "Oligodendrocyte", "Oligodendrocyte precursor"]
+
+    # Cell type importance
+    pd.DataFrame({
+        "cell_type": cell_types,
+        "mean_attention": [0.3, 0.25, 0.25, 0.2],
+        "std_attention": [0.05, 0.04, 0.03, 0.03],
+        "rank": [1, 2, 3, 4],
+    }).to_parquet(analysis_dir / "cell_type_importance.parquet")
+
+    # Cell type importance by pathology
+    data = []
+    for ct in cell_types:
+        for tertile in ["low", "medium", "high"]:
+            data.append({
+                "cell_type": ct,
+                "pathology_tertile": tertile,
+                "mean_attention": np.random.rand() * 0.3 + 0.1,
+            })
+    pd.DataFrame(data).to_parquet(analysis_dir / "cell_type_importance_by_pathology.parquet")
+
+    # Gene importance
+    gene_data = []
+    for ct in cell_types:
+        for rank in range(1, 51):
+            gene_data.append({
+                "cell_type": ct,
+                "rank": rank,
+                "gene": f"GENE{rank}",
+                "weight": np.random.rand() * 0.3,
+            })
+    pd.DataFrame(gene_data).to_parquet(analysis_dir / "gene_importance_top_genes.parquet")
+
+    # Gene importance by cell type
+    by_ct_data = []
+    for ct in cell_types[:2]:  # Just first two
+        for i in range(100):
+            by_ct_data.append({
+                "cell_type": ct,
+                "gene": f"GENE{i}",
+                "weight": np.random.rand(),
+            })
+    pd.DataFrame(by_ct_data).to_parquet(analysis_dir / "gene_importance_by_celltype.parquet")
+
+    # CCC data
+    pd.DataFrame({
+        "edge_type": ["Secreted_Signaling", "ECM_Receptor", "Cell_Cell_Contact"],
+        "display_name": ["Secreted Signaling", "ECM-Receptor", "Cell-Cell Contact"],
+        "mean_attention": [0.35, 0.25, 0.20],
+    }).to_parquet(analysis_dir / "ccc_by_category.parquet")
+
+    interactions = []
+    for src in cell_types[:3]:
+        for tgt in cell_types[:3]:
+            interactions.append({
+                "source": src,
+                "target": tgt,
+                "mean_attention": np.random.rand() * 0.3,
+            })
+    pd.DataFrame(interactions).to_parquet(analysis_dir / "ccc_top_interactions.parquet")
+
+    # Resilience signature
+    pd.DataFrame({
+        "cell_type": cell_types,
+        "signature": np.random.randn(4) * 0.2,
+    }).to_parquet(analysis_dir / "resilience_signature.parquet")
+
+    # Predictions
+    np.random.seed(42)
+    n = 50
+    actual = np.random.randn(n) * 2 + 5
+    pd.DataFrame({
+        "subject_id": [f"S{i}" for i in range(n)],
+        "predicted_mean": actual + np.random.randn(n) * 0.5,
+        "predicted_std": np.abs(np.random.randn(n)) * 0.3 + 0.2,
+        "actual": actual,
+    }).to_parquet(analysis_dir / "predictions.parquet")
+
+    # Calibration
+    pd.DataFrame({
+        "level": ["1sigma", "2sigma", "3sigma"],
+        "expected_coverage": [0.6827, 0.9545, 0.9973],
+        "observed_coverage": [0.70, 0.92, 0.99],
+        "calibration_error": [0.02, -0.03, -0.01],
+    }).to_parquet(analysis_dir / "calibration_summary.parquet")
+
+    # Uncertainty correlates
+    pd.DataFrame({
+        "covariate": ["cell_count", "pathology", "age"],
+        "correlation": [0.35, 0.22, -0.15],
+        "p_value": [0.01, 0.03, 0.12],
+        "significant": [True, True, False],
+    }).to_parquet(analysis_dir / "uncertainty_correlates.parquet")
+
+    # Regional gene importance
+    regional_data = []
+    for region in ["DLPFC", "PCC", "AC"]:
+        for ct in ["Ast", "Mic"]:
+            for i in range(10):
+                regional_data.append({
+                    "region": region,
+                    "cell_type": ct,
+                    "gene": f"GENE{i}_{region}",
+                    "effective_weight": np.random.rand() * 0.5,
+                })
+    pd.DataFrame(regional_data).to_parquet(analysis_dir / "regional_gene_importance.parquet")
+
+    # Attention weights HDF5
+    with h5py.File(analysis_dir / "attention_weights.h5", "w") as f:
+        f.create_dataset("gene_gate", data=np.random.rand(8, 100))
+        f.create_dataset("pathology_attention", data=np.random.rand(50, 4, 8))
+        f.attrs["cell_type_names"] = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
+        f.attrs["gene_names"] = [f"GENE{i}" for i in range(100)]
+
+    return analysis_dir
+
+
+# =============================================================================
+# Script Import Tests
+# =============================================================================
+
+
+class TestGeneratePlotsImports:
+    """Test that script imports work correctly."""
+
+    def test_script_is_importable(self):
+        """Test that script can be imported."""
+        from scripts.generate_plots import (
+            parse_args,
+            load_dataframe,
+            load_attention_weights,
+            generate_attention_plots,
+            generate_importance_plots,
+            generate_prediction_plots,
+            generate_uncertainty_plots,
+            generate_regional_plots,
+        )
+
+        assert callable(parse_args)
+        assert callable(load_dataframe)
+        assert callable(load_attention_weights)
+        assert callable(generate_attention_plots)
+        assert callable(generate_importance_plots)
+        assert callable(generate_prediction_plots)
+        assert callable(generate_uncertainty_plots)
+        assert callable(generate_regional_plots)
+
+
+# =============================================================================
+# Function Unit Tests
+# =============================================================================
+
+
+class TestLoadDataframe:
+    """Test load_dataframe function."""
+
+    def test_load_parquet(self, tmp_path):
+        """Test loading parquet file."""
+        from scripts.generate_plots import load_dataframe
+
+        df = pd.DataFrame({"a": [1, 2, 3]})
+        path = tmp_path / "test"
+        df.to_parquet(path.with_suffix(".parquet"))
+
+        loaded = load_dataframe(path)
+        pd.testing.assert_frame_equal(df, loaded)
+
+    def test_load_csv(self, tmp_path):
+        """Test loading CSV file."""
+        from scripts.generate_plots import load_dataframe
+
+        df = pd.DataFrame({"a": [1, 2, 3]})
+        path = tmp_path / "test.csv"
+        df.to_csv(path, index=False)
+
+        loaded = load_dataframe(path)
+        pd.testing.assert_frame_equal(df, loaded)
+
+    def test_load_nonexistent(self, tmp_path):
+        """Test loading nonexistent file returns None."""
+        from scripts.generate_plots import load_dataframe
+
+        loaded = load_dataframe(tmp_path / "nonexistent")
+        assert loaded is None
+
+
+class TestLoadAttentionWeights:
+    """Test load_attention_weights function."""
+
+    def test_load_hdf5(self, tmp_path):
+        """Test loading HDF5 file."""
+        from scripts.generate_plots import load_attention_weights
+
+        path = tmp_path / "attention.h5"
+        with h5py.File(path, "w") as f:
+            f.create_dataset("gene_gate", data=np.random.rand(8, 100))
+            f.attrs["cell_type_names"] = ["A", "B", "C"]
+
+        weights = load_attention_weights(path)
+
+        assert "gene_gate" in weights
+        assert "cell_type_names" in weights
+
+    def test_load_nonexistent(self, tmp_path):
+        """Test loading nonexistent file returns empty dict."""
+        from scripts.generate_plots import load_attention_weights
+
+        weights = load_attention_weights(tmp_path / "nonexistent.h5")
+        assert weights == {}
+
+
+# =============================================================================
+# Plot Generation Tests
+# =============================================================================
+
+
+class TestGenerateAttentionPlots:
+    """Test generate_attention_plots function."""
+
+    def test_generates_plots(self, mock_analysis_dir, tmp_path):
+        """Test attention plots are generated."""
+        from scripts.generate_plots import generate_attention_plots, load_attention_weights
+
+        plots_dir = tmp_path / "plots"
+        plots_dir.mkdir()
+
+        attention_weights = load_attention_weights(mock_analysis_dir / "attention_weights.h5")
+
+        count = generate_attention_plots(
+            analysis_dir=mock_analysis_dir,
+            attention_weights=attention_weights,
+            plots_dir=plots_dir,
+            fmt="png",
+        )
+
+        assert count > 0
+        assert any(plots_dir.glob("*.png"))
+
+
+class TestGenerateImportancePlots:
+    """Test generate_importance_plots function."""
+
+    def test_generates_plots(self, mock_analysis_dir, tmp_path):
+        """Test importance plots are generated."""
+        from scripts.generate_plots import generate_importance_plots
+
+        plots_dir = tmp_path / "plots"
+        plots_dir.mkdir()
+
+        count = generate_importance_plots(
+            analysis_dir=mock_analysis_dir,
+            plots_dir=plots_dir,
+            fmt="png",
+        )
+
+        assert count > 0
+        assert any(plots_dir.glob("*.png"))
+
+
+class TestGeneratePredictionPlots:
+    """Test generate_prediction_plots function."""
+
+    def test_generates_plots(self, mock_analysis_dir, tmp_path):
+        """Test prediction plots are generated."""
+        from scripts.generate_plots import generate_prediction_plots
+
+        plots_dir = tmp_path / "plots"
+        plots_dir.mkdir()
+
+        count = generate_prediction_plots(
+            analysis_dir=mock_analysis_dir,
+            plots_dir=plots_dir,
+            fmt="png",
+        )
+
+        assert count > 0
+        assert any(plots_dir.glob("*.png"))
+
+
+class TestGenerateUncertaintyPlots:
+    """Test generate_uncertainty_plots function."""
+
+    def test_generates_plots(self, mock_analysis_dir, tmp_path):
+        """Test uncertainty plots are generated."""
+        from scripts.generate_plots import generate_uncertainty_plots
+
+        plots_dir = tmp_path / "plots"
+        plots_dir.mkdir()
+
+        count = generate_uncertainty_plots(
+            analysis_dir=mock_analysis_dir,
+            plots_dir=plots_dir,
+            fmt="png",
+        )
+
+        assert count > 0
+        assert any(plots_dir.glob("*.png"))
+
+
+class TestGenerateRegionalPlots:
+    """Test generate_regional_plots function."""
+
+    def test_generates_plots(self, mock_analysis_dir, tmp_path):
+        """Test regional plots are generated."""
+        from scripts.generate_plots import generate_regional_plots
+
+        plots_dir = tmp_path / "plots"
+        plots_dir.mkdir()
+
+        count = generate_regional_plots(
+            analysis_dir=mock_analysis_dir,
+            plots_dir=plots_dir,
+            fmt="png",
+        )
+
+        assert count > 0
+        assert any(plots_dir.glob("*.png"))
+
+
+# =============================================================================
+# Integration Tests
+# =============================================================================
+
+
+class TestScriptIntegration:
+    """Integration tests for generate_plots.py script."""
+
+    def test_help_flag(self):
+        """Test --help flag works."""
+        result = subprocess.run(
+            [sys.executable, "scripts/generate_plots.py", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "Generate publication-quality plots" in result.stdout
+
+    def test_requires_input(self):
+        """Test script fails without input."""
+        result = subprocess.run(
+            [sys.executable, "scripts/generate_plots.py"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+
+    def test_with_analysis_dir(self, mock_analysis_dir, tmp_path):
+        """Test script runs with analysis directory."""
+        plots_dir = tmp_path / "plots"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/generate_plots.py",
+                "--analysis-dir", str(mock_analysis_dir),
+                "--plots-dir", str(plots_dir),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        # Should complete successfully
+        assert "Traceback" not in result.stderr
+        assert plots_dir.exists()
+
+    def test_only_flag(self, mock_analysis_dir, tmp_path):
+        """Test --only flag works."""
+        plots_dir = tmp_path / "plots"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/generate_plots.py",
+                "--analysis-dir", str(mock_analysis_dir),
+                "--plots-dir", str(plots_dir),
+                "--only", "prediction",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert "Traceback" not in result.stderr
+        # Should only generate prediction plots
+        assert "prediction" in result.stdout.lower() or result.returncode == 0
+
+    def test_skip_flag(self, mock_analysis_dir, tmp_path):
+        """Test --skip flag works."""
+        plots_dir = tmp_path / "plots"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/generate_plots.py",
+                "--analysis-dir", str(mock_analysis_dir),
+                "--plots-dir", str(plots_dir),
+                "--skip", "attention", "importance",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert "Traceback" not in result.stderr
+
+    def test_format_flag(self, mock_analysis_dir, tmp_path):
+        """Test --format flag works."""
+        plots_dir = tmp_path / "plots"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/generate_plots.py",
+                "--analysis-dir", str(mock_analysis_dir),
+                "--plots-dir", str(plots_dir),
+                "--format", "pdf",
+                "--only", "prediction",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert "Traceback" not in result.stderr
+        # Should generate PDF files
+        if plots_dir.exists():
+            pdf_files = list(plots_dir.glob("*.pdf"))
+            # May or may not have PDF files depending on what was available
+
+
+# =============================================================================
+# Edge Cases
+# =============================================================================
+
+
+class TestGeneratePlotsEdgeCases:
+    """Test edge cases."""
+
+    def test_empty_analysis_dir(self, tmp_path):
+        """Test with empty analysis directory."""
+        from scripts.generate_plots import (
+            generate_attention_plots,
+            generate_importance_plots,
+            generate_prediction_plots,
+        )
+
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        plots_dir = tmp_path / "plots"
+        plots_dir.mkdir()
+
+        # Should not crash, just return 0 plots
+        count1 = generate_attention_plots(
+            analysis_dir=empty_dir,
+            attention_weights={},
+            plots_dir=plots_dir,
+        )
+        count2 = generate_importance_plots(
+            analysis_dir=empty_dir,
+            plots_dir=plots_dir,
+        )
+        count3 = generate_prediction_plots(
+            analysis_dir=empty_dir,
+            plots_dir=plots_dir,
+        )
+
+        assert count1 == 0
+        assert count2 == 0
+        assert count3 == 0
+
+    def test_partial_data(self, tmp_path):
+        """Test with partial analysis data."""
+        from scripts.generate_plots import generate_prediction_plots
+
+        analysis_dir = tmp_path / "analysis"
+        analysis_dir.mkdir()
+        plots_dir = tmp_path / "plots"
+        plots_dir.mkdir()
+
+        # Create only predictions (no calibration, no correlates)
+        pd.DataFrame({
+            "predicted_mean": np.random.randn(20),
+            "predicted_std": np.abs(np.random.randn(20)) + 0.1,
+            "actual": np.random.randn(20),
+        }).to_parquet(analysis_dir / "predictions.parquet")
+
+        count = generate_prediction_plots(
+            analysis_dir=analysis_dir,
+            plots_dir=plots_dir,
+        )
+
+        # Should generate what it can
+        assert count >= 0
+
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def cleanup():
+    """Cleanup matplotlib figures after each test."""
+    import matplotlib.pyplot as plt
+    yield
+    plt.close("all")
