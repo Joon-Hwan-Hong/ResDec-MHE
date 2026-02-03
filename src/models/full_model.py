@@ -118,6 +118,8 @@ class CognitiveResilienceModel(nn.Module):
         dropout: float = 0.1,
         n_pathology_features: int = 3,
         n_pma_seeds: int = 1,
+        mlp_hidden: list[int] | None = None,
+        use_layer_norm: bool = True,
         node_types: Optional[list[str]] = None,
         edge_categories: Optional[list[str]] = None,
     ):
@@ -162,8 +164,10 @@ class CognitiveResilienceModel(nn.Module):
             n_cell_types=n_cell_types,
             n_genes=n_genes,
             d_embed=d_embed,
+            mlp_hidden=mlp_hidden,
             dropout=dropout,
             temperature=gene_gate_temperature,
+            use_layer_norm=use_layer_norm,
         )
 
         # Region Handler (pools across regions)
@@ -205,6 +209,7 @@ class CognitiveResilienceModel(nn.Module):
             d_embed=d_embed,
             d_fused=d_fused,
             n_cell_types=n_cell_types,
+            dropout=dropout,
         )
 
         # Pathology Encoder (combines pathology with region context)
@@ -212,6 +217,7 @@ class CognitiveResilienceModel(nn.Module):
             n_pathology_features=n_pathology_features,
             d_region=d_embed,
             d_cond=d_cond,
+            dropout=dropout,
         )
 
         # Pathology-Stratified Attention

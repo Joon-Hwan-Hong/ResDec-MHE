@@ -20,6 +20,7 @@ Workflow:
 
 import argparse
 import logging
+import warnings
 from pathlib import Path
 
 import optuna
@@ -44,6 +45,9 @@ def create_study(config: DictConfig, storage: str | None = None) -> optuna.Study
         Configured Optuna Study (direction=minimize)
     """
     optuna_cfg = config.optuna
+
+    # Suppress Optuna experimental warnings (e.g., multivariate TPE)
+    warnings.filterwarnings("ignore", category=optuna.exceptions.ExperimentalWarning)
 
     # Sampler
     sampler_cfg = optuna_cfg.sampler
@@ -215,9 +219,11 @@ def objective(
         Mean validation loss across CV folds (lower is better)
     """
     import lightning.pytorch as pl
-    from lightning.pytorch.callbacks import EarlyStopping
+    from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 
-    from scripts.train import set_seed, setup_callbacks
+    from scripts.train import setup_callbacks
+    from src.utils.reproducibility import set_seed
+    from src.training.callbacks import MinEpochEarlyStopping, ResilienceModelCheckpoint
     from src.training.lightning_module import CognitiveResilienceLightningModule
 
     # Sample and build config
@@ -238,17 +244,30 @@ def objective(
         accelerator = "auto"
         devices = "auto"
 
+    # Callback types to exclude for Optuna trials:
+    # - ModelCheckpoint: trials don't save checkpoints
+    # - ResilienceModelCheckpoint: same reason
+    # - LearningRateMonitor: no logger in trial trainers
+    #
+    # Note: We do NOT use PyTorchLightningPruningCallback because:
+    # 1. Each fold creates a new Trainer, causing epoch counter resets
+    # 2. This creates step collisions (fold 0 epoch 5 vs fold 1 epoch 5)
+    # 3. Cross-fold epoch comparison is statistically invalid
+    #
+    # Instead, we report only at fold boundaries (see trial.report below).
+    # Pruning semantics: n_warmup_steps=1 means complete 1 fold before pruning.
+    # Within-fold warmup protection is handled by MinEpochEarlyStopping.
+    _EXCLUDED_TRIAL_CALLBACKS = (ModelCheckpoint, ResilienceModelCheckpoint, LearningRateMonitor)
+
     for fold_idx in range(n_folds):
         # Build model
         module = CognitiveResilienceLightningModule(config)
 
-        # Setup callbacks with Optuna pruning
-        callbacks = setup_callbacks(config)
-        callbacks.append(
-            optuna.integration.PyTorchLightningPruningCallback(
-                trial, monitor="val_loss"
-            )
-        )
+        # Setup callbacks, filtering those inappropriate for trials
+        callbacks = [
+            cb for cb in setup_callbacks(config)
+            if not isinstance(cb, _EXCLUDED_TRIAL_CALLBACKS)
+        ]
 
         # Trainer for this fold (no checkpointing for trials)
         trainer = pl.Trainer(
@@ -275,60 +294,20 @@ def objective(
             )
             return float("inf")
 
-        if splits is not None and adata is not None and metadata is not None:
-            from src.data.splits import get_fold_subjects
-            from src.data.datasets import CognitiveResilienceDataset
-            from src.data.collate import create_dataloader
+        from src.data.loaders import create_fold_dataloaders
+        train_loader, val_loader = create_fold_dataloaders(
+            config, adata, metadata, splits, fold_idx,
+        )
+        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
-            train_subjects = get_fold_subjects(splits, fold_idx=fold_idx, split_type="train")
-            val_subjects = get_fold_subjects(splits, fold_idx=fold_idx, split_type="val")
+        val_loss = trainer.callback_metrics.get("val_loss")
+        if val_loss is not None:
+            fold_val_losses.append(val_loss.item())
 
-            data_cfg = config.data
-            train_ds = CognitiveResilienceDataset(
-                adata, metadata, train_subjects,
-                cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
-                subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
-                target_column=data_cfg.get("target_column", "cogn_global"),
-                pathology_columns=list(data_cfg.get("pathology_columns", [])),
-                max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
-                min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
-            )
-            val_ds = CognitiveResilienceDataset(
-                adata, metadata, val_subjects,
-                cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
-                subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
-                target_column=data_cfg.get("target_column", "cogn_global"),
-                pathology_columns=list(data_cfg.get("pathology_columns", [])),
-                max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
-                min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
-            )
-
-            dl_cfg = data_cfg.dataloader
-            train_loader = create_dataloader(
-                train_ds, batch_size=dl_cfg.batch_size, shuffle=True,
-                num_workers=dl_cfg.get("num_workers", 4),
-                pin_memory=dl_cfg.get("pin_memory", True),
-                multiregion=True, use_hgt_format=True,
-                prefetch_factor=dl_cfg.get("prefetch_factor", 2),
-            )
-            val_loader = create_dataloader(
-                val_ds, batch_size=dl_cfg.batch_size, shuffle=False,
-                num_workers=dl_cfg.get("num_workers", 4),
-                pin_memory=dl_cfg.get("pin_memory", True),
-                multiregion=True, use_hgt_format=True,
-                prefetch_factor=dl_cfg.get("prefetch_factor", 2),
-            )
-
-            trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
-
-            val_loss = trainer.callback_metrics.get("val_loss")
-            if val_loss is not None:
-                fold_val_losses.append(val_loss.item())
-
-            # Report intermediate value for pruning
-            trial.report(fold_val_losses[-1] if fold_val_losses else float("inf"), fold_idx)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+        # Report intermediate value for pruning
+        trial.report(fold_val_losses[-1] if fold_val_losses else float("inf"), fold_idx)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
 
     # Return mean val_loss across folds
     if fold_val_losses:

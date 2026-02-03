@@ -6,6 +6,14 @@ Handles batching of:
 - Padded cell-level data
 - Multi-region data (optional)
 
+Collate Format:
+    This module uses **dict lists** format for HGT graph data, NOT PyG HeteroData.
+    The dict format is directly compatible with HGTEncoderBatched and avoids
+    runtime conversion overhead. Key functions:
+    - collate_for_hgt_multiregion: Primary collate for training (recommended)
+    - collate_for_hgt: Single-region variant
+    - collate_fn: Basic collate without HGT dict format
+
 Note on Multi-GPU:
     Device allocation is handled by PyTorch Lightning's Trainer, NOT by manual
     move_batch_to_device(). When using DDP (recommended), Lightning spawns

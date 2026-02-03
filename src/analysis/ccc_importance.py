@@ -1,0 +1,438 @@
+"""
+Cell-cell communication (CCC) importance analysis from HGT attention weights.
+
+Produces analysis outputs:
+1. ccc_importance.csv - Source cell type, target cell type, edge type, attention score
+2. ccc_importance_by_region.csv - CCC importance stratified by brain region
+3. top_interactions.csv - Top 100 LR interactions by attention, with gene names
+4. hgt_attention.h5 - Full attention tensor for programmatic analysis
+5. ccc_network_summary.csv - Aggregated by edge type category
+
+Output format: Tidy DataFrames saved as Parquet (primary) and CSV (human-readable).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
+
+import h5py
+import numpy as np
+import pandas as pd
+
+from src.utils.io import save_dataframe
+from src.data.constants import (
+    CELL_TYPE_ORDER,
+    ALL_EDGE_TYPES,
+    EDGE_TYPE_DISPLAY_NAMES,
+    N_CELL_TYPES,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CCCImportanceResult:
+    """
+    Container for CCC importance analysis results.
+
+    Attributes:
+        edge_importance: DataFrame with columns [source, target, edge_type, mean_attention, std_attention]
+        top_interactions: DataFrame with top-k interactions
+        by_region: DataFrame stratified by region (if available)
+        network_summary: DataFrame aggregated by edge type category
+        raw_attention: Raw HGT attention tensors (if retained)
+        metadata: Additional analysis metadata
+    """
+
+    edge_importance: pd.DataFrame
+    top_interactions: pd.DataFrame
+    by_region: pd.DataFrame | None = None
+    network_summary: pd.DataFrame | None = None
+    raw_attention: dict | None = None
+    metadata: dict = field(default_factory=dict)
+
+
+class CCCImportanceAnalyzer:
+    """
+    Analyze cell-cell communication importance from HGT attention weights.
+
+    The HGT learns attention over edges (cell type pairs × edge types) which
+    indicates which intercellular communication channels are important for
+    cognition prediction.
+
+    Example:
+        >>> analyzer = CCCImportanceAnalyzer(
+        ...     hgt_attention=attention_dict,  # Per-subject attention tensors
+        ...     edge_index_dict=edge_index,    # Edge connectivity
+        ... )
+        >>> result = analyzer.analyze(top_k=100)
+        >>> analyzer.save(result, output_dir)
+    """
+
+    def __init__(
+        self,
+        edge_attention_scores: np.ndarray | None = None,
+        edge_metadata: pd.DataFrame | None = None,
+        cell_type_names: list[str] | None = None,
+        edge_types: list[str] | None = None,
+        region_labels: np.ndarray | None = None,
+        subject_ids: list[str] | None = None,
+    ):
+        """
+        Initialize analyzer with edge attention scores.
+
+        Args:
+            edge_attention_scores: Aggregated edge attention [n_subjects, n_edges] or
+                                  [n_edges] if pre-aggregated across subjects
+            edge_metadata: DataFrame with edge info (source, target, edge_type, etc.)
+            cell_type_names: Cell type names (defaults to CELL_TYPE_ORDER)
+            edge_types: Edge type names (defaults to ALL_EDGE_TYPES)
+            region_labels: Region labels for stratification [n_subjects]
+            subject_ids: Subject identifiers
+        """
+        self.edge_attention_scores = edge_attention_scores
+        self.edge_metadata = edge_metadata
+        self.cell_type_names = cell_type_names or list(CELL_TYPE_ORDER)
+        self.edge_types = edge_types or list(ALL_EDGE_TYPES)
+        self.region_labels = region_labels
+        self.subject_ids = subject_ids
+
+    def analyze(self, top_k: int = 100) -> CCCImportanceResult:
+        """
+        Run all CCC importance analyses.
+
+        Args:
+            top_k: Number of top interactions to extract
+
+        Returns:
+            CCCImportanceResult with all analyses
+        """
+        # Compute edge importance aggregated across subjects
+        edge_importance = self._compute_edge_importance()
+
+        # Get top interactions
+        top_interactions = self._compute_top_interactions(edge_importance, top_k=top_k)
+
+        # Region stratification
+        by_region = None
+        if self.region_labels is not None and self.edge_attention_scores is not None:
+            if self.edge_attention_scores.ndim == 2:
+                by_region = self._compute_importance_by_region()
+
+        # Network summary by edge type
+        network_summary = self._compute_network_summary(edge_importance)
+
+        n_edges = len(edge_importance) if edge_importance is not None else 0
+        metadata = {
+            "n_edges": n_edges,
+            "top_k": top_k,
+            "has_region_analysis": by_region is not None,
+            "n_edge_types": len(self.edge_types),
+        }
+
+        return CCCImportanceResult(
+            edge_importance=edge_importance,
+            top_interactions=top_interactions,
+            by_region=by_region,
+            network_summary=network_summary,
+            metadata=metadata,
+        )
+
+    def _compute_edge_importance(self) -> pd.DataFrame:
+        """
+        Compute edge importance aggregated across subjects.
+
+        Returns:
+            DataFrame with columns: source, target, edge_type, mean_attention, std_attention
+        """
+        if self.edge_metadata is None:
+            # Generate placeholder edge data if not provided
+            return self._generate_placeholder_edge_importance()
+
+        if self.edge_attention_scores is None:
+            # Return edge metadata without attention scores
+            return self.edge_metadata.copy()
+
+        # Aggregate attention scores
+        if self.edge_attention_scores.ndim == 2:
+            # [n_subjects, n_edges]
+            mean_attention = self.edge_attention_scores.mean(axis=0)
+            std_attention = self.edge_attention_scores.std(axis=0)
+        else:
+            # [n_edges] - already aggregated
+            mean_attention = self.edge_attention_scores
+            std_attention = np.zeros_like(mean_attention)
+
+        # Merge with edge metadata
+        result = self.edge_metadata.copy()
+        result["mean_attention"] = mean_attention[:len(result)]
+        result["std_attention"] = std_attention[:len(result)]
+
+        return result
+
+    def _generate_placeholder_edge_importance(self) -> pd.DataFrame:
+        """Generate placeholder edge importance for all cell type pairs."""
+        rows = []
+        for edge_type in self.edge_types:
+            for src_idx, src_name in enumerate(self.cell_type_names):
+                for tgt_idx, tgt_name in enumerate(self.cell_type_names):
+                    rows.append({
+                        "source": src_name,
+                        "target": tgt_name,
+                        "edge_type": edge_type,
+                        "source_idx": src_idx,
+                        "target_idx": tgt_idx,
+                        "mean_attention": 0.0,
+                        "std_attention": 0.0,
+                    })
+        return pd.DataFrame(rows)
+
+    def _compute_top_interactions(
+        self,
+        edge_importance: pd.DataFrame,
+        top_k: int = 100,
+    ) -> pd.DataFrame:
+        """
+        Get top-k interactions by attention weight.
+
+        Args:
+            edge_importance: DataFrame with edge importance
+            top_k: Number of top interactions
+
+        Returns:
+            DataFrame with top interactions ranked
+        """
+        if "mean_attention" not in edge_importance.columns:
+            # No attention scores, return empty
+            return pd.DataFrame(columns=["rank", "source", "target", "edge_type", "mean_attention"])
+
+        df = edge_importance.sort_values("mean_attention", ascending=False).head(top_k).copy()
+        df["rank"] = range(1, len(df) + 1)
+
+        cols = ["rank", "source", "target", "edge_type", "mean_attention"]
+        if "std_attention" in df.columns:
+            cols.append("std_attention")
+
+        return df[cols].reset_index(drop=True)
+
+    def _compute_importance_by_region(self) -> pd.DataFrame:
+        """
+        Compute edge importance stratified by brain region.
+
+        Returns:
+            DataFrame with columns: region, source, target, edge_type, mean_attention, n_subjects
+        """
+        if self.region_labels is None or self.edge_attention_scores is None:
+            raise ValueError("region_labels and edge_attention_scores required")
+
+        if self.edge_attention_scores.ndim != 2:
+            raise ValueError("edge_attention_scores must be 2D for region stratification")
+
+        unique_regions = np.unique(self.region_labels)
+
+        rows = []
+        for region in unique_regions:
+            region_str = str(region)
+            mask = self.region_labels == region
+            n_in_group = mask.sum()
+
+            if n_in_group == 0:
+                continue
+
+            group_attention = self.edge_attention_scores[mask]
+            mean_attention = group_attention.mean(axis=0)
+
+            # Combine with edge metadata
+            if self.edge_metadata is not None:
+                for idx, row in self.edge_metadata.iterrows():
+                    if idx < len(mean_attention):
+                        rows.append({
+                            "region": region_str,
+                            "source": row.get("source", f"cell_{idx}"),
+                            "target": row.get("target", f"cell_{idx}"),
+                            "edge_type": row.get("edge_type", "unknown"),
+                            "mean_attention": float(mean_attention[idx]),
+                            "n_subjects": int(n_in_group),
+                        })
+
+        return pd.DataFrame(rows)
+
+    def _compute_network_summary(self, edge_importance: pd.DataFrame) -> pd.DataFrame:
+        """
+        Aggregate importance by edge type category.
+
+        Returns:
+            DataFrame with columns: edge_type, display_name, mean_attention, std_attention, n_edges
+        """
+        if "edge_type" not in edge_importance.columns or "mean_attention" not in edge_importance.columns:
+            return pd.DataFrame(columns=["edge_type", "display_name", "mean_attention", "std_attention", "n_edges"])
+
+        summary = edge_importance.groupby("edge_type").agg({
+            "mean_attention": ["mean", "std", "count"],
+        }).reset_index()
+
+        summary.columns = ["edge_type", "mean_attention", "std_attention", "n_edges"]
+
+        # Add display names
+        summary["display_name"] = summary["edge_type"].map(
+            lambda x: EDGE_TYPE_DISPLAY_NAMES.get(x, x)
+        )
+
+        # Sort by mean attention
+        summary = summary.sort_values("mean_attention", ascending=False).reset_index(drop=True)
+
+        return summary[["edge_type", "display_name", "mean_attention", "std_attention", "n_edges"]]
+
+    def save(
+        self,
+        result: CCCImportanceResult,
+        output_dir: str | Path,
+        formats: list[Literal["parquet", "csv"]] | None = None,
+    ) -> dict[str, Path]:
+        """
+        Save analysis results to files.
+
+        Args:
+            result: CCCImportanceResult to save
+            output_dir: Directory for output files
+            formats: Output formats (default: ["parquet", "csv"])
+
+        Returns:
+            Dict mapping output name to file path
+        """
+        if formats is None:
+            formats = ["parquet", "csv"]
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_files = {}
+
+        # Save edge importance
+        for fmt in formats:
+            path = output_dir / f"ccc_importance.{fmt}"
+            save_dataframe(result.edge_importance, path, fmt)
+            saved_files[f"edge_importance_{fmt}"] = path
+
+        # Save top interactions
+        for fmt in formats:
+            path = output_dir / f"top_interactions.{fmt}"
+            save_dataframe(result.top_interactions, path, fmt)
+            saved_files[f"top_interactions_{fmt}"] = path
+
+        # Save region-stratified (if available)
+        if result.by_region is not None:
+            for fmt in formats:
+                path = output_dir / f"ccc_importance_by_region.{fmt}"
+                save_dataframe(result.by_region, path, fmt)
+                saved_files[f"by_region_{fmt}"] = path
+
+        # Save network summary
+        if result.network_summary is not None:
+            for fmt in formats:
+                path = output_dir / f"ccc_network_summary.{fmt}"
+                save_dataframe(result.network_summary, path, fmt)
+                saved_files[f"network_summary_{fmt}"] = path
+
+        # Save raw attention as HDF5 (if available)
+        if result.raw_attention is not None:
+            h5_path = output_dir / "hgt_attention.h5"
+            self._save_hdf5(result, h5_path)
+            saved_files["hdf5"] = h5_path
+
+        logger.info(f"Saved CCC importance analysis to {output_dir}")
+        return saved_files
+
+    def _save_hdf5(self, result: CCCImportanceResult, path: Path) -> None:
+        """Save HGT attention to HDF5."""
+        with h5py.File(path, "w") as f:
+            f.attrs["schema_version"] = "1.0"
+
+            if result.raw_attention is not None:
+                for key, value in result.raw_attention.items():
+                    if isinstance(value, np.ndarray):
+                        f.create_dataset(
+                            key,
+                            data=value,
+                            compression="gzip",
+                            compression_opts=4,
+                        )
+
+
+def compute_ccc_importance(
+    edge_attention_scores: np.ndarray | None = None,
+    edge_metadata: pd.DataFrame | None = None,
+    cell_type_names: list[str] | None = None,
+    edge_types: list[str] | None = None,
+    region_labels: np.ndarray | None = None,
+    top_k: int = 100,
+    output_dir: str | Path | None = None,
+) -> CCCImportanceResult:
+    """
+    Convenience function to compute and optionally save CCC importance.
+
+    Args:
+        edge_attention_scores: Edge attention [n_subjects, n_edges] or [n_edges]
+        edge_metadata: DataFrame with edge info
+        cell_type_names: Cell type names
+        edge_types: Edge type names
+        region_labels: Region labels for stratification
+        top_k: Number of top interactions
+        output_dir: If provided, save results to this directory
+
+    Returns:
+        CCCImportanceResult with analysis results
+    """
+    analyzer = CCCImportanceAnalyzer(
+        edge_attention_scores=edge_attention_scores,
+        edge_metadata=edge_metadata,
+        cell_type_names=cell_type_names,
+        edge_types=edge_types,
+        region_labels=region_labels,
+    )
+
+    result = analyzer.analyze(top_k=top_k)
+
+    if output_dir is not None:
+        analyzer.save(result, output_dir)
+
+    return result
+
+
+def create_edge_metadata_from_graph(
+    edge_index_dict: dict,
+    cell_type_names: list[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Create edge metadata DataFrame from graph edge index dict.
+
+    Args:
+        edge_index_dict: Dict mapping (src_type, edge_type, tgt_type) to edge indices
+        cell_type_names: Cell type names
+
+    Returns:
+        DataFrame with columns: source, target, edge_type, source_idx, target_idx
+    """
+    cell_type_names = cell_type_names or list(CELL_TYPE_ORDER)
+
+    rows = []
+    for (src_type, edge_type, tgt_type), edge_index in edge_index_dict.items():
+        # edge_index is [2, n_edges]
+        if hasattr(edge_index, 'numpy'):
+            edge_index = edge_index.numpy()
+
+        for i in range(edge_index.shape[1]):
+            src_idx = int(edge_index[0, i])
+            tgt_idx = int(edge_index[1, i])
+            rows.append({
+                "source": src_type,
+                "target": tgt_type,
+                "edge_type": edge_type,
+                "source_idx": src_idx,
+                "target_idx": tgt_idx,
+            })
+
+    return pd.DataFrame(rows)

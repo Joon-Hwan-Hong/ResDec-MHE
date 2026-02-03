@@ -52,7 +52,7 @@ class ResilienceMetrics:
         mae = float(np.mean(np.abs(residuals)))
 
         # Correlation
-        if len(mean_np) >= 3:
+        if len(mean_np) >= 3 and np.std(mean_np) > 1e-8 and np.std(target_np) > 1e-8:
             pearson_r_val = float(pearsonr(mean_np, target_np)[0])
             spearman_rho_val = float(spearmanr(mean_np, target_np)[0])
         else:

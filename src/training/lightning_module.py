@@ -34,11 +34,24 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
     Args:
         config: OmegaConf config with 'model' and 'training' sections
+
+    Checkpoint Loading:
+        Config is NOT saved via save_hyperparameters() to avoid duplication with
+        ResilienceModelCheckpoint. When loading from checkpoint, pass config explicitly::
+
+            checkpoint = torch.load("path/to/checkpoint.ckpt")
+            config = OmegaConf.create(checkpoint["model_config"])
+            module = CognitiveResilienceLightningModule.load_from_checkpoint(
+                "path/to/checkpoint.ckpt",
+                config=config,
+            )
     """
 
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.save_hyperparameters(config)
+        # Ignore config in save_hyperparameters — ResilienceModelCheckpoint handles
+        # config persistence. On load_from_checkpoint(), pass config explicitly.
+        self.save_hyperparameters(ignore=["config"])
         self.config = config
 
         # Build model
@@ -65,6 +78,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             dropout=model_cfg.get("dropout", 0.1),
             n_pathology_features=model_cfg.pathology_attention.get("n_pathology_features", 3),
             n_pma_seeds=model_cfg.set_transformer.get("n_pma_seeds", 1),
+            mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") else None,
+            use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
         )
 
         # Loss function setup with branching
@@ -147,34 +162,37 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 logger.warning("NaN loss at batch %d — skipping", batch_idx)
                 return None
 
-        self.log("train_loss", loss, prog_bar=True, sync_dist=True)
+        bs = batch["cognition"].shape[0]
+        self.log("train_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
         return loss
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
         """Validation step: forward pass + loss + metrics."""
         output = self._forward_batch(batch)
         loss = self._compute_loss(output, batch["cognition"])
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True)
+        bs = batch["cognition"].shape[0]
+        self.log("val_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
         # Compute and log metrics
         std = output.get("std")
         metrics = self.metrics.compute(output["mean"], std, batch["cognition"])
         for name, value in metrics.items():
             if not (isinstance(value, float) and value != value):  # skip NaN
-                self.log(f"val_{name}", value, sync_dist=True)
+                self.log(f"val_{name}", value, sync_dist=True, batch_size=bs)
 
     def test_step(self, batch: dict, batch_idx: int) -> None:
         """Test step: forward pass + loss + metrics (same as validation, test_ prefix)."""
         output = self._forward_batch(batch)
         loss = self._compute_loss(output, batch["cognition"])
-        self.log("test_loss", loss, prog_bar=True, sync_dist=True)
+        bs = batch["cognition"].shape[0]
+        self.log("test_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
         # Compute and log metrics
         std = output.get("std")
         metrics = self.metrics.compute(output["mean"], std, batch["cognition"])
         for name, value in metrics.items():
             if not (isinstance(value, float) and value != value):  # skip NaN
-                self.log(f"test_{name}", value, sync_dist=True)
+                self.log(f"test_{name}", value, sync_dist=True, batch_size=bs)
 
     def predict_step(self, batch: dict, batch_idx: int) -> dict[str, Any]:
         """Predict step: forward pass returning predictions dict.
@@ -221,9 +239,15 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         eta_min = sched_cfg.get("eta_min", 1e-6)
 
         if sched_cfg.type == "cosine":
+            t_max = train_cfg.max_epochs - warmup_epochs
+            if t_max <= 0:
+                raise ValueError(
+                    f"warmup_epochs ({warmup_epochs}) must be less than "
+                    f"max_epochs ({train_cfg.max_epochs}) for cosine scheduler"
+                )
             cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=train_cfg.max_epochs - warmup_epochs,
+                T_max=t_max,
                 eta_min=eta_min,
             )
 

@@ -416,8 +416,8 @@ def run_liana_per_subject(
             results[subject_id] = pd.DataFrame()
             continue
 
-        # Filter to valid cell types
-        adata_subject = adata_subject[adata_subject.obs[cell_type_column].isin(valid_cts)]
+        # Filter to valid cell types (copy to avoid view-to-copy promotion in LIANA)
+        adata_subject = adata_subject[adata_subject.obs[cell_type_column].isin(valid_cts)].copy()
 
         try:
             liana_result = run_liana_analysis(

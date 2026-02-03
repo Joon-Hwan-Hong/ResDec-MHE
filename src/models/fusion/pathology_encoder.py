@@ -23,6 +23,7 @@ class PathologyEncoder(nn.Module):
         n_pathology_features: int = 3,
         d_region: int = 128,
         d_cond: int = 64,
+        dropout: float = 0.1,
     ):
         super().__init__()
 
@@ -38,22 +39,24 @@ class PathologyEncoder(nn.Module):
         self.d_region = d_region
         self.d_cond = d_cond
 
-        # Pathology MLP
+        # Pathology MLP (post-activation dropout: LN → GELU → Dropout)
         self.pathology_mlp = nn.Sequential(
             nn.Linear(n_pathology_features, d_cond),
             nn.LayerNorm(d_cond),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(d_cond, d_cond),
         )
 
         # Region context projection
         self.region_proj = nn.Linear(d_region, d_cond)
 
-        # Combined projection
+        # Combined projection (post-activation dropout: LN → GELU → Dropout)
         self.combine = nn.Sequential(
             nn.Linear(d_cond * 2, d_cond),
             nn.LayerNorm(d_cond),
             nn.GELU(),
+            nn.Dropout(dropout),
         )
 
     def forward(

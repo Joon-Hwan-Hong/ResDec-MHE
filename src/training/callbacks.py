@@ -1,6 +1,10 @@
 """
 Training callbacks for cognitive resilience model.
 
+MinEpochEarlyStopping: EarlyStopping wrapper that enforces a minimum number of
+  epochs before patience counting begins. Protects LR warmup and temperature
+  annealing phases from premature termination.
+
 TemperatureAnnealing: Anneals gene attention gate temperature during training.
   - Warmup phase: keeps tau_max for stability
   - Anneal phase: exponential/linear/cosine decay from tau_max to tau_min
@@ -18,11 +22,62 @@ import torch
 import lightning.pytorch as pl
 from omegaconf import OmegaConf
 
+from lightning.pytorch.callbacks import EarlyStopping
+
 from src.utils.hashing import hash_config
 
 logger = logging.getLogger(__name__)
 
 BRANCH_NAMES = ("pseudobulk_encoder", "hgt_encoder", "cell_transformer")
+
+
+class MinEpochEarlyStopping(EarlyStopping):
+    """
+    EarlyStopping with enforced minimum epochs before patience counting.
+
+    Standard Lightning EarlyStopping starts monitoring from epoch 0. This wrapper
+    skips all early stopping logic until min_epochs is reached, protecting warmup
+    phases (LR warmup, temperature annealing) from premature termination.
+
+    Design doc requirement:
+        "Minimum 20 epochs before early stopping activates (allow warmup + initial exploration)"
+
+    Args:
+        min_epochs: Minimum epochs before early stopping can trigger (default: 20)
+        **kwargs: All standard EarlyStopping arguments (monitor, patience, min_delta, mode, etc.)
+
+    Example:
+        >>> callback = MinEpochEarlyStopping(
+        ...     min_epochs=20,
+        ...     monitor="val_loss",
+        ...     patience=15,
+        ...     min_delta=0.0001,
+        ...     mode="min",
+        ... )
+    """
+
+    def __init__(self, min_epochs: int = 20, **kwargs):
+        super().__init__(**kwargs)
+        self.min_epochs = min_epochs
+
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """Skip early stopping check if below min_epochs threshold."""
+        if trainer.current_epoch < self.min_epochs:
+            return  # Skip all early stopping logic during warmup
+        super().on_validation_end(trainer, pl_module)
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """Skip early stopping check if below min_epochs threshold."""
+        if trainer.current_epoch < self.min_epochs:
+            return  # Skip all early stopping logic during warmup
+        super().on_train_epoch_end(trainer, pl_module)
+
+    def __repr__(self) -> str:
+        return (
+            f"MinEpochEarlyStopping(min_epochs={self.min_epochs}, "
+            f"monitor='{self.monitor}', patience={self.patience}, "
+            f"min_delta={self.min_delta}, mode='{self.mode}')"
+        )
 
 
 class TemperatureAnnealing(pl.Callback):
@@ -298,3 +353,28 @@ class ResilienceModelCheckpoint(pl.Callback):
         checkpoint["timestamp"] = datetime.now(timezone.utc).isoformat()
         checkpoint["rng_states"] = rng_states
         checkpoint["model_config"] = model_config
+
+    def on_load_checkpoint(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        checkpoint: dict,
+    ) -> None:
+        """Restore RNG states from checkpoint for exact reproducibility on resume."""
+        import random
+        import numpy as np
+
+        rng_states = checkpoint.get("rng_states")
+        if rng_states is None:
+            logger.warning(
+                "Checkpoint has no rng_states — RNG state not restored. "
+                "Training will not be exactly reproducible from this checkpoint."
+            )
+            return
+
+        random.setstate(rng_states["python"])
+        np.random.set_state(rng_states["numpy"])
+        torch.set_rng_state(rng_states["torch"])
+
+        if "cuda" in rng_states and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(rng_states["cuda"])

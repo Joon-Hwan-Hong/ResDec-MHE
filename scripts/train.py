@@ -18,22 +18,29 @@ Workflow:
 
 import argparse
 import logging
-import random
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
+import scanpy as sc
 import torch
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import (
-    EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
 )
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig, OmegaConf
 
-from src.training.callbacks import GradientNormLogger, ResilienceModelCheckpoint, TemperatureAnnealing
+from src.training.callbacks import (
+    GradientNormLogger,
+    MinEpochEarlyStopping,
+    ResilienceModelCheckpoint,
+    TemperatureAnnealing,
+)
 from src.training.lightning_module import CognitiveResilienceLightningModule
+from src.utils.experiment import ExperimentManager
+from src.utils.reproducibility import set_seed
 
 logger = logging.getLogger(__name__)
 
@@ -66,21 +73,6 @@ def load_config(
         config = OmegaConf.merge(config, override_conf)
 
     return config
-
-
-def set_seed(seed: int) -> None:
-    """
-    Set random seeds for reproducibility across all frameworks.
-
-    Args:
-        seed: Random seed value
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    pl.seed_everything(seed, workers=True)
 
 
 def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
@@ -118,10 +110,11 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
         )
     )
 
-    # EarlyStopping
+    # EarlyStopping with min_epochs enforcement
     es_cfg = train_cfg.early_stopping
     callbacks.append(
-        EarlyStopping(
+        MinEpochEarlyStopping(
+            min_epochs=es_cfg.get("min_epochs", 20),
             monitor=es_cfg.monitor,
             patience=es_cfg.patience,
             min_delta=es_cfg.min_delta,
@@ -257,10 +250,17 @@ def main() -> None:
     set_seed(seed)
     logger.info("Seed set to %d", seed)
 
-    # Save config for reproducibility
-    output_dir = Path(config.paths.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(config, output_dir / "config.yaml")
+    # Create experiment directory structure via ExperimentManager
+    base_dir = config.paths.get("output_dir", "outputs/")
+    exp_manager = ExperimentManager(base_dir=base_dir)
+    config_dict = OmegaConf.to_container(config, resolve=True)
+    experiment = exp_manager.create_experiment(config_dict)
+    logger.info("Experiment created: %s", experiment.exp_hash)
+
+    # Override paths in config to use experiment-specific directories
+    OmegaConf.update(config, "paths.output_dir", str(experiment.exp_dir))
+    OmegaConf.update(config, "paths.checkpoint_dir", str(experiment.checkpoints_dir))
+    OmegaConf.update(config, "paths.logs_dir", str(experiment.tensorboard_dir))
 
     # Build Lightning module
     module = CognitiveResilienceLightningModule(config)
@@ -271,26 +271,27 @@ def main() -> None:
     logger.info("Trainer configured: max_epochs=%d", trainer.max_epochs)
 
     # Data loading
-    from src.data.splits import create_stratified_splits, get_fold_subjects, load_splits
-    from src.data.datasets import CognitiveResilienceDataset, PrecomputedDataset
-    from src.data.collate import create_dataloader
+    from src.data.splits import create_stratified_splits, load_splits
+    from src.data.loaders import create_fold_dataloaders
 
     data_cfg = config.data
-    dl_cfg = data_cfg.dataloader
-
     adata = None
     metadata = None
 
-    # Load or create splits
     if args.splits_path:
         splits = load_splits(args.splits_path)
         logger.info("Loaded splits from %s", args.splits_path)
     else:
-        import scanpy as sc
-        import pandas as pd
         adata = sc.read_h5ad(data_cfg.adata_path)
         metadata_path = Path(data_cfg.metadata_path)
-        metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
+        metadata_csv = metadata_path / "metadata.csv"
+        if not metadata_csv.exists():
+            raise FileNotFoundError(
+                f"Metadata file not found: {metadata_csv}. "
+                "Provide --splits-path to skip metadata loading, or ensure "
+                "the metadata CSV exists at the configured path."
+            )
+        metadata = pd.read_csv(metadata_csv)
         splits = create_stratified_splits(
             metadata,
             subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
@@ -302,74 +303,24 @@ def main() -> None:
         )
         logger.info("Created stratified splits: %d folds", data_cfg.splits.n_folds)
 
-    # Get fold subjects
-    train_subjects = get_fold_subjects(splits, fold_idx=args.fold, split_type="train")
-    val_subjects = get_fold_subjects(splits, fold_idx=args.fold, split_type="val")
-    logger.info("Fold %d: %d train, %d val subjects", args.fold, len(train_subjects), len(val_subjects))
-
-    # Ensure metadata is loaded (needed for both dataset types)
     if metadata is None:
-        import pandas as pd
         metadata_path = Path(data_cfg.metadata_path)
-        metadata = pd.read_csv(metadata_path / "metadata.csv")
+        metadata_csv = metadata_path / "metadata.csv"
+        if not metadata_csv.exists():
+            raise FileNotFoundError(
+                f"Metadata file not found: {metadata_csv}. "
+                "Ensure the metadata CSV exists at the configured path."
+            )
+        metadata = pd.read_csv(metadata_csv)
 
-    # Create datasets
-    if args.precomputed_dir:
-        train_ds = PrecomputedDataset(
-            feature_dir=args.precomputed_dir,
-            subject_ids=train_subjects,
-            metadata=metadata,
-            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
-            target_column=data_cfg.get("target_column", "cogn_global"),
-            pathology_columns=list(data_cfg.get("pathology_columns", [])),
-        )
-        val_ds = PrecomputedDataset(
-            feature_dir=args.precomputed_dir,
-            subject_ids=val_subjects,
-            metadata=metadata,
-            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
-            target_column=data_cfg.get("target_column", "cogn_global"),
-            pathology_columns=list(data_cfg.get("pathology_columns", [])),
-        )
-    else:
-        if adata is None:
-            import scanpy as sc
-            adata = sc.read_h5ad(data_cfg.adata_path)
+    if adata is None and not args.precomputed_dir:
+        adata = sc.read_h5ad(data_cfg.adata_path)
 
-        train_ds = CognitiveResilienceDataset(
-            adata, metadata, train_subjects,
-            cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
-            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
-            target_column=data_cfg.get("target_column", "cogn_global"),
-            pathology_columns=list(data_cfg.get("pathology_columns", [])),
-            max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
-            min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
-        )
-        val_ds = CognitiveResilienceDataset(
-            adata, metadata, val_subjects,
-            cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
-            subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
-            target_column=data_cfg.get("target_column", "cogn_global"),
-            pathology_columns=list(data_cfg.get("pathology_columns", [])),
-            max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
-            min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
-        )
-
-    # Create dataloaders
-    train_loader = create_dataloader(
-        train_ds, batch_size=dl_cfg.batch_size, shuffle=True,
-        num_workers=dl_cfg.get("num_workers", 4),
-        pin_memory=dl_cfg.get("pin_memory", True),
-        multiregion=True, use_hgt_format=True,
-        prefetch_factor=dl_cfg.get("prefetch_factor", 2),
+    train_loader, val_loader = create_fold_dataloaders(
+        config, adata, metadata, splits, args.fold,
+        precomputed_dir=args.precomputed_dir,
     )
-    val_loader = create_dataloader(
-        val_ds, batch_size=dl_cfg.batch_size, shuffle=False,
-        num_workers=dl_cfg.get("num_workers", 4),
-        pin_memory=dl_cfg.get("pin_memory", True),
-        multiregion=True, use_hgt_format=True,
-        prefetch_factor=dl_cfg.get("prefetch_factor", 2),
-    )
+    logger.info("Fold %d dataloaders created", args.fold)
 
     # Train
     trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
