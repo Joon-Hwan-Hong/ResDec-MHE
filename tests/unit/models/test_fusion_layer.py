@@ -78,6 +78,7 @@ class TestForwardPass:
         from src.models.fusion.fusion_layer import FusionLayer
 
         layer = FusionLayer(d_embed=64, d_fused=128)
+        layer.eval()  # Disable dropout so LayerNorm statistics are preserved
 
         pb = torch.randn(32, N_CELL_TYPES, 64)
         hgt = torch.randn(32, N_CELL_TYPES, 64)

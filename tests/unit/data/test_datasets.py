@@ -270,6 +270,7 @@ class TestCellSampling:
 class TestDatasetInit:
     """Tests for Dataset initialization."""
 
+    @pytest.mark.filterwarnings("ignore:.*Removed.*subjects not found.*:UserWarning")
     def test_validates_subjects_exist(self):
         """Should filter out subjects not in adata or metadata."""
         from src.data.datasets import CognitiveResilienceDataset

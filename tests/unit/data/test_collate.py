@@ -3,7 +3,7 @@ Tests for src/data/collate.py
 
 Tests cover:
 - Collate function correctness for various batch sizes
-- HeteroData construction and batching
+- Dict-list format construction and batching for HGT
 - Edge case handling (empty graphs, single sample batch)
 - Tensor shape verification
 - Output schema compliance (Task C6)

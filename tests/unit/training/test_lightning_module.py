@@ -115,6 +115,8 @@ def _make_batch(batch_size=4, n_genes=50, n_cell_types=N_CELL_TYPES,
 
     cells = torch.randn(batch_size, n_cell_types, max_cells, n_genes)
     cell_mask = torch.ones(batch_size, n_cell_types, max_cells, dtype=torch.bool)
+    cell_type_mask = torch.ones(batch_size, n_cell_types, dtype=torch.bool)
+    cell_type_mask[:, -3:] = False  # Mask out last 3 types
     pathology = torch.rand(batch_size, 3)
     cognition = torch.randn(batch_size, 1)
 
@@ -125,6 +127,7 @@ def _make_batch(batch_size=4, n_genes=50, n_cell_types=N_CELL_TYPES,
         "edge_attr_dict_list": edge_attr_dict_list,
         "cells": cells,
         "cell_mask": cell_mask,
+        "cell_type_mask": cell_type_mask,
         "pathology": pathology,
         "cognition": cognition,
     }
@@ -154,6 +157,7 @@ class TestTrainingStep:
         """training_step returns a scalar loss tensor."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
+        module.log = lambda *args, **kwargs: None
         batch = _make_batch(n_genes=50)
         loss = module.training_step(batch, batch_idx=0)
         assert isinstance(loss, torch.Tensor)
@@ -164,6 +168,7 @@ class TestTrainingStep:
         """With deterministic head, training_step uses MSE loss."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
+        module.log = lambda *args, **kwargs: None
         batch = _make_batch(n_genes=50)
         loss = module.training_step(batch, batch_idx=0)
         # Should not crash — MSE used instead of β-NLL
@@ -173,6 +178,7 @@ class TestTrainingStep:
         """Gradients flow through training_step to model parameters."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
+        module.log = lambda *args, **kwargs: None
         batch = _make_batch(n_genes=50)
         loss = module.training_step(batch, batch_idx=0)
         loss.backward()
@@ -187,6 +193,7 @@ class TestTrainingStep:
         """Bayesian head training_step returns finite loss using beta-NLL."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(bayesian_config)
+        module.log = lambda *args, **kwargs: None
         batch = _make_batch(n_genes=50)
         loss = module.training_step(batch, batch_idx=0)
         assert isinstance(loss, torch.Tensor)
@@ -202,6 +209,7 @@ class TestValidationStep:
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         module.eval()
+        module.log = lambda *args, **kwargs: None
         batch = _make_batch(n_genes=50)
         # Should not raise
         module.validation_step(batch, batch_idx=0)
@@ -246,6 +254,7 @@ class TestTestStep:
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         module.eval()
+        module.log = lambda *args, **kwargs: None
         batch = _make_batch(n_genes=50)
         # Should not raise
         module.test_step(batch, batch_idx=0)
@@ -343,6 +352,7 @@ class TestOptimizerConfiguration:
         scheduler = result["lr_scheduler"]["scheduler"]
         assert "SequentialLR" in type(scheduler).__name__
 
+    @pytest.mark.filterwarnings("ignore:.*Detected call of.*lr_scheduler.step.*before.*optimizer.step.*:UserWarning")
     def test_scheduler_warmup_increases_lr(self, base_config):
         """During warmup, learning rate increases linearly."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
@@ -369,6 +379,7 @@ class TestOptimizerConfiguration:
         scheduler = result["lr_scheduler"]["scheduler"]
         assert "CosineAnnealingLR" in type(scheduler).__name__
 
+    @pytest.mark.filterwarnings("ignore:.*Detected call of.*lr_scheduler.step.*before.*optimizer.step.*:UserWarning")
     def test_scheduler_cosine_decay_after_warmup(self, base_config):
         """After warmup, LR decreases via cosine annealing."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
@@ -399,6 +410,7 @@ class TestGeneGateL1Regularization:
         from src.training.lightning_module import CognitiveResilienceLightningModule
         base_config.training.regularization.gene_gate_l1 = 0.01
         module = CognitiveResilienceLightningModule(base_config)
+        module.log = lambda *args, **kwargs: None
         batch = _make_batch(n_genes=50)
         loss_with_l1 = module.training_step(batch, batch_idx=0)
         assert torch.isfinite(loss_with_l1)
@@ -479,6 +491,7 @@ class TestParameterWiring:
         from src.training.lightning_module import CognitiveResilienceLightningModule
         base_config.model.pathology_attention.n_pathology_features = 3
         module = CognitiveResilienceLightningModule(base_config)
+        module.log = lambda *args, **kwargs: None
         assert module.model.pathology_encoder.n_pathology_features == 3
         # Verify model instantiates and runs with the parameter
         batch = _make_batch(n_genes=50)
@@ -558,3 +571,73 @@ class TestTrainerIntegration:
 
         # Verify training completed
         assert trainer.current_epoch == 1
+
+
+class TestCheckpointRoundTrip:
+    """Tests for saving and loading checkpoints."""
+
+    def test_save_load_checkpoint_predictions_match(self, base_config, tmp_path):
+        """Checkpoint round-trip: saved and loaded module produce identical predictions."""
+        import lightning.pytorch as pl
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+
+        module = CognitiveResilienceLightningModule(base_config)
+
+        # Fit 1 epoch with synthetic data
+        train_ds = _SyntheticDataset(n_samples=4, n_genes=50)
+        val_ds = _SyntheticDataset(n_samples=2, n_genes=50)
+        train_loader = torch.utils.data.DataLoader(
+            train_ds, batch_size=2, collate_fn=_identity_collate,
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_ds, batch_size=2, collate_fn=_identity_collate,
+        )
+
+        trainer = pl.Trainer(
+            max_epochs=1,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            enable_checkpointing=False,
+            logger=False,
+            default_root_dir=str(tmp_path),
+        )
+        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+        # Save checkpoint
+        ckpt_path = tmp_path / "test_checkpoint.ckpt"
+        trainer.save_checkpoint(str(ckpt_path))
+
+        # Get predictions from original module
+        module.eval()
+        batch = _make_batch(batch_size=2, n_genes=50)
+        with torch.no_grad():
+            original_output = module.model(
+                region_pseudobulk=batch["region_pseudobulk"],
+                region_mask=batch["region_mask"],
+                edge_index_dict_list=batch["edge_index_dict_list"],
+                edge_attr_dict_list=batch["edge_attr_dict_list"],
+                cells=batch["cells"],
+                cell_mask=batch["cell_mask"],
+                cell_type_mask=batch.get("cell_type_mask"),
+                pathology=batch["pathology"],
+            )
+
+        # Load from checkpoint (config must be passed explicitly since we ignore it in save_hyperparameters)
+        loaded_module = CognitiveResilienceLightningModule.load_from_checkpoint(
+            str(ckpt_path), config=base_config, weights_only=False,
+        )
+        loaded_module.eval()
+        with torch.no_grad():
+            loaded_output = loaded_module.model(
+                region_pseudobulk=batch["region_pseudobulk"],
+                region_mask=batch["region_mask"],
+                edge_index_dict_list=batch["edge_index_dict_list"],
+                edge_attr_dict_list=batch["edge_attr_dict_list"],
+                cells=batch["cells"],
+                cell_mask=batch["cell_mask"],
+                cell_type_mask=batch.get("cell_type_mask"),
+                pathology=batch["pathology"],
+            )
+
+        assert torch.allclose(original_output["mean"], loaded_output["mean"], atol=1e-6)

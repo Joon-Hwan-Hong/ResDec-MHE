@@ -280,6 +280,49 @@ class TestResilienceModelCheckpoint:
         assert isinstance(checkpoint["model_config"], dict)
         assert checkpoint["model_config"]["n_genes"] == 50
 
+    def test_on_load_checkpoint_restores_rng_states(self):
+        """on_load_checkpoint restores RNG states so draws are reproducible."""
+        import random
+        import numpy as np
+
+        callback, trainer, pl_module, checkpoint = self._make_checkpoint_context()
+
+        # Save checkpoint (captures current RNG states)
+        callback.on_save_checkpoint(trainer, pl_module, checkpoint)
+
+        # Record expected draws from the saved state
+        saved_python_state = checkpoint["rng_states"]["python"]
+        saved_numpy_state = checkpoint["rng_states"]["numpy"]
+        saved_torch_state = checkpoint["rng_states"]["torch"]
+
+        # Advance RNG past the saved state
+        random.random()
+        random.random()
+        np.random.random(10)
+        torch.randn(10)
+
+        # Restore from checkpoint
+        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+
+        # Verify states match the saved checkpoint
+        assert random.getstate() == saved_python_state
+        restored_numpy = np.random.get_state()
+        assert restored_numpy[0] == saved_numpy_state[0]  # 'MT19937'
+        assert (restored_numpy[1] == saved_numpy_state[1]).all()
+        assert torch.equal(torch.random.get_rng_state(), saved_torch_state)
+
+    def test_on_load_checkpoint_warns_missing_rng(self):
+        """on_load_checkpoint warns when checkpoint has no rng_states."""
+        import logging
+
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+        empty_checkpoint = {}  # No rng_states key
+
+        with patch("src.training.callbacks.logger") as mock_logger:
+            callback.on_load_checkpoint(trainer, pl_module, empty_checkpoint)
+            mock_logger.warning.assert_called_once()
+            assert "rng_states" in mock_logger.warning.call_args[0][0]
+
 
 class TestEarlyStopping:
     """Tests for early stopping configuration."""
@@ -314,6 +357,123 @@ class TestEarlyStopping:
             "early_stopping must include min_epochs"
         assert cfg.training.early_stopping.min_epochs >= 20, \
             "min_epochs should be >= 20 (warmup + stabilization)"
+
+
+class TestMinEpochEarlyStopping:
+    """Tests for MinEpochEarlyStopping callback."""
+
+    def test_inherits_from_early_stopping(self):
+        """MinEpochEarlyStopping is a subclass of EarlyStopping."""
+        from src.training.callbacks import MinEpochEarlyStopping
+        from lightning.pytorch.callbacks import EarlyStopping
+
+        callback = MinEpochEarlyStopping(min_epochs=20, monitor="val_loss", patience=15)
+        assert isinstance(callback, EarlyStopping)
+
+    def test_min_epochs_default(self):
+        """Default min_epochs is 20."""
+        from src.training.callbacks import MinEpochEarlyStopping
+
+        callback = MinEpochEarlyStopping(monitor="val_loss", patience=15)
+        assert callback.min_epochs == 20
+
+    def test_min_epochs_custom(self):
+        """Custom min_epochs value is stored correctly."""
+        from src.training.callbacks import MinEpochEarlyStopping
+
+        callback = MinEpochEarlyStopping(min_epochs=30, monitor="val_loss", patience=15)
+        assert callback.min_epochs == 30
+
+    def test_skips_early_stopping_before_min_epochs(self):
+        """on_validation_end does nothing before min_epochs is reached."""
+        from src.training.callbacks import MinEpochEarlyStopping
+
+        callback = MinEpochEarlyStopping(min_epochs=20, monitor="val_loss", patience=3)
+
+        trainer = MagicMock()
+        pl_module = MagicMock()
+
+        # Before min_epochs: callback should NOT call parent's on_validation_end
+        # We test this by verifying wait_count doesn't change
+        trainer.current_epoch = 10  # < 20
+        initial_wait_count = callback.wait_count
+
+        callback.on_validation_end(trainer, pl_module)
+
+        # wait_count should remain unchanged (parent method not called)
+        assert callback.wait_count == initial_wait_count
+
+    def test_activates_after_min_epochs(self):
+        """on_validation_end calls parent after min_epochs is reached."""
+        from src.training.callbacks import MinEpochEarlyStopping
+
+        callback = MinEpochEarlyStopping(min_epochs=20, monitor="val_loss", patience=3)
+
+        trainer = MagicMock()
+        trainer.current_epoch = 25  # > 20
+        trainer.callback_metrics = {"val_loss": 0.5}
+
+        pl_module = MagicMock()
+
+        # After min_epochs: parent method should be called
+        # We mock the parent class method to verify it's called
+        with patch.object(
+            MinEpochEarlyStopping.__bases__[0],  # EarlyStopping
+            "on_validation_end",
+        ) as mock_parent:
+            callback.on_validation_end(trainer, pl_module)
+            mock_parent.assert_called_once_with(trainer, pl_module)
+
+    def test_on_train_epoch_end_skips_before_min_epochs(self):
+        """on_train_epoch_end does nothing before min_epochs is reached."""
+        from src.training.callbacks import MinEpochEarlyStopping
+
+        callback = MinEpochEarlyStopping(min_epochs=20, monitor="val_loss", patience=3)
+
+        trainer = MagicMock()
+        trainer.current_epoch = 5  # < 20
+        pl_module = MagicMock()
+
+        # Should not call parent
+        with patch.object(
+            MinEpochEarlyStopping.__bases__[0],
+            "on_train_epoch_end",
+        ) as mock_parent:
+            callback.on_train_epoch_end(trainer, pl_module)
+            mock_parent.assert_not_called()
+
+    def test_repr(self):
+        """__repr__ includes min_epochs and inherited parameters."""
+        from src.training.callbacks import MinEpochEarlyStopping
+
+        callback = MinEpochEarlyStopping(
+            min_epochs=25,
+            monitor="val_loss",
+            patience=15,
+            min_delta=0.001,
+            mode="min",
+        )
+        repr_str = repr(callback)
+        assert "min_epochs=25" in repr_str
+        assert "monitor='val_loss'" in repr_str
+        assert "patience=15" in repr_str
+
+    def test_setup_callbacks_uses_min_epoch_early_stopping(self):
+        """setup_callbacks in train.py uses MinEpochEarlyStopping."""
+        from omegaconf import OmegaConf
+        from scripts.train import setup_callbacks
+        from src.training.callbacks import MinEpochEarlyStopping
+
+        cfg = OmegaConf.load("configs/default.yaml")
+        callbacks = setup_callbacks(cfg)
+
+        # Find the MinEpochEarlyStopping callback
+        es_callbacks = [cb for cb in callbacks if isinstance(cb, MinEpochEarlyStopping)]
+        assert len(es_callbacks) == 1, "Should have exactly one MinEpochEarlyStopping"
+
+        es = es_callbacks[0]
+        assert es.min_epochs == cfg.training.early_stopping.min_epochs
+        assert es.patience == cfg.training.early_stopping.patience
 
 
 class TestModelCheckpoint:

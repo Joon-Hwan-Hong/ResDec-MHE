@@ -289,6 +289,7 @@ class TestTrueKFold:
         assert val_set == train_val_set, \
             "Not all train_val subjects appear in a validation fold."
 
+    @pytest.mark.filterwarnings("ignore:.*Combining.*rare strata.*:UserWarning")
     def test_val_size_determined_by_n_folds(self):
         """Validation size should be ~1/n_folds of train_val_pool."""
         from src.data.splits import create_stratified_splits
@@ -368,6 +369,7 @@ class TestStratificationFallback:
         assert len(strata) == n
         assert strata.nunique() >= 2  # At least 2 strata
 
+    @pytest.mark.filterwarnings("ignore:.*falling back to median split.*:UserWarning")
     def test_median_fallback_produces_balanced_split(self):
         """Median fallback should produce roughly 50/50 split."""
         from src.data.splits import create_stratification_variable

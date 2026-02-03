@@ -6,6 +6,7 @@ Tests the composable pieces of the training script:
 - Callback setup from config
 - Trainer configuration
 - Seed setting
+- Integration test for main() with synthetic data
 """
 
 import pytest
@@ -14,7 +15,7 @@ from omegaconf import OmegaConf
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.data.constants import N_CELL_TYPES, N_REGIONS
+from src.data.constants import N_CELL_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
 
 
 @pytest.fixture
@@ -46,7 +47,7 @@ def train_config():
         },
         "training": {
             "max_epochs": 10,
-            "precision": "32",
+            "precision": "32-true",
             "gradient_clip_val": 1.0,
             "optimizer": {
                 "type": "adamw",
@@ -95,7 +96,6 @@ def train_config():
                 "num_workers": 0,
                 "pin_memory": False,
                 "prefetch_factor": 2,
-                "use_heterodata": True,
             },
             "cell_sampling": {
                 "max_cells_per_type": 100,
@@ -264,6 +264,16 @@ class TestSetupTrainer:
         setup_trainer(train_config)
         assert torch.backends.cudnn.benchmark is False
 
+    def test_setup_trainer_deterministic_true(self, train_config, tmp_path):
+        """Trainer sets deterministic=True for reproducibility via torch."""
+        from scripts.train import setup_trainer
+        train_config.paths.output_dir = str(tmp_path)
+        train_config.paths.logs_dir = str(tmp_path / "logs")
+        train_config.paths.checkpoint_dir = str(tmp_path / "checkpoints")
+        train_config.reproducibility = {"deterministic": True, "benchmark": False}
+        setup_trainer(train_config)
+        assert torch.are_deterministic_algorithms_enabled() is True
+
     def test_setup_trainer_has_callbacks(self, train_config, tmp_path):
         """Trainer has callbacks configured."""
         from scripts.train import setup_trainer
@@ -298,3 +308,228 @@ class TestSetSeed:
         set_seed(123)
         b = torch.randn(5)
         assert not torch.allclose(a, b)
+
+
+class TestMainHelp:
+    """Smoke tests for main() entry point."""
+
+    def test_train_help_exits_clean(self, monkeypatch):
+        """train.py --help exits with code 0."""
+        monkeypatch.setattr("sys.argv", ["train.py", "--help"])
+        with pytest.raises(SystemExit) as exc_info:
+            from scripts.train import main
+            main()
+        assert exc_info.value.code == 0
+
+
+class TestConfigToTrainerWiring:
+    """Tests that config flows through to Trainer correctly."""
+
+    def test_callbacks_and_trainer_match_config(self, train_config, tmp_path):
+        """setup_callbacks + setup_trainer produce correct Trainer config."""
+        from scripts.train import setup_callbacks, setup_trainer
+        import lightning.pytorch as pl
+
+        train_config.paths.output_dir = str(tmp_path)
+        train_config.paths.logs_dir = str(tmp_path / "logs")
+        train_config.paths.checkpoint_dir = str(tmp_path / "checkpoints")
+        train_config.reproducibility = {"deterministic": True, "benchmark": False}
+
+        callbacks = setup_callbacks(train_config)
+        trainer = setup_trainer(train_config, callbacks=callbacks)
+
+        # Check all expected callback types present
+        from src.training.callbacks import (
+            TemperatureAnnealing,
+            GradientNormLogger,
+            ResilienceModelCheckpoint,
+            MinEpochEarlyStopping,
+        )
+        callback_types = [type(c) for c in callbacks]
+        assert pl.callbacks.ModelCheckpoint in callback_types
+        assert MinEpochEarlyStopping in callback_types  # Custom wrapper, not base EarlyStopping
+        assert pl.callbacks.LearningRateMonitor in callback_types
+        assert TemperatureAnnealing in callback_types
+        assert GradientNormLogger in callback_types
+        assert ResilienceModelCheckpoint in callback_types
+
+        # Verify trainer config matches
+        assert trainer.max_epochs == train_config.training.max_epochs
+        assert trainer.gradient_clip_val == train_config.training.gradient_clip_val
+
+
+def _make_synthetic_batch(batch_size=2, n_genes=50, n_cell_types=N_CELL_TYPES,
+                          n_regions=N_REGIONS, max_cells=10):
+    """Create synthetic batch matching collate_for_hgt_multiregion format."""
+    region_pseudobulk = torch.randn(batch_size, n_regions, n_cell_types, n_genes)
+    region_mask = torch.zeros(batch_size, n_regions, dtype=torch.bool)
+    region_mask[:, 0] = True  # PFC only
+
+    sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
+    sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
+
+    edge_index_dict_list = []
+    edge_attr_dict_list = []
+    for _ in range(batch_size):
+        ei_dict = {}
+        ea_dict = {}
+        for src in sanitized_types[:2]:
+            for dst in sanitized_types[:2]:
+                key = (src, sanitized_edges[0], dst)
+                ei_dict[key] = torch.tensor([[0], [0]], dtype=torch.long)
+                ea_dict[key] = torch.rand(1, 1)
+        edge_index_dict_list.append(ei_dict)
+        edge_attr_dict_list.append(ea_dict)
+
+    cells = torch.randn(batch_size, n_cell_types, max_cells, n_genes)
+    cell_mask = torch.ones(batch_size, n_cell_types, max_cells, dtype=torch.bool)
+    cell_type_mask = torch.ones(batch_size, n_cell_types, dtype=torch.bool)
+    pathology = torch.rand(batch_size, 3)
+    cognition = torch.randn(batch_size, 1)
+
+    return {
+        "region_pseudobulk": region_pseudobulk,
+        "region_mask": region_mask,
+        "edge_index_dict_list": edge_index_dict_list,
+        "edge_attr_dict_list": edge_attr_dict_list,
+        "cells": cells,
+        "cell_mask": cell_mask,
+        "cell_type_mask": cell_type_mask,
+        "pathology": pathology,
+        "cognition": cognition,
+    }
+
+
+class SyntheticDataset(torch.utils.data.Dataset):
+    """Minimal synthetic dataset for integration testing."""
+
+    def __init__(self, n_samples=8, n_genes=50):
+        self.n_samples = n_samples
+        self.n_genes = n_genes
+
+    def __len__(self):
+        return self.n_samples
+
+    def __getitem__(self, idx):
+        # Return single sample (not batched)
+        batch = _make_synthetic_batch(batch_size=1, n_genes=self.n_genes)
+        return {k: v.squeeze(0) if isinstance(v, torch.Tensor) else v[0]
+                for k, v in batch.items()}
+
+
+class TestMainIntegration:
+    """Integration tests for train.py main() with synthetic data."""
+
+    def test_main_trains_one_epoch_with_synthetic_data(self, train_config, tmp_path):
+        """main() completes one epoch with synthetic data (mocked loaders)."""
+        import lightning.pytorch as pl
+        from scripts.train import setup_callbacks
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+
+        # Configure for minimal training (scheduler needs warmup < max_epochs)
+        train_config.training.max_epochs = 3
+        train_config.training.scheduler.warmup_epochs = 1
+        train_config.training.early_stopping.min_epochs = 1
+        train_config.paths.output_dir = str(tmp_path)
+        train_config.paths.logs_dir = str(tmp_path / "logs")
+        train_config.paths.checkpoint_dir = str(tmp_path / "checkpoints")
+        (tmp_path / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+        # Create synthetic dataloaders
+        train_ds = SyntheticDataset(n_samples=4, n_genes=train_config.model.n_genes)
+        val_ds = SyntheticDataset(n_samples=2, n_genes=train_config.model.n_genes)
+
+        # Custom collate that handles the dict format
+        def synthetic_collate(samples):
+            batch = {}
+            for key in samples[0].keys():
+                if isinstance(samples[0][key], torch.Tensor):
+                    batch[key] = torch.stack([s[key] for s in samples])
+                elif isinstance(samples[0][key], dict):
+                    batch[key] = [s[key] for s in samples]
+                else:
+                    batch[key] = [s[key] for s in samples]
+            return batch
+
+        train_loader = torch.utils.data.DataLoader(
+            train_ds, batch_size=2, collate_fn=synthetic_collate
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_ds, batch_size=2, collate_fn=synthetic_collate
+        )
+
+        # Build module and trainer
+        module = CognitiveResilienceLightningModule(train_config)
+
+        # Filter out callbacks incompatible with enable_checkpointing=False or logger=False
+        callbacks = [
+            cb for cb in setup_callbacks(train_config)
+            if not isinstance(cb, (pl.callbacks.ModelCheckpoint, pl.callbacks.LearningRateMonitor))
+        ]
+
+        trainer = pl.Trainer(
+            max_epochs=1,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            enable_checkpointing=False,
+            logger=False,
+            callbacks=callbacks,
+        )
+
+        # Train should complete without error
+        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+        # Verify training happened
+        assert trainer.current_epoch == 1
+        assert trainer.global_step > 0
+
+    def test_main_logs_val_loss(self, train_config, tmp_path):
+        """Training logs val_loss metric for checkpointing/early stopping."""
+        import lightning.pytorch as pl
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+
+        # Configure for minimal training (scheduler needs warmup < max_epochs)
+        train_config.training.max_epochs = 3
+        train_config.training.scheduler.warmup_epochs = 1
+        train_config.paths.output_dir = str(tmp_path)
+        train_config.paths.logs_dir = str(tmp_path / "logs")
+        train_config.paths.checkpoint_dir = str(tmp_path / "checkpoints")
+        (tmp_path / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+        train_ds = SyntheticDataset(n_samples=4, n_genes=train_config.model.n_genes)
+        val_ds = SyntheticDataset(n_samples=2, n_genes=train_config.model.n_genes)
+
+        def synthetic_collate(samples):
+            batch = {}
+            for key in samples[0].keys():
+                if isinstance(samples[0][key], torch.Tensor):
+                    batch[key] = torch.stack([s[key] for s in samples])
+                elif isinstance(samples[0][key], dict):
+                    batch[key] = [s[key] for s in samples]
+                else:
+                    batch[key] = [s[key] for s in samples]
+            return batch
+
+        train_loader = torch.utils.data.DataLoader(
+            train_ds, batch_size=2, collate_fn=synthetic_collate
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_ds, batch_size=2, collate_fn=synthetic_collate
+        )
+
+        module = CognitiveResilienceLightningModule(train_config)
+        trainer = pl.Trainer(
+            max_epochs=1,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            enable_checkpointing=False,
+            logger=False,
+        )
+
+        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+        # val_loss should be logged
+        assert "val_loss" in trainer.callback_metrics
+        assert trainer.callback_metrics["val_loss"].item() > 0

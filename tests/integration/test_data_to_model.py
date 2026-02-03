@@ -341,8 +341,8 @@ class TestCollateToHGTEncoder:
         assert attention is not None
         assert len(attention) == 4  # One per batch sample
 
-    def test_hgt_encoder_forward_with_manual_heterodata(self):
-        """Test HGT forward pass with manually constructed HeteroData."""
+    def test_hgt_encoder_forward_with_manual_dict_format(self):
+        """Test HGT forward pass with manually constructed dict format."""
         from src.models.branches.hgt_encoder import HGTEncoder
 
         d_input = 64
@@ -385,7 +385,7 @@ class TestCollateToHGTEncoder:
             assert torch.isfinite(out).all()
 
     def test_hgt_encoder_with_sanitized_node_names(self):
-        """HGTEncoder should handle sanitized node names from collate_to_heterodata.
+        """HGTEncoder should handle sanitized node names from collate_for_hgt.
 
         This tests the fix for the bug where HGT residual update iterated over
         unsanitized self.node_types but h_dict had sanitized keys, causing most
@@ -405,11 +405,11 @@ class TestCollateToHGTEncoder:
             n_layers=2,
         )
 
-        # Sanitize function matching collate_to_heterodata
+        # Sanitize function matching collate_for_hgt
         def sanitize_name(name: str) -> str:
             return name.replace(" ", "_").replace("/", "_").replace("-", "_")
 
-        # Create x_dict with SANITIZED keys (as collate_to_heterodata does)
+        # Create x_dict with SANITIZED keys (as collate_for_hgt does)
         sanitized_cell_types = [sanitize_name(ct) for ct in CELL_TYPE_ORDER]
         x_dict = {
             sanitized_ct: torch.randn(1, d_input)

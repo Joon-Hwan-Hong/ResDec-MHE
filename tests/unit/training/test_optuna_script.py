@@ -2,7 +2,7 @@
 Tests for scripts/optuna_optimize.py helper functions.
 
 Tests the composable pieces of the HP optimization script:
-- Study creation with TPE sampler and Hyperband pruner
+- Study creation with TPE sampler and MedianPruner (fold-level pruning)
 - Hyperparameter sampling from search space
 - Trial config building (overriding base config with sampled params)
 """
@@ -45,7 +45,7 @@ def optuna_config():
         },
         "training": {
             "max_epochs": 100,
-            "precision": "32",
+            "precision": "32-true",
             "gradient_clip_val": 1.0,
             "optimizer": {
                 "type": "adamw",
@@ -94,7 +94,6 @@ def optuna_config():
                 "num_workers": 0,
                 "pin_memory": False,
                 "prefetch_factor": 2,
-                "use_heterodata": True,
             },
             "cell_sampling": {
                 "max_cells_per_type": 100,
@@ -106,10 +105,12 @@ def optuna_config():
             "n_trials": 10,
             "timeout": 3600,
             "pruner": {
-                "type": "hyperband",
-                "min_resource": 5,
-                "max_resource": 100,
-                "reduction_factor": 3,
+                # MedianPruner with fold-level reporting (not epoch-level)
+                # n_warmup_steps=1 means complete 1 fold before pruning
+                "type": "median",
+                "n_startup_trials": 5,
+                "n_warmup_steps": 1,
+                "interval_steps": 1,
             },
             "sampler": {
                 "type": "tpe",
@@ -122,6 +123,11 @@ def optuna_config():
                 "dropout": {"type": "uniform", "low": 0.0, "high": 0.3},
                 "n_hgt_layers": {"type": "int", "low": 2, "high": 4},
                 "beta": {"type": "uniform", "low": 0.0, "high": 1.0},
+                "weight_decay": {"type": "loguniform", "low": 1e-6, "high": 1e-2},
+                "batch_size": {"type": "categorical", "choices": [16, 32, 64]},
+                "n_heads": {"type": "categorical", "choices": [2, 4, 8]},
+                "n_inducing": {"type": "categorical", "choices": [16, 32, 64]},
+                "gene_gate_temp": {"type": "uniform", "low": 0.1, "high": 2.0},
             },
         },
         "paths": {
@@ -151,13 +157,13 @@ class TestCreateStudy:
         study = create_study(optuna_config)
         assert isinstance(study.sampler, optuna.samplers.TPESampler)
 
-    def test_create_study_uses_hyperband_pruner(self, optuna_config):
-        """Study uses Hyperband pruner as specified."""
+    def test_create_study_uses_median_pruner(self, optuna_config):
+        """Study uses MedianPruner as specified (default for fold-level pruning)."""
         from scripts.optuna_optimize import create_study
         import optuna
 
         study = create_study(optuna_config)
-        assert isinstance(study.pruner, optuna.pruners.HyperbandPruner)
+        assert isinstance(study.pruner, optuna.pruners.MedianPruner)
 
     def test_create_study_minimizes(self, optuna_config):
         """Study direction is minimize (lower val_loss = better)."""
@@ -332,29 +338,80 @@ class TestBuildTrialConfig:
 class TestCreateStudyPrunerTypes:
     """Tests for different pruner types in study creation."""
 
-    def test_create_study_uses_median_pruner(self, optuna_config):
-        """Study uses MedianPruner when config specifies median type."""
+    def test_create_study_uses_hyperband_pruner_when_configured(self, optuna_config):
+        """Study uses HyperbandPruner when config specifies hyperband type."""
         from scripts.optuna_optimize import create_study
         import optuna
 
         optuna_config.optuna.pruner = {
-            "type": "median",
-            "n_startup_trials": 5,
-            "n_warmup_steps": 25,
-            "interval_steps": 5,
+            "type": "hyperband",
+            "min_resource": 5,
+            "max_resource": 100,
+            "reduction_factor": 3,
         }
         study = create_study(optuna_config)
-        assert isinstance(study.pruner, optuna.pruners.MedianPruner)
+        assert isinstance(study.pruner, optuna.pruners.HyperbandPruner)
 
     def test_create_study_median_pruner_warmup_steps(self, optuna_config):
-        """MedianPruner respects n_warmup_steps config."""
+        """MedianPruner respects n_warmup_steps config (folds, not epochs)."""
         from scripts.optuna_optimize import create_study
 
-        optuna_config.optuna.pruner = {
-            "type": "median",
-            "n_startup_trials": 5,
-            "n_warmup_steps": 25,
-            "interval_steps": 5,
-        }
+        # Default fixture already uses median pruner with n_warmup_steps=1
         study = create_study(optuna_config)
-        assert study.pruner._n_warmup_steps == 25
+        assert study.pruner._n_warmup_steps == 1
+
+    def test_create_study_median_pruner_interval_steps(self, optuna_config):
+        """MedianPruner respects interval_steps config."""
+        from scripts.optuna_optimize import create_study
+
+        # Default fixture uses interval_steps=1 (check after each fold)
+        study = create_study(optuna_config)
+        assert study.pruner._interval_steps == 1
+
+
+class TestOptunaMainHelp:
+    """Smoke tests for optuna main() entry point."""
+
+    def test_optuna_help_exits_clean(self, monkeypatch):
+        """optuna_optimize.py --help exits with code 0."""
+        monkeypatch.setattr("sys.argv", ["optuna_optimize.py", "--help"])
+        with pytest.raises(SystemExit) as exc_info:
+            from scripts.optuna_optimize import main
+            main()
+        assert exc_info.value.code == 0
+
+
+class TestBuildTrialConfigSimpleMappings:
+    """Tests for simple 1:1 parameter mappings in build_trial_config."""
+
+    def test_build_trial_config_weight_decay(self, optuna_config):
+        """weight_decay maps to training.optimizer.weight_decay."""
+        from scripts.optuna_optimize import build_trial_config
+
+        params = {"weight_decay": 0.001}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.training.optimizer.weight_decay == 0.001
+
+    def test_build_trial_config_batch_size(self, optuna_config):
+        """batch_size maps to data.dataloader.batch_size."""
+        from scripts.optuna_optimize import build_trial_config
+
+        params = {"batch_size": 32}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.data.dataloader.batch_size == 32
+
+    def test_build_trial_config_n_inducing(self, optuna_config):
+        """n_inducing maps to model.set_transformer.n_inducing_points."""
+        from scripts.optuna_optimize import build_trial_config
+
+        params = {"n_inducing": 64}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.model.set_transformer.n_inducing_points == 64
+
+    def test_build_trial_config_gene_gate_temp(self, optuna_config):
+        """gene_gate_temp maps to model.gene_gate.initial_temperature."""
+        from scripts.optuna_optimize import build_trial_config
+
+        params = {"gene_gate_temp": 1.5}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.model.gene_gate.initial_temperature == 1.5
