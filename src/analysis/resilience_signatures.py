@@ -27,7 +27,7 @@ from scipy import stats
 
 from src.data.constants import CELL_TYPE_ORDER, N_CELL_TYPES
 from src.utils.io import save_dataframe
-from src.utils.statistics import benjamini_hochberg, cohens_d_with_ci
+from src.utils.statistics import benjamini_hochberg, cohens_d_with_ci, attention_entropy
 
 logger = logging.getLogger(__name__)
 
@@ -742,7 +742,7 @@ class ResilienceSignatureAnalyzer:
 
             # Additionally, measure entropy change when removing this node
             # Higher entropy change = more structurally important
-            original_entropy = self._attention_entropy(attention)
+            original_entropy = attention_entropy(attention, axis=1)
 
             # Renormalized attention without this node
             remaining_sum = original_remaining.sum(axis=1, keepdims=True)
@@ -752,7 +752,7 @@ class ResilienceSignatureAnalyzer:
             # Pad back to original size for entropy comparison
             renorm_full = np.zeros_like(attention)
             renorm_full[:, remaining_mask] = renorm_remaining
-            ablated_entropy = self._attention_entropy(renorm_full[:, remaining_mask])
+            ablated_entropy = attention_entropy(renorm_full[:, remaining_mask], axis=1)
 
             # Importance combines: attention magnitude + entropy change
             # Normalize each component to [0, 1] range for fair combination
@@ -788,28 +788,6 @@ class ResilienceSignatureAnalyzer:
         df["rank"] = range(1, len(df) + 1)
 
         return df
-
-    @staticmethod
-    def _attention_entropy(attention: np.ndarray) -> np.ndarray:
-        """
-        Compute entropy of attention distribution for each subject.
-
-        Args:
-            attention: [n_subjects, n_cell_types]
-
-        Returns:
-            Entropy per subject [n_subjects]
-        """
-        # Add small epsilon to avoid log(0)
-        eps = 1e-10
-        attention = np.clip(attention, eps, 1.0)
-
-        # Normalize to ensure sum to 1
-        attention = attention / attention.sum(axis=1, keepdims=True)
-
-        # Shannon entropy
-        entropy = -np.sum(attention * np.log(attention), axis=1)
-        return entropy
 
     def _compare_ablation_methods(
         self,

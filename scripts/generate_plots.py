@@ -52,6 +52,8 @@ from src.visualization import (
     plot_cluster_composition,
     plot_linear_probe_results,
     plot_embedding_summary,
+    # Training curves
+    plot_training_summary,
 )
 from src.data.constants import CELL_TYPE_ORDER
 
@@ -93,6 +95,10 @@ PLOT_TYPES = {
         "linear_probe_results",
         "embedding_summary",
     ],
+    "training": [
+        "loss_curves",
+        "learning_rate",
+    ],
 }
 
 
@@ -125,6 +131,11 @@ def parse_args() -> argparse.Namespace:
         "--predictions-path",
         type=str,
         help="Explicit path to predictions parquet file",
+    )
+    input_group.add_argument(
+        "--training-log-dir",
+        type=str,
+        help="Path to training logs directory (for training curve plots)",
     )
 
     # Output
@@ -619,6 +630,36 @@ def generate_embedding_plots(
     return generated
 
 
+def generate_training_plots(
+    log_dir: Path,
+    output_dir: Path,
+    skip_plots: list[str],
+    fmt: str = "png",
+) -> list[str]:
+    """Generate training curve plots."""
+    generated = []
+
+    if not log_dir or not log_dir.exists():
+        logger.info("  No training log directory provided, skipping training plots")
+        return generated
+
+    # Use the plot_training_summary function which handles the full pipeline
+    if "loss_curves" not in skip_plots or "learning_rate" not in skip_plots:
+        try:
+            paths = plot_training_summary(
+                log_dir=log_dir,
+                output_dir=output_dir,
+                fmt=fmt,
+            )
+            for p in paths:
+                generated.append(str(p))
+                logger.info(f"  Generated: {Path(p).name}")
+        except Exception as e:
+            logger.warning(f"  Failed training curves: {e}")
+
+    return generated
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -633,12 +674,14 @@ def main():
         analysis_dir = Path(args.analysis_dir) if args.analysis_dir else exp_dir / "analysis"
         attention_path = Path(args.attention_path) if args.attention_path else analysis_dir / "attention_weights.h5"
         output_dir = Path(args.output_dir) if args.output_dir else exp_dir / "figures"
+        training_log_dir = Path(args.training_log_dir) if args.training_log_dir else exp_dir / "logs"
     else:
         if not args.analysis_dir:
             raise ValueError("Must provide either --experiment-dir or --analysis-dir")
         analysis_dir = Path(args.analysis_dir)
         attention_path = Path(args.attention_path) if args.attention_path else analysis_dir / "attention_weights.h5"
         output_dir = Path(args.output_dir) if args.output_dir else Path("figures")
+        training_log_dir = Path(args.training_log_dir) if args.training_log_dir else None
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
@@ -691,6 +734,11 @@ def main():
     if "embedding" in plot_categories:
         logger.info("Generating embedding plots...")
         generated = generate_embedding_plots(data, output_dir, skip_plots, fmt)
+        all_generated.extend(generated)
+
+    if "training" in plot_categories:
+        logger.info("Generating training curve plots...")
+        generated = generate_training_plots(training_log_dir, output_dir, skip_plots, fmt)
         all_generated.extend(generated)
 
     # Summary

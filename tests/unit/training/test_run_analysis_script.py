@@ -236,6 +236,110 @@ class TestRunUncertaintyAnalysis:
         assert (tmp_path / "calibration_summary.csv").exists()
 
 
+class TestRunCCCImportance:
+    """Test run_ccc_importance function."""
+
+    def test_runs_without_error(self, tmp_path):
+        """Test function runs without error."""
+        from scripts.run_analysis import run_ccc_importance
+
+        # Create mock edge attention scores [n_subjects, n_edges]
+        edge_attention = np.random.rand(20, 50)
+        cell_type_names = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
+
+        run_ccc_importance(
+            edge_attention_scores=edge_attention,
+            cell_type_names=cell_type_names,
+            output_dir=tmp_path,
+            formats=["csv"],
+        )
+
+        assert (tmp_path / "ccc_importance.csv").exists()
+
+    def test_with_edge_metadata(self, tmp_path):
+        """Test function with edge metadata."""
+        from scripts.run_analysis import run_ccc_importance
+
+        edge_attention = np.random.rand(20, 10)
+        edge_metadata = pd.DataFrame({
+            "source": ["Ast", "Mic", "Ast", "Oli", "Exc"] * 2,
+            "target": ["Mic", "Ast", "Exc", "Inh", "Inh"] * 2,
+            "edge_type": ["secreted_signaling"] * 10,
+        })
+
+        run_ccc_importance(
+            edge_attention_scores=edge_attention,
+            edge_metadata=edge_metadata,
+            output_dir=tmp_path,
+            formats=["csv"],
+        )
+
+        assert (tmp_path / "ccc_importance.csv").exists()
+
+
+class TestRunResilienceSignature:
+    """Test run_resilience_signature function."""
+
+    def test_runs_without_error(self, tmp_path):
+        """Test function runs without error."""
+        from scripts.run_analysis import run_resilience_signature
+
+        np.random.seed(42)
+        n_subjects = 30
+        n_cell_types = 8
+
+        # Create mock attention [n_subjects, n_heads, n_cell_types]
+        attention = np.random.rand(n_subjects, 4, n_cell_types)
+        pathology_scores = np.random.rand(n_subjects) * 10
+        cognition_scores = np.random.rand(n_subjects) * 100
+        cell_type_names = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
+
+        run_resilience_signature(
+            attention=attention,
+            pathology_scores=pathology_scores,
+            cognition_scores=cognition_scores,
+            cell_type_names=cell_type_names,
+            n_permutations=10,  # Few permutations for speed
+            output_dir=tmp_path,
+            formats=["csv"],
+        )
+
+        assert (tmp_path / "resilience_signature.csv").exists()
+
+
+class TestRunRegionalAnalysis:
+    """Test run_regional_analysis function."""
+
+    def test_runs_without_error(self, tmp_path):
+        """Test function runs without error."""
+        from scripts.run_analysis import run_regional_analysis
+
+        np.random.seed(42)
+        n_regions = 6
+        n_cell_types = 8
+        n_genes = 100
+
+        region_weights = np.random.rand(n_regions)
+        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+        region_names = ["PFC", "AG", "MTC", "EC", "HC", "TH"]
+        cell_type_names = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+
+        run_regional_analysis(
+            region_weights=region_weights,
+            gene_gate_weights=gene_gate_weights,
+            region_names=region_names,
+            cell_type_names=cell_type_names,
+            gene_names=gene_names,
+            top_k_genes=10,
+            output_dir=tmp_path,
+            formats=["csv"],
+        )
+
+        # Regional analysis saves multiple outputs
+        assert (tmp_path / "region_contribution.csv").exists()
+
+
 # =============================================================================
 # Integration Tests
 # =============================================================================

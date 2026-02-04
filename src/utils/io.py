@@ -129,6 +129,8 @@ def save_attention_weights(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with h5py.File(path, "w") as f:
+        f.attrs["schema_version"] = "1.0"
+
         if gene_gate is not None:
             f.create_dataset("gene_gate", data=gene_gate)
 

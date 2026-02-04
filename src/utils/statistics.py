@@ -265,3 +265,49 @@ def benjamini_hochberg(
     significant = adjusted < alpha
 
     return adjusted, significant
+
+
+def attention_entropy(
+    attention: np.ndarray,
+    axis: int | None = None,
+    epsilon: float = 1e-10,
+) -> float | np.ndarray:
+    """
+    Compute Shannon entropy of attention distribution.
+
+    Can operate on flat arrays (returning scalar) or along an axis
+    (returning array of entropies).
+
+    Args:
+        attention: Attention weights (non-negative, will be normalized)
+        axis: Axis along which to compute entropy. If None, flattens array.
+        epsilon: Small value for numerical stability
+
+    Returns:
+        Entropy value(s). Higher entropy = more uniform attention.
+    """
+    attention = np.asarray(attention, dtype=np.float64)
+
+    if axis is None:
+        # Flatten and compute single entropy
+        values = attention.flatten()
+        values = values[values > 0]
+        if len(values) == 0:
+            return 0.0
+
+        # Normalize to probability distribution
+        p = values / values.sum()
+        return float(-np.sum(p * np.log(p + epsilon)))
+    else:
+        # Compute entropy along axis
+        # Normalize along axis
+        sums = attention.sum(axis=axis, keepdims=True)
+        sums = np.where(sums > 0, sums, 1)  # Avoid division by zero
+        p = attention / sums
+
+        # Clip for numerical stability
+        p = np.clip(p, epsilon, 1.0)
+
+        # Shannon entropy: -sum(p * log(p))
+        entropy = -np.sum(p * np.log(p), axis=axis)
+        return entropy

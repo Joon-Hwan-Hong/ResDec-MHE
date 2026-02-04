@@ -14,7 +14,9 @@ Workflow:
 5. Run resilience signature analysis (if pathology data available)
 6. Run regional analysis (if region data available)
 7. Run uncertainty analysis (if std predictions available)
-8. Save all results to analysis output directory
+8. Run cell attention analysis (if PMA attention available)
+9. Run embedding analysis (if embeddings available)
+10. Save all results to analysis output directory
 
 Outputs saved to: {experiment_dir}/analysis/ or --output-dir
 """
@@ -36,6 +38,8 @@ from src.analysis import (
     RegionalAnalyzer,
     UncertaintyAnalyzer,
     compute_expected_calibration_error,
+    CellAttentionAnalyzer,
+    EmbeddingAnalyzer,
 )
 from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
 
@@ -115,6 +119,16 @@ def parse_args() -> argparse.Namespace:
         "--skip-uncertainty",
         action="store_true",
         help="Skip uncertainty analysis",
+    )
+    analysis_group.add_argument(
+        "--skip-cell-attention",
+        action="store_true",
+        help="Skip cell-level attention analysis (PMA attention)",
+    )
+    analysis_group.add_argument(
+        "--skip-embedding",
+        action="store_true",
+        help="Skip embedding analysis (UMAP, clustering, linear probes)",
     )
 
     # Parameters
@@ -331,6 +345,58 @@ def run_uncertainty_analysis(
         logger.info(f"  Expected Calibration Error (ECE): {ece:.4f}")
 
 
+def run_cell_attention(
+    pma_attention: np.ndarray,
+    cell_ids: list[str] | None = None,
+    cell_types: list[str] | None = None,
+    subject_ids: list[str] | None = None,
+    aggregation: str = "mean",
+    output_dir: Path = None,
+    formats: list[str] = None,
+) -> None:
+    """Run cell-level attention analysis from PMA."""
+    logger.info("Running cell attention analysis...")
+
+    analyzer = CellAttentionAnalyzer(
+        pma_attention=pma_attention,
+        cell_ids=cell_ids,
+        cell_types=cell_types,
+        subject_ids=subject_ids,
+        aggregation=aggregation,
+    )
+
+    result = analyzer.analyze()
+
+    if output_dir:
+        analyzer.save(result, output_dir, formats=formats)
+        logger.info(f"  Saved cell attention analysis to {output_dir}")
+
+
+def run_embedding_analysis(
+    embeddings: np.ndarray,
+    subject_ids: list[str] | None = None,
+    covariates: pd.DataFrame | None = None,
+    batch_labels: np.ndarray | None = None,
+    output_dir: Path = None,
+    formats: list[str] = None,
+) -> None:
+    """Run embedding analysis (UMAP, clustering, linear probes)."""
+    logger.info("Running embedding analysis...")
+
+    analyzer = EmbeddingAnalyzer(
+        embeddings=embeddings,
+        subject_ids=subject_ids,
+        covariates=covariates,
+        batch_labels=batch_labels,
+    )
+
+    result = analyzer.analyze()
+
+    if output_dir:
+        analyzer.save(result, output_dir, formats=formats)
+        logger.info(f"  Saved embedding analysis to {output_dir}")
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -396,6 +462,15 @@ def main():
     gene_gate = attention_weights.get("gene_gate")
     hgt_attention = attention_weights.get("hgt_attention")
     region_weights = attention_weights.get("region_weights")
+    pma_attention = attention_weights.get("pma_attention")
+    embeddings = attention_weights.get("embeddings")
+
+    # Load edge metadata for CCC analysis if available
+    edge_metadata = None
+    edge_metadata_path = output_dir / "edge_metadata.parquet"
+    if edge_metadata_path.exists():
+        edge_metadata = pd.read_parquet(edge_metadata_path)
+        logger.info(f"Loaded edge metadata with {len(edge_metadata)} edges")
 
     # Run analyses
     analyses_run = 0
@@ -426,6 +501,8 @@ def main():
     if not args.skip_ccc and hgt_attention is not None:
         run_ccc_importance(
             edge_attention_scores=hgt_attention,
+            edge_metadata=edge_metadata,
+            cell_type_names=cell_type_names,
             output_dir=output_dir,
             formats=args.formats,
         )
@@ -489,6 +566,45 @@ def main():
             analyses_run += 1
         else:
             logger.warning("Skipping uncertainty analysis: no predicted_std in predictions")
+
+    # Cell attention analysis (requires PMA attention)
+    if not args.skip_cell_attention and pma_attention is not None:
+        # Get cell metadata from attention weights if available
+        cell_ids = metadata.get("cell_ids")
+        if cell_ids is not None:
+            cell_ids = list(cell_ids)
+        cell_types = metadata.get("cell_types")
+        if cell_types is not None:
+            cell_types = list(cell_types)
+
+        run_cell_attention(
+            pma_attention=pma_attention,
+            cell_ids=cell_ids,
+            cell_types=cell_types,
+            subject_ids=subject_ids,
+            output_dir=output_dir,
+            formats=args.formats,
+        )
+        analyses_run += 1
+
+    # Embedding analysis (requires subject embeddings)
+    if not args.skip_embedding and embeddings is not None:
+        # Build covariates for linear probe analysis
+        covariates = None
+        if predictions_df is not None:
+            cov_cols = [c for c in predictions_df.columns
+                       if c not in ["subject_id", "predicted_mean", "predicted_std"]]
+            if cov_cols:
+                covariates = predictions_df[cov_cols]
+
+        run_embedding_analysis(
+            embeddings=embeddings,
+            subject_ids=subject_ids,
+            covariates=covariates,
+            output_dir=output_dir,
+            formats=args.formats,
+        )
+        analyses_run += 1
 
     logger.info(f"Completed {analyses_run} analyses")
     logger.info(f"Results saved to: {output_dir}")

@@ -27,6 +27,7 @@ import pandas as pd
 from scipy import stats
 
 from src.utils.io import save_dataframe
+from src.utils.statistics import gini_coefficient, attention_entropy
 
 logger = logging.getLogger(__name__)
 
@@ -302,8 +303,8 @@ class CellAttentionAnalyzer:
                 "mean_attention": float(attention.mean()),
                 "std_attention": float(attention.std()),
                 "max_attention": float(attention.max()),
-                "gini": self._gini_coefficient(attention),
-                "entropy": self._attention_entropy(attention),
+                "gini": gini_coefficient(attention),
+                "entropy": attention_entropy(attention),
             })
 
         return pd.DataFrame(rows)
@@ -341,29 +342,6 @@ class CellAttentionAnalyzer:
         df = df.sort_values("mean_attention", ascending=False).reset_index(drop=True)
 
         return df
-
-    @staticmethod
-    def _gini_coefficient(values: np.ndarray) -> float:
-        """Compute Gini coefficient of attention distribution."""
-        values = np.sort(values.flatten())
-        n = len(values)
-        if n == 0 or values.sum() == 0:
-            return 0.0
-
-        indices = np.arange(1, n + 1)
-        return float((2 * (indices * values).sum() / (n * values.sum())) - (n + 1) / n)
-
-    @staticmethod
-    def _attention_entropy(values: np.ndarray) -> float:
-        """Compute Shannon entropy of attention distribution."""
-        values = values.flatten()
-        values = values[values > 0]
-        if len(values) == 0:
-            return 0.0
-
-        # Normalize
-        p = values / values.sum()
-        return float(-np.sum(p * np.log(p + 1e-10)))
 
     def save(
         self,
