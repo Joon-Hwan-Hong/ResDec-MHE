@@ -21,16 +21,9 @@ import pandas as pd
 from scipy import stats
 
 from src.utils.io import save_dataframe
+from src.utils.statistics import compute_calibration_metrics, CALIBRATION_LEVELS
 
 logger = logging.getLogger(__name__)
-
-
-# Expected coverage for calibrated Gaussian predictions
-CALIBRATION_LEVELS = {
-    "1sigma": 0.6827,  # 68.27%
-    "2sigma": 0.9545,  # 95.45%
-    "3sigma": 0.9973,  # 99.73%
-}
 
 
 @dataclass
@@ -192,8 +185,7 @@ class UncertaintyAnalyzer:
         """
         Compute calibration error at different sigma levels.
 
-        For a well-calibrated model, ~68% of actual values should fall within
-        1σ of predictions, ~95% within 2σ, and ~99.7% within 3σ.
+        Delegates to shared implementation in src.utils.statistics.
 
         Returns:
             DataFrame with columns: level, expected_coverage, observed_coverage,
@@ -202,37 +194,12 @@ class UncertaintyAnalyzer:
         if self.actual is None:
             raise ValueError("actual values required for calibration")
 
-        z_scores = np.abs(self.actual - self.predicted_mean) / self.predicted_std
-
-        rows = []
-        for level_name, expected in CALIBRATION_LEVELS.items():
-            # Number of sigmas (1, 2, or 3)
-            n_sigma = int(level_name[0])
-
-            # Observed coverage: fraction of z-scores <= n_sigma
-            observed = (z_scores <= n_sigma).mean()
-
-            # Calibration error (positive = underconfident, negative = overconfident)
-            error = observed - expected
-
-            # Interpretation
-            if error > 0.05:
-                interp = "underconfident"
-            elif error < -0.05:
-                interp = "overconfident"
-            else:
-                interp = "well_calibrated"
-
-            rows.append({
-                "level": level_name,
-                "n_sigma": n_sigma,
-                "expected_coverage": expected,
-                "observed_coverage": float(observed),
-                "calibration_error": float(error),
-                "interpretation": interp,
-            })
-
-        return pd.DataFrame(rows)
+        result = compute_calibration_metrics(
+            self.predicted_mean,
+            self.predicted_std,
+            self.actual,
+        )
+        return result.detailed
 
     def _compute_correlates(self) -> pd.DataFrame:
         """
@@ -404,7 +371,7 @@ def compute_expected_calibration_error(
             continue
 
         # Expected coverage (at 1 sigma)
-        expected = CALIBRATION_LEVELS["1sigma"]
+        expected = CALIBRATION_LEVELS["1_sigma"]
 
         # Observed coverage
         observed = (z_scores[mask] <= 1.0).mean()

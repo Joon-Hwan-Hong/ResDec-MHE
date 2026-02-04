@@ -13,6 +13,8 @@ import torch
 from scipy.special import erf as scipy_erf
 from scipy.stats import pearsonr, spearmanr
 
+from src.utils.statistics import calibration_error as _shared_calibration_error
+
 
 class ResilienceMetrics:
     """
@@ -117,8 +119,7 @@ class ResilienceMetrics:
         """
         Compute regression calibration error.
 
-        For a well-calibrated model: 68.3% of z-scores ≤ 1, 95.4% ≤ 2, 99.7% ≤ 3.
-        Returns mean gap across these levels (negative = overconfident).
+        Delegates to shared implementation in src.utils.statistics.
 
         Args:
             mean: [N] predicted values
@@ -128,15 +129,4 @@ class ResilienceMetrics:
         Returns:
             Mean calibration error (0 = perfect, negative = overconfident)
         """
-        z_scores = np.abs(target - mean) / (std + 1e-10)
-
-        # Expected coverage at 1σ, 2σ, 3σ
-        expected = [0.6827, 0.9545, 0.9973]
-        thresholds = [1.0, 2.0, 3.0]
-
-        gaps = []
-        for threshold, exp_coverage in zip(thresholds, expected):
-            observed_coverage = float(np.mean(z_scores <= threshold))
-            gaps.append(observed_coverage - exp_coverage)
-
-        return float(np.mean(gaps))
+        return _shared_calibration_error(mean, std, target)

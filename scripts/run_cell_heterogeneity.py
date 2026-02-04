@@ -33,6 +33,7 @@ import pandas as pd
 
 from src.data.constants import CELL_TYPE_ORDER
 from src.utils.io import save_dataframe
+from src.utils.statistics import gini_coefficient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -258,7 +259,7 @@ def analyze_cell_heterogeneity(
                 valid_attention / valid_attention.sum() *
                 np.log(valid_attention / valid_attention.sum() + 1e-10)
             )),
-            "gini_coefficient": float(_gini_coefficient(valid_attention)),
+            "gini_coefficient": float(gini_coefficient(valid_attention)),
         })
 
         # Identify high-attention cells per subject
@@ -323,19 +324,6 @@ def analyze_cell_heterogeneity(
         ).reset_index(drop=True)
 
     return summary_df, high_attention_df, all_scores_df
-
-
-def _gini_coefficient(values: np.ndarray) -> float:
-    """
-    Compute Gini coefficient (measure of inequality/concentration).
-
-    0 = perfect equality (all values same)
-    1 = perfect inequality (one value has everything)
-    """
-    values = np.sort(values)
-    n = len(values)
-    index = np.arange(1, n + 1)
-    return ((2 * index - n - 1) * values).sum() / (n * values.sum() + 1e-10)
 
 
 def main():

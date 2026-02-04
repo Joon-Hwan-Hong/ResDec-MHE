@@ -47,6 +47,16 @@ from src.utils.gpu import (
 from src.utils.device import (
     move_batch_to_device,
 )
+from src.utils.statistics import (
+    CalibrationResult,
+    CALIBRATION_LEVELS,
+    compute_calibration_metrics,
+    calibration_error,
+    gini_coefficient,
+    cohens_d,
+    cohens_d_with_ci,
+    benjamini_hochberg,
+)
 
 __all__ = [
     # Config
@@ -89,4 +99,13 @@ __all__ = [
     "estimate_batch_size",
     # Device
     "move_batch_to_device",
+    # Statistics
+    "CalibrationResult",
+    "CALIBRATION_LEVELS",
+    "compute_calibration_metrics",
+    "calibration_error",
+    "gini_coefficient",
+    "cohens_d",
+    "cohens_d_with_ci",
+    "benjamini_hochberg",
 ]

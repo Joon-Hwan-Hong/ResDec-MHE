@@ -1,25 +1,17 @@
 """
-Generate publication-quality plots from analysis outputs.
+Generate publication-quality plots from analysis results.
 
 Usage:
     uv run python scripts/generate_plots.py --experiment-dir experiments/20260113_143052_a3f7b2c1
-    uv run python scripts/generate_plots.py --analysis-dir analysis_output --plots-dir plots
-    uv run python scripts/generate_plots.py --experiment-dir experiments/20260113_143052_a3f7b2c1 --only attention importance
+    uv run python scripts/generate_plots.py --experiment-dir experiments/20260113 --plot-types attention resilience
+    uv run python scripts/generate_plots.py --analysis-dir analysis_output --output-dir figures/
 
 Workflow:
-1. Load analysis results from experiment directory (or explicit paths)
-2. Generate attention visualization plots
-3. Generate importance visualization plots
-4. Generate prediction quality plots
-5. Save all plots to output directory at 600 DPI
+1. Load analysis results from experiment (or explicit paths)
+2. Generate publication-quality plots using src.visualization
+3. Save plots to figures/ subdirectory
 
-Outputs saved to: data/plots/{experiment_hash}/ or --plots-dir
-with nested subdirectories:
-    attention/      - Cell type and gene attention heatmaps
-    importance/     - Gene and CCC importance plots
-    regional/       - Regional analysis plots
-    prediction/     - Predicted vs actual, residuals
-    uncertainty/    - Calibration, uncertainty correlates
+Outputs saved to: {experiment_dir}/figures/ or --output-dir
 """
 
 import argparse
@@ -32,9 +24,11 @@ import pandas as pd
 
 from src.utils.io import load_dataframe
 from src.visualization import (
+    # Config
     setup_seaborn_style,
     setup_matplotlib_defaults,
-    FIGURE_DPI,
+    save_figure,
+    FIGURE_FORMAT,
     # Attention plots
     plot_cell_type_attention_heatmap,
     plot_cell_type_importance_bar,
@@ -53,7 +47,13 @@ from src.visualization import (
     plot_residuals,
     plot_uncertainty_vs_error,
     plot_uncertainty_correlates,
+    # Embedding plots
+    plot_umap_scatter,
+    plot_cluster_composition,
+    plot_linear_probe_results,
+    plot_embedding_summary,
 )
+from src.data.constants import CELL_TYPE_ORDER
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,13 +62,44 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-PLOT_CATEGORIES = ["attention", "importance", "prediction", "uncertainty", "regional"]
+# Available plot categories
+PLOT_TYPES = {
+    "attention": [
+        "cell_type_attention_heatmap",
+        "cell_type_importance_bar",
+        "attention_distribution",
+        "gene_gate_heatmap",
+    ],
+    "resilience": [
+        "resilience_signature_heatmap",
+    ],
+    "importance": [
+        "top_genes_per_cell_type",
+        "gene_importance_volcano",
+        "ccc_network_summary",
+        "top_interactions_heatmap",
+        "regional_gene_importance",
+    ],
+    "prediction": [
+        "predicted_vs_actual",
+        "calibration_curve",
+        "residuals",
+        "uncertainty_vs_error",
+        "uncertainty_correlates",
+    ],
+    "embedding": [
+        "umap_scatter",
+        "cluster_composition",
+        "linear_probe_results",
+        "embedding_summary",
+    ],
+}
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Generate publication-quality plots from analysis outputs",
+        description="Generate publication-quality plots from analysis results",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -83,456 +114,594 @@ def parse_args() -> argparse.Namespace:
     input_group.add_argument(
         "--analysis-dir",
         type=str,
-        help="Explicit path to analysis output directory",
+        help="Explicit path to analysis results directory",
     )
     input_group.add_argument(
         "--attention-path",
         type=str,
         help="Explicit path to attention weights HDF5 file",
     )
+    input_group.add_argument(
+        "--predictions-path",
+        type=str,
+        help="Explicit path to predictions parquet file",
+    )
 
     # Output
     parser.add_argument(
-        "--plots-dir",
+        "--output-dir",
         type=str,
-        help="Output directory for plots (default: data/plots/{experiment_hash}/)",
+        help="Output directory for figures (default: {experiment-dir}/figures/)",
     )
 
     # Plot selection
-    parser.add_argument(
-        "--only",
+    plot_group = parser.add_argument_group("Plot Selection")
+    plot_group.add_argument(
+        "--plot-types",
         nargs="+",
-        choices=PLOT_CATEGORIES,
-        help=f"Only generate specific plot categories: {PLOT_CATEGORIES}",
+        choices=list(PLOT_TYPES.keys()) + ["all"],
+        default=["all"],
+        help="Categories of plots to generate (default: all)",
     )
-    parser.add_argument(
-        "--skip",
+    plot_group.add_argument(
+        "--skip-plots",
         nargs="+",
-        choices=PLOT_CATEGORIES,
-        help="Skip specific plot categories",
+        default=[],
+        help="Specific plots to skip (by name)",
     )
 
-    # Plot options
-    parser.add_argument(
+    # Output format
+    format_group = parser.add_argument_group("Output Format")
+    format_group.add_argument(
         "--format",
         type=str,
         default="png",
         choices=["png", "pdf", "svg"],
-        help="Output format (default: png)",
+        help="Output figure format (default: png)",
     )
-    parser.add_argument(
+    format_group.add_argument(
         "--dpi",
         type=int,
-        default=FIGURE_DPI,
-        help=f"Output DPI (default: {FIGURE_DPI})",
-    )
-    parser.add_argument(
-        "--top-k-genes",
-        type=int,
-        default=50,
-        help="Number of top genes for gene heatmaps (default: 50)",
-    )
-    parser.add_argument(
-        "--n-genes-per-cell-type",
-        type=int,
-        default=10,
-        help="Number of genes per cell type in bar plots (default: 10)",
+        default=600,
+        help="Output DPI for raster formats (default: 600)",
     )
 
     return parser.parse_args()
 
 
-def load_attention_weights(path: Path) -> dict:
-    """Load attention weights from HDF5 file."""
-    weights = {}
-    if not path.exists():
-        return weights
+def load_analysis_data(analysis_dir: Path) -> dict:
+    """
+    Load analysis results from directory.
 
+    Args:
+        analysis_dir: Path to analysis results directory
+
+    Returns:
+        Dictionary of loaded DataFrames and arrays
+    """
+    data = {}
+
+    # Cell type importance
+    cell_type_path = analysis_dir / "cell_type_importance.parquet"
+    if cell_type_path.exists():
+        data["cell_type_importance"] = load_dataframe(cell_type_path)
+        logger.info(f"  Loaded cell_type_importance: {len(data['cell_type_importance'])} rows")
+
+    # Gene importance
+    gene_path = analysis_dir / "gene_importance_by_celltype.parquet"
+    if gene_path.exists():
+        data["gene_importance"] = load_dataframe(gene_path)
+        logger.info(f"  Loaded gene_importance: {len(data['gene_importance'])} rows")
+
+    # CCC importance
+    ccc_path = analysis_dir / "ccc_importance.parquet"
+    if ccc_path.exists():
+        data["ccc_importance"] = load_dataframe(ccc_path)
+        logger.info(f"  Loaded ccc_importance: {len(data['ccc_importance'])} rows")
+
+    # Resilience signature
+    resilience_path = analysis_dir / "resilience_signature.parquet"
+    if resilience_path.exists():
+        data["resilience_signature"] = load_dataframe(resilience_path)
+        logger.info(f"  Loaded resilience_signature: {len(data['resilience_signature'])} rows")
+
+    # Regional analysis
+    regional_path = analysis_dir / "regional_gene_importance.parquet"
+    if regional_path.exists():
+        data["regional_gene_importance"] = load_dataframe(regional_path)
+        logger.info(f"  Loaded regional_gene_importance: {len(data['regional_gene_importance'])} rows")
+
+    # Predictions
+    predictions_path = analysis_dir / "predictions.parquet"
+    if predictions_path.exists():
+        data["predictions"] = load_dataframe(predictions_path)
+        logger.info(f"  Loaded predictions: {len(data['predictions'])} rows")
+
+    # Uncertainty analysis
+    uncertainty_path = analysis_dir / "prediction_uncertainty.parquet"
+    if uncertainty_path.exists():
+        data["uncertainty"] = load_dataframe(uncertainty_path)
+        logger.info(f"  Loaded uncertainty: {len(data['uncertainty'])} rows")
+
+    # Calibration
+    calibration_path = analysis_dir / "calibration_summary.parquet"
+    if calibration_path.exists():
+        data["calibration"] = load_dataframe(calibration_path)
+        logger.info(f"  Loaded calibration: {len(data['calibration'])} rows")
+
+    # Embedding analysis
+    umap_path = analysis_dir / "umap_projection.parquet"
+    if umap_path.exists():
+        data["umap_projection"] = load_dataframe(umap_path)
+        logger.info(f"  Loaded umap_projection: {len(data['umap_projection'])} rows")
+
+    cluster_path = analysis_dir / "cluster_assignments.parquet"
+    if cluster_path.exists():
+        data["cluster_assignments"] = load_dataframe(cluster_path)
+        logger.info(f"  Loaded cluster_assignments: {len(data['cluster_assignments'])} rows")
+
+    probe_path = analysis_dir / "linear_probe_results.parquet"
+    if probe_path.exists():
+        data["linear_probe_results"] = load_dataframe(probe_path)
+        logger.info(f"  Loaded linear_probe_results: {len(data['linear_probe_results'])} rows")
+
+    return data
+
+
+def load_attention_weights(path: Path) -> dict:
+    """Load attention weights from HDF5."""
+    if not path.exists():
+        return {}
+
+    weights = {}
     with h5py.File(path, "r") as f:
         for key in f.keys():
             weights[key] = f[key][:]
+            logger.info(f"  Loaded {key}: shape {weights[key].shape}")
 
-        # Load metadata from attributes
-        for attr in ["cell_type_names", "gene_names", "subject_ids"]:
-            if attr in f.attrs:
-                weights[attr] = list(f.attrs[attr])
+        if "metadata" in dict(f.attrs):
+            weights["metadata"] = dict(f.attrs)
 
     return weights
 
 
 def generate_attention_plots(
-    analysis_dir: Path,
-    attention_weights: dict,
-    plots_dir: Path,
+    data: dict,
+    attention: dict,
+    output_dir: Path,
+    skip_plots: list[str],
     fmt: str = "png",
-    top_k_genes: int = 50,
-) -> int:
-    """Generate attention visualization plots."""
-    logger.info("Generating attention plots...")
-    count = 0
+) -> list[str]:
+    """
+    Generate attention-related plots.
 
-    # Create subdirectory for attention plots
-    attention_dir = plots_dir / "attention"
-    attention_dir.mkdir(parents=True, exist_ok=True)
+    Returns:
+        List of generated plot paths
+    """
+    generated = []
+
+    # Cell type attention heatmap
+    if "cell_type_attention_heatmap" not in skip_plots:
+        if "cell_type_importance" in data:
+            df = data["cell_type_importance"]
+            # Check if we have pathology stratification
+            if "pathology_tertile" in df.columns:
+                try:
+                    fig = plot_cell_type_attention_heatmap(df)
+                    path = output_dir / f"cell_type_attention_heatmap.{fmt}"
+                    save_figure(fig, str(path), format=fmt)
+                    generated.append(str(path))
+                    logger.info(f"  Generated: {path.name}")
+                except Exception as e:
+                    logger.warning(f"  Failed cell_type_attention_heatmap: {e}")
 
     # Cell type importance bar chart
-    importance_df = load_dataframe(analysis_dir / "cell_type_importance")
-    if importance_df is not None:
-        plot_cell_type_importance_bar(
-            importance_df,
-            title="Cell Type Importance Ranking",
-            save_path=attention_dir / f"cell_type_importance_bar.{fmt}",
-        )
-        count += 1
-        logger.info("  Created attention/cell_type_importance_bar")
+    if "cell_type_importance_bar" not in skip_plots:
+        if "cell_type_importance" in data:
+            df = data["cell_type_importance"]
+            try:
+                fig = plot_cell_type_importance_bar(df)
+                path = output_dir / f"cell_type_importance_bar.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed cell_type_importance_bar: {e}")
 
-    # Cell type attention heatmap (by pathology level)
-    attention_by_pathology = load_dataframe(analysis_dir / "cell_type_importance_by_pathology")
-    if attention_by_pathology is not None:
-        plot_cell_type_attention_heatmap(
-            attention_by_pathology,
-            title="Cell Type Attention by Pathology Level",
-            save_path=attention_dir / f"cell_type_attention_heatmap.{fmt}",
-        )
-        count += 1
-        logger.info("  Created attention/cell_type_attention_heatmap")
+    # Attention distribution
+    if "attention_distribution" not in skip_plots:
+        if "pathology_attention" in attention:
+            try:
+                fig = plot_attention_distribution(
+                    attention["pathology_attention"],
+                    cell_type_names=list(CELL_TYPE_ORDER),
+                )
+                path = output_dir / f"attention_distribution.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed attention_distribution: {e}")
 
     # Gene gate heatmap
-    gene_gate = attention_weights.get("gene_gate")
-    if gene_gate is not None:
-        gene_names = attention_weights.get("gene_names")
-        cell_type_names = attention_weights.get("cell_type_names")
-        plot_gene_gate_heatmap(
-            gene_gate,
-            gene_names=gene_names,
-            cell_type_names=cell_type_names,
-            top_k_genes=top_k_genes,
-            title="Gene Attention Weights",
-            save_path=attention_dir / f"gene_gate_heatmap.{fmt}",
-        )
-        count += 1
-        logger.info("  Created attention/gene_gate_heatmap")
+    if "gene_gate_heatmap" not in skip_plots:
+        if "gene_gate" in attention:
+            try:
+                fig = plot_gene_gate_heatmap(
+                    attention["gene_gate"],
+                    cell_type_names=list(CELL_TYPE_ORDER),
+                )
+                path = output_dir / f"gene_gate_heatmap.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed gene_gate_heatmap: {e}")
 
-    # Attention distribution (if pathology attention available)
-    pathology_attention = attention_weights.get("pathology_attention")
-    if pathology_attention is not None and pathology_attention.ndim >= 2:
-        # Average over heads if present
-        if pathology_attention.ndim == 3:
-            attention_2d = pathology_attention.mean(axis=1)
-        else:
-            attention_2d = pathology_attention
+    return generated
 
-        cell_type_names = attention_weights.get("cell_type_names")
-        plot_attention_distribution(
-            attention_2d,
-            cell_type_names=cell_type_names,
-            title="Attention Weight Distribution by Cell Type",
-            save_path=attention_dir / f"attention_distribution.{fmt}",
-        )
-        count += 1
-        logger.info("  Created attention/attention_distribution")
 
-    # Resilience signature heatmap
-    signature_df = load_dataframe(analysis_dir / "resilience_signature")
-    if signature_df is not None:
-        plot_resilience_signature_heatmap(
-            signature_df,
-            title="Resilience Signature",
-            save_path=attention_dir / f"resilience_signature_heatmap.{fmt}",
-        )
-        count += 1
-        logger.info("  Created attention/resilience_signature_heatmap")
+def generate_resilience_plots(
+    data: dict,
+    output_dir: Path,
+    skip_plots: list[str],
+    fmt: str = "png",
+) -> list[str]:
+    """Generate resilience signature plots."""
+    generated = []
 
-    return count
+    if "resilience_signature_heatmap" not in skip_plots:
+        if "resilience_signature" in data:
+            df = data["resilience_signature"]
+            try:
+                fig = plot_resilience_signature_heatmap(df)
+                path = output_dir / f"resilience_signature_heatmap.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed resilience_signature_heatmap: {e}")
+
+    return generated
 
 
 def generate_importance_plots(
-    analysis_dir: Path,
-    plots_dir: Path,
+    data: dict,
+    output_dir: Path,
+    skip_plots: list[str],
     fmt: str = "png",
-    n_genes: int = 10,
-) -> int:
-    """Generate gene and CCC importance plots."""
-    logger.info("Generating importance plots...")
-    count = 0
-
-    # Create subdirectory for importance plots
-    importance_dir = plots_dir / "importance"
-    importance_dir.mkdir(parents=True, exist_ok=True)
+) -> list[str]:
+    """Generate gene/CCC importance plots."""
+    generated = []
 
     # Top genes per cell type
-    top_genes_df = load_dataframe(analysis_dir / "gene_importance_top_genes")
-    if top_genes_df is not None:
-        plot_top_genes_per_cell_type(
-            top_genes_df,
-            n_genes=n_genes,
-            title="Top Genes per Cell Type",
-            save_path=importance_dir / f"top_genes_per_cell_type.{fmt}",
-        )
-        count += 1
-        logger.info("  Created importance/top_genes_per_cell_type")
+    if "top_genes_per_cell_type" not in skip_plots:
+        if "gene_importance" in data:
+            df = data["gene_importance"]
+            try:
+                fig = plot_top_genes_per_cell_type(df, top_k=10)
+                path = output_dir / f"top_genes_per_cell_type.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed top_genes_per_cell_type: {e}")
 
-    # Gene importance by cell type (full ranking)
-    gene_importance_df = load_dataframe(analysis_dir / "gene_importance_by_celltype")
-    if gene_importance_df is not None:
-        # Create volcano plot for first cell type as example
-        cell_types = gene_importance_df["cell_type"].unique()
-        if len(cell_types) > 0:
-            for ct in cell_types[:3]:  # Top 3 cell types
-                ct_df = gene_importance_df[gene_importance_df["cell_type"] == ct].copy()
-                if len(ct_df) > 0:
-                    plot_gene_importance_volcano(
-                        ct_df,
-                        cell_type=ct,
-                        save_path=importance_dir / f"gene_importance_volcano_{ct.replace(' ', '_')}.{fmt}",
-                    )
-                    count += 1
-            logger.info(f"  Created {min(3, len(cell_types))} importance/gene_importance_volcano plots")
+    # Gene importance volcano
+    if "gene_importance_volcano" not in skip_plots:
+        if "gene_importance" in data:
+            df = data["gene_importance"]
+            # Need fold change and p-value columns
+            if "log2_fold_change" in df.columns and "pvalue" in df.columns:
+                try:
+                    fig = plot_gene_importance_volcano(df)
+                    path = output_dir / f"gene_importance_volcano.{fmt}"
+                    save_figure(fig, str(path), format=fmt)
+                    generated.append(str(path))
+                    logger.info(f"  Generated: {path.name}")
+                except Exception as e:
+                    logger.warning(f"  Failed gene_importance_volcano: {e}")
 
     # CCC network summary
-    network_df = load_dataframe(analysis_dir / "ccc_by_category")
-    if network_df is not None:
-        plot_ccc_network_summary(
-            network_df,
-            title="Cell-Cell Communication by Category",
-            save_path=importance_dir / f"ccc_network_summary.{fmt}",
-        )
-        count += 1
-        logger.info("  Created importance/ccc_network_summary")
+    if "ccc_network_summary" not in skip_plots:
+        if "ccc_importance" in data:
+            df = data["ccc_importance"]
+            try:
+                fig = plot_ccc_network_summary(df)
+                path = output_dir / f"ccc_network_summary.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed ccc_network_summary: {e}")
 
-    # Top interactions
-    interactions_df = load_dataframe(analysis_dir / "ccc_top_interactions")
-    if interactions_df is not None:
-        plot_top_interactions_heatmap(
-            interactions_df,
-            top_k=20,
-            title="Top Cell-Cell Interactions",
-            save_path=importance_dir / f"top_interactions.{fmt}",
-        )
-        count += 1
-        logger.info("  Created importance/top_interactions")
-
-    return count
-
-
-def generate_regional_plots(
-    analysis_dir: Path,
-    plots_dir: Path,
-    fmt: str = "png",
-    n_genes: int = 10,
-) -> int:
-    """Generate regional analysis plots."""
-    logger.info("Generating regional plots...")
-    count = 0
-
-    # Create subdirectory for regional plots
-    regional_dir = plots_dir / "regional"
-    regional_dir.mkdir(parents=True, exist_ok=True)
+    # Top interactions heatmap
+    if "top_interactions_heatmap" not in skip_plots:
+        if "ccc_importance" in data:
+            df = data["ccc_importance"]
+            try:
+                fig = plot_top_interactions_heatmap(df, top_k=20)
+                path = output_dir / f"top_interactions_heatmap.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed top_interactions_heatmap: {e}")
 
     # Regional gene importance
-    regional_df = load_dataframe(analysis_dir / "regional_gene_importance")
-    if regional_df is not None:
-        plot_regional_gene_importance(
-            regional_df,
-            n_genes=n_genes,
-            title="Top Genes by Region",
-            save_path=regional_dir / f"regional_gene_importance.{fmt}",
-        )
-        count += 1
-        logger.info("  Created regional/regional_gene_importance")
+    if "regional_gene_importance" not in skip_plots:
+        if "regional_gene_importance" in data:
+            df = data["regional_gene_importance"]
+            try:
+                fig = plot_regional_gene_importance(df)
+                path = output_dir / f"regional_gene_importance.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed regional_gene_importance: {e}")
 
-    return count
+    return generated
 
 
 def generate_prediction_plots(
-    analysis_dir: Path,
-    plots_dir: Path,
+    data: dict,
+    output_dir: Path,
+    skip_plots: list[str],
     fmt: str = "png",
-) -> int:
-    """Generate prediction quality plots."""
-    logger.info("Generating prediction plots...")
-    count = 0
+) -> list[str]:
+    """Generate prediction and uncertainty plots."""
+    generated = []
 
-    # Create subdirectory for prediction plots
-    prediction_dir = plots_dir / "prediction"
-    prediction_dir.mkdir(parents=True, exist_ok=True)
+    predictions = data.get("predictions")
+    if predictions is None:
+        return generated
 
-    # Load predictions
-    predictions_df = load_dataframe(analysis_dir / "predictions")
-    if predictions_df is None:
-        predictions_df = load_dataframe(analysis_dir / "prediction_uncertainty")
-
-    if predictions_df is not None and "predicted_mean" in predictions_df.columns:
-        predicted_mean = predictions_df["predicted_mean"].values
-        actual = predictions_df.get("actual")
-        actual = actual.values if actual is not None else None
-        predicted_std = predictions_df.get("predicted_std")
-        predicted_std = predicted_std.values if predicted_std is not None else None
-
-        # Predicted vs actual
-        if actual is not None:
-            plot_predicted_vs_actual(
-                predicted_mean=predicted_mean,
-                actual=actual,
-                predicted_std=predicted_std,
-                title="Predicted vs Actual Cognition",
-                save_path=prediction_dir / f"predicted_vs_actual.{fmt}",
-            )
-            count += 1
-            logger.info("  Created prediction/predicted_vs_actual")
-
-            # Residuals
-            plot_residuals(
-                predicted_mean=predicted_mean,
-                actual=actual,
-                predicted_std=predicted_std,
-                title="Residual Analysis",
-                save_path=prediction_dir / f"residuals.{fmt}",
-            )
-            count += 1
-            logger.info("  Created prediction/residuals")
-
-    return count
-
-
-def generate_uncertainty_plots(
-    analysis_dir: Path,
-    plots_dir: Path,
-    fmt: str = "png",
-) -> int:
-    """Generate uncertainty analysis plots."""
-    logger.info("Generating uncertainty plots...")
-    count = 0
-
-    # Create subdirectory for uncertainty plots
-    uncertainty_dir = plots_dir / "uncertainty"
-    uncertainty_dir.mkdir(parents=True, exist_ok=True)
-
-    # Load predictions for uncertainty vs error
-    predictions_df = load_dataframe(analysis_dir / "predictions")
-    if predictions_df is None:
-        predictions_df = load_dataframe(analysis_dir / "prediction_uncertainty")
-
-    if predictions_df is not None:
-        if all(col in predictions_df.columns for col in ["predicted_mean", "predicted_std", "actual"]):
-            plot_uncertainty_vs_error(
-                predicted_mean=predictions_df["predicted_mean"].values,
-                actual=predictions_df["actual"].values,
-                predicted_std=predictions_df["predicted_std"].values,
-                title="Uncertainty vs Prediction Error",
-                save_path=uncertainty_dir / f"uncertainty_vs_error.{fmt}",
-            )
-            count += 1
-            logger.info("  Created uncertainty/uncertainty_vs_error")
+    # Predicted vs actual
+    if "predicted_vs_actual" not in skip_plots:
+        if "predicted" in predictions.columns and "actual" in predictions.columns:
+            try:
+                fig = plot_predicted_vs_actual(
+                    predictions["predicted"].values,
+                    predictions["actual"].values,
+                )
+                path = output_dir / f"predicted_vs_actual.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed predicted_vs_actual: {e}")
 
     # Calibration curve
-    calibration_df = load_dataframe(analysis_dir / "calibration_summary")
-    if calibration_df is not None:
-        plot_calibration_curve(
-            calibration_df,
-            title="Uncertainty Calibration",
-            save_path=uncertainty_dir / f"calibration_curve.{fmt}",
-        )
-        count += 1
-        logger.info("  Created uncertainty/calibration_curve")
+    if "calibration_curve" not in skip_plots:
+        if "calibration" in data:
+            cal_df = data["calibration"]
+            try:
+                fig = plot_calibration_curve(cal_df)
+                path = output_dir / f"calibration_curve.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed calibration_curve: {e}")
+
+    # Residuals
+    if "residuals" not in skip_plots:
+        if "predicted" in predictions.columns and "actual" in predictions.columns:
+            try:
+                fig = plot_residuals(
+                    predictions["predicted"].values,
+                    predictions["actual"].values,
+                )
+                path = output_dir / f"residuals.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed residuals: {e}")
+
+    # Uncertainty vs error
+    if "uncertainty_vs_error" not in skip_plots:
+        if all(col in predictions.columns for col in ["predicted", "actual", "predicted_std"]):
+            try:
+                fig = plot_uncertainty_vs_error(
+                    predictions["predicted"].values,
+                    predictions["actual"].values,
+                    predictions["predicted_std"].values,
+                )
+                path = output_dir / f"uncertainty_vs_error.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed uncertainty_vs_error: {e}")
 
     # Uncertainty correlates
-    correlates_df = load_dataframe(analysis_dir / "uncertainty_correlates")
-    if correlates_df is not None and len(correlates_df) > 0:
-        plot_uncertainty_correlates(
-            correlates_df,
-            title="Uncertainty Correlates",
-            save_path=uncertainty_dir / f"uncertainty_correlates.{fmt}",
-        )
-        count += 1
-        logger.info("  Created uncertainty/uncertainty_correlates")
+    if "uncertainty_correlates" not in skip_plots:
+        if "uncertainty" in data:
+            unc_df = data["uncertainty"]
+            try:
+                fig = plot_uncertainty_correlates(unc_df)
+                path = output_dir / f"uncertainty_correlates.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed uncertainty_correlates: {e}")
 
-    return count
+    return generated
+
+
+def generate_embedding_plots(
+    data: dict,
+    output_dir: Path,
+    skip_plots: list[str],
+    fmt: str = "png",
+) -> list[str]:
+    """Generate embedding analysis plots."""
+    generated = []
+
+    umap_df = data.get("umap_projection")
+    cluster_df = data.get("cluster_assignments")
+    probe_df = data.get("linear_probe_results")
+
+    if umap_df is None:
+        return generated
+
+    # UMAP scatter
+    if "umap_scatter" not in skip_plots:
+        try:
+            # Try to color by cluster if available
+            color_by = None
+            if cluster_df is not None and "cluster" in cluster_df.columns:
+                # Merge cluster info into umap_df
+                if "subject_id" in umap_df.columns and "subject_id" in cluster_df.columns:
+                    umap_with_cluster = umap_df.merge(
+                        cluster_df[["subject_id", "cluster"]],
+                        on="subject_id",
+                        how="left"
+                    )
+                    color_by = "cluster"
+                else:
+                    umap_with_cluster = umap_df
+            else:
+                umap_with_cluster = umap_df
+
+            fig = plot_umap_scatter(umap_with_cluster, color_by=color_by)
+            path = output_dir / f"umap_scatter.{fmt}"
+            save_figure(fig, str(path), format=fmt)
+            generated.append(str(path))
+            logger.info(f"  Generated: {path.name}")
+        except Exception as e:
+            logger.warning(f"  Failed umap_scatter: {e}")
+
+    # Cluster composition
+    if "cluster_composition" not in skip_plots:
+        if cluster_df is not None and "cluster" in cluster_df.columns:
+            try:
+                fig = plot_cluster_composition(cluster_df)
+                if fig is not None:
+                    path = output_dir / f"cluster_composition.{fmt}"
+                    save_figure(fig, str(path), format=fmt)
+                    generated.append(str(path))
+                    logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed cluster_composition: {e}")
+
+    # Linear probe results
+    if "linear_probe_results" not in skip_plots:
+        if probe_df is not None and "r2_score" in probe_df.columns:
+            try:
+                fig = plot_linear_probe_results(probe_df)
+                if fig is not None:
+                    path = output_dir / f"linear_probe_results.{fmt}"
+                    save_figure(fig, str(path), format=fmt)
+                    generated.append(str(path))
+                    logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed linear_probe_results: {e}")
+
+    # Embedding summary (multi-panel)
+    if "embedding_summary" not in skip_plots:
+        try:
+            fig = plot_embedding_summary(
+                umap_df=umap_df,
+                cluster_df=cluster_df,
+                probe_df=probe_df,
+            )
+            path = output_dir / f"embedding_summary.{fmt}"
+            save_figure(fig, str(path), format=fmt)
+            generated.append(str(path))
+            logger.info(f"  Generated: {path.name}")
+        except Exception as e:
+            logger.warning(f"  Failed embedding_summary: {e}")
+
+    return generated
 
 
 def main():
     """Main entry point."""
     args = parse_args()
 
-    # Setup plotting style
+    # Setup plotting
     setup_seaborn_style()
     setup_matplotlib_defaults()
 
     # Resolve paths
     if args.experiment_dir:
         exp_dir = Path(args.experiment_dir)
-        exp_hash = exp_dir.name
         analysis_dir = Path(args.analysis_dir) if args.analysis_dir else exp_dir / "analysis"
-        plots_dir = Path(args.plots_dir) if args.plots_dir else Path("data/plots") / exp_hash
         attention_path = Path(args.attention_path) if args.attention_path else analysis_dir / "attention_weights.h5"
+        output_dir = Path(args.output_dir) if args.output_dir else exp_dir / "figures"
     else:
         if not args.analysis_dir:
             raise ValueError("Must provide either --experiment-dir or --analysis-dir")
         analysis_dir = Path(args.analysis_dir)
-        plots_dir = Path(args.plots_dir) if args.plots_dir else Path("plots")
         attention_path = Path(args.attention_path) if args.attention_path else analysis_dir / "attention_weights.h5"
+        output_dir = Path(args.output_dir) if args.output_dir else Path("figures")
 
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Plots output directory: {plots_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory: {output_dir}")
 
-    # Determine which plot categories to generate
-    categories = set(PLOT_CATEGORIES)
-    if args.only:
-        categories = set(args.only)
-    if args.skip:
-        categories -= set(args.skip)
+    # Load data
+    logger.info(f"Loading analysis results from {analysis_dir}...")
+    data = load_analysis_data(analysis_dir)
 
-    logger.info(f"Generating plot categories: {categories}")
+    attention = {}
+    if attention_path.exists():
+        logger.info(f"Loading attention weights from {attention_path}...")
+        attention = load_attention_weights(attention_path)
 
-    # Load attention weights
-    attention_weights = load_attention_weights(attention_path)
-    if attention_weights:
-        logger.info(f"Loaded attention weights: {list(attention_weights.keys())}")
+    if not data and not attention:
+        logger.error("No data found to plot. Check input paths.")
+        return
 
-    # Generate plots
-    total_plots = 0
+    # Determine which plot types to generate
+    if "all" in args.plot_types:
+        plot_categories = list(PLOT_TYPES.keys())
+    else:
+        plot_categories = args.plot_types
 
-    if "attention" in categories:
-        total_plots += generate_attention_plots(
-            analysis_dir=analysis_dir,
-            attention_weights=attention_weights,
-            plots_dir=plots_dir,
-            fmt=args.format,
-            top_k_genes=args.top_k_genes,
-        )
+    skip_plots = set(args.skip_plots)
+    fmt = args.format
 
-    if "importance" in categories:
-        total_plots += generate_importance_plots(
-            analysis_dir=analysis_dir,
-            plots_dir=plots_dir,
-            fmt=args.format,
-            n_genes=args.n_genes_per_cell_type,
-        )
+    # Generate plots by category
+    all_generated = []
 
-    if "regional" in categories:
-        total_plots += generate_regional_plots(
-            analysis_dir=analysis_dir,
-            plots_dir=plots_dir,
-            fmt=args.format,
-            n_genes=args.n_genes_per_cell_type,
-        )
+    if "attention" in plot_categories:
+        logger.info("Generating attention plots...")
+        generated = generate_attention_plots(data, attention, output_dir, skip_plots, fmt)
+        all_generated.extend(generated)
 
-    if "prediction" in categories:
-        total_plots += generate_prediction_plots(
-            analysis_dir=analysis_dir,
-            plots_dir=plots_dir,
-            fmt=args.format,
-        )
+    if "resilience" in plot_categories:
+        logger.info("Generating resilience plots...")
+        generated = generate_resilience_plots(data, output_dir, skip_plots, fmt)
+        all_generated.extend(generated)
 
-    if "uncertainty" in categories:
-        total_plots += generate_uncertainty_plots(
-            analysis_dir=analysis_dir,
-            plots_dir=plots_dir,
-            fmt=args.format,
-        )
+    if "importance" in plot_categories:
+        logger.info("Generating importance plots...")
+        generated = generate_importance_plots(data, output_dir, skip_plots, fmt)
+        all_generated.extend(generated)
 
-    logger.info(f"Generated {total_plots} plots")
-    logger.info(f"Plots saved to: {plots_dir}")
+    if "prediction" in plot_categories:
+        logger.info("Generating prediction plots...")
+        generated = generate_prediction_plots(data, output_dir, skip_plots, fmt)
+        all_generated.extend(generated)
+
+    if "embedding" in plot_categories:
+        logger.info("Generating embedding plots...")
+        generated = generate_embedding_plots(data, output_dir, skip_plots, fmt)
+        all_generated.extend(generated)
+
+    # Summary
+    logger.info(f"\nGenerated {len(all_generated)} plots:")
+    for path in all_generated:
+        logger.info(f"  {Path(path).name}")
+
+    if not all_generated:
+        logger.warning("No plots were generated. Check that analysis data exists.")
+
+    logger.info(f"\nAll figures saved to: {output_dir}")
 
 
 if __name__ == "__main__":

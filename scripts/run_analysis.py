@@ -23,12 +23,11 @@ import argparse
 import logging
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from src.utils.io import load_dataframe
+from src.utils.io import load_dataframe, load_attention_weights
 from src.analysis import (
     CellTypeImportanceAnalyzer,
     GeneImportanceAnalyzer,
@@ -163,34 +162,6 @@ def load_predictions(path: Path) -> pd.DataFrame:
     return df
 
 
-def load_attention_weights(path: Path) -> dict:
-    """Load attention weights from HDF5 file."""
-    weights = {}
-    if not path.exists():
-        return weights
-
-    with h5py.File(path, "r") as f:
-        # Load available datasets
-        if "gene_gate" in f:
-            weights["gene_gate"] = f["gene_gate"][:]
-        if "pathology_attention" in f:
-            weights["pathology_attention"] = f["pathology_attention"][:]
-        if "cell_type_selection" in f:
-            weights["cell_type_selection"] = f["cell_type_selection"][:]
-        if "region_weights" in f:
-            weights["region_weights"] = f["region_weights"][:]
-        if "hgt_attention" in f:
-            weights["hgt_attention"] = f["hgt_attention"][:]
-
-        # Load metadata from attributes
-        if "cell_type_names" in f.attrs:
-            weights["cell_type_names"] = list(f.attrs["cell_type_names"])
-        if "gene_names" in f.attrs:
-            weights["gene_names"] = list(f.attrs["gene_names"])
-        if "subject_ids" in f.attrs:
-            weights["subject_ids"] = list(f.attrs["subject_ids"])
-
-    return weights
 
 
 def run_cell_type_importance(
@@ -242,9 +213,10 @@ def run_gene_importance(
 
 
 def run_ccc_importance(
-    hgt_attention: np.ndarray,
-    edge_index: np.ndarray | None = None,
+    edge_attention_scores: np.ndarray,
     edge_metadata: pd.DataFrame | None = None,
+    cell_type_names: list[str] | None = None,
+    edge_types: list[str] | None = None,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -252,9 +224,10 @@ def run_ccc_importance(
     logger.info("Running CCC importance analysis...")
 
     analyzer = CCCImportanceAnalyzer(
-        hgt_attention=hgt_attention,
-        edge_index=edge_index,
+        edge_attention_scores=edge_attention_scores,
         edge_metadata=edge_metadata,
+        cell_type_names=cell_type_names,
+        edge_types=edge_types,
     )
 
     result = analyzer.analyze()
@@ -265,12 +238,12 @@ def run_ccc_importance(
 
 
 def run_resilience_signature(
-    pathology_attention: np.ndarray,
+    attention: np.ndarray,
+    pathology_scores: np.ndarray,
     cognition_scores: np.ndarray,
-    pathology_levels: np.ndarray,
     cell_type_names: list[str],
     n_permutations: int = 1000,
-    fdr_threshold: float = 0.05,
+    random_seed: int | None = None,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -278,15 +251,15 @@ def run_resilience_signature(
     logger.info("Running resilience signature analysis...")
 
     analyzer = ResilienceSignatureAnalyzer(
-        attention_weights=pathology_attention,
+        attention=attention,
+        pathology_scores=pathology_scores,
         cognition_scores=cognition_scores,
-        pathology_levels=pathology_levels,
         cell_type_names=cell_type_names,
     )
 
     result = analyzer.analyze(
         n_permutations=n_permutations,
-        fdr_threshold=fdr_threshold,
+        random_seed=random_seed,
     )
 
     if output_dir:
@@ -398,10 +371,15 @@ def main():
         attention_weights = load_attention_weights(attention_path)
         logger.info(f"  Loaded keys: {list(attention_weights.keys())}")
 
-    # Get cell type names
-    cell_type_names = attention_weights.get("cell_type_names", list(CELL_TYPE_ORDER))
-    gene_names = attention_weights.get("gene_names")
-    subject_ids = attention_weights.get("subject_ids")
+    # Get metadata from attention weights (stored in "metadata" key by io.load_attention_weights)
+    metadata = attention_weights.get("metadata", {})
+    cell_type_names = list(metadata.get("cell_type_names", CELL_TYPE_ORDER))
+    gene_names = metadata.get("gene_names")
+    if gene_names is not None:
+        gene_names = list(gene_names)
+    subject_ids = metadata.get("subject_ids")
+    if subject_ids is not None:
+        subject_ids = list(subject_ids)
 
     # Load metadata if provided
     metadata_df = None
@@ -447,7 +425,7 @@ def main():
     # CCC importance
     if not args.skip_ccc and hgt_attention is not None:
         run_ccc_importance(
-            hgt_attention=hgt_attention,
+            edge_attention_scores=hgt_attention,
             output_dir=output_dir,
             formats=args.formats,
         )
@@ -458,12 +436,11 @@ def main():
         if predictions_df is not None and "actual" in predictions_df.columns:
             if metadata_df is not None and "pathology" in metadata_df.columns:
                 run_resilience_signature(
-                    pathology_attention=pathology_attention,
+                    attention=pathology_attention,
                     cognition_scores=predictions_df["actual"].values,
-                    pathology_levels=metadata_df["pathology"].values,
+                    pathology_scores=metadata_df["pathology"].values,
                     cell_type_names=cell_type_names,
                     n_permutations=args.n_permutations,
-                    fdr_threshold=args.fdr_threshold,
                     output_dir=output_dir,
                     formats=args.formats,
                 )

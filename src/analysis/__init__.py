@@ -33,12 +33,17 @@ from src.analysis.uncertainty_analysis import (
     UncertaintyAnalysisResult,
     compute_uncertainty_analysis,
     compute_expected_calibration_error,
-    CALIBRATION_LEVELS,
 )
+from src.utils.statistics import CALIBRATION_LEVELS
 from src.analysis.embedding_analysis import (
     EmbeddingAnalyzer,
     EmbeddingAnalysisResult,
     analyze_embeddings,
+)
+from src.analysis.cell_attention_analysis import (
+    CellAttentionAnalyzer,
+    CellAttentionResult,
+    compute_cell_attention,
 )
 
 __all__ = [
@@ -75,4 +80,8 @@ __all__ = [
     "EmbeddingAnalyzer",
     "EmbeddingAnalysisResult",
     "analyze_embeddings",
+    # Cell attention analysis
+    "CellAttentionAnalyzer",
+    "CellAttentionResult",
+    "compute_cell_attention",
 ]

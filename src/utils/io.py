@@ -106,7 +106,7 @@ def load_checkpoint(
 
 def save_attention_weights(
     path: str | Path,
-    gene_gates: np.ndarray | None = None,
+    gene_gate: np.ndarray | None = None,
     hgt_attention: np.ndarray | None = None,
     pma_attention: np.ndarray | None = None,
     pathology_attention: np.ndarray | None = None,
@@ -118,10 +118,10 @@ def save_attention_weights(
 
     Args:
         path: Output path for HDF5 file
-        gene_gates: Gene gate weights [31, n_genes]
+        gene_gate: Gene gate weights [n_cell_types, n_genes]
         hgt_attention: HGT attention [n_subjects, n_layers, n_heads, n_edges]
         pma_attention: PMA attention [n_subjects, k_selected, n_cells]
-        pathology_attention: Pathology attention [n_subjects, n_heads, 31]
+        pathology_attention: Pathology attention [n_subjects, n_heads, n_cell_types]
         metadata: Additional metadata to store as attributes
         compression: Compression algorithm ("gzip" or None)
     """
@@ -129,8 +129,8 @@ def save_attention_weights(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with h5py.File(path, "w") as f:
-        if gene_gates is not None:
-            f.create_dataset("gene_gates", data=gene_gates)
+        if gene_gate is not None:
+            f.create_dataset("gene_gate", data=gene_gate)
 
         if hgt_attention is not None:
             f.create_dataset("hgt_attention", data=hgt_attention, compression=compression)

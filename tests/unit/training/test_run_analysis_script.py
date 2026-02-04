@@ -73,11 +73,12 @@ class TestRunAnalysisImports:
         from scripts.run_analysis import (
             parse_args,
             load_predictions,
-            load_attention_weights,
             run_cell_type_importance,
             run_gene_importance,
             run_uncertainty_analysis,
         )
+        # load_attention_weights is now imported from src.utils.io
+        from src.utils.io import load_attention_weights
 
         assert callable(parse_args)
         assert callable(load_predictions)
@@ -129,11 +130,11 @@ class TestLoadPredictions:
 
 
 class TestLoadAttentionWeights:
-    """Test load_attention_weights function."""
+    """Test load_attention_weights function (now from src.utils.io)."""
 
     def test_load_hdf5(self, tmp_path):
         """Test loading HDF5 file."""
-        from scripts.run_analysis import load_attention_weights
+        from src.utils.io import load_attention_weights
 
         path = tmp_path / "attention.h5"
         with h5py.File(path, "w") as f:
@@ -145,16 +146,19 @@ class TestLoadAttentionWeights:
 
         assert "gene_gate" in weights
         assert "pathology_attention" in weights
-        assert "cell_type_names" in weights
+        # Metadata is stored under "metadata" key in the shared function
+        assert "metadata" in weights
+        assert "cell_type_names" in weights["metadata"]
         assert weights["gene_gate"].shape == (8, 100)
 
     def test_load_nonexistent(self, tmp_path):
-        """Test loading nonexistent file returns empty dict."""
-        from scripts.run_analysis import load_attention_weights
+        """Test loading nonexistent file raises FileNotFoundError."""
+        from src.utils.io import load_attention_weights
 
         path = Path(tmp_path) / "nonexistent.h5"
-        weights = load_attention_weights(path)
-        assert weights == {}
+        # The shared function raises FileNotFoundError for nonexistent files
+        with pytest.raises(FileNotFoundError):
+            load_attention_weights(path)
 
 
 # =============================================================================
@@ -309,11 +313,13 @@ class TestRunAnalysisEdgeCases:
 
     def test_empty_analysis_dir(self, tmp_path):
         """Test with empty analysis directory."""
-        from scripts.run_analysis import load_attention_weights
+        from src.utils.io import load_attention_weights
 
-        # Empty dir should not crash for attention weights
-        weights = load_attention_weights(Path(tmp_path) / "nonexistent.h5")
-        assert weights == {}
+        # Shared function raises FileNotFoundError for nonexistent files
+        # This is the expected behavior - callers should check existence first
+        path = Path(tmp_path) / "nonexistent.h5"
+        with pytest.raises(FileNotFoundError):
+            load_attention_weights(path)
 
     def test_partial_data(self, tmp_path):
         """Test with partial data (only predictions, no attention)."""

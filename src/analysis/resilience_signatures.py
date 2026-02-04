@@ -27,6 +27,7 @@ from scipy import stats
 
 from src.data.constants import CELL_TYPE_ORDER, N_CELL_TYPES
 from src.utils.io import save_dataframe
+from src.utils.statistics import benjamini_hochberg, cohens_d_with_ci
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +306,8 @@ class ResilienceSignatureAnalyzer:
 
         # Cohen's d: (mean1 - mean2) / pooled_std
         # Pooled std: sqrt(((n1-1)*s1^2 + (n2-1)*s2^2) / (n1+n2-2))
+        # Note: This is a vectorized implementation of the formula in
+        # src.utils.statistics.cohens_d_with_ci for performance across cell types.
         cohens_d = np.zeros(len(self.cell_type_names))
         ci_lower = np.zeros(len(self.cell_type_names))
         ci_upper = np.zeros(len(self.cell_type_names))
@@ -410,7 +413,7 @@ class ResilienceSignatureAnalyzer:
             p_values[ct_idx] = (null_dist >= obs).mean()
 
         # FDR correction (Benjamini-Hochberg)
-        fdr_corrected = self._benjamini_hochberg(p_values)
+        fdr_corrected, _ = benjamini_hochberg(p_values)
 
         df = pd.DataFrame({
             "cell_type": self.cell_type_names,
@@ -421,34 +424,6 @@ class ResilienceSignatureAnalyzer:
         })
 
         return df, perm_signatures
-
-    @staticmethod
-    def _benjamini_hochberg(p_values: np.ndarray) -> np.ndarray:
-        """
-        Apply Benjamini-Hochberg FDR correction.
-
-        The BH procedure:
-        1. Sort p-values in ascending order
-        2. For rank i, compute adjusted_p = p * n / i
-        3. Enforce monotonicity: adjusted[i] = min(adjusted[i], adjusted[i+1])
-        4. Map back to original order
-        """
-        n = len(p_values)
-        sorted_indices = np.argsort(p_values)
-        sorted_p = p_values[sorted_indices]
-
-        # BH adjustment on sorted p-values: p_adjusted[i] = p[i] * n / (i+1)
-        adjusted_sorted = sorted_p * n / np.arange(1, n + 1)
-
-        # Enforce monotonicity on SORTED values (cumulative minimum from right)
-        # This ensures adjusted[i] >= adjusted[j] for i < j
-        adjusted_sorted = np.minimum.accumulate(adjusted_sorted[::-1])[::-1]
-
-        # Map back to original order
-        adjusted = np.zeros(n)
-        adjusted[sorted_indices] = adjusted_sorted
-
-        return np.clip(adjusted, 0, 1)
 
     def _compute_signature_by_region(self) -> pd.DataFrame | None:
         """
@@ -1082,6 +1057,7 @@ class ResilienceSignatureAnalyzer:
             import h5py
             path = output_dir / "resilience_permutation_null.h5"
             with h5py.File(path, "w") as f:
+                f.attrs["schema_version"] = "1.0"
                 f.create_dataset(
                     "null_distribution",
                     data=result.permutation_null,

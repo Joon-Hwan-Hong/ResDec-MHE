@@ -40,6 +40,22 @@ from src.visualization.prediction_plots import (
     plot_uncertainty_correlates,
 )
 
+from src.visualization.training_curves import (
+    load_training_logs,
+    load_tensorboard_scalars,
+    plot_loss_curves,
+    plot_metric_curves,
+    plot_learning_rate,
+    plot_training_summary,
+)
+
+from src.visualization.embedding_plots import (
+    plot_umap_scatter,
+    plot_cluster_composition,
+    plot_linear_probe_results,
+    plot_embedding_summary,
+)
+
 __all__ = [
     # Config
     "FIGURE_DPI",
@@ -73,4 +89,16 @@ __all__ = [
     "plot_residuals",
     "plot_uncertainty_vs_error",
     "plot_uncertainty_correlates",
+    # Training curves
+    "load_training_logs",
+    "load_tensorboard_scalars",
+    "plot_loss_curves",
+    "plot_metric_curves",
+    "plot_learning_rate",
+    "plot_training_summary",
+    # Embedding plots
+    "plot_umap_scatter",
+    "plot_cluster_composition",
+    "plot_linear_probe_results",
+    "plot_embedding_summary",
 ]
