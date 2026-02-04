@@ -409,7 +409,7 @@ class CellAttentionAnalyzer:
     def _save_hdf5(self, path: Path) -> None:
         """Save attention weights and metadata to HDF5."""
         with h5py.File(path, "w") as f:
-            f.attrs["schema_version"] = "1.0"
+            f.attrs["schema_version"] = "2.0"
 
             # Save raw attention
             f.create_dataset(

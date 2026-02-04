@@ -44,7 +44,7 @@ def sample_predictions():
 def sample_calibration_df():
     """Sample calibration DataFrame."""
     return pd.DataFrame({
-        "level": ["1sigma", "2sigma", "3sigma"],
+        "level": ["1_sigma", "2_sigma", "3_sigma"],
         "expected_coverage": [0.6827, 0.9545, 0.9973],
         "observed_coverage": [0.70, 0.92, 0.99],
         "calibration_error": [0.02, -0.03, -0.01],
@@ -548,7 +548,7 @@ class TestPredictionPlotsEdgeCases:
     def test_single_calibration_level(self):
         """Test calibration curve with single level."""
         df = pd.DataFrame({
-            "level": ["1sigma"],
+            "level": ["1_sigma"],
             "expected_coverage": [0.6827],
             "observed_coverage": [0.70],
         })

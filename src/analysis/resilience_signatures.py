@@ -191,6 +191,7 @@ class ResilienceSignatureAnalyzer:
         run_ablation: bool = False,
         ablation_method: Literal["both", "zero_embedding", "node_removal"] = "both",
         embeddings: np.ndarray | None = None,
+        apply_fdr_correction: bool = True,
     ) -> ResilienceSignatureResult:
         """
         Run resilience signature analysis.
@@ -201,6 +202,7 @@ class ResilienceSignatureAnalyzer:
             run_ablation: Whether to run ablation study
             ablation_method: Which ablation method(s) to run
             embeddings: Optional embeddings for ablation [n_subjects, n_cell_types, embed_dim]
+            apply_fdr_correction: Whether to apply Benjamini-Hochberg FDR correction (default: True)
 
         Returns:
             ResilienceSignatureResult with signature and statistics
@@ -212,7 +214,9 @@ class ResilienceSignatureAnalyzer:
         pvalues_df = None
         permutation_null = None
         if n_permutations > 0 and self.n_resilient > 0 and self.n_vulnerable > 0:
-            pvalues_df, permutation_null = self._permutation_test(n_permutations, random_seed)
+            pvalues_df, permutation_null = self._permutation_test(
+                n_permutations, random_seed, apply_fdr_correction
+            )
 
         # Group statistics
         group_stats_df = self._compute_group_statistics()
@@ -363,6 +367,7 @@ class ResilienceSignatureAnalyzer:
         self,
         n_permutations: int,
         random_seed: int | None,
+        apply_fdr_correction: bool = True,
     ) -> tuple[pd.DataFrame, np.ndarray]:
         """
         Permutation test for signature significance.
@@ -372,6 +377,7 @@ class ResilienceSignatureAnalyzer:
         Args:
             n_permutations: Number of permutations
             random_seed: Random seed
+            apply_fdr_correction: Whether to apply Benjamini-Hochberg FDR correction
 
         Returns:
             Tuple of (DataFrame with p-values, null distribution array [n_permutations, n_cell_types])
@@ -412,16 +418,26 @@ class ResilienceSignatureAnalyzer:
             null_dist = np.abs(perm_signatures[:, ct_idx])
             p_values[ct_idx] = (null_dist >= obs).mean()
 
-        # FDR correction (Benjamini-Hochberg)
-        fdr_corrected, _ = benjamini_hochberg(p_values)
-
-        df = pd.DataFrame({
-            "cell_type": self.cell_type_names,
-            "p_value": p_values,
-            "fdr_corrected": fdr_corrected,
-            "significant_005": fdr_corrected < 0.05,
-            "significant_001": fdr_corrected < 0.01,
-        })
+        # FDR correction (Benjamini-Hochberg) - optional
+        if apply_fdr_correction:
+            fdr_corrected, _ = benjamini_hochberg(p_values)
+            df = pd.DataFrame({
+                "cell_type": self.cell_type_names,
+                "p_value": p_values,
+                "fdr_corrected": fdr_corrected,
+                "significant_005": fdr_corrected < 0.05,
+                "significant_001": fdr_corrected < 0.01,
+            })
+        else:
+            # Use uncorrected p-values
+            df = pd.DataFrame({
+                "cell_type": self.cell_type_names,
+                "p_value": p_values,
+                "fdr_corrected": p_values,  # Same as uncorrected for compatibility
+                "significant_005": p_values < 0.05,
+                "significant_001": p_values < 0.01,
+            })
+            logger.warning("FDR correction disabled - reporting uncorrected p-values")
 
         return df, perm_signatures
 
@@ -1035,7 +1051,7 @@ class ResilienceSignatureAnalyzer:
             import h5py
             path = output_dir / "resilience_permutation_null.h5"
             with h5py.File(path, "w") as f:
-                f.attrs["schema_version"] = "1.0"
+                f.attrs["schema_version"] = "2.0"
                 f.create_dataset(
                     "null_distribution",
                     data=result.permutation_null,

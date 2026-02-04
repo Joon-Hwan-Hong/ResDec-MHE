@@ -88,11 +88,19 @@ def mock_analysis_dir(tmp_path):
             })
     pd.DataFrame(interactions).to_parquet(analysis_dir / "ccc_top_interactions.parquet")
 
-    # Resilience signature
+    # Resilience signature (both root for backward compat and subdirectory)
     pd.DataFrame({
         "cell_type": cell_types,
         "signature": np.random.randn(4) * 0.2,
     }).to_parquet(analysis_dir / "resilience_signature.parquet")
+
+    # Also create a subdirectory layout
+    resilience_subdir = analysis_dir / "resilience_gpath"
+    resilience_subdir.mkdir()
+    pd.DataFrame({
+        "cell_type": cell_types,
+        "signature": np.random.randn(4) * 0.2,
+    }).to_parquet(resilience_subdir / "resilience_signature.parquet")
 
     # Predictions
     np.random.seed(42)
@@ -117,7 +125,7 @@ def mock_analysis_dir(tmp_path):
 
     # Calibration
     pd.DataFrame({
-        "level": ["1sigma", "2sigma", "3sigma"],
+        "level": ["1_sigma", "2_sigma", "3_sigma"],
         "expected_coverage": [0.6827, 0.9545, 0.9973],
         "observed_coverage": [0.70, 0.92, 0.99],
         "calibration_error": [0.02, -0.03, -0.01],
@@ -146,10 +154,16 @@ def mock_analysis_dir(tmp_path):
 
     # Attention weights HDF5
     with h5py.File(analysis_dir / "attention_weights.h5", "w") as f:
+        f.attrs["schema_version"] = "2.0"
         f.create_dataset("gene_gate", data=np.random.rand(8, 100))
         f.create_dataset("pathology_attention", data=np.random.rand(50, 4, 8))
-        f.attrs["cell_type_names"] = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
-        f.attrs["gene_names"] = [f"GENE{i}" for i in range(100)]
+        vlen_str = h5py.special_dtype(vlen=str)
+        f.create_dataset("cell_type_names", data=np.array(
+            ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"], dtype=object
+        ), dtype=vlen_str)
+        f.create_dataset("gene_names", data=np.array(
+            [f"GENE{i}" for i in range(100)], dtype=object
+        ), dtype=vlen_str)
 
     return analysis_dir
 
@@ -226,14 +240,15 @@ class TestLoadAttentionWeights:
         from scripts.generate_plots import load_attention_weights
 
         path = tmp_path / "attention.h5"
+        vlen_str = h5py.special_dtype(vlen=str)
         with h5py.File(path, "w") as f:
             f.create_dataset("gene_gate", data=np.random.rand(8, 100))
-            f.attrs["cell_type_names"] = ["A", "B", "C"]
+            f.create_dataset("cell_type_names", data=np.array(["A", "B", "C"], dtype=object), dtype=vlen_str)
 
         weights = load_attention_weights(path)
 
         assert "gene_gate" in weights
-        # The local load_attention_weights in generate_plots extracts from metadata
+        assert "cell_type_names" in weights
 
     def test_load_nonexistent(self, tmp_path):
         """Test loading nonexistent file returns empty dict."""
@@ -296,8 +311,8 @@ class TestGenerateImportancePlots:
             fmt="png",
         )
 
-        assert len(generated) >= 0  # May be 0 if data doesn't have expected columns
-        # Plot generation depends on having correct data columns
+        # Should generate at least CCC-related plots when data is available
+        assert isinstance(generated, list)
 
 
 class TestGeneratePredictionPlots:
@@ -319,8 +334,8 @@ class TestGeneratePredictionPlots:
             fmt="png",
         )
 
-        assert len(generated) >= 0  # May generate some plots
-        # Depends on having predictions with correct columns
+        # With predictions data including actual + predicted_mean, should generate plots
+        assert len(generated) > 0
 
 
 class TestGenerateResiliencePlots:
@@ -342,7 +357,8 @@ class TestGenerateResiliencePlots:
             fmt="png",
         )
 
-        assert len(generated) >= 0  # May be 0 if data missing
+        # With resilience_signature data present, should generate at least one plot
+        assert len(generated) > 0
 
 
 # =============================================================================
@@ -518,8 +534,8 @@ class TestGeneratePlotsEdgeCases:
             skip_plots=[],
         )
 
-        # Should generate what it can
-        assert len(generated) >= 0
+        # Should generate what it can without errors
+        assert isinstance(generated, list)
 
 
 # =============================================================================

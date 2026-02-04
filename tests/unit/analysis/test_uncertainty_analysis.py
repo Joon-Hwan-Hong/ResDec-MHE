@@ -319,10 +319,10 @@ class TestCalibration:
         result = analyzer.analyze()
         df = result.calibration
 
-        assert set(df["level"]) == {"1sigma", "2sigma", "3sigma"}
-        assert df[df["level"] == "1sigma"]["expected_coverage"].values[0] == pytest.approx(0.6827, abs=0.001)
-        assert df[df["level"] == "2sigma"]["expected_coverage"].values[0] == pytest.approx(0.9545, abs=0.001)
-        assert df[df["level"] == "3sigma"]["expected_coverage"].values[0] == pytest.approx(0.9973, abs=0.001)
+        assert set(df["level"]) == {"1_sigma", "2_sigma", "3_sigma"}
+        assert df[df["level"] == "1_sigma"]["expected_coverage"].values[0] == pytest.approx(0.6827, abs=0.001)
+        assert df[df["level"] == "2_sigma"]["expected_coverage"].values[0] == pytest.approx(0.9545, abs=0.001)
+        assert df[df["level"] == "3_sigma"]["expected_coverage"].values[0] == pytest.approx(0.9973, abs=0.001)
 
     def test_calibration_interpretation(self):
         """Test calibration interpretation labels."""

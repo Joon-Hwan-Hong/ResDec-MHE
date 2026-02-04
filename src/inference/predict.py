@@ -33,6 +33,7 @@ from tqdm import tqdm
 from src.data.constants import CELL_TYPE_ORDER
 from src.models.full_model import CognitiveResilienceModel
 from src.training.lightning_module import CognitiveResilienceLightningModule
+from src.utils.io import save_attention_weights as _io_save_attention_weights
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class PredictionResult:
         attention_weights: Pathology attention [n_subjects, n_heads, n_cell_types]
         gene_gate_weights: Static gene gate weights [n_cell_types, n_genes] (shared)
         hgt_attention: List of per-sample HGT attention dicts, None if not extracted
+        pma_attention: List of per-cell-type PMA attention [n_cell_types][n_subjects, n_heads, n_seeds, max_cells]
         metadata: Dict of additional metadata (config, checkpoint path, etc.)
     """
     subject_ids: list[str]
@@ -61,6 +63,8 @@ class PredictionResult:
     attention_weights: np.ndarray
     gene_gate_weights: np.ndarray
     hgt_attention: list[dict] | None = None
+    pma_attention: list[np.ndarray] | None = None
+    region_weights: np.ndarray | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -258,6 +262,7 @@ class Predictor:
         self,
         batch: dict[str, Any],
         extract_hgt_attention: bool = False,
+        extract_pma_attention: bool = False,
     ) -> dict[str, Any]:
         """
         Run inference on a single batch.
@@ -265,6 +270,7 @@ class Predictor:
         Args:
             batch: Batch dict from DataLoader
             extract_hgt_attention: Whether to extract HGT attention weights
+            extract_pma_attention: Whether to extract PMA cell-level attention weights
 
         Returns:
             Dict with predictions and attention weights
@@ -282,6 +288,7 @@ class Predictor:
             cell_type_mask=batch.get("cell_type_mask"),
             pathology=batch.get("pathology"),
             return_hgt_attention=extract_hgt_attention,
+            return_pma_attention=extract_pma_attention,
         )
 
         result = {
@@ -294,6 +301,12 @@ class Predictor:
 
         if extract_hgt_attention and "hgt_attention" in output:
             result["hgt_attention"] = output["hgt_attention"]
+
+        if extract_pma_attention and "pma_attention" in output:
+            # Convert list of tensors to list of numpy arrays
+            result["pma_attention"] = [
+                attn.cpu().numpy() for attn in output["pma_attention"]
+            ]
 
         # Include metadata from batch
         if "subject_id" in batch:
@@ -310,6 +323,7 @@ class Predictor:
         self,
         dataloader: DataLoader,
         extract_hgt_attention: bool = False,
+        extract_pma_attention: bool = False,
         show_progress: bool = True,
     ) -> PredictionResult:
         """
@@ -318,6 +332,7 @@ class Predictor:
         Args:
             dataloader: DataLoader yielding batches
             extract_hgt_attention: Whether to extract HGT attention weights
+            extract_pma_attention: Whether to extract PMA cell-level attention weights
             show_progress: Whether to show progress bar
 
         Returns:
@@ -330,13 +345,17 @@ class Predictor:
         all_pathology = []
         all_attention = []
         all_hgt_attention = [] if extract_hgt_attention else None
+        # PMA attention: list of lists, outer = cell types, inner = batches
+        all_pma_attention: list[list[np.ndarray]] | None = None
+        if extract_pma_attention:
+            all_pma_attention = [[] for _ in range(len(CELL_TYPE_ORDER))]
 
         iterator: Iterator = dataloader
         if show_progress:
             iterator = tqdm(dataloader, desc="Predicting", unit="batch")
 
         for batch in iterator:
-            result = self.predict_batch(batch, extract_hgt_attention)
+            result = self.predict_batch(batch, extract_hgt_attention, extract_pma_attention)
 
             all_mean.append(result["mean"])
             all_attention.append(result["attention_weights"])
@@ -351,6 +370,10 @@ class Predictor:
                 all_subject_ids.extend(result["subject_ids"])
             if extract_hgt_attention and "hgt_attention" in result:
                 all_hgt_attention.extend(result["hgt_attention"])
+            if extract_pma_attention and "pma_attention" in result:
+                # result["pma_attention"] is list of [B, n_heads, n_seeds, max_cells] per cell type
+                for ct_idx, ct_attn in enumerate(result["pma_attention"]):
+                    all_pma_attention[ct_idx].append(ct_attn)
 
         # Concatenate results
         mean = np.concatenate(all_mean, axis=0)
@@ -363,6 +386,17 @@ class Predictor:
         gene_gate_weights = self.model.pseudobulk_encoder.gene_gate.get_gate_weights()
         gene_gate_weights = gene_gate_weights.cpu().numpy()
 
+        # Get region importance weights
+        region_importance = self.model.get_region_importance()
+        region_weights = np.array(list(region_importance.values()), dtype=np.float32)
+
+        # Concatenate PMA attention per cell type
+        pma_attention = None
+        if extract_pma_attention and all_pma_attention:
+            pma_attention = [
+                np.concatenate(ct_batches, axis=0) for ct_batches in all_pma_attention
+            ]
+
         # Build metadata
         metadata = {
             "checkpoint_path": self.checkpoint_path,
@@ -370,9 +404,13 @@ class Predictor:
             "n_subjects": len(all_subject_ids),
             "has_uncertainty": std is not None,
             "extracted_hgt_attention": extract_hgt_attention,
+            "extracted_pma_attention": extract_pma_attention,
         }
         if self.config:
             metadata["model_config"] = OmegaConf.to_container(self.config.model, resolve=True)
+            # Store pathology columns if available in data config
+            if hasattr(self.config, "data") and hasattr(self.config.data, "pathology_columns"):
+                metadata["pathology_columns"] = list(self.config.data.pathology_columns)
 
         return PredictionResult(
             subject_ids=all_subject_ids,
@@ -383,6 +421,8 @@ class Predictor:
             attention_weights=attention_weights,
             gene_gate_weights=gene_gate_weights,
             hgt_attention=all_hgt_attention,
+            pma_attention=pma_attention,
+            region_weights=region_weights,
             metadata=metadata,
         )
 
@@ -426,9 +466,18 @@ class Predictor:
             df_data["residual"] = results.actual.flatten() - results.mean.flatten()
 
         if results.pathology is not None:
-            df_data["gpath"] = results.pathology[:, 0]
-            df_data["amylsqrt"] = results.pathology[:, 1]
-            df_data["tangsqrt"] = results.pathology[:, 2]
+            # Default pathology column names (can be customized via metadata)
+            default_pathology_names = ["gpath", "amylsqrt", "tangsqrt"]
+            pathology_names = results.metadata.get("pathology_columns", default_pathology_names)
+
+            # Handle both 1D and 2D pathology arrays with bounds checking
+            n_pathology = results.pathology.shape[-1] if results.pathology.ndim > 1 else 1
+            for i in range(min(n_pathology, len(pathology_names))):
+                col_name = pathology_names[i]
+                if results.pathology.ndim > 1:
+                    df_data[col_name] = results.pathology[:, i]
+                else:
+                    df_data[col_name] = results.pathology
 
         df = pd.DataFrame(df_data)
 
@@ -460,51 +509,27 @@ class Predictor:
         results: PredictionResult,
         path: Path,
     ) -> None:
-        """Save attention weights to HDF5 file."""
-        with h5py.File(path, "w") as f:
-            # Schema version for future compatibility
-            f.attrs["schema_version"] = "1.0"
-            f.attrs["n_subjects"] = results.n_subjects
-            f.attrs["checkpoint_path"] = results.metadata.get("checkpoint_path", "")
+        """Save attention weights to HDF5 file via canonical io.save_attention_weights()."""
+        # Aggregate HGT attention if available
+        hgt_agg = None
+        if results.hgt_attention is not None and len(results.hgt_attention) > 0:
+            from src.inference.extract_attention import aggregate_hgt_attention
+            hgt_agg = aggregate_hgt_attention(results.hgt_attention, include_per_sample=True)
 
-            # Gene gate weights (static, shared across subjects)
-            # Shape: [n_cell_types, n_genes]
-            f.create_dataset(
-                "gene_gate_weights",
-                data=results.gene_gate_weights,
-                compression="gzip",
-                compression_opts=4,
-            )
-            f["gene_gate_weights"].attrs["shape"] = "[n_cell_types, n_genes]"
-            f["gene_gate_weights"].attrs["description"] = "Learned gene attention weights per cell type"
-
-            # Pathology attention weights (per subject)
-            # Shape: [n_subjects, n_heads, n_cell_types]
-            f.create_dataset(
-                "pathology_attention",
-                data=results.attention_weights,
-                compression="gzip",
-                compression_opts=4,
-            )
-            f["pathology_attention"].attrs["shape"] = "[n_subjects, n_heads, n_cell_types]"
-            f["pathology_attention"].attrs["description"] = "Cell type attention conditioned on pathology"
-
-            # Subject IDs (as fixed-length strings)
-            subject_ids_encoded = np.array(results.subject_ids, dtype="S64")
-            f.create_dataset("subject_ids", data=subject_ids_encoded)
-
-            # Cell type names for reference
-            cell_types_encoded = np.array(list(CELL_TYPE_ORDER), dtype="S64")
-            f.create_dataset("cell_type_names", data=cell_types_encoded)
-
-            # HGT attention (if extracted)
-            if results.hgt_attention is not None:
-                hgt_group = f.create_group("hgt_attention")
-                hgt_group.attrs["description"] = "Per-layer, per-head HGT attention (edge weights)"
-                # Note: HGT attention structure is complex (per-sample, per-edge-type dicts)
-                # For now, we just flag that it's available - full extraction in extract_attention.py
-                hgt_group.attrs["available"] = True
-                hgt_group.attrs["n_samples"] = len(results.hgt_attention)
+        _io_save_attention_weights(
+            path=path,
+            gene_gate=results.gene_gate_weights,
+            pathology_attention=results.attention_weights,
+            region_weights=results.region_weights,
+            hgt_attention=hgt_agg,
+            pma_attention=results.pma_attention,
+            subject_ids=results.subject_ids,
+            cell_type_names=list(CELL_TYPE_ORDER),
+            metadata={
+                "n_subjects": results.n_subjects,
+                "checkpoint_path": results.metadata.get("checkpoint_path", ""),
+            },
+        )
 
 
 def predict_from_checkpoint(
@@ -513,6 +538,7 @@ def predict_from_checkpoint(
     output_dir: str | Path,
     device: str = "auto",
     extract_hgt_attention: bool = False,
+    extract_pma_attention: bool = False,
 ) -> PredictionResult:
     """
     Convenience function: load checkpoint, run inference, save results.
@@ -523,12 +549,17 @@ def predict_from_checkpoint(
         output_dir: Directory for output files
         device: Device for inference
         extract_hgt_attention: Whether to extract HGT attention
+        extract_pma_attention: Whether to extract PMA cell-level attention
 
     Returns:
         PredictionResult with all outputs
     """
     predictor = Predictor.from_checkpoint(checkpoint_path, device=device)
-    results = predictor.predict(dataloader, extract_hgt_attention=extract_hgt_attention)
+    results = predictor.predict(
+        dataloader,
+        extract_hgt_attention=extract_hgt_attention,
+        extract_pma_attention=extract_pma_attention,
+    )
     predictor.save_predictions(results, output_dir)
     return results
 
@@ -586,7 +617,7 @@ def save_predictions_hdf5(
 
     with h5py.File(path, "w") as f:
         # Schema version
-        f.attrs["schema_version"] = "1.0"
+        f.attrs["schema_version"] = "2.0"
         f.attrs["n_subjects"] = results.n_subjects
 
         # Predictions
@@ -603,15 +634,15 @@ def save_predictions_hdf5(
         )
 
         f.create_dataset(
-            "gene_gate_weights",
+            "gene_gate",
             data=results.gene_gate_weights,
             compression="gzip",
             compression_opts=4,
         )
 
-        # Subject IDs
-        subject_ids_encoded = np.array(results.subject_ids, dtype="S64")
-        f.create_dataset("subject_ids", data=subject_ids_encoded)
+        # Subject IDs (variable-length strings)
+        vlen_str = h5py.special_dtype(vlen=str)
+        f.create_dataset("subject_ids", data=np.array(results.subject_ids, dtype=object), dtype=vlen_str)
 
         # Metadata as JSON attribute
         if results.metadata:

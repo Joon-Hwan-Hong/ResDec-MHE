@@ -346,6 +346,7 @@ class CognitiveResilienceModel(nn.Module):
         cognition: Optional[torch.Tensor] = None,          # [B, 1] for training
         # Interpretability options
         return_hgt_attention: bool = False,
+        return_pma_attention: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass through the full model.
@@ -374,6 +375,7 @@ class CognitiveResilienceModel(nn.Module):
             pathology: [B, 3] pathology features (amyloid, tau, global)
             cognition: [B, 1] target cognition scores (optional, for training)
             return_hgt_attention: Whether to return HGT attention weights (for interpretability)
+            return_pma_attention: Whether to return PMA cell-level attention (for interpretability)
 
         Returns:
             dict with keys:
@@ -381,6 +383,7 @@ class CognitiveResilienceModel(nn.Module):
                 - 'std': [B, 1] uncertainty (only if use_bayesian_head)
                 - 'attention_weights': [B, n_heads, n_cell_types] pathology attention
                 - 'hgt_attention': List of attention dicts per layer (if return_hgt_attention)
+                - 'pma_attention': List of [B, n_heads, n_seeds, max_cells] per cell type (if return_pma_attention)
         """
         # ─────────────────────────────────────────────────────────────────────
         # Handle single-region vs multi-region input
@@ -478,8 +481,8 @@ class CognitiveResilienceModel(nn.Module):
         # Branch 3: Cell transformer (cell-level heterogeneity)
         # ─────────────────────────────────────────────────────────────────────
         # [B, n_cell_types, max_cells, n_genes] -> [B, n_cell_types, d_embed]
-        cell_emb, selection_weights, _ = self.cell_transformer(
-            cells, cell_mask, return_attention=False, apply_selection_weights=True
+        cell_emb, selection_weights, pma_attention = self.cell_transformer(
+            cells, cell_mask, return_attention=return_pma_attention, apply_selection_weights=True
         )
 
         # ─────────────────────────────────────────────────────────────────────
@@ -509,6 +512,9 @@ class CognitiveResilienceModel(nn.Module):
 
         if return_hgt_attention and hgt_attention is not None:
             output['hgt_attention'] = hgt_attention
+
+        if return_pma_attention and pma_attention is not None:
+            output['pma_attention'] = pma_attention
 
         if self.use_bayesian_head:
             mean, std = self.prediction_head(attended, cognition)

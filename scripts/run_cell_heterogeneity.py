@@ -123,36 +123,48 @@ def load_pma_attention(path: Path) -> dict:
     """
     Load PMA attention weights from HDF5 file.
 
+    Uses io.load_attention_weights() for consistent schema handling, then
+    unpacks PMA attention into the 3D format expected by analyze_cell_heterogeneity().
+
     Returns:
         Dict with 'pma_attention' [n_subjects, n_cell_types, n_cells] and metadata
     """
-    weights = {}
+    from src.utils.io import load_attention_weights, unpack_pma_attention
+
     if not path.exists():
         raise FileNotFoundError(f"Attention file not found: {path}")
 
-    with h5py.File(path, "r") as f:
-        # Load PMA attention
-        if "pma_attention" in f:
-            weights["pma_attention"] = f["pma_attention"][:]
-            logger.info(f"  Loaded pma_attention with shape {weights['pma_attention'].shape}")
-        elif "set_transformer_attention" in f:
-            weights["pma_attention"] = f["set_transformer_attention"][:]
-            logger.info(f"  Loaded set_transformer_attention with shape {weights['pma_attention'].shape}")
-        else:
-            logger.warning("No PMA attention found in HDF5 file")
-            return weights
+    raw = load_attention_weights(path)
+    weights = {}
 
-        # Load metadata
-        if "cell_type_names" in f.attrs:
-            weights["cell_type_names"] = list(f.attrs["cell_type_names"])
-        if "subject_ids" in f.attrs:
-            weights["subject_ids"] = list(f.attrs["subject_ids"])
-        if "cell_barcodes" in f:
-            # Ragged array: list of arrays, one per cell type per subject
-            weights["cell_barcodes"] = {}
-            barcodes_group = f["cell_barcodes"]
-            for key in barcodes_group.keys():
-                weights["cell_barcodes"][key] = barcodes_group[key][:]
+    pma_raw = raw.get("pma_attention")
+    cell_type_names = raw.get("cell_type_names")
+    if isinstance(cell_type_names, list):
+        weights["cell_type_names"] = cell_type_names
+    elif "metadata" in raw and "cell_type_names" in raw["metadata"]:
+        weights["cell_type_names"] = list(raw["metadata"]["cell_type_names"])
+
+    subject_ids = raw.get("subject_ids")
+    if isinstance(subject_ids, list):
+        weights["subject_ids"] = subject_ids
+    elif "metadata" in raw and "subject_ids" in raw["metadata"]:
+        weights["subject_ids"] = list(raw["metadata"]["subject_ids"])
+
+    if pma_raw is not None:
+        if isinstance(pma_raw, dict):
+            # Nested group from predictor — unpack to 3D
+            pma_3d = unpack_pma_attention(pma_raw, weights.get("cell_type_names"))
+            if pma_3d is not None:
+                weights["pma_attention"] = pma_3d
+                logger.info(f"  Loaded pma_attention (unpacked) with shape {pma_3d.shape}")
+            else:
+                logger.warning("PMA attention group found but could not unpack")
+        elif isinstance(pma_raw, np.ndarray):
+            # Legacy flat format
+            weights["pma_attention"] = pma_raw
+            logger.info(f"  Loaded pma_attention with shape {pma_raw.shape}")
+    else:
+        logger.warning("No PMA attention found in HDF5 file")
 
     return weights
 

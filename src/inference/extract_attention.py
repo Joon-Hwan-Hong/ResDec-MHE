@@ -331,67 +331,25 @@ def save_attention_weights_hdf5(
     """
     Save all attention weights to HDF5 file.
 
+    Delegates to io.save_attention_weights() for consistent schema.
+
     Args:
         weights: AttentionWeights container
         path: Output HDF5 path
         gene_names: Optional gene names to include
     """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from src.utils.io import save_attention_weights
 
-    with h5py.File(path, "w") as f:
-        # Schema version
-        f.attrs["schema_version"] = "1.0"
-
-        # Gene gate weights
-        f.create_dataset(
-            "gene_gate",
-            data=weights.gene_gate,
-            compression="gzip",
-            compression_opts=4,
-        )
-        f["gene_gate"].attrs["shape"] = "[n_cell_types, n_genes]"
-
-        # Cell type selection weights
-        if weights.cell_type_selection is not None:
-            f.create_dataset("cell_type_selection", data=weights.cell_type_selection)
-            f["cell_type_selection"].attrs["shape"] = "[n_cell_types]"
-
-        # Region weights
-        if weights.region_weights is not None:
-            f.create_dataset("region_weights", data=weights.region_weights)
-            f["region_weights"].attrs["shape"] = "[n_regions]"
-
-        # Pathology attention (if available)
-        if weights.pathology_attention is not None:
-            f.create_dataset(
-                "pathology_attention",
-                data=weights.pathology_attention,
-                compression="gzip",
-                compression_opts=4,
-            )
-            f["pathology_attention"].attrs["shape"] = "[n_subjects, n_heads, n_cell_types]"
-
-        # Cell type names
-        cell_types_encoded = np.array(weights.cell_type_names, dtype="S64")
-        f.create_dataset("cell_type_names", data=cell_types_encoded)
-
-        # Gene names (if provided)
-        if gene_names is not None:
-            gene_names_encoded = np.array(gene_names, dtype="S64")
-            f.create_dataset("gene_names", data=gene_names_encoded)
-
-        # Subject IDs (if available)
-        if weights.subject_ids is not None:
-            subject_ids_encoded = np.array(weights.subject_ids, dtype="S64")
-            f.create_dataset("subject_ids", data=subject_ids_encoded)
-
-        # HGT layer scales
-        if weights.hgt_layer_scales is not None:
-            hgt_group = f.create_group("hgt_layer_scales")
-            for key, value in weights.hgt_layer_scales.items():
-                if isinstance(value, np.ndarray):
-                    hgt_group.create_dataset(key, data=value)
+    save_attention_weights(
+        path=path,
+        gene_gate=weights.gene_gate,
+        pathology_attention=weights.pathology_attention,
+        cell_type_selection=weights.cell_type_selection,
+        region_weights=weights.region_weights,
+        subject_ids=weights.subject_ids,
+        cell_type_names=weights.cell_type_names,
+        gene_names=gene_names,
+    )
 
     logger.info(f"Saved attention weights to {path}")
 
@@ -444,3 +402,117 @@ def load_attention_weights_hdf5(path: str | Path) -> AttentionWeights:
         subject_ids=subject_ids,
         cell_type_names=cell_type_names,
     )
+
+
+def aggregate_hgt_attention(
+    hgt_attention: list[list[dict]],
+    edge_types: list[tuple[str, str, str]] | None = None,
+    include_per_sample: bool = True,
+) -> dict[str, np.ndarray | list[str]]:
+    """
+    Aggregate HGT attention across samples.
+
+    Computes mean and std of attention weights for each edge type across all samples.
+    Optionally includes per-sample summaries to preserve subject-level variation.
+
+    Design Note (2026-02):
+        Full per-edge attention storage was not implemented because edge counts vary
+        per subject (different CCC graphs), making rectangular tensor storage infeasible
+        without padding or ragged arrays. Instead, we store per-sample summaries that
+        aggregate within each sample while preserving between-sample variation.
+
+    Args:
+        hgt_attention: List of per-sample attention, where each sample contains
+                      a list of per-layer dicts mapping edge_type -> [n_edges, n_heads]
+        edge_types: Optional list of edge types to include. If None, extracts from data.
+        include_per_sample: Whether to include per-sample per-layer summaries (default: True)
+
+    Returns:
+        Dict with:
+            - 'edge_type_names': List of string representations of edge types
+            - 'mean_by_edge_type': [n_edge_types, n_heads] mean attention per edge type
+            - 'std_by_edge_type': [n_edge_types, n_heads] std attention per edge type
+            - 'per_sample': [n_samples, n_edge_types, n_layers, n_heads] per-sample summaries (if include_per_sample)
+            - 'n_samples': Number of samples
+            - 'n_layers': Number of HGT layers
+    """
+    if not hgt_attention or len(hgt_attention) == 0:
+        return {
+            "edge_type_names": [],
+            "mean_by_edge_type": np.array([]),
+            "std_by_edge_type": np.array([]),
+            "per_sample": np.array([]) if include_per_sample else None,
+            "n_samples": 0,
+            "n_layers": 0,
+        }
+
+    n_samples = len(hgt_attention)
+    n_layers = len(hgt_attention[0]) if hgt_attention[0] else 0
+
+    # Collect all edge types from the data if not provided
+    if edge_types is None:
+        edge_type_set = set()
+        for sample_attn in hgt_attention:
+            for layer_attn in sample_attn:
+                edge_type_set.update(layer_attn.keys())
+        edge_types = sorted(list(edge_type_set))
+
+    if len(edge_types) == 0:
+        return {
+            "edge_type_names": [],
+            "mean_by_edge_type": np.array([]),
+            "std_by_edge_type": np.array([]),
+            "per_sample": np.array([]) if include_per_sample else None,
+            "n_samples": n_samples,
+            "n_layers": n_layers,
+        }
+
+    # For each edge type, aggregate attention across samples and layers
+    # We take the mean across edges within each sample, then aggregate across samples
+    edge_type_names = [f"{et[0]}|{et[1]}|{et[2]}" for et in edge_types]
+
+    # Determine n_heads from first available attention
+    n_heads = None
+    for sample_attn in hgt_attention:
+        for layer_attn in sample_attn:
+            for attn in layer_attn.values():
+                if isinstance(attn, torch.Tensor):
+                    n_heads = attn.shape[-1]
+                else:
+                    n_heads = attn.shape[-1]
+                break
+            if n_heads is not None:
+                break
+        if n_heads is not None:
+            break
+
+    if n_heads is None:
+        n_heads = 4  # Default
+
+    # Collect per-sample per-layer attention summaries
+    # Shape: [n_samples, n_edge_types, n_layers, n_heads]
+    per_sample_per_layer = np.zeros((n_samples, len(edge_types), n_layers, n_heads))
+
+    for sample_idx, sample_attn in enumerate(hgt_attention):
+        for layer_idx, layer_attn in enumerate(sample_attn):
+            for et_idx, et in enumerate(edge_types):
+                if et in layer_attn:
+                    attn = layer_attn[et]
+                    if isinstance(attn, torch.Tensor):
+                        attn = attn.cpu().numpy()
+                    # Mean across edges for this edge type in this layer
+                    per_sample_per_layer[sample_idx, et_idx, layer_idx, :] = attn.mean(axis=0)
+
+    # Aggregate: mean across layers, then across samples
+    attention_per_sample = per_sample_per_layer.mean(axis=2)  # [n_samples, n_edge_types, n_heads]
+    mean_by_edge_type = attention_per_sample.mean(axis=0)  # [n_edge_types, n_heads]
+    std_by_edge_type = attention_per_sample.std(axis=0)    # [n_edge_types, n_heads]
+
+    return {
+        "edge_type_names": edge_type_names,
+        "mean_by_edge_type": mean_by_edge_type,
+        "std_by_edge_type": std_by_edge_type,
+        "per_sample": per_sample_per_layer if include_per_sample else None,
+        "n_samples": n_samples,
+        "n_layers": n_layers,
+    }

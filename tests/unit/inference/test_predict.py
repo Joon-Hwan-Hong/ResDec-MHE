@@ -149,7 +149,8 @@ class TestPredictionResultDataclass:
         """All expected fields are present in PredictionResult."""
         expected_fields = {
             "subject_ids", "mean", "std", "actual", "pathology",
-            "attention_weights", "gene_gate_weights", "hgt_attention", "metadata"
+            "attention_weights", "gene_gate_weights", "hgt_attention",
+            "pma_attention", "region_weights", "metadata"
         }
         actual_fields = {f.name for f in fields(sample_prediction_result)}
         assert expected_fields == actual_fields
@@ -295,7 +296,7 @@ class TestSerializationHDF5:
 
             with h5py.File(path, "r") as f:
                 assert "attention_weights" in f
-                assert "gene_gate_weights" in f
+                assert "gene_gate" in f
 
     def test_hdf5_attention_shapes_preserved(self, sample_prediction_result):
         """HDF5 preserves attention weight shapes."""
@@ -307,7 +308,7 @@ class TestSerializationHDF5:
 
             with h5py.File(path, "r") as f:
                 assert f["attention_weights"].shape == sample_prediction_result.attention_weights.shape
-                assert f["gene_gate_weights"].shape == sample_prediction_result.gene_gate_weights.shape
+                assert f["gene_gate"].shape == sample_prediction_result.gene_gate_weights.shape
 
 
 # ============================================================================

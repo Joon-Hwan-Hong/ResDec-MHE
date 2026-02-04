@@ -183,6 +183,7 @@ class TestAnalysis:
 # ============================================================================
 
 
+@pytest.mark.filterwarnings("ignore:n_jobs value 1 overridden to 1 by setting random_state:UserWarning")
 class TestUMAP:
     """Tests for UMAP projection."""
 

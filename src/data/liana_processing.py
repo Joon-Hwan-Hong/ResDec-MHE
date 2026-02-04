@@ -550,3 +550,144 @@ def build_subject_ccc_features(
         "edge_attr": edge_attr,
         "n_edges": len(edge_src),
     }
+
+
+def extract_lr_pairs_by_edge(
+    liana_results: pd.DataFrame,
+    cell_types: list[str] | None = None,
+    ligand_col: str = "ligand_complex",
+    receptor_col: str = "receptor_complex",
+    source_col: str = "source",
+    target_col: str = "target",
+    max_pairs_per_edge: int = 10,
+) -> dict[str, list[str]]:
+    """
+    Extract ligand-receptor pairs contributing to each edge type.
+
+    Creates a mapping from (source, target, edge_type) to the list of L-R pairs
+    that contribute to that edge. This allows annotating high-attention edges
+    with their biological underpinnings.
+
+    Note:
+        Since HGT attention is computed at the edge-type level (not per-L-R pair),
+        we cannot assign attention scores to individual L-R pairs. This function
+        provides context about which L-R pairs contribute to each edge, ranked by
+        LIANA magnitude.
+
+    Args:
+        liana_results: LIANA+ results DataFrame
+        cell_types: List of cell types to include (None = all)
+        ligand_col: Column name for ligand
+        receptor_col: Column name for receptor
+        source_col: Column name for source cell type
+        target_col: Column name for target cell type
+        max_pairs_per_edge: Maximum L-R pairs to keep per edge (ranked by magnitude)
+
+    Returns:
+        Dict mapping "source|target|edge_type" -> ["ligand1_receptor1", "ligand2_receptor2", ...]
+
+    Example:
+        >>> lr_mapping = extract_lr_pairs_by_edge(liana_results)
+        >>> lr_mapping["Microglia|Astrocyte|Secreted_Signaling"]
+        ['IL1B_IL1R1', 'TNF_TNFR1', 'CCL2_CCR2', ...]
+    """
+    # Ensure edge types are assigned
+    if "edge_type_name" not in liana_results.columns:
+        liana_results = assign_edge_types(liana_results)
+
+    # Filter to valid cell types if provided
+    if cell_types is not None:
+        ct_set = set(cell_types)
+        liana_results = liana_results[
+            liana_results[source_col].isin(ct_set) &
+            liana_results[target_col].isin(ct_set)
+        ]
+
+    # Group by (source, target, edge_type) and collect L-R pairs
+    lr_mapping = {}
+
+    # Sort by magnitude_rank so best interactions come first
+    if "magnitude_rank" in liana_results.columns:
+        liana_sorted = liana_results.sort_values("magnitude_rank", ascending=True)
+    else:
+        liana_sorted = liana_results
+
+    for _, row in liana_sorted.iterrows():
+        src = row.get(source_col, "")
+        tgt = row.get(target_col, "")
+        et_name = row.get("edge_type_name", EDGE_TYPE_NOVEL)
+
+        # Skip if missing cell type info
+        if not src or not tgt:
+            continue
+
+        # Get L-R pair
+        ligand = row.get(ligand_col, "")
+        receptor = row.get(receptor_col, "")
+
+        if pd.isna(ligand) or pd.isna(receptor):
+            continue
+        if not ligand or not receptor:
+            continue
+
+        # Create edge key
+        edge_key = f"{src}|{tgt}|{et_name}"
+        lr_pair = f"{ligand}_{receptor}"
+
+        # Add to mapping (respecting max_pairs_per_edge)
+        if edge_key not in lr_mapping:
+            lr_mapping[edge_key] = []
+
+        if len(lr_mapping[edge_key]) < max_pairs_per_edge:
+            if lr_pair not in lr_mapping[edge_key]:  # Avoid duplicates
+                lr_mapping[edge_key].append(lr_pair)
+
+    return lr_mapping
+
+
+def aggregate_lr_mapping_across_subjects(
+    subject_lr_mappings: dict[str, dict[str, list[str]]],
+    min_subjects: int = 1,
+) -> dict[str, list[str]]:
+    """
+    Aggregate L-R pair mappings across multiple subjects.
+
+    Takes L-R mappings from multiple subjects and creates a consensus mapping
+    that includes L-R pairs observed across subjects, ranked by frequency.
+
+    Args:
+        subject_lr_mappings: Dict of {subject_id: lr_mapping} from extract_lr_pairs_by_edge
+        min_subjects: Minimum number of subjects where L-R pair must appear
+
+    Returns:
+        Aggregated mapping: "source|target|edge_type" -> ["ligand1_receptor1", ...]
+        L-R pairs are ordered by frequency across subjects (most common first)
+
+    Example:
+        >>> lr_mappings = {subj: extract_lr_pairs_by_edge(liana[subj]) for subj in subjects}
+        >>> consensus = aggregate_lr_mapping_across_subjects(lr_mappings)
+    """
+    from collections import Counter
+
+    # Count L-R pair occurrences per edge across subjects
+    edge_lr_counts: dict[str, Counter] = {}
+
+    for subject_id, lr_mapping in subject_lr_mappings.items():
+        for edge_key, lr_pairs in lr_mapping.items():
+            if edge_key not in edge_lr_counts:
+                edge_lr_counts[edge_key] = Counter()
+            for lr_pair in lr_pairs:
+                edge_lr_counts[edge_key][lr_pair] += 1
+
+    # Filter by min_subjects and sort by frequency
+    aggregated = {}
+    for edge_key, lr_counter in edge_lr_counts.items():
+        filtered_pairs = [
+            (lr, count) for lr, count in lr_counter.items()
+            if count >= min_subjects
+        ]
+        # Sort by count (descending), then alphabetically
+        sorted_pairs = sorted(filtered_pairs, key=lambda x: (-x[1], x[0]))
+        aggregated[edge_key] = [lr for lr, _ in sorted_pairs]
+
+    return aggregated

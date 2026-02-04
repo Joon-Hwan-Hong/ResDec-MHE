@@ -349,6 +349,8 @@ class TestOutputSchemaValidation:
 # ============================================================================
 
 
+@pytest.mark.filterwarnings("ignore:Degrees of freedom <= 0 for slice:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:invalid value encountered in divide:RuntimeWarning")
 class TestPropertyBased:
     """Property-based tests using Hypothesis."""
 
@@ -467,6 +469,8 @@ class TestEdgeCases:
         # Signature should be ~0 when groups are indistinguishable
         assert result.signature is not None
 
+    @pytest.mark.filterwarnings("ignore:Degrees of freedom <= 0 for slice:RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered in divide:RuntimeWarning")
     def test_minimum_subjects_for_groups(self):
         """Handles minimum number of subjects for group formation."""
         # Need at least 9 subjects for 3 tertiles within high pathology

@@ -291,6 +291,8 @@ class TestResilienceAnalysisPipeline:
                 assert (output_dir / fname).exists(), f"Missing: {fname}"
 
 
+@pytest.mark.filterwarnings("ignore:n_jobs value 1 overridden to 1 by setting random_state:UserWarning")
+@pytest.mark.filterwarnings("ignore:The TBB threading layer requires TBB version:numba.core.errors.NumbaWarning")
 class TestEmbeddingAnalysisPipeline:
     """Integration tests for embedding analysis pipeline."""
 
@@ -434,6 +436,68 @@ class TestCellHeterogeneityPipeline:
             )
 
 
+class TestCCCWithHGTData:
+    """Integration tests for CCC analyzer with HGT attention data."""
+
+    def test_hgt_save_load_unpack_to_ccc(self):
+        """End-to-end: save HGT HDF5 → load → unpack → CCC analyzer → non-zero results."""
+        from src.utils.io import save_attention_weights, load_attention_weights, unpack_hgt_for_ccc
+        from src.analysis.ccc_importance import CCCImportanceAnalyzer
+
+        np.random.seed(42)
+        n_samples = 10
+        n_edge_types = 5
+        n_heads = 4
+
+        # Create mock HGT attention dict (output format of aggregate_hgt_attention)
+        edge_type_names = [
+            "Ast|Mic|Secreted_Signaling",
+            "Mic|Ast|Secreted_Signaling",
+            "Oli|Exc|ECM_Receptor",
+            "Exc|Inh|Cell_Cell_Contact",
+            "Ast|Oli|Secreted_Signaling",
+        ]
+        hgt_dict = {
+            "edge_type_names": edge_type_names,
+            "mean_by_edge_type": np.random.rand(n_edge_types, n_heads).astype(np.float32),
+            "std_by_edge_type": np.random.rand(n_edge_types, n_heads).astype(np.float32),
+            "per_sample": np.random.rand(n_samples, n_edge_types, 3, n_heads).astype(np.float32),
+            "n_samples": n_samples,
+            "n_layers": 3,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attention_weights.h5"
+
+            # Save
+            save_attention_weights(path=path, hgt_attention=hgt_dict)
+
+            # Load
+            loaded = load_attention_weights(path)
+            hgt_raw = loaded.get("hgt_attention")
+            assert hgt_raw is not None
+
+            # Unpack
+            scores, edge_metadata, names = unpack_hgt_for_ccc(hgt_raw)
+            assert scores is not None
+            assert edge_metadata is not None
+            assert scores.shape == (n_samples, n_edge_types)
+
+            # Pass to CCC analyzer
+            analyzer = CCCImportanceAnalyzer(
+                edge_attention_scores=scores,
+                edge_metadata=edge_metadata,
+            )
+            result = analyzer.analyze()
+
+            # Verify non-zero results
+            assert len(result.edge_importance) == n_edge_types
+            assert result.edge_importance["mean_attention"].sum() > 0
+            assert len(result.top_interactions) > 0
+            assert result.top_interactions["mean_attention"].iloc[0] > 0
+
+
+@pytest.mark.filterwarnings("ignore:n_jobs value 1 overridden to 1 by setting random_state:UserWarning")
 class TestCrossModuleIntegration:
     """Test that analysis modules work together correctly."""
 

@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from src.utils.io import load_dataframe, load_attention_weights
+from src.utils.io import load_dataframe, load_attention_weights, unpack_hgt_for_ccc, unpack_pma_attention
 from src.analysis import (
     CellTypeImportanceAnalyzer,
     GeneImportanceAnalyzer,
@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         "--metadata-path",
         type=str,
         help="Path to subject metadata CSV/parquet with pathology info",
+    )
+    input_group.add_argument(
+        "--liana-dir",
+        type=str,
+        default=None,
+        help="Directory containing per-subject LIANA results (parquet files)",
     )
 
     # Output
@@ -151,6 +157,11 @@ def parse_args() -> argparse.Namespace:
         default=0.05,
         help="FDR threshold for significance (default: 0.05)",
     )
+    param_group.add_argument(
+        "--no-fdr",
+        action="store_true",
+        help="Disable FDR correction (report uncorrected p-values)",
+    )
 
     # Output formats
     parser.add_argument(
@@ -182,7 +193,7 @@ def run_cell_type_importance(
     pathology_attention: np.ndarray,
     cell_type_names: list[str],
     pathology_levels: np.ndarray | None = None,
-    region_names: list[str] | None = None,
+    region_labels: np.ndarray | None = None,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -193,6 +204,7 @@ def run_cell_type_importance(
         attention=pathology_attention,
         cell_type_names=cell_type_names,
         pathology_scores=pathology_levels,
+        region_labels=region_labels,
     )
 
     result = analyzer.analyze()
@@ -231,6 +243,7 @@ def run_ccc_importance(
     edge_metadata: pd.DataFrame | None = None,
     cell_type_names: list[str] | None = None,
     edge_types: list[str] | None = None,
+    lr_pair_mapping: dict[str, list[str]] | None = None,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -242,6 +255,7 @@ def run_ccc_importance(
         edge_metadata=edge_metadata,
         cell_type_names=cell_type_names,
         edge_types=edge_types,
+        lr_pair_mapping=lr_pair_mapping,
     )
 
     result = analyzer.analyze()
@@ -258,6 +272,7 @@ def run_resilience_signature(
     cell_type_names: list[str],
     n_permutations: int = 1000,
     random_seed: int | None = None,
+    apply_fdr_correction: bool = True,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -274,6 +289,7 @@ def run_resilience_signature(
     result = analyzer.analyze(
         n_permutations=n_permutations,
         random_seed=random_seed,
+        apply_fdr_correction=apply_fdr_correction,
     )
 
     if output_dir:
@@ -460,10 +476,24 @@ def main():
     # Extract arrays for analysis
     pathology_attention = attention_weights.get("pathology_attention")
     gene_gate = attention_weights.get("gene_gate")
-    hgt_attention = attention_weights.get("hgt_attention")
+    hgt_raw = attention_weights.get("hgt_attention")
     region_weights = attention_weights.get("region_weights")
-    pma_attention = attention_weights.get("pma_attention")
+    pma_raw = attention_weights.get("pma_attention")
     embeddings = attention_weights.get("embeddings")
+
+    # Unpack HGT for CCC analyzer
+    edge_attention_scores = None
+    hgt_edge_metadata = None
+    edge_type_names = None
+    if hgt_raw is not None and isinstance(hgt_raw, dict):
+        edge_attention_scores, hgt_edge_metadata, edge_type_names = unpack_hgt_for_ccc(hgt_raw)
+
+    # Unpack PMA for cell attention analyzer
+    pma_attention_3d = None
+    if pma_raw is not None and isinstance(pma_raw, dict):
+        pma_attention_3d = unpack_pma_attention(pma_raw, cell_type_names)
+    elif pma_raw is not None and isinstance(pma_raw, np.ndarray):
+        pma_attention_3d = pma_raw  # Already flat (legacy format)
 
     # Load edge metadata for CCC analysis if available
     edge_metadata = None
@@ -472,14 +502,46 @@ def main():
         edge_metadata = pd.read_parquet(edge_metadata_path)
         logger.info(f"Loaded edge metadata with {len(edge_metadata)} edges")
 
+    # Source region labels from metadata
+    region_labels = None
+    if metadata_df is not None and "region" in metadata_df.columns:
+        region_labels = metadata_df["region"].values
+
+    # Build LR-pair mapping from LIANA results if provided
+    lr_pair_mapping = None
+    if args.liana_dir:
+        from src.data.liana_processing import extract_lr_pairs_by_edge, aggregate_lr_mapping_across_subjects
+        liana_dir = Path(args.liana_dir)
+        subject_mappings = {}
+        for liana_file in sorted(liana_dir.glob("*.parquet")):
+            subject_id = liana_file.stem
+            liana_df = pd.read_parquet(liana_file)
+            subject_mappings[subject_id] = extract_lr_pairs_by_edge(
+                liana_df, cell_types=cell_type_names
+            )
+        if subject_mappings:
+            lr_pair_mapping = aggregate_lr_mapping_across_subjects(subject_mappings, min_subjects=2)
+            logger.info(f"Built LR mapping from {len(subject_mappings)} subjects, {len(lr_pair_mapping)} edges")
+
     # Run analyses
     analyses_run = 0
 
     # Cell type importance
     if not args.skip_cell_type and pathology_attention is not None:
+        # Get pathology levels for stratification (prefer gpath as primary)
+        pathology_levels = None
+        if predictions_df is not None:
+            for col in ["gpath", "amylsqrt", "tangsqrt", "pathology"]:
+                if col in predictions_df.columns:
+                    pathology_levels = predictions_df[col].values
+                    logger.info(f"  Using {col} for pathology stratification")
+                    break
+
         run_cell_type_importance(
             pathology_attention=pathology_attention,
             cell_type_names=cell_type_names,
+            pathology_levels=pathology_levels,
+            region_labels=region_labels,
             output_dir=output_dir,
             formats=args.formats,
         )
@@ -498,32 +560,58 @@ def main():
         analyses_run += 1
 
     # CCC importance
-    if not args.skip_ccc and hgt_attention is not None:
+    if not args.skip_ccc and edge_attention_scores is not None:
+        # Merge HGT-derived edge_metadata with any file-based edge_metadata
+        effective_edge_metadata = edge_metadata if edge_metadata is not None else hgt_edge_metadata
         run_ccc_importance(
-            edge_attention_scores=hgt_attention,
-            edge_metadata=edge_metadata,
+            edge_attention_scores=edge_attention_scores,
+            edge_metadata=effective_edge_metadata,
             cell_type_names=cell_type_names,
+            edge_types=edge_type_names,
+            lr_pair_mapping=lr_pair_mapping,
             output_dir=output_dir,
             formats=args.formats,
         )
         analyses_run += 1
 
     # Resilience signatures (requires pathology and cognition data)
+    # Runs separately for each available pathology measure (gpath, amylsqrt, tangsqrt)
     if not args.skip_resilience and pathology_attention is not None:
         if predictions_df is not None and "actual" in predictions_df.columns:
-            if metadata_df is not None and "pathology" in metadata_df.columns:
-                run_resilience_signature(
-                    attention=pathology_attention,
-                    cognition_scores=predictions_df["actual"].values,
-                    pathology_scores=metadata_df["pathology"].values,
-                    cell_type_names=cell_type_names,
-                    n_permutations=args.n_permutations,
-                    output_dir=output_dir,
-                    formats=args.formats,
-                )
-                analyses_run += 1
+            # Check for pathology columns in predictions_df first, then metadata_df
+            pathology_columns = ["gpath", "amylsqrt", "tangsqrt"]
+            available_pathology = []
+
+            for col in pathology_columns:
+                if predictions_df is not None and col in predictions_df.columns:
+                    available_pathology.append((col, predictions_df[col].values))
+                elif metadata_df is not None and col in metadata_df.columns:
+                    available_pathology.append((col, metadata_df[col].values))
+
+            # Also check for legacy "pathology" column
+            if not available_pathology:
+                if metadata_df is not None and "pathology" in metadata_df.columns:
+                    available_pathology.append(("pathology", metadata_df["pathology"].values))
+                elif predictions_df is not None and "pathology" in predictions_df.columns:
+                    available_pathology.append(("pathology", predictions_df["pathology"].values))
+
+            if available_pathology:
+                for pathology_name, pathology_scores in available_pathology:
+                    logger.info(f"Running resilience signature for {pathology_name}...")
+                    resilience_output_dir = output_dir / f"resilience_{pathology_name}"
+                    run_resilience_signature(
+                        attention=pathology_attention,
+                        cognition_scores=predictions_df["actual"].values,
+                        pathology_scores=pathology_scores,
+                        cell_type_names=cell_type_names,
+                        n_permutations=args.n_permutations,
+                        apply_fdr_correction=not args.no_fdr,
+                        output_dir=resilience_output_dir,
+                        formats=args.formats,
+                    )
+                    analyses_run += 1
             else:
-                logger.warning("Skipping resilience signature: no pathology levels in metadata")
+                logger.warning("Skipping resilience signature: no pathology columns found (gpath, amylsqrt, tangsqrt, or pathology)")
         else:
             logger.warning("Skipping resilience signature: no actual cognition scores")
 
@@ -568,7 +656,7 @@ def main():
             logger.warning("Skipping uncertainty analysis: no predicted_std in predictions")
 
     # Cell attention analysis (requires PMA attention)
-    if not args.skip_cell_attention and pma_attention is not None:
+    if not args.skip_cell_attention and pma_attention_3d is not None:
         # Get cell metadata from attention weights if available
         cell_ids = metadata.get("cell_ids")
         if cell_ids is not None:
@@ -578,7 +666,7 @@ def main():
             cell_types = list(cell_types)
 
         run_cell_attention(
-            pma_attention=pma_attention,
+            pma_attention=pma_attention_3d,
             cell_ids=cell_ids,
             cell_types=cell_types,
             subject_ids=subject_ids,

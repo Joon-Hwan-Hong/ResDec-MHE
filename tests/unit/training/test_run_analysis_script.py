@@ -34,14 +34,34 @@ def mock_experiment_dir(tmp_path):
     })
     predictions.to_parquet(analysis_dir / "predictions.parquet")
 
-    # Create mock attention weights
+    # Create mock attention weights with nested groups matching predictor output
     with h5py.File(analysis_dir / "attention_weights.h5", "w") as f:
+        f.attrs["schema_version"] = "2.0"
         f.create_dataset("gene_gate", data=np.random.rand(8, 100))
         f.create_dataset("pathology_attention", data=np.random.rand(20, 4, 8))
         f.create_dataset("region_weights", data=np.random.rand(6))
-        f.attrs["cell_type_names"] = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
-        f.attrs["gene_names"] = [f"GENE{i}" for i in range(100)]
-        f.attrs["subject_ids"] = [f"ROSMAP_{i:03d}" for i in range(20)]
+        vlen_str = h5py.special_dtype(vlen=str)
+        f.create_dataset("cell_type_names", data=np.array(
+            ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"], dtype=object
+        ), dtype=vlen_str)
+        f.create_dataset("gene_names", data=np.array(
+            [f"GENE{i}" for i in range(100)], dtype=object
+        ), dtype=vlen_str)
+        f.create_dataset("subject_ids", data=np.array(
+            [f"ROSMAP_{i:03d}" for i in range(20)], dtype=object
+        ), dtype=vlen_str)
+
+        # HGT attention as nested group
+        hgt_group = f.create_group("hgt_attention")
+        n_edge_types = 5
+        hgt_group.create_dataset("edge_type_names", data=np.array([
+            "Ast|Mic|Secreted_Signaling", "Mic|Ast|Secreted_Signaling",
+            "Oli|Exc|ECM_Receptor", "Exc|Inh|Cell_Cell_Contact",
+            "Ast|Oli|Secreted_Signaling",
+        ], dtype=object), dtype=vlen_str)
+        agg_group = hgt_group.create_group("aggregated")
+        agg_group.create_dataset("mean_by_edge_type", data=np.random.rand(n_edge_types, 4))
+        agg_group.create_dataset("std_by_edge_type", data=np.random.rand(n_edge_types, 4))
 
     return exp_dir
 
@@ -137,10 +157,11 @@ class TestLoadAttentionWeights:
         from src.utils.io import load_attention_weights
 
         path = tmp_path / "attention.h5"
+        vlen_str = h5py.special_dtype(vlen=str)
         with h5py.File(path, "w") as f:
             f.create_dataset("gene_gate", data=np.random.rand(8, 100))
             f.create_dataset("pathology_attention", data=np.random.rand(20, 4, 8))
-            f.attrs["cell_type_names"] = ["A", "B", "C"]
+            f.create_dataset("cell_type_names", data=np.array(["A", "B", "C"], dtype=object), dtype=vlen_str)
 
         weights = load_attention_weights(Path(path))
 
@@ -150,15 +171,19 @@ class TestLoadAttentionWeights:
         assert "metadata" in weights
         assert "cell_type_names" in weights["metadata"]
         assert weights["gene_gate"].shape == (8, 100)
+        # String datasets are also at the top level as lists
+        assert "cell_type_names" in weights
+        assert isinstance(weights["cell_type_names"], list)
+        assert weights["cell_type_names"] == ["A", "B", "C"]
 
     def test_load_nonexistent(self, tmp_path):
-        """Test loading nonexistent file raises FileNotFoundError."""
+        """Test loading nonexistent file returns empty dict."""
         from src.utils.io import load_attention_weights
 
         path = Path(tmp_path) / "nonexistent.h5"
-        # The shared function raises FileNotFoundError for nonexistent files
-        with pytest.raises(FileNotFoundError):
-            load_attention_weights(path)
+        # The shared function returns empty dict for nonexistent files
+        result = load_attention_weights(path)
+        assert result == {}
 
 
 # =============================================================================
@@ -385,6 +410,23 @@ class TestScriptIntegration:
         # Check for no Python errors
         assert "Traceback" not in result.stderr or "Error" not in result.stderr
 
+    def test_with_experiment_dir_full(self, mock_experiment_dir):
+        """Test script runs with experiment directory including CCC (uses nested HGT groups)."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/run_analysis.py",
+                "--experiment-dir", str(mock_experiment_dir),
+                "--skip-resilience",
+                "--skip-embedding",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        # Script should complete without Python errors
+        assert "Traceback" not in result.stderr
+
     def test_skip_flags(self, mock_experiment_dir):
         """Test skip flags work."""
         result = subprocess.run(
@@ -419,11 +461,10 @@ class TestRunAnalysisEdgeCases:
         """Test with empty analysis directory."""
         from src.utils.io import load_attention_weights
 
-        # Shared function raises FileNotFoundError for nonexistent files
-        # This is the expected behavior - callers should check existence first
+        # Shared function returns empty dict for nonexistent files
         path = Path(tmp_path) / "nonexistent.h5"
-        with pytest.raises(FileNotFoundError):
-            load_attention_weights(path)
+        result = load_attention_weights(path)
+        assert result == {}
 
     def test_partial_data(self, tmp_path):
         """Test with partial data (only predictions, no attention)."""

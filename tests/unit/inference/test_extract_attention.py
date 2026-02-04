@@ -315,7 +315,7 @@ class TestHDF5Serialization:
 
             with h5py.File(path, "r") as f:
                 assert "schema_version" in f.attrs
-                assert f.attrs["schema_version"] == "1.0"
+                assert f.attrs["schema_version"] == "2.0"
 
     def test_save_with_gene_names(self, sample_gene_gate):
         """Gene names are saved when provided."""

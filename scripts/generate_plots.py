@@ -18,11 +18,10 @@ import argparse
 import logging
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pandas as pd
 
-from src.utils.io import load_dataframe
+from src.utils.io import load_dataframe, load_attention_weights
 from src.visualization import (
     # Config
     setup_seaborn_style,
@@ -198,11 +197,23 @@ def load_analysis_data(analysis_dir: Path) -> dict:
         data["cell_type_importance"] = load_dataframe(cell_type_path)
         logger.info(f"  Loaded cell_type_importance: {len(data['cell_type_importance'])} rows")
 
-    # Gene importance
-    gene_path = analysis_dir / "gene_importance_by_celltype.parquet"
+    # Gene importance (use top_genes_per_celltype which has rank column for plotting)
+    gene_path = analysis_dir / "top_genes_per_celltype.parquet"
     if gene_path.exists():
         data["gene_importance"] = load_dataframe(gene_path)
         logger.info(f"  Loaded gene_importance: {len(data['gene_importance'])} rows")
+    else:
+        # Fallback to gene_importance_by_celltype (may lack rank column)
+        alt_path = analysis_dir / "gene_importance_by_celltype.parquet"
+        if alt_path.exists():
+            data["gene_importance"] = load_dataframe(alt_path)
+            logger.info(f"  Loaded gene_importance (alt): {len(data['gene_importance'])} rows")
+
+    # Cell type importance by pathology (for heatmap)
+    pathology_ct_path = analysis_dir / "cell_type_importance_by_pathology.parquet"
+    if pathology_ct_path.exists():
+        data["cell_type_importance_by_pathology"] = load_dataframe(pathology_ct_path)
+        logger.info(f"  Loaded cell_type_importance_by_pathology: {len(data['cell_type_importance_by_pathology'])} rows")
 
     # CCC importance
     ccc_path = analysis_dir / "ccc_importance.parquet"
@@ -210,11 +221,26 @@ def load_analysis_data(analysis_dir: Path) -> dict:
         data["ccc_importance"] = load_dataframe(ccc_path)
         logger.info(f"  Loaded ccc_importance: {len(data['ccc_importance'])} rows")
 
-    # Resilience signature
-    resilience_path = analysis_dir / "resilience_signature.parquet"
-    if resilience_path.exists():
-        data["resilience_signature"] = load_dataframe(resilience_path)
-        logger.info(f"  Loaded resilience_signature: {len(data['resilience_signature'])} rows")
+    # Resilience signature — scan subdirectories (resilience_gpath/, resilience_amylsqrt/, etc.)
+    resilience_data = {}
+    for subdir in sorted(analysis_dir.glob("resilience_*/")):
+        sig_path = subdir / "resilience_signature.parquet"
+        if sig_path.exists():
+            pathology_name = subdir.name.replace("resilience_", "")
+            resilience_data[pathology_name] = load_dataframe(sig_path)
+            logger.info(f"  Loaded resilience_signature ({pathology_name}): {len(resilience_data[pathology_name])} rows")
+
+    # Also check root for backward compat
+    root_resilience = analysis_dir / "resilience_signature.parquet"
+    if root_resilience.exists() and not resilience_data:
+        resilience_data["combined"] = load_dataframe(root_resilience)
+        logger.info(f"  Loaded resilience_signature (root): {len(resilience_data['combined'])} rows")
+
+    if resilience_data:
+        data["resilience_signatures"] = resilience_data
+        # Also store first one as "resilience_signature" for backward compat
+        first_key = next(iter(resilience_data))
+        data["resilience_signature"] = resilience_data[first_key]
 
     # Regional analysis
     regional_path = analysis_dir / "regional_gene_importance.parquet"
@@ -259,23 +285,6 @@ def load_analysis_data(analysis_dir: Path) -> dict:
     return data
 
 
-def load_attention_weights(path: Path) -> dict:
-    """Load attention weights from HDF5."""
-    if not path.exists():
-        return {}
-
-    weights = {}
-    with h5py.File(path, "r") as f:
-        for key in f.keys():
-            weights[key] = f[key][:]
-            logger.info(f"  Loaded {key}: shape {weights[key].shape}")
-
-        if "metadata" in dict(f.attrs):
-            weights["metadata"] = dict(f.attrs)
-
-    return weights
-
-
 def generate_attention_plots(
     data: dict,
     attention: dict,
@@ -293,18 +302,22 @@ def generate_attention_plots(
 
     # Cell type attention heatmap
     if "cell_type_attention_heatmap" not in skip_plots:
+        heatmap_df = None
         if "cell_type_importance" in data:
             df = data["cell_type_importance"]
-            # Check if we have pathology stratification
             if "pathology_tertile" in df.columns:
-                try:
-                    fig = plot_cell_type_attention_heatmap(df)
-                    path = output_dir / f"cell_type_attention_heatmap.{fmt}"
-                    save_figure(fig, str(path), format=fmt)
-                    generated.append(str(path))
-                    logger.info(f"  Generated: {path.name}")
-                except Exception as e:
-                    logger.warning(f"  Failed cell_type_attention_heatmap: {e}")
+                heatmap_df = df
+        if heatmap_df is None and "cell_type_importance_by_pathology" in data:
+            heatmap_df = data["cell_type_importance_by_pathology"]
+        if heatmap_df is not None:
+            try:
+                fig = plot_cell_type_attention_heatmap(heatmap_df)
+                path = output_dir / f"cell_type_attention_heatmap.{fmt}"
+                save_figure(fig, str(path), format=fmt)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed cell_type_attention_heatmap: {e}")
 
     # Cell type importance bar chart
     if "cell_type_importance_bar" not in skip_plots:
@@ -362,16 +375,21 @@ def generate_resilience_plots(
     generated = []
 
     if "resilience_signature_heatmap" not in skip_plots:
-        if "resilience_signature" in data:
-            df = data["resilience_signature"]
+        resilience_data = data.get("resilience_signatures", {})
+        # Fallback to single resilience_signature
+        if not resilience_data and "resilience_signature" in data:
+            resilience_data = {"combined": data["resilience_signature"]}
+
+        for pathology_name, df in resilience_data.items():
             try:
                 fig = plot_resilience_signature_heatmap(df)
-                path = output_dir / f"resilience_signature_heatmap.{fmt}"
+                suffix = f"_{pathology_name}" if pathology_name != "combined" else ""
+                path = output_dir / f"resilience_signature_heatmap{suffix}.{fmt}"
                 save_figure(fig, str(path), format=fmt)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
-                logger.warning(f"  Failed resilience_signature_heatmap: {e}")
+                logger.warning(f"  Failed resilience_signature_heatmap ({pathology_name}): {e}")
 
     return generated
 
@@ -390,7 +408,7 @@ def generate_importance_plots(
         if "gene_importance" in data:
             df = data["gene_importance"]
             try:
-                fig = plot_top_genes_per_cell_type(df, top_k=10)
+                fig = plot_top_genes_per_cell_type(df, n_genes=10)
                 path = output_dir / f"top_genes_per_cell_type.{fmt}"
                 save_figure(fig, str(path), format=fmt)
                 generated.append(str(path))
@@ -470,10 +488,10 @@ def generate_prediction_plots(
 
     # Predicted vs actual
     if "predicted_vs_actual" not in skip_plots:
-        if "predicted" in predictions.columns and "actual" in predictions.columns:
+        if "predicted_mean" in predictions.columns and "actual" in predictions.columns:
             try:
                 fig = plot_predicted_vs_actual(
-                    predictions["predicted"].values,
+                    predictions["predicted_mean"].values,
                     predictions["actual"].values,
                 )
                 path = output_dir / f"predicted_vs_actual.{fmt}"
@@ -498,10 +516,10 @@ def generate_prediction_plots(
 
     # Residuals
     if "residuals" not in skip_plots:
-        if "predicted" in predictions.columns and "actual" in predictions.columns:
+        if "predicted_mean" in predictions.columns and "actual" in predictions.columns:
             try:
                 fig = plot_residuals(
-                    predictions["predicted"].values,
+                    predictions["predicted_mean"].values,
                     predictions["actual"].values,
                 )
                 path = output_dir / f"residuals.{fmt}"
@@ -513,10 +531,10 @@ def generate_prediction_plots(
 
     # Uncertainty vs error
     if "uncertainty_vs_error" not in skip_plots:
-        if all(col in predictions.columns for col in ["predicted", "actual", "predicted_std"]):
+        if all(col in predictions.columns for col in ["predicted_mean", "actual", "predicted_std"]):
             try:
                 fig = plot_uncertainty_vs_error(
-                    predictions["predicted"].values,
+                    predictions["predicted_mean"].values,
                     predictions["actual"].values,
                     predictions["predicted_std"].values,
                 )

@@ -296,26 +296,27 @@ class GeneImportanceAnalyzer:
     def _save_hdf5(self, result: GeneImportanceResult, path: Path) -> None:
         """Save gene gate weights to HDF5."""
         with h5py.File(path, "w") as f:
-            f.attrs["schema_version"] = "1.0"
+            f.attrs["schema_version"] = "2.0"
             f.attrs["n_cell_types"] = self.n_cell_types
             f.attrs["n_genes"] = self.n_genes
 
             # Gene gate weights
             f.create_dataset(
-                "gene_gate_weights",
+                "gene_gate",
                 data=result.gene_gate_weights,
                 compression="gzip",
                 compression_opts=4,
             )
-            f["gene_gate_weights"].attrs["shape"] = "[n_cell_types, n_genes]"
+            f["gene_gate"].attrs["shape"] = "[n_cell_types, n_genes]"
+
+            # Variable-length string type
+            vlen_str = h5py.special_dtype(vlen=str)
 
             # Gene names
-            gene_names_encoded = np.array(result.gene_names, dtype="S64")
-            f.create_dataset("gene_names", data=gene_names_encoded)
+            f.create_dataset("gene_names", data=np.array(result.gene_names, dtype=object), dtype=vlen_str)
 
             # Cell type names
-            cell_types_encoded = np.array(self.cell_type_names, dtype="S64")
-            f.create_dataset("cell_type_names", data=cell_types_encoded)
+            f.create_dataset("cell_type_names", data=np.array(self.cell_type_names, dtype=object), dtype=vlen_str)
 
 
 def compute_gene_importance(
@@ -367,7 +368,7 @@ def load_gene_gate_weights_hdf5(path: str | Path) -> tuple[np.ndarray, list[str]
         Tuple of (gene_gate_weights, gene_names, cell_type_names)
     """
     with h5py.File(path, "r") as f:
-        gene_gate_weights = f["gene_gate_weights"][:]
+        gene_gate_weights = f["gene_gate"][:]
         gene_names = [x.decode("utf-8") for x in f["gene_names"][:]]
         cell_type_names = [x.decode("utf-8") for x in f["cell_type_names"][:]]
 

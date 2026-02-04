@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-import h5py
 import numpy as np
 import pandas as pd
 
@@ -51,7 +50,6 @@ class CCCImportanceResult:
     top_interactions: pd.DataFrame
     by_region: pd.DataFrame | None = None
     network_summary: pd.DataFrame | None = None
-    raw_attention: dict | None = None
     metadata: dict = field(default_factory=dict)
 
 
@@ -80,6 +78,7 @@ class CCCImportanceAnalyzer:
         edge_types: list[str] | None = None,
         region_labels: np.ndarray | None = None,
         subject_ids: list[str] | None = None,
+        lr_pair_mapping: dict[str, list[str]] | None = None,
     ):
         """
         Initialize analyzer with edge attention scores.
@@ -92,6 +91,8 @@ class CCCImportanceAnalyzer:
             edge_types: Edge type names (defaults to ALL_EDGE_TYPES)
             region_labels: Region labels for stratification [n_subjects]
             subject_ids: Subject identifiers
+            lr_pair_mapping: Mapping from "source|target|edge_type" to list of L-R pairs.
+                           Use extract_lr_pairs_by_edge() to create this mapping.
         """
         self.edge_attention_scores = edge_attention_scores
         self.edge_metadata = edge_metadata
@@ -99,6 +100,7 @@ class CCCImportanceAnalyzer:
         self.edge_types = edge_types or list(ALL_EDGE_TYPES)
         self.region_labels = region_labels
         self.subject_ids = subject_ids
+        self.lr_pair_mapping = lr_pair_mapping or {}
 
     def analyze(self, top_k: int = 100) -> CCCImportanceResult:
         """
@@ -148,15 +150,12 @@ class CCCImportanceAnalyzer:
         Returns:
             DataFrame with columns: source, target, edge_type, mean_attention, std_attention
         """
-        if self.edge_metadata is None:
-            # Generate placeholder edge data if not provided
+        if self.edge_attention_scores is None:
+            if self.edge_metadata is not None:
+                return self.edge_metadata.copy()
             return self._generate_placeholder_edge_importance()
 
-        if self.edge_attention_scores is None:
-            # Return edge metadata without attention scores
-            return self.edge_metadata.copy()
-
-        # Aggregate attention scores
+        # edge_attention_scores is available — use it
         if self.edge_attention_scores.ndim == 2:
             # [n_subjects, n_edges]
             mean_attention = self.edge_attention_scores.mean(axis=0)
@@ -166,10 +165,17 @@ class CCCImportanceAnalyzer:
             mean_attention = self.edge_attention_scores
             std_attention = np.zeros_like(mean_attention)
 
-        # Merge with edge metadata
-        result = self.edge_metadata.copy()
-        result["mean_attention"] = mean_attention[:len(result)]
-        result["std_attention"] = std_attention[:len(result)]
+        if self.edge_metadata is not None:
+            result = self.edge_metadata.copy()
+            result["mean_attention"] = mean_attention[:len(result)]
+            result["std_attention"] = std_attention[:len(result)]
+        else:
+            # No metadata but have scores — create numbered edge DataFrame
+            result = pd.DataFrame({
+                "edge_idx": range(len(mean_attention)),
+                "mean_attention": mean_attention,
+                "std_attention": std_attention,
+            })
 
         return result
 
@@ -198,12 +204,18 @@ class CCCImportanceAnalyzer:
         """
         Get top-k interactions by attention weight.
 
+        If lr_pair_mapping is provided, annotates each edge with the contributing
+        ligand-receptor pairs. Note that attention is computed at the edge-type
+        level, not per-L-R pair, so these are the L-R pairs that contribute to
+        each edge rather than individual L-R attention scores.
+
         Args:
             edge_importance: DataFrame with edge importance
             top_k: Number of top interactions
 
         Returns:
-            DataFrame with top interactions ranked
+            DataFrame with top interactions ranked, including 'lr_pairs' column
+            if lr_pair_mapping was provided
         """
         if "mean_attention" not in edge_importance.columns:
             # No attention scores, return empty
@@ -212,9 +224,25 @@ class CCCImportanceAnalyzer:
         df = edge_importance.sort_values("mean_attention", ascending=False).head(top_k).copy()
         df["rank"] = range(1, len(df) + 1)
 
-        cols = ["rank", "source", "target", "edge_type", "mean_attention"]
+        # Build column list from what's actually available
+        cols = ["rank"]
+        for col in ("source", "target", "edge_type", "edge_idx"):
+            if col in df.columns:
+                cols.append(col)
+        cols.append("mean_attention")
         if "std_attention" in df.columns:
             cols.append("std_attention")
+
+        # Add L-R pair annotations if mapping is available
+        if self.lr_pair_mapping and "source" in df.columns:
+            lr_pairs_col = []
+            for _, row in df.iterrows():
+                edge_key = f"{row['source']}|{row['target']}|{row['edge_type']}"
+                lr_pairs = self.lr_pair_mapping.get(edge_key, [])
+                # Join with semicolon for CSV compatibility
+                lr_pairs_col.append(";".join(lr_pairs) if lr_pairs else "")
+            df["lr_pairs"] = lr_pairs_col
+            cols.append("lr_pairs")
 
         return df[cols].reset_index(drop=True)
 
@@ -337,29 +365,8 @@ class CCCImportanceAnalyzer:
                 save_dataframe(result.network_summary, path, fmt)
                 saved_files[f"network_summary_{fmt}"] = path
 
-        # Save raw attention as HDF5 (if available)
-        if result.raw_attention is not None:
-            h5_path = output_dir / "hgt_attention.h5"
-            self._save_hdf5(result, h5_path)
-            saved_files["hdf5"] = h5_path
-
         logger.info(f"Saved CCC importance analysis to {output_dir}")
         return saved_files
-
-    def _save_hdf5(self, result: CCCImportanceResult, path: Path) -> None:
-        """Save HGT attention to HDF5."""
-        with h5py.File(path, "w") as f:
-            f.attrs["schema_version"] = "1.0"
-
-            if result.raw_attention is not None:
-                for key, value in result.raw_attention.items():
-                    if isinstance(value, np.ndarray):
-                        f.create_dataset(
-                            key,
-                            data=value,
-                            compression="gzip",
-                            compression_opts=4,
-                        )
 
 
 def compute_ccc_importance(
