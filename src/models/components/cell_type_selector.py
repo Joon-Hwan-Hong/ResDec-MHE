@@ -33,7 +33,9 @@ class CellTypeSelector(nn.Module):
         self,
         n_cell_types: int = 31,
         temperature: float = 1.0,
-        # TODO: Temperature annealing deferred until training loop is built. Design doc specifies annealing schedule (see docs/plans/2026-01-13-cognitive-resilience-model-design-part2-training-ops.md).
+        # Note: Fixed temperature by design. Annealing deferred per design doc recommendation
+        # (Part 2, § Training Callbacks). Revisit if training diagnostics show the model
+        # struggles to differentiate cell type importance.
         init_uniform: bool = True,
     ):
         super().__init__()

@@ -169,33 +169,40 @@ class Predictor:
                     "No config found in checkpoint. Provide config explicitly."
                 )
 
-        # Build model
+        # Build model from checkpoint config
         model_cfg = config.model
-        use_bayesian = model_cfg.head.type == "bayesian"
+        try:
+            use_bayesian = model_cfg.head.type == "bayesian"
 
-        model = CognitiveResilienceModel(
-            n_genes=model_cfg.n_genes,
-            n_cell_types=model_cfg.n_cell_types,
-            d_embed=model_cfg.d_embed,
-            d_fused=model_cfg.d_fused,
-            d_cond=model_cfg.pathology_attention.d_cond,
-            n_regions=model_cfg.get("n_regions", 6),
-            n_hgt_layers=model_cfg.hgt.n_layers,
-            n_hgt_heads=model_cfg.hgt.n_heads,
-            n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
-            n_isab_layers=model_cfg.set_transformer.n_isab_layers,
-            n_inducing_points=model_cfg.set_transformer.n_inducing_points,
-            n_attention_heads=model_cfg.pathology_attention.n_heads,
-            gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
-            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
-            use_bayesian_head=use_bayesian,
-            d_head_hidden=model_cfg.head.d_hidden,
-            dropout=model_cfg.get("dropout", 0.1),
-            n_pathology_features=model_cfg.pathology_attention.get("n_pathology_features", 3),
-            n_pma_seeds=model_cfg.set_transformer.get("n_pma_seeds", 1),
-            mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") else None,
-            use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
-        )
+            model = CognitiveResilienceModel(
+                n_genes=model_cfg.n_genes,
+                n_cell_types=model_cfg.n_cell_types,
+                d_embed=model_cfg.d_embed,
+                d_fused=model_cfg.d_fused,
+                d_cond=model_cfg.pathology_attention.d_cond,
+                n_regions=model_cfg.get("n_regions", 6),
+                n_hgt_layers=model_cfg.hgt.n_layers,
+                n_hgt_heads=model_cfg.hgt.n_heads,
+                n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
+                n_isab_layers=model_cfg.set_transformer.n_isab_layers,
+                n_inducing_points=model_cfg.set_transformer.n_inducing_points,
+                n_attention_heads=model_cfg.pathology_attention.n_heads,
+                gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
+                selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
+                use_bayesian_head=use_bayesian,
+                d_head_hidden=model_cfg.head.d_hidden,
+                dropout=model_cfg.get("dropout", 0.1),
+                n_pathology_features=model_cfg.pathology_attention.get("n_pathology_features", 3),
+                n_pma_seeds=model_cfg.set_transformer.get("n_pma_seeds", 1),
+                mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") else None,
+                use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
+            )
+        except (AttributeError, KeyError) as e:
+            raise ValueError(
+                f"Checkpoint config missing required model parameter: {e}. "
+                f"Available keys: {list(model_cfg.keys()) if hasattr(model_cfg, 'keys') else 'N/A'}. "
+                f"Provide a complete config via the config= argument."
+            ) from e
 
         # Load weights
         if "state_dict" in checkpoint:
@@ -660,7 +667,7 @@ def predict_from_checkpoint(
     extract_hgt_attention: bool = False,
     extract_pma_attention: bool = False,
     extract_region_attention: bool = True,
-    extract_embeddings: bool = False,
+    extract_embeddings: bool = True,
 ) -> PredictionResult:
     """
     Convenience function: load checkpoint, run inference, save results.

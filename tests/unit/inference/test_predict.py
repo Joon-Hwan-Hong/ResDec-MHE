@@ -804,12 +804,19 @@ class TestCellTypeSelection:
 # ============================================================================
 
 
-class TestRegionalAttentionDefault:
-    """Tests for predict_from_checkpoint extract_region_attention default."""
+class TestPredictFromCheckpointDefaults:
+    """Tests for predict_from_checkpoint default parameter values."""
 
     def test_predict_from_checkpoint_defaults_region_attention_true(self):
         """predict_from_checkpoint has extract_region_attention=True by default."""
         import inspect
         sig = inspect.signature(predict_from_checkpoint)
         param = sig.parameters["extract_region_attention"]
+        assert param.default is True
+
+    def test_predict_from_checkpoint_defaults_embeddings_true(self):
+        """predict_from_checkpoint has extract_embeddings=True by default."""
+        import inspect
+        sig = inspect.signature(predict_from_checkpoint)
+        param = sig.parameters["extract_embeddings"]
         assert param.default is True

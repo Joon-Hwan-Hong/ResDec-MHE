@@ -34,7 +34,6 @@ class GeneAttentionGate(nn.Module):
         n_cell_types: int,
         n_genes: int,
         temperature: float = 1.0,
-        # TODO: Temperature annealing deferred until training loop is built. Design doc specifies annealing schedule (see docs/plans/2026-01-13-cognitive-resilience-model-design-part2-training-ops.md).
         init_uniform: bool = True,
     ):
         super().__init__()

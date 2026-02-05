@@ -190,7 +190,12 @@ class CCCImportanceAnalyzer:
         return result
 
     def _generate_placeholder_edge_importance(self) -> pd.DataFrame:
-        """Generate placeholder edge importance for all cell type pairs."""
+        """Generate placeholder edge importance for all cell type pairs.
+
+        Intentional graceful degradation: returns zero-filled DataFrame when
+        no edge attention data is available (e.g., inference ran without HGT
+        attention extraction). Keeps downstream code functional.
+        """
         rows = []
         for edge_type in self.edge_types:
             for src_idx, src_name in enumerate(self.cell_type_names):

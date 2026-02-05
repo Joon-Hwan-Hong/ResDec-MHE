@@ -412,6 +412,54 @@ class TestCellHeterogeneityPipeline:
         assert len(all_scores_df) > 0
         assert "is_high_attention" in all_scores_df.columns
 
+    def test_cell_metadata_enrichment(
+        self,
+        synthetic_pma_attention,
+        n_subjects,
+    ):
+        """cell_metadata columns are merged into high_attention_df and all_scores_df."""
+        from scripts.run_cell_heterogeneity import analyze_cell_heterogeneity
+
+        n_cell_types_actual = synthetic_pma_attention.shape[1]
+        max_cells = synthetic_pma_attention.shape[2]
+        subject_ids = [f"subj_{i}" for i in range(n_subjects)]
+
+        # Build cell_barcodes dict so rows get a "cell_barcode" column
+        cell_barcodes = {}
+        all_barcodes = []
+        for s_idx in range(n_subjects):
+            for ct_idx in range(n_cell_types_actual):
+                barcodes = [f"BC_{s_idx}_{ct_idx}_{c}" for c in range(max_cells)]
+                cell_barcodes[f"{s_idx}_{ct_idx}"] = barcodes
+                all_barcodes.extend(barcodes)
+
+        # cell_metadata indexed by barcode with an extra column
+        cell_metadata = pd.DataFrame(
+            {"donor_age": np.random.randint(60, 90, size=len(all_barcodes))},
+            index=all_barcodes,
+        )
+
+        summary_df, high_attention_df, all_scores_df = analyze_cell_heterogeneity(
+            pma_attention=synthetic_pma_attention,
+            cell_type_names=list(CELL_TYPE_ORDER),
+            subject_ids=subject_ids,
+            cell_barcodes=cell_barcodes,
+            cell_metadata=cell_metadata,
+            top_percentile=10.0,
+            min_cells_per_type=5,
+        )
+
+        # "donor_age" should appear in both output DataFrames
+        assert "donor_age" in high_attention_df.columns, (
+            f"cell_metadata column not merged into high_attention_df; cols={list(high_attention_df.columns)}"
+        )
+        assert "donor_age" in all_scores_df.columns, (
+            f"cell_metadata column not merged into all_scores_df; cols={list(all_scores_df.columns)}"
+        )
+        # At least some values should be non-NaN (barcodes matched)
+        assert high_attention_df["donor_age"].notna().any()
+        assert all_scores_df["donor_age"].notna().any()
+
     def test_pma_attention_loading(self, synthetic_pma_attention, n_cell_types):
         """Test PMA attention can be saved and loaded from HDF5."""
         from scripts.run_cell_heterogeneity import load_pma_attention
