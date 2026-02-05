@@ -40,6 +40,7 @@ def mock_experiment_dir(tmp_path):
         f.create_dataset("gene_gate", data=np.random.rand(8, 100))
         f.create_dataset("pathology_attention", data=np.random.rand(20, 4, 8))
         f.create_dataset("region_weights", data=np.random.rand(6))
+        f.create_dataset("region_pseudobulk", data=np.random.rand(6, 8, 100))
         vlen_str = h5py.special_dtype(vlen=str)
         f.create_dataset("cell_type_names", data=np.array(
             ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"], dtype=object
@@ -54,10 +55,11 @@ def mock_experiment_dir(tmp_path):
         # HGT attention as nested group
         hgt_group = f.create_group("hgt_attention")
         n_edge_types = 5
+        # PyG convention: src|edge_type|dst
         hgt_group.create_dataset("edge_type_names", data=np.array([
-            "Ast|Mic|Secreted_Signaling", "Mic|Ast|Secreted_Signaling",
-            "Oli|Exc|ECM_Receptor", "Exc|Inh|Cell_Cell_Contact",
-            "Ast|Oli|Secreted_Signaling",
+            "Ast|Secreted_Signaling|Mic", "Mic|Secreted_Signaling|Ast",
+            "Oli|ECM_Receptor|Exc", "Exc|Cell_Cell_Contact|Inh",
+            "Ast|Secreted_Signaling|Oli",
         ], dtype=object), dtype=vlen_str)
         agg_group = hgt_group.create_group("aggregated")
         agg_group.create_dataset("mean_by_edge_type", data=np.random.rand(n_edge_types, 4))
@@ -72,7 +74,10 @@ def mock_metadata(tmp_path):
     metadata = pd.DataFrame({
         "subject_id": [f"ROSMAP_{i:03d}" for i in range(20)],
         "pathology": np.random.rand(20) * 10,
+        "gpath": np.random.rand(20) * 10,
+        "cogn_global": np.random.randn(20) * 2 + 5,
         "age": np.random.randint(60, 95, 20),
+        "cell_count": np.random.randint(100, 5000, 20),
     })
     path = tmp_path / "metadata.csv"
     metadata.to_csv(path, index=False)
@@ -494,3 +499,185 @@ class TestRunAnalysisEdgeCases:
 
         # Should handle missing attention gracefully
         assert "Traceback" not in result.stderr
+
+
+# =============================================================================
+# New Tests for Phase 6 Round 3
+# =============================================================================
+
+
+class TestAlignArrayBySubjectId:
+    """Test _align_array_by_subject_id helper."""
+
+    def test_basic_alignment(self):
+        """Test basic subject-aligned extraction."""
+        from scripts.run_analysis import _align_array_by_subject_id
+
+        source_df = pd.DataFrame({
+            "subject_id": ["S1", "S2", "S3"],
+            "gpath": [1.0, 2.0, 3.0],
+        })
+        target_ids = ["S3", "S1", "S2"]
+        result = _align_array_by_subject_id(source_df, target_ids, "gpath")
+        np.testing.assert_array_equal(result, [3.0, 1.0, 2.0])
+
+    def test_missing_subjects_get_nan(self):
+        """Missing subjects get NaN values."""
+        from scripts.run_analysis import _align_array_by_subject_id
+
+        source_df = pd.DataFrame({
+            "subject_id": ["S1", "S2"],
+            "gpath": [1.0, 2.0],
+        })
+        target_ids = ["S1", "S3", "S2"]
+        result = _align_array_by_subject_id(source_df, target_ids, "gpath")
+        assert result[0] == 1.0
+        assert np.isnan(result[1])
+        assert result[2] == 2.0
+
+    def test_column_not_found_returns_none(self):
+        """Returns None when column doesn't exist."""
+        from scripts.run_analysis import _align_array_by_subject_id
+
+        source_df = pd.DataFrame({"subject_id": ["S1"], "other": [1.0]})
+        result = _align_array_by_subject_id(source_df, ["S1"], "nonexistent")
+        assert result is None
+
+    def test_no_subject_id_column_returns_none(self):
+        """Returns None when source_id_column doesn't exist."""
+        from scripts.run_analysis import _align_array_by_subject_id
+
+        source_df = pd.DataFrame({"id": ["S1"], "gpath": [1.0]})
+        result = _align_array_by_subject_id(source_df, ["S1"], "gpath")
+        assert result is None
+
+
+class TestResilienceWithAblation:
+    """Test run_resilience_signature with ablation flags."""
+
+    def test_ablation_params_accepted(self, tmp_path):
+        """Test run_resilience_signature accepts ablation parameters."""
+        from scripts.run_analysis import run_resilience_signature
+
+        np.random.seed(42)
+        n_subjects = 30
+        n_cell_types = 8
+
+        attention = np.random.rand(n_subjects, 4, n_cell_types)
+        pathology_scores = np.random.rand(n_subjects) * 10
+        cognition_scores = np.random.rand(n_subjects) * 100
+        cell_type_names = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
+
+        run_resilience_signature(
+            attention=attention,
+            pathology_scores=pathology_scores,
+            cognition_scores=cognition_scores,
+            cell_type_names=cell_type_names,
+            n_permutations=10,
+            run_ablation=True,
+            ablation_method="zero_embedding",
+            output_dir=tmp_path,
+            formats=["csv"],
+        )
+
+        assert (tmp_path / "resilience_signature.csv").exists()
+
+
+class TestAblationCLIFlags:
+    """Test ablation CLI flags are accepted by argparse."""
+
+    def test_ablation_flags_accepted(self, mock_experiment_dir, mock_metadata):
+        """Test --run-ablation and --ablation-method are accepted."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/run_analysis.py",
+                "--experiment-dir", str(mock_experiment_dir),
+                "--metadata-path", str(mock_metadata),
+                "--skip-cell-type", "--skip-gene", "--skip-ccc",
+                "--skip-regional", "--skip-uncertainty", "--skip-embedding",
+                "--run-ablation",
+                "--ablation-method", "zero_embedding",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert "Traceback" not in result.stderr
+
+
+class TestCognitionFallback:
+    """Test resilience analysis cognition fallback to metadata."""
+
+    def test_resilience_uses_metadata_cognition(self, tmp_path):
+        """Test resilience runs using cogn_global from metadata when predictions lack actual."""
+        # Create predictions WITHOUT "actual" column
+        predictions = pd.DataFrame({
+            "subject_id": [f"S{i}" for i in range(30)],
+            "predicted_mean": np.random.randn(30) * 2 + 5,
+            "predicted_std": np.abs(np.random.randn(30)) * 0.5 + 0.3,
+        })
+        predictions.to_parquet(tmp_path / "predictions.parquet")
+
+        # Create metadata WITH cognition column
+        metadata = pd.DataFrame({
+            "subject_id": [f"S{i}" for i in range(30)],
+            "cogn_global": np.random.randn(30) * 2 + 5,
+            "gpath": np.random.rand(30) * 10,
+        })
+        metadata.to_csv(tmp_path / "metadata.csv", index=False)
+
+        # Create attention weights
+        with h5py.File(tmp_path / "attention.h5", "w") as f:
+            f.attrs["schema_version"] = "2.0"
+            f.create_dataset("gene_gate", data=np.random.rand(8, 50))
+            f.create_dataset("pathology_attention", data=np.random.rand(30, 4, 8))
+            vlen_str = h5py.special_dtype(vlen=str)
+            f.create_dataset("subject_ids", data=np.array(
+                [f"S{i}" for i in range(30)], dtype=object
+            ), dtype=vlen_str)
+            f.create_dataset("cell_type_names", data=np.array(
+                ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"], dtype=object
+            ), dtype=vlen_str)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/run_analysis.py",
+                "--predictions-path", str(tmp_path / "predictions.parquet"),
+                "--attention-path", str(tmp_path / "attention.h5"),
+                "--metadata-path", str(tmp_path / "metadata.csv"),
+                "--output-dir", str(tmp_path / "output"),
+                "--skip-cell-type", "--skip-gene", "--skip-ccc",
+                "--skip-regional", "--skip-uncertainty", "--skip-embedding",
+                "--n-permutations", "10",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert "Traceback" not in result.stderr
+        assert "cogn_global" in result.stderr
+
+
+class TestRegionPseudobulkRoundtrip:
+    """Test region_pseudobulk save/load roundtrip."""
+
+    def test_region_pseudobulk_saved_to_hdf5(self, tmp_path):
+        """region_pseudobulk is saved and loadable from HDF5."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        gene_gate = np.random.rand(8, 100).astype(np.float32)
+        region_pseudobulk = np.random.rand(6, 8, 100).astype(np.float32)
+
+        path = tmp_path / "attention.h5"
+        save_attention_weights(
+            path=path,
+            gene_gate=gene_gate,
+            region_pseudobulk=region_pseudobulk,
+        )
+
+        loaded = load_attention_weights(path)
+        assert "region_pseudobulk" in loaded
+        np.testing.assert_array_almost_equal(
+            loaded["region_pseudobulk"], region_pseudobulk
+        )

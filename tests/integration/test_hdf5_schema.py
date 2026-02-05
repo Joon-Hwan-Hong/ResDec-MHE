@@ -355,6 +355,15 @@ class TestSaveLoadRoundTrip:
             assert scores.shape[0] == len(synthetic_hgt_attention)
             assert scores.shape[1] == len(names)
 
+            # Verify edge name parsing follows PyG convention (src|edge_type|dst)
+            # Fixture uses ("Microglia", "Secreted_Signaling", "Astrocyte") etc.
+            first_name = names[0]  # e.g. "Microglia|Secreted_Signaling|Astrocyte"
+            parts = first_name.split("|")
+            first_row = metadata_df.iloc[0]
+            assert first_row["source"] == parts[0]      # source = first part
+            assert first_row["edge_type"] == parts[1]    # edge_type = middle part
+            assert first_row["target"] == parts[2]       # target = last part
+
     def test_pma_roundtrip_with_unpack(self):
         """Save PMA via io.save_attention_weights, load, then unpack_pma_attention."""
         from src.utils.io import save_attention_weights, load_attention_weights, unpack_pma_attention
@@ -423,3 +432,25 @@ class TestSaveLoadRoundTrip:
             loaded = load_attention_weights(path)
             assert "gene_gate" in loaded
             assert loaded["gene_gate"].shape == (8, 100)
+
+    def test_region_pseudobulk_roundtrip(self):
+        """region_pseudobulk survives save/load round-trip."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "region_pb.h5"
+            gene_gate = np.random.rand(8, 100).astype(np.float32)
+            region_pb = np.random.rand(6, 8, 100).astype(np.float32)
+
+            save_attention_weights(
+                path=path,
+                gene_gate=gene_gate,
+                region_pseudobulk=region_pb,
+            )
+
+            loaded = load_attention_weights(path)
+            assert "region_pseudobulk" in loaded
+            np.testing.assert_array_almost_equal(
+                loaded["region_pseudobulk"], region_pb
+            )
+            assert loaded["region_pseudobulk"].shape == (6, 8, 100)

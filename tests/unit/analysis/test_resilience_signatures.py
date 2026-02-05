@@ -651,7 +651,9 @@ class TestAblationStudy:
         )
         expected_cols = {
             "cell_type", "method", "importance", "importance_std",
-            "importance_high_pathology", "importance_low_pathology", "rank"
+            "importance_high_pathology", "importance_low_pathology",
+            "importance_low_tertile", "importance_med_tertile", "importance_high_tertile",
+            "rank"
         }
         assert set(result.ablation_results.columns) == expected_cols
         assert (result.ablation_results["method"] == "zero_embedding").all()
@@ -665,7 +667,9 @@ class TestAblationStudy:
         )
         expected_cols = {
             "cell_type", "method", "importance", "importance_std",
-            "importance_high_pathology", "importance_low_pathology", "rank"
+            "importance_high_pathology", "importance_low_pathology",
+            "importance_low_tertile", "importance_med_tertile", "importance_high_tertile",
+            "rank"
         }
         assert set(result.ablation_results.columns) == expected_cols
         assert (result.ablation_results["method"] == "node_removal").all()

@@ -18,7 +18,7 @@ Workflow:
 5. Save results for downstream analysis (e.g., DEG analysis)
 
 Outputs saved to: {experiment_dir}/analysis/ or --output-dir
-- cell_heterogeneity_summary.{parquet,csv}: Per cell-type heterogeneity statistics
+- cell_attention_summary.{parquet,csv}: Per cell-type heterogeneity statistics
 - high_attention_cells.{parquet,csv}: Cell barcodes with high attention
 - cell_attention_scores.{parquet,csv}: All cells with their attention scores
 """
@@ -394,11 +394,37 @@ def main():
 
     # Save results
     for fmt in args.formats:
-        save_dataframe(summary_df, output_dir / f"cell_heterogeneity_summary.{fmt}", fmt)
+        save_dataframe(summary_df, output_dir / f"cell_attention_summary.{fmt}", fmt)
         save_dataframe(high_attention_df, output_dir / f"high_attention_cells.{fmt}", fmt)
         # All scores can be large, only save parquet by default
         if fmt == "parquet" or len(all_scores_df) < 100000:
             save_dataframe(all_scores_df, output_dir / f"cell_attention_scores.{fmt}", fmt)
+
+    # Save raw attention to HDF5 (spec: cell_attention.h5)
+    h5_path = output_dir / "cell_attention.h5"
+    with h5py.File(h5_path, "w") as f:
+        f.attrs["schema_version"] = "2.0"
+
+        # Save the 3D PMA attention [n_subjects, n_cell_types, max_cells]
+        f.create_dataset(
+            "pma_attention",
+            data=attention_data["pma_attention"],
+            compression="gzip",
+            compression_opts=4,
+        )
+
+        n_subjects, n_cell_types_actual, max_cells = attention_data["pma_attention"].shape
+        f.attrs["n_subjects"] = n_subjects
+        f.attrs["n_cell_types"] = n_cell_types_actual
+        f.attrs["max_cells"] = max_cells
+
+        # Save identifiers
+        dt = h5py.special_dtype(vlen=str)
+        f.create_dataset("cell_type_names", data=cell_type_names, dtype=dt)
+        if subject_ids:
+            f.create_dataset("subject_ids", data=subject_ids, dtype=dt)
+
+    logger.info(f"Saved cell attention HDF5 to {h5_path}")
 
     # Log summary
     logger.info(f"\nCell Heterogeneity Summary:")

@@ -65,6 +65,8 @@ class PredictionResult:
     hgt_attention: list[dict] | None = None
     pma_attention: list[np.ndarray] | None = None
     region_weights: np.ndarray | None = None
+    region_pseudobulk_mean: np.ndarray | None = None  # [n_regions, n_cell_types, n_genes]
+    gene_names: list[str] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -350,6 +352,9 @@ class Predictor:
         if extract_pma_attention:
             all_pma_attention = [[] for _ in range(len(CELL_TYPE_ORDER))]
 
+        # Region pseudobulk accumulation for regional analysis
+        all_region_pseudobulk = []
+
         iterator: Iterator = dataloader
         if show_progress:
             iterator = tqdm(dataloader, desc="Predicting", unit="batch")
@@ -375,6 +380,13 @@ class Predictor:
                 for ct_idx, ct_attn in enumerate(result["pma_attention"]):
                     all_pma_attention[ct_idx].append(ct_attn)
 
+            # Accumulate region pseudobulk (input data, for regional analysis)
+            if "region_pseudobulk" in batch:
+                rpb = batch["region_pseudobulk"]
+                if isinstance(rpb, torch.Tensor):
+                    rpb = rpb.cpu().numpy()
+                all_region_pseudobulk.append(rpb)
+
         # Concatenate results
         mean = np.concatenate(all_mean, axis=0)
         attention_weights = np.concatenate(all_attention, axis=0)
@@ -390,12 +402,24 @@ class Predictor:
         region_importance = self.model.get_region_importance()
         region_weights = np.array(list(region_importance.values()), dtype=np.float32)
 
+        # Extract gene names from dataset if available
+        gene_names = None
+        dataset = getattr(dataloader, "dataset", None)
+        if dataset is not None and hasattr(dataset, "get_gene_names"):
+            gene_names = dataset.get_gene_names()
+
         # Concatenate PMA attention per cell type
         pma_attention = None
         if extract_pma_attention and all_pma_attention:
             pma_attention = [
                 np.concatenate(ct_batches, axis=0) for ct_batches in all_pma_attention
             ]
+
+        # Compute mean region_pseudobulk across subjects for regional analysis
+        region_pseudobulk_mean = None
+        if all_region_pseudobulk:
+            stacked = np.concatenate(all_region_pseudobulk, axis=0)  # [N, n_regions, n_cell_types, n_genes]
+            region_pseudobulk_mean = stacked.mean(axis=0)  # [n_regions, n_cell_types, n_genes]
 
         # Build metadata
         metadata = {
@@ -423,6 +447,8 @@ class Predictor:
             hgt_attention=all_hgt_attention,
             pma_attention=pma_attention,
             region_weights=region_weights,
+            region_pseudobulk_mean=region_pseudobulk_mean,
+            gene_names=gene_names,
             metadata=metadata,
         )
 
@@ -521,10 +547,12 @@ class Predictor:
             gene_gate=results.gene_gate_weights,
             pathology_attention=results.attention_weights,
             region_weights=results.region_weights,
+            region_pseudobulk=results.region_pseudobulk_mean,
             hgt_attention=hgt_agg,
             pma_attention=results.pma_attention,
             subject_ids=results.subject_ids,
             cell_type_names=list(CELL_TYPE_ORDER),
+            gene_names=results.gene_names,
             metadata={
                 "n_subjects": results.n_subjects,
                 "checkpoint_path": results.metadata.get("checkpoint_path", ""),

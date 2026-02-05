@@ -450,12 +450,13 @@ class TestCCCWithHGTData:
         n_heads = 4
 
         # Create mock HGT attention dict (output format of aggregate_hgt_attention)
+        # PyG convention: src|edge_type|dst
         edge_type_names = [
-            "Ast|Mic|Secreted_Signaling",
-            "Mic|Ast|Secreted_Signaling",
-            "Oli|Exc|ECM_Receptor",
-            "Exc|Inh|Cell_Cell_Contact",
-            "Ast|Oli|Secreted_Signaling",
+            "Ast|Secreted_Signaling|Mic",
+            "Mic|Secreted_Signaling|Ast",
+            "Oli|ECM_Receptor|Exc",
+            "Exc|Cell_Cell_Contact|Inh",
+            "Ast|Secreted_Signaling|Oli",
         ]
         hgt_dict = {
             "edge_type_names": edge_type_names,
@@ -482,6 +483,12 @@ class TestCCCWithHGTData:
             assert scores is not None
             assert edge_metadata is not None
             assert scores.shape == (n_samples, n_edge_types)
+
+            # Verify PyG convention parsing (src|edge_type|dst)
+            # First edge type: "Ast|Secreted_Signaling|Mic"
+            assert edge_metadata.iloc[0]["source"] == "Ast"
+            assert edge_metadata.iloc[0]["edge_type"] == "Secreted_Signaling"
+            assert edge_metadata.iloc[0]["target"] == "Mic"
 
             # Pass to CCC analyzer
             analyzer = CCCImportanceAnalyzer(

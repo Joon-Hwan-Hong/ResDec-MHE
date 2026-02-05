@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from src.utils.io import load_dataframe, load_attention_weights, unpack_hgt_for_ccc, unpack_pma_attention
+from src.utils.io import load_dataframe, load_attention_weights, unpack_hgt_for_ccc
 from src.analysis import (
     CellTypeImportanceAnalyzer,
     GeneImportanceAnalyzer,
@@ -162,6 +162,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable FDR correction (report uncorrected p-values)",
     )
+    param_group.add_argument(
+        "--run-ablation",
+        action="store_true",
+        help="Run ablation study as part of resilience signature analysis",
+    )
+    param_group.add_argument(
+        "--ablation-method",
+        type=str,
+        default="both",
+        choices=["both", "zero_embedding", "node_removal"],
+        help="Ablation method for resilience analysis (default: both)",
+    )
 
     # Output formats
     parser.add_argument(
@@ -187,6 +199,47 @@ def load_predictions(path: Path) -> pd.DataFrame:
     return df
 
 
+
+
+def _align_array_by_subject_id(
+    source_df: pd.DataFrame,
+    target_subject_ids: list[str],
+    column: str,
+    source_id_column: str = "subject_id",
+) -> np.ndarray | None:
+    """Align a column from source_df to match target_subject_ids order.
+
+    Args:
+        source_df: DataFrame containing the data column and subject ID column.
+        target_subject_ids: Subject IDs in the desired order (from attention weights).
+        column: Data column to extract and align.
+        source_id_column: Column name for subject ID in source_df.
+
+    Returns:
+        np.ndarray aligned to target_subject_ids order, or None if column/ID not found.
+    """
+    if column not in source_df.columns:
+        return None
+    if source_id_column not in source_df.columns:
+        return None
+
+    meta_indexed = source_df.set_index(source_id_column)
+    aligned = []
+    n_missing = 0
+    for sid in target_subject_ids:
+        if sid in meta_indexed.index:
+            aligned.append(meta_indexed.loc[sid, column])
+        else:
+            aligned.append(np.nan)
+            n_missing += 1
+
+    if n_missing > 0:
+        logger.warning(
+            f"  {n_missing}/{len(target_subject_ids)} subjects missing from "
+            f"metadata for column '{column}'"
+        )
+
+    return np.array(aligned, dtype=float)
 
 
 def run_cell_type_importance(
@@ -244,6 +297,8 @@ def run_ccc_importance(
     cell_type_names: list[str] | None = None,
     edge_types: list[str] | None = None,
     lr_pair_mapping: dict[str, list[str]] | None = None,
+    region_labels: np.ndarray | None = None,
+    subject_ids: list[str] | None = None,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -256,6 +311,8 @@ def run_ccc_importance(
         cell_type_names=cell_type_names,
         edge_types=edge_types,
         lr_pair_mapping=lr_pair_mapping,
+        region_labels=region_labels,
+        subject_ids=subject_ids,
     )
 
     result = analyzer.analyze()
@@ -273,6 +330,10 @@ def run_resilience_signature(
     n_permutations: int = 1000,
     random_seed: int | None = None,
     apply_fdr_correction: bool = True,
+    run_ablation: bool = False,
+    ablation_method: str = "both",
+    region_labels: np.ndarray | None = None,
+    subject_ids: list[str] | None = None,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -284,12 +345,16 @@ def run_resilience_signature(
         pathology_scores=pathology_scores,
         cognition_scores=cognition_scores,
         cell_type_names=cell_type_names,
+        region_labels=region_labels,
+        subject_ids=subject_ids,
     )
 
     result = analyzer.analyze(
         n_permutations=n_permutations,
         random_seed=random_seed,
         apply_fdr_correction=apply_fdr_correction,
+        run_ablation=run_ablation,
+        ablation_method=ablation_method,
     )
 
     if output_dir:
@@ -478,7 +543,7 @@ def main():
     gene_gate = attention_weights.get("gene_gate")
     hgt_raw = attention_weights.get("hgt_attention")
     region_weights = attention_weights.get("region_weights")
-    pma_raw = attention_weights.get("pma_attention")
+    region_pseudobulk_raw = attention_weights.get("region_pseudobulk")
     embeddings = attention_weights.get("embeddings")
 
     # Unpack HGT for CCC analyzer
@@ -488,12 +553,11 @@ def main():
     if hgt_raw is not None and isinstance(hgt_raw, dict):
         edge_attention_scores, hgt_edge_metadata, edge_type_names = unpack_hgt_for_ccc(hgt_raw)
 
-    # Unpack PMA for cell attention analyzer
-    pma_attention_3d = None
-    if pma_raw is not None and isinstance(pma_raw, dict):
-        pma_attention_3d = unpack_pma_attention(pma_raw, cell_type_names)
-    elif pma_raw is not None and isinstance(pma_raw, np.ndarray):
-        pma_attention_3d = pma_raw  # Already flat (legacy format)
+    # Note: PMA attention is NOT unpacked here. Cell-level heterogeneity analysis
+    # should use scripts/run_cell_heterogeneity.py which handles the per-cell-type
+    # PMA structure natively. CellAttentionAnalyzer expects [n_subjects, k_inducing,
+    # n_cells] but PMA data from HDF5 is per-cell-type [n_subjects, n_cell_types,
+    # max_cells] — a semantic mismatch.
 
     # Load edge metadata for CCC analysis if available
     edge_metadata = None
@@ -502,10 +566,22 @@ def main():
         edge_metadata = pd.read_parquet(edge_metadata_path)
         logger.info(f"Loaded edge metadata with {len(edge_metadata)} edges")
 
-    # Source region labels from metadata
+    # Source region labels from metadata, aligned to subject order
     region_labels = None
     if metadata_df is not None and "region" in metadata_df.columns:
-        region_labels = metadata_df["region"].values
+        if subject_ids is not None and "subject_id" in metadata_df.columns:
+            meta_indexed = metadata_df.set_index("subject_id")
+            aligned_regions = []
+            for sid in subject_ids:
+                if sid in meta_indexed.index:
+                    aligned_regions.append(meta_indexed.loc[sid, "region"])
+                else:
+                    aligned_regions.append(None)
+            region_labels = np.array(aligned_regions)
+            logger.info(f"Aligned region labels to {len(subject_ids)} subjects")
+        else:
+            region_labels = metadata_df["region"].values
+            logger.warning("Region labels taken without alignment — metadata may not match subject order")
 
     # Build LR-pair mapping from LIANA results if provided
     lr_pair_mapping = None
@@ -569,6 +645,8 @@ def main():
             cell_type_names=cell_type_names,
             edge_types=edge_type_names,
             lr_pair_mapping=lr_pair_mapping,
+            region_labels=region_labels,
+            subject_ids=subject_ids,
             output_dir=output_dir,
             formats=args.formats,
         )
@@ -577,8 +655,28 @@ def main():
     # Resilience signatures (requires pathology and cognition data)
     # Runs separately for each available pathology measure (gpath, amylsqrt, tangsqrt)
     if not args.skip_resilience and pathology_attention is not None:
+        # Step 1: Acquire cognition scores (try multiple sources)
+        cognition_scores = None
+        cognition_source = None
+
+        # Source A: predictions_df "actual" column
         if predictions_df is not None and "actual" in predictions_df.columns:
-            # Check for pathology columns in predictions_df first, then metadata_df
+            cognition_scores = predictions_df["actual"].values
+            cognition_source = "predictions_df['actual']"
+
+        # Source B: metadata_df cognition columns (aligned by subject_id)
+        if cognition_scores is None and metadata_df is not None and subject_ids is not None:
+            for cog_col in ["cogn_global", "cognition", "cognitive_score"]:
+                aligned = _align_array_by_subject_id(metadata_df, subject_ids, cog_col)
+                if aligned is not None:
+                    cognition_scores = aligned
+                    cognition_source = f"metadata_df['{cog_col}']"
+                    break
+
+        if cognition_scores is not None:
+            logger.info(f"  Using cognition from {cognition_source}")
+
+            # Step 2: Acquire pathology scores
             pathology_columns = ["gpath", "amylsqrt", "tangsqrt"]
             available_pathology = []
 
@@ -586,12 +684,23 @@ def main():
                 if predictions_df is not None and col in predictions_df.columns:
                     available_pathology.append((col, predictions_df[col].values))
                 elif metadata_df is not None and col in metadata_df.columns:
-                    available_pathology.append((col, metadata_df[col].values))
+                    if subject_ids is not None:
+                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col)
+                        if aligned is not None:
+                            available_pathology.append((col, aligned))
+                    else:
+                        available_pathology.append((col, metadata_df[col].values))
+                        logger.warning(f"Pathology '{col}' taken without alignment — no subject_ids")
 
             # Also check for legacy "pathology" column
             if not available_pathology:
                 if metadata_df is not None and "pathology" in metadata_df.columns:
-                    available_pathology.append(("pathology", metadata_df["pathology"].values))
+                    if subject_ids is not None:
+                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, "pathology")
+                        if aligned is not None:
+                            available_pathology.append(("pathology", aligned))
+                    else:
+                        available_pathology.append(("pathology", metadata_df["pathology"].values))
                 elif predictions_df is not None and "pathology" in predictions_df.columns:
                     available_pathology.append(("pathology", predictions_df["pathology"].values))
 
@@ -601,11 +710,15 @@ def main():
                     resilience_output_dir = output_dir / f"resilience_{pathology_name}"
                     run_resilience_signature(
                         attention=pathology_attention,
-                        cognition_scores=predictions_df["actual"].values,
+                        cognition_scores=cognition_scores,
                         pathology_scores=pathology_scores,
                         cell_type_names=cell_type_names,
                         n_permutations=args.n_permutations,
                         apply_fdr_correction=not args.no_fdr,
+                        run_ablation=args.run_ablation,
+                        ablation_method=args.ablation_method,
+                        region_labels=region_labels,
+                        subject_ids=subject_ids,
                         output_dir=resilience_output_dir,
                         formats=args.formats,
                     )
@@ -613,13 +726,27 @@ def main():
             else:
                 logger.warning("Skipping resilience signature: no pathology columns found (gpath, amylsqrt, tangsqrt, or pathology)")
         else:
-            logger.warning("Skipping resilience signature: no actual cognition scores")
+            logger.warning(
+                "Skipping resilience signature: no cognition scores found "
+                "(checked predictions_df['actual'], metadata cogn_global/cognition/cognitive_score)"
+            )
 
     # Regional analysis
     if not args.skip_regional and region_weights is not None:
+        # Convert region_pseudobulk array to dict format for RegionalAnalyzer
+        region_pseudobulk_dict = None
+        if region_pseudobulk_raw is not None:
+            region_names_list = list(REGION_ORDER)
+            region_pseudobulk_dict = {}
+            for i, rname in enumerate(region_names_list):
+                if i < region_pseudobulk_raw.shape[0]:
+                    region_pseudobulk_dict[rname] = region_pseudobulk_raw[i]
+            logger.info(f"Loaded region pseudobulk for {len(region_pseudobulk_dict)} regions")
+
         run_regional_analysis(
             region_weights=region_weights,
             gene_gate_weights=gene_gate,
+            region_pseudobulk=region_pseudobulk_dict,
             region_names=list(REGION_ORDER),
             cell_type_names=cell_type_names,
             gene_names=gene_names,
@@ -640,7 +767,25 @@ def main():
             cov_cols = [c for c in predictions_df.columns
                        if c not in ["subject_id", "predicted_mean", "predicted_std", "actual"]]
             if cov_cols:
-                covariates = predictions_df[cov_cols]
+                covariates = predictions_df[cov_cols].copy()
+
+            # Merge metadata numeric columns (aligned by subject_id) for richer correlates
+            if metadata_df is not None and subject_ids is not None:
+                exclude_cols = {"subject_id", "region"}
+                if covariates is not None:
+                    exclude_cols.update(covariates.columns)
+
+                numeric_cols = metadata_df.select_dtypes(include=[np.number]).columns
+                meta_cov_cols = [c for c in numeric_cols if c not in exclude_cols]
+
+                if meta_cov_cols:
+                    for col in meta_cov_cols:
+                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col)
+                        if aligned is not None:
+                            if covariates is None:
+                                covariates = pd.DataFrame(index=range(len(subject_ids)))
+                            covariates[col] = aligned
+                    logger.info(f"  Added {len(meta_cov_cols)} metadata covariates: {meta_cov_cols}")
 
             run_uncertainty_analysis(
                 predicted_mean=predictions_df["predicted_mean"].values,
@@ -655,25 +800,8 @@ def main():
         else:
             logger.warning("Skipping uncertainty analysis: no predicted_std in predictions")
 
-    # Cell attention analysis (requires PMA attention)
-    if not args.skip_cell_attention and pma_attention_3d is not None:
-        # Get cell metadata from attention weights if available
-        cell_ids = metadata.get("cell_ids")
-        if cell_ids is not None:
-            cell_ids = list(cell_ids)
-        cell_types = metadata.get("cell_types")
-        if cell_types is not None:
-            cell_types = list(cell_types)
-
-        run_cell_attention(
-            pma_attention=pma_attention_3d,
-            cell_ids=cell_ids,
-            cell_types=cell_types,
-            subject_ids=subject_ids,
-            output_dir=output_dir,
-            formats=args.formats,
-        )
-        analyses_run += 1
+    # Cell attention analysis: skipped here — use scripts/run_cell_heterogeneity.py
+    # for per-cell-type PMA analysis (see note in PMA section above).
 
     # Embedding analysis (requires subject embeddings)
     if not args.skip_embedding and embeddings is not None:

@@ -150,7 +150,8 @@ class TestPredictionResultDataclass:
         expected_fields = {
             "subject_ids", "mean", "std", "actual", "pathology",
             "attention_weights", "gene_gate_weights", "hgt_attention",
-            "pma_attention", "region_weights", "metadata"
+            "pma_attention", "region_weights", "region_pseudobulk_mean",
+            "gene_names", "metadata"
         }
         actual_fields = {f.name for f in fields(sample_prediction_result)}
         assert expected_fields == actual_fields

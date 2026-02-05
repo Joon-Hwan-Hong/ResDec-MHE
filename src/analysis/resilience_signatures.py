@@ -157,6 +157,13 @@ class ResilienceSignatureAnalyzer:
         )
         self.high_pathology_mask = self.pathology_scores >= pathology_threshold
 
+        # Pathology tertile masks (low/medium/high)
+        path_33 = np.percentile(self.pathology_scores, 33.3)
+        path_67 = np.percentile(self.pathology_scores, 66.7)
+        self.pathology_low_mask = self.pathology_scores < path_33
+        self.pathology_med_mask = (self.pathology_scores >= path_33) & (self.pathology_scores < path_67)
+        self.pathology_high_mask = self.pathology_scores >= path_67
+
         # Within high pathology subjects, split by cognition
         high_path_indices = np.where(self.high_pathology_mask)[0]
         high_path_cognition = self.cognition_scores[high_path_indices]
@@ -182,6 +189,10 @@ class ResilienceSignatureAnalyzer:
         logger.info(
             f"Identified {self.n_resilient} resilient and {self.n_vulnerable} vulnerable "
             f"subjects from {self.high_pathology_mask.sum()} high-pathology subjects"
+        )
+        logger.info(
+            f"Pathology tertiles: low={self.pathology_low_mask.sum()}, "
+            f"medium={self.pathology_med_mask.sum()}, high={self.pathology_high_mask.sum()}"
         )
 
     def analyze(
@@ -628,6 +639,9 @@ class ResilienceSignatureAnalyzer:
                     "importance_std": row["importance_std"],
                     "importance_high_pathology": row.get("importance_high_pathology", np.nan),
                     "importance_low_pathology": row.get("importance_low_pathology", np.nan),
+                    "importance_low_tertile": row.get("importance_low_tertile", np.nan),
+                    "importance_med_tertile": row.get("importance_med_tertile", np.nan),
+                    "importance_high_tertile": row.get("importance_high_tertile", np.nan),
                     "rank": row["rank"],
                 })
 
@@ -700,23 +714,8 @@ class ResilienceSignatureAnalyzer:
         mean_importance = importances.mean(axis=1)
         std_importance = importances.std(axis=1)
 
-        # Stratified by pathology
-        importance_high_path = importances[:, self.high_pathology_mask].mean(axis=1) if self.high_pathology_mask.any() else np.zeros(n_cell_types)
-        importance_low_path = importances[:, ~self.high_pathology_mask].mean(axis=1) if (~self.high_pathology_mask).any() else np.zeros(n_cell_types)
-
-        # Create DataFrame
-        df = pd.DataFrame({
-            "cell_type": self.cell_type_names,
-            "importance": mean_importance,
-            "importance_std": std_importance,
-            "importance_high_pathology": importance_high_path,
-            "importance_low_pathology": importance_low_path,
-        })
-
-        # Rank by importance (higher = more important)
-        df = df.sort_values("importance", ascending=False).reset_index(drop=True)
-        df["rank"] = range(1, len(df) + 1)
-
+        # Stratified by pathology tertiles
+        df = self._build_ablation_dataframe(importances, mean_importance, std_importance, n_cell_types)
         return df
 
     def _ablation_node_removal(self) -> pd.DataFrame:
@@ -786,23 +785,62 @@ class ResilienceSignatureAnalyzer:
         mean_importance = importances.mean(axis=1)
         std_importance = importances.std(axis=1)
 
-        # Stratified by pathology
-        importance_high_path = importances[:, self.high_pathology_mask].mean(axis=1) if self.high_pathology_mask.any() else np.zeros(n_cell_types)
-        importance_low_path = importances[:, ~self.high_pathology_mask].mean(axis=1) if (~self.high_pathology_mask).any() else np.zeros(n_cell_types)
+        # Stratified by pathology tertiles
+        df = self._build_ablation_dataframe(importances, mean_importance, std_importance, n_cell_types)
+        return df
 
-        # Create DataFrame
+    def _build_ablation_dataframe(
+        self,
+        importances: np.ndarray,
+        mean_importance: np.ndarray,
+        std_importance: np.ndarray,
+        n_cell_types: int,
+    ) -> pd.DataFrame:
+        """Build ablation result DataFrame with pathology tertile stratification.
+
+        Args:
+            importances: [n_cell_types, n_subjects] raw importance scores
+            mean_importance: [n_cell_types] mean across subjects
+            std_importance: [n_cell_types] std across subjects
+            n_cell_types: number of cell types
+        """
+        # Binary stratification (backward compat)
+        importance_high_path = (
+            importances[:, self.high_pathology_mask].mean(axis=1)
+            if self.high_pathology_mask.any() else np.zeros(n_cell_types)
+        )
+        importance_low_path = (
+            importances[:, ~self.high_pathology_mask].mean(axis=1)
+            if (~self.high_pathology_mask).any() else np.zeros(n_cell_types)
+        )
+
+        # Tertile stratification (low/medium/high)
+        importance_low_tertile = (
+            importances[:, self.pathology_low_mask].mean(axis=1)
+            if self.pathology_low_mask.any() else np.zeros(n_cell_types)
+        )
+        importance_med_tertile = (
+            importances[:, self.pathology_med_mask].mean(axis=1)
+            if self.pathology_med_mask.any() else np.zeros(n_cell_types)
+        )
+        importance_high_tertile = (
+            importances[:, self.pathology_high_mask].mean(axis=1)
+            if self.pathology_high_mask.any() else np.zeros(n_cell_types)
+        )
+
         df = pd.DataFrame({
             "cell_type": self.cell_type_names,
             "importance": mean_importance,
             "importance_std": std_importance,
             "importance_high_pathology": importance_high_path,
             "importance_low_pathology": importance_low_path,
+            "importance_low_tertile": importance_low_tertile,
+            "importance_med_tertile": importance_med_tertile,
+            "importance_high_tertile": importance_high_tertile,
         })
 
-        # Rank by importance
         df = df.sort_values("importance", ascending=False).reset_index(drop=True)
         df["rank"] = range(1, len(df) + 1)
-
         return df
 
     def _compare_ablation_methods(

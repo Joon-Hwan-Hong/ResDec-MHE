@@ -5,8 +5,10 @@ Produces analysis outputs:
 1. ccc_importance.csv - Source cell type, target cell type, edge type, attention score
 2. ccc_importance_by_region.csv - CCC importance stratified by brain region
 3. top_interactions.csv - Top 100 LR interactions by attention, with gene names
-4. hgt_attention.h5 - Full attention tensor for programmatic analysis
-5. ccc_network_summary.csv - Aggregated by edge type category
+4. ccc_network_summary.csv - Aggregated by edge type category
+
+Note: Raw HGT attention tensors are stored in the main attention_weights.h5 file
+(saved by the predictor), not by this analyzer.
 
 Output format: Tidy DataFrames saved as Parquet (primary) and CSV (human-readable).
 """
@@ -167,8 +169,19 @@ class CCCImportanceAnalyzer:
 
         if self.edge_metadata is not None:
             result = self.edge_metadata.copy()
-            result["mean_attention"] = mean_attention[:len(result)]
-            result["std_attention"] = std_attention[:len(result)]
+            n_attention = len(mean_attention)
+            n_metadata = len(result)
+            if n_attention != n_metadata:
+                logger.warning(
+                    f"Attention length ({n_attention}) differs from edge metadata "
+                    f"length ({n_metadata}). Truncating to shorter length."
+                )
+                min_len = min(n_attention, n_metadata)
+                result = result.iloc[:min_len].copy()
+                mean_attention = mean_attention[:min_len]
+                std_attention = std_attention[:min_len]
+            result["mean_attention"] = mean_attention
+            result["std_attention"] = std_attention
         else:
             # No metadata but have scores — create numbered edge DataFrame
             result = pd.DataFrame({

@@ -355,52 +355,40 @@ def save_attention_weights_hdf5(
 
 
 def load_attention_weights_hdf5(path: str | Path) -> AttentionWeights:
+    """Load attention weights from HDF5 file.
+
+    .. deprecated::
+        Prefer ``src.utils.io.load_attention_weights()`` for full nested group
+        support. This function converts to AttentionWeights dataclass for
+        backward compatibility but drops nested HGT/PMA group data.
     """
-    Load attention weights from HDF5 file.
+    import warnings
 
-    Args:
-        path: Path to HDF5 file
+    warnings.warn(
+        "load_attention_weights_hdf5() is deprecated. "
+        "Use src.utils.io.load_attention_weights() for full nested group support.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
-    Returns:
-        AttentionWeights container
-    """
-    with h5py.File(path, "r") as f:
-        gene_gate = f["gene_gate"][:]
+    from src.utils.io import load_attention_weights as _io_load
 
-        cell_type_selection = None
-        if "cell_type_selection" in f:
-            cell_type_selection = f["cell_type_selection"][:]
+    raw = _io_load(path)
+    if not raw:
+        raise FileNotFoundError(f"Could not load attention weights from: {path}")
 
-        region_weights = None
-        if "region_weights" in f:
-            region_weights = f["region_weights"][:]
-
-        pathology_attention = None
-        if "pathology_attention" in f:
-            pathology_attention = f["pathology_attention"][:]
-
-        cell_type_names = None
-        if "cell_type_names" in f:
-            cell_type_names = [x.decode("utf-8") for x in f["cell_type_names"][:]]
-
-        subject_ids = None
-        if "subject_ids" in f:
-            subject_ids = [x.decode("utf-8") for x in f["subject_ids"][:]]
-
-        hgt_layer_scales = None
-        if "hgt_layer_scales" in f:
-            hgt_layer_scales = {}
-            for key in f["hgt_layer_scales"].keys():
-                hgt_layer_scales[key] = f["hgt_layer_scales"][key][:]
+    gene_gate = raw.get("gene_gate")
+    if gene_gate is None:
+        raise KeyError("gene_gate not found in HDF5 file")
 
     return AttentionWeights(
         gene_gate=gene_gate,
-        cell_type_selection=cell_type_selection,
-        region_weights=region_weights,
-        pathology_attention=pathology_attention,
-        hgt_layer_scales=hgt_layer_scales,
-        subject_ids=subject_ids,
-        cell_type_names=cell_type_names,
+        pathology_attention=raw.get("pathology_attention"),
+        cell_type_selection=raw.get("cell_type_selection"),
+        region_weights=raw.get("region_weights"),
+        subject_ids=raw.get("subject_ids") if isinstance(raw.get("subject_ids"), list) else None,
+        cell_type_names=raw.get("cell_type_names") if isinstance(raw.get("cell_type_names"), list) else None,
+        hgt_layer_scales=None,
     )
 
 

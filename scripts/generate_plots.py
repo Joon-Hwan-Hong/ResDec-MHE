@@ -221,6 +221,18 @@ def load_analysis_data(analysis_dir: Path) -> dict:
         data["ccc_importance"] = load_dataframe(ccc_path)
         logger.info(f"  Loaded ccc_importance: {len(data['ccc_importance'])} rows")
 
+    # CCC network summary (aggregated by edge type)
+    ccc_summary_path = analysis_dir / "ccc_network_summary.parquet"
+    if ccc_summary_path.exists():
+        data["ccc_network_summary"] = load_dataframe(ccc_summary_path)
+        logger.info(f"  Loaded ccc_network_summary: {len(data['ccc_network_summary'])} rows")
+
+    # Top interactions (ranked by attention)
+    top_interactions_path = analysis_dir / "top_interactions.parquet"
+    if top_interactions_path.exists():
+        data["top_interactions"] = load_dataframe(top_interactions_path)
+        logger.info(f"  Loaded top_interactions: {len(data['top_interactions'])} rows")
+
     # Resilience signature — scan subdirectories (resilience_gpath/, resilience_amylsqrt/, etc.)
     resilience_data = {}
     for subdir in sorted(analysis_dir.glob("resilience_*/")):
@@ -431,10 +443,12 @@ def generate_importance_plots(
                 except Exception as e:
                     logger.warning(f"  Failed gene_importance_volcano: {e}")
 
-    # CCC network summary
+    # CCC network summary (prefer aggregated summary, fall back to raw importance)
     if "ccc_network_summary" not in skip_plots:
-        if "ccc_importance" in data:
-            df = data["ccc_importance"]
+        df = data.get("ccc_network_summary")
+        if df is None:
+            df = data.get("ccc_importance")
+        if df is not None:
             try:
                 fig = plot_ccc_network_summary(df)
                 path = output_dir / f"ccc_network_summary.{fmt}"
@@ -444,10 +458,12 @@ def generate_importance_plots(
             except Exception as e:
                 logger.warning(f"  Failed ccc_network_summary: {e}")
 
-    # Top interactions heatmap
+    # Top interactions heatmap (prefer ranked top_interactions, fall back to raw importance)
     if "top_interactions_heatmap" not in skip_plots:
-        if "ccc_importance" in data:
-            df = data["ccc_importance"]
+        df = data.get("top_interactions")
+        if df is None:
+            df = data.get("ccc_importance")
+        if df is not None:
             try:
                 fig = plot_top_interactions_heatmap(df, top_k=20)
                 path = output_dir / f"top_interactions_heatmap.{fmt}"

@@ -58,7 +58,7 @@ def mock_analysis_dir(tmp_path):
                 "gene": f"GENE{rank}",
                 "weight": np.random.rand() * 0.3,
             })
-    pd.DataFrame(gene_data).to_parquet(analysis_dir / "gene_importance_top_genes.parquet")
+    pd.DataFrame(gene_data).to_parquet(analysis_dir / "top_genes_per_celltype.parquet")
 
     # Gene importance by cell type
     by_ct_data = []
@@ -71,22 +71,40 @@ def mock_analysis_dir(tmp_path):
             })
     pd.DataFrame(by_ct_data).to_parquet(analysis_dir / "gene_importance_by_celltype.parquet")
 
-    # CCC data
+    # CCC data — filenames must match what load_analysis_data() expects
+    # ccc_importance: per-edge importance
+    ccc_edges = []
+    for src in cell_types[:3]:
+        for tgt in cell_types[:3]:
+            ccc_edges.append({
+                "source": src,
+                "target": tgt,
+                "edge_type": "Secreted_Signaling",
+                "mean_attention": np.random.rand() * 0.3,
+                "std_attention": np.random.rand() * 0.1,
+            })
+    pd.DataFrame(ccc_edges).to_parquet(analysis_dir / "ccc_importance.parquet")
+
+    # ccc_network_summary: aggregated by edge type
     pd.DataFrame({
         "edge_type": ["Secreted_Signaling", "ECM_Receptor", "Cell_Cell_Contact"],
         "display_name": ["Secreted Signaling", "ECM-Receptor", "Cell-Cell Contact"],
         "mean_attention": [0.35, 0.25, 0.20],
-    }).to_parquet(analysis_dir / "ccc_by_category.parquet")
+        "std_attention": [0.05, 0.03, 0.02],
+        "n_edges": [9, 6, 4],
+    }).to_parquet(analysis_dir / "ccc_network_summary.parquet")
 
+    # top_interactions: ranked interactions
     interactions = []
-    for src in cell_types[:3]:
-        for tgt in cell_types[:3]:
-            interactions.append({
-                "source": src,
-                "target": tgt,
-                "mean_attention": np.random.rand() * 0.3,
-            })
-    pd.DataFrame(interactions).to_parquet(analysis_dir / "ccc_top_interactions.parquet")
+    for rank, (src, tgt) in enumerate(zip(cell_types[:3] * 2, cell_types[1:4] * 2), 1):
+        interactions.append({
+            "rank": rank,
+            "source": src,
+            "target": tgt,
+            "edge_type": "Secreted_Signaling",
+            "mean_attention": np.random.rand() * 0.3,
+        })
+    pd.DataFrame(interactions).to_parquet(analysis_dir / "top_interactions.parquet")
 
     # Resilience signature (both root for backward compat and subdirectory)
     pd.DataFrame({

@@ -110,6 +110,7 @@ def save_attention_weights(
     pathology_attention: np.ndarray | None = None,
     cell_type_selection: np.ndarray | None = None,
     region_weights: np.ndarray | None = None,
+    region_pseudobulk: np.ndarray | None = None,
     hgt_attention: dict | None = None,
     pma_attention: list[np.ndarray] | None = None,
     subject_ids: list[str] | None = None,
@@ -130,6 +131,7 @@ def save_attention_weights(
         pathology_attention: Pathology attention [n_subjects, n_heads, n_cell_types]
         cell_type_selection: Cell type selection weights [n_cell_types]
         region_weights: Region importance weights [n_regions]
+        region_pseudobulk: Mean region pseudobulk [n_regions, n_cell_types, n_genes]
         hgt_attention: HGT attention dict from aggregate_hgt_attention()
         pma_attention: PMA attention as list of per-cell-type arrays
                        [n_cell_types][n_subjects, n_heads, n_seeds, max_cells]
@@ -164,6 +166,11 @@ def save_attention_weights(
         if region_weights is not None:
             ds = f.create_dataset("region_weights", data=region_weights)
             ds.attrs["shape"] = "[n_regions]"
+
+        if region_pseudobulk is not None:
+            ds = f.create_dataset("region_pseudobulk", data=region_pseudobulk,
+                                  compression=compression, compression_opts=compression_opts)
+            ds.attrs["shape"] = "[n_regions, n_cell_types, n_genes]"
 
         # --- String datasets (variable-length) ---
         vlen_str = h5py.special_dtype(vlen=str)
@@ -372,7 +379,7 @@ def unpack_hgt_for_ccc(
         - edge_attention_scores: [n_samples, n_edge_types] if per_sample available
           (mean across layers and heads), else [n_edge_types] from aggregated
         - edge_metadata: DataFrame with source, target, edge_type columns
-        - edge_type_names: list of "source|target|edge_type" strings
+        - edge_type_names: list of "source|edge_type|target" strings (PyG convention)
     """
     # Extract edge type names
     edge_type_names = None
@@ -403,7 +410,8 @@ def unpack_hgt_for_ccc(
     for name in edge_type_names:
         parts = name.split("|")
         if len(parts) == 3:
-            rows.append({"source": parts[0], "target": parts[1], "edge_type": parts[2]})
+            # PyG convention: (src_type, edge_type, dst_type)
+            rows.append({"source": parts[0], "target": parts[2], "edge_type": parts[1]})
         else:
             rows.append({"source": name, "target": name, "edge_type": name})
     edge_metadata = pd.DataFrame(rows)
@@ -441,8 +449,8 @@ def unpack_pma_attention(
         cell_type_names: Cell type names to order by (uses CELL_TYPE_ORDER if None)
 
     Returns:
-        np.ndarray [n_subjects, n_cell_types, max_cells] — aggregated across heads/seeds,
-        suitable for CellAttentionAnalyzer which expects 3D input.
+        np.ndarray [n_subjects, n_cell_types, max_cells] — aggregated across heads/seeds.
+        For cell-level analysis, use run_cell_heterogeneity.py which handles this structure.
         Returns None if per_cell_type data is not found.
     """
     from src.data.constants import CELL_TYPE_ORDER
