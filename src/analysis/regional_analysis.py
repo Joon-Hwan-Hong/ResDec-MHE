@@ -38,6 +38,7 @@ class RegionalAnalysisResult:
     """
 
     attention_summary: pd.DataFrame
+    per_subject_attention: pd.DataFrame | None = None
     gene_importance: pd.DataFrame | None = None
     region_contribution: pd.DataFrame | None = None
     metadata: dict = field(default_factory=dict)
@@ -95,7 +96,7 @@ class RegionalAnalyzer:
         self.gene_names = gene_names
         self.subject_ids = subject_ids
 
-    def analyze(self, top_k_genes: int = 50) -> RegionalAnalysisResult:
+    def analyze(self, top_k_genes: int = 100) -> RegionalAnalysisResult:
         """
         Run all regional analyses.
 
@@ -107,6 +108,9 @@ class RegionalAnalyzer:
         """
         # Compute attention summary
         attention_summary = self._compute_attention_summary()
+
+        # Compute per-subject attention table
+        per_subject_attention = self._compute_per_subject_attention()
 
         # Compute region contribution (from learned weights)
         region_contribution = self._compute_region_contribution()
@@ -128,6 +132,7 @@ class RegionalAnalyzer:
 
         return RegionalAnalysisResult(
             attention_summary=attention_summary,
+            per_subject_attention=per_subject_attention,
             gene_importance=gene_importance,
             region_contribution=region_contribution,
             metadata=metadata,
@@ -178,6 +183,39 @@ class RegionalAnalyzer:
 
         return df
 
+    def _compute_per_subject_attention(self) -> pd.DataFrame | None:
+        """
+        Compute per-subject regional attention table.
+
+        Returns:
+            DataFrame with columns: subject_id, region, attention_weight
+        """
+        if self.region_attention is None:
+            return None
+
+        # Handle different shapes
+        if self.region_attention.ndim == 2:
+            attention_per_region = self.region_attention
+        elif self.region_attention.ndim == 3:
+            attention_per_region = self.region_attention.mean(axis=2)
+        else:
+            return None
+
+        n_subjects = attention_per_region.shape[0]
+        n_regions = min(attention_per_region.shape[1], len(self.region_names))
+        subject_ids = self.subject_ids or [f"subject_{i}" for i in range(n_subjects)]
+
+        rows = []
+        for subj_idx, subj_id in enumerate(subject_ids):
+            for region_idx in range(n_regions):
+                rows.append({
+                    "subject_id": subj_id,
+                    "region": self.region_names[region_idx],
+                    "attention_weight": float(attention_per_region[subj_idx, region_idx]),
+                })
+
+        return pd.DataFrame(rows)
+
     def _compute_region_contribution(self) -> pd.DataFrame | None:
         """
         Compute region contribution from learned weights.
@@ -205,7 +243,7 @@ class RegionalAnalyzer:
 
         return df[["region", "weight", "normalized_weight", "rank"]]
 
-    def _compute_gene_importance_by_region(self, top_k: int = 50) -> pd.DataFrame:
+    def _compute_gene_importance_by_region(self, top_k: int = 100) -> pd.DataFrame:
         """
         Compute effective gene importance per region.
 
@@ -284,6 +322,13 @@ class RegionalAnalyzer:
             save_dataframe(result.attention_summary, path, fmt)
             saved_files[f"attention_summary_{fmt}"] = path
 
+        # Save per-subject attention (if available)
+        if result.per_subject_attention is not None:
+            for fmt in formats:
+                path = output_dir / f"regional_attention_per_subject.{fmt}"
+                save_dataframe(result.per_subject_attention, path, fmt)
+                saved_files[f"per_subject_attention_{fmt}"] = path
+
         # Save region contribution (if available)
         if result.region_contribution is not None:
             for fmt in formats:
@@ -310,7 +355,8 @@ def compute_regional_analysis(
     region_names: list[str] | None = None,
     cell_type_names: list[str] | None = None,
     gene_names: list[str] | None = None,
-    top_k_genes: int = 50,
+    subject_ids: list[str] | None = None,
+    top_k_genes: int = 100,
     output_dir: str | Path | None = None,
 ) -> RegionalAnalysisResult:
     """
@@ -324,6 +370,7 @@ def compute_regional_analysis(
         region_names: Region names
         cell_type_names: Cell type names
         gene_names: Gene names
+        subject_ids: Subject identifiers
         top_k_genes: Number of top genes per region per cell type
         output_dir: If provided, save results to this directory
 
@@ -338,6 +385,7 @@ def compute_regional_analysis(
         region_names=region_names,
         cell_type_names=cell_type_names,
         gene_names=gene_names,
+        subject_ids=subject_ids,
     )
 
     result = analyzer.analyze(top_k_genes=top_k_genes)

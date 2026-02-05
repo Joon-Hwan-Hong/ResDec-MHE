@@ -115,6 +115,7 @@ def save_attention_weights(
     hgt_attention: dict | None = None,
     pma_attention: list[np.ndarray] | None = None,
     cell_barcodes: list[list[list[str]]] | None = None,
+    cell_counts: np.ndarray | None = None,
     subject_ids: list[str] | None = None,
     cell_type_names: list[str] | None = None,
     gene_names: list[str] | None = None,
@@ -141,6 +142,7 @@ def save_attention_weights(
                        [n_cell_types][n_subjects, n_heads, n_seeds, max_cells]
         cell_barcodes: Per-subject, per-cell-type barcode lists
                        [n_subjects][n_cell_types][barcodes]
+        cell_counts: Cell counts per cell type [n_subjects, n_cell_types]
         embeddings: Dict of embeddings {name: array} (e.g., pseudobulk, hgt, cell, fused, attended)
         subject_ids: Subject identifier strings
         cell_type_names: Cell type name strings
@@ -183,6 +185,11 @@ def save_attention_weights(
             ds = f.create_dataset("region_pseudobulk", data=region_pseudobulk,
                                   compression=compression, compression_opts=compression_opts)
             ds.attrs["shape"] = "[n_regions, n_cell_types, n_genes]"
+
+        if cell_counts is not None:
+            ds = f.create_dataset("cell_counts", data=cell_counts,
+                                  compression=compression, compression_opts=compression_opts)
+            ds.attrs["shape"] = "[n_subjects, n_cell_types]"
 
         # --- String datasets (variable-length) ---
         vlen_str = h5py.special_dtype(vlen=str)

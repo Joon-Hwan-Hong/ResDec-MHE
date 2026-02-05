@@ -67,6 +67,7 @@ class PredictionResult:
     region_attention: np.ndarray | None = None  # [n_subjects, n_regions]
     region_pseudobulk_mean: np.ndarray | None = None  # [n_regions, n_cell_types, n_genes]
     cell_barcodes: list[list[list[str]]] | None = None  # [n_subjects][n_cell_types][barcodes]
+    cell_counts: np.ndarray | None = None  # [n_subjects, n_cell_types] cell counts per type
     gene_names: list[str] | None = None
     cell_type_selection: np.ndarray | None = None  # [n_cell_types] selection weights
     embeddings: dict[str, np.ndarray] | None = None  # {name: array} branch/fused/attended
@@ -388,6 +389,7 @@ class Predictor:
         all_region_mask = []  # Track which regions are valid per subject
         all_region_attention = [] if extract_region_attention else None
         all_cell_barcodes = []
+        all_cell_counts = []
         _embedding_names = ['pseudobulk', 'hgt', 'cell', 'fused', 'attended']
         all_embeddings: dict[str, list[np.ndarray]] | None = None
         if extract_embeddings:
@@ -424,6 +426,14 @@ class Predictor:
                 all_region_attention.append(result["region_attention"])
             if "cell_barcodes" in result and result["cell_barcodes"] is not None:
                 all_cell_barcodes.extend(result["cell_barcodes"])
+            # Derive cell counts per cell type from cell_mask
+            if "cell_mask" in batch:
+                cm = batch["cell_mask"]
+                if isinstance(cm, torch.Tensor):
+                    cm = cm.cpu()
+                # cell_mask: [B, n_cell_types, max_cells] bool → sum over cells
+                batch_cell_counts = cm.sum(dim=-1).numpy()  # [B, n_cell_types]
+                all_cell_counts.append(batch_cell_counts)
             if extract_embeddings and "embeddings" in result:
                 for name in _embedding_names:
                     if name in result["embeddings"]:
@@ -474,6 +484,9 @@ class Predictor:
         dataset = getattr(dataloader, "dataset", None)
         if dataset is not None and hasattr(dataset, "get_gene_names"):
             gene_names = dataset.get_gene_names()
+
+        # Concatenate cell counts
+        cell_counts = np.concatenate(all_cell_counts, axis=0) if all_cell_counts else None
 
         # Concatenate PMA attention per cell type
         pma_attention = None
@@ -542,6 +555,7 @@ class Predictor:
             region_attention=region_attention,
             region_pseudobulk_mean=region_pseudobulk_mean,
             cell_barcodes=all_cell_barcodes if all_cell_barcodes else None,
+            cell_counts=cell_counts,
             gene_names=gene_names,
             embeddings=embeddings_dict,
             metadata=metadata,
@@ -648,6 +662,7 @@ class Predictor:
             hgt_attention=hgt_agg,
             pma_attention=results.pma_attention,
             cell_barcodes=results.cell_barcodes,
+            cell_counts=results.cell_counts,
             subject_ids=results.subject_ids,
             cell_type_names=list(CELL_TYPE_ORDER),
             gene_names=results.gene_names,
@@ -664,8 +679,8 @@ def predict_from_checkpoint(
     dataloader: DataLoader,
     output_dir: str | Path,
     device: str = "auto",
-    extract_hgt_attention: bool = False,
-    extract_pma_attention: bool = False,
+    extract_hgt_attention: bool = True,
+    extract_pma_attention: bool = True,
     extract_region_attention: bool = True,
     extract_embeddings: bool = True,
 ) -> PredictionResult:
@@ -697,50 +712,4 @@ def predict_from_checkpoint(
     return results
 
 
-def save_predictions_parquet(
-    results: PredictionResult,
-    path: str | Path,
-) -> None:
-    """
-    Save predictions to Parquet file.
 
-    Args:
-        results: PredictionResult to save
-        path: Output Parquet path
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    df_data = {
-        "subject_id": results.subject_ids,
-        "predicted_mean": results.mean.flatten(),
-    }
-
-    if results.has_uncertainty:
-        df_data["predicted_std"] = results.std.flatten()
-
-    if results.has_actual:
-        df_data["actual"] = results.actual.flatten()
-    else:
-        df_data["actual"] = [np.nan] * len(results.subject_ids)
-
-    if results.pathology is not None:
-        df_data["pathology"] = results.pathology[:, 0] if results.pathology.ndim > 1 else results.pathology
-
-    df = pd.DataFrame(df_data)
-    df.to_parquet(path, index=False)
-    logger.info(f"Saved predictions to {path}")
-
-
-
-def load_predictions_parquet(path: str | Path) -> pd.DataFrame:
-    """
-    Load predictions from Parquet file.
-
-    Args:
-        path: Path to Parquet file
-
-    Returns:
-        DataFrame with predictions
-    """
-    return pd.read_parquet(path)

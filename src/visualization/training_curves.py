@@ -116,6 +116,7 @@ def plot_loss_curves(
     title: str = "Training Progress",
     save_path: str | Path | None = None,
     log_scale: bool = False,
+    dpi: int | None = None,
 ) -> plt.Figure:
     """
     Plot training and validation loss curves.
@@ -198,7 +199,8 @@ def plot_loss_curves(
     plt.tight_layout()
 
     if save_path:
-        save_figure(fig, str(save_path))
+        save_kwargs = {"dpi": dpi} if dpi is not None else {}
+        save_figure(fig, str(save_path), **save_kwargs)
         logger.info(f"Saved loss curves to {save_path}")
 
     return fig
@@ -210,6 +212,7 @@ def plot_metric_curves(
     figsize: tuple[float, float] = (10, 6),
     title: str = "Training Metrics",
     save_path: str | Path | None = None,
+    dpi: int | None = None,
 ) -> plt.Figure:
     """
     Plot multiple metric curves on the same figure.
@@ -260,7 +263,8 @@ def plot_metric_curves(
     plt.tight_layout()
 
     if save_path:
-        save_figure(fig, str(save_path))
+        save_kwargs = {"dpi": dpi} if dpi is not None else {}
+        save_figure(fig, str(save_path), **save_kwargs)
         logger.info(f"Saved metric curves to {save_path}")
 
     return fig
@@ -272,6 +276,7 @@ def plot_learning_rate(
     figsize: tuple[float, float] = (10, 4),
     title: str = "Learning Rate Schedule",
     save_path: str | Path | None = None,
+    dpi: int | None = None,
 ) -> plt.Figure:
     """
     Plot learning rate schedule over training.
@@ -311,7 +316,8 @@ def plot_learning_rate(
     plt.tight_layout()
 
     if save_path:
-        save_figure(fig, str(save_path))
+        save_kwargs = {"dpi": dpi} if dpi is not None else {}
+        save_figure(fig, str(save_path), **save_kwargs)
         logger.info(f"Saved learning rate plot to {save_path}")
 
     return fig
@@ -322,6 +328,7 @@ def plot_training_summary(
     output_dir: str | Path | None = None,
     figsize: tuple[float, float] = (12, 8),
     fmt: str = "png",
+    dpi: int | None = None,
 ) -> list[Path]:
     """
     Generate summary training plots from log directory.
@@ -376,6 +383,7 @@ def plot_training_summary(
             train_loss=df[train_loss_col].dropna().values,
             val_loss=df[val_loss_col].dropna().values if val_loss_col else None,
             save_path=output_dir / f"loss_curves.{fmt}",
+            dpi=dpi,
         )
         plt.close(fig)
         generated.append(output_dir / f"loss_curves.{fmt}")
@@ -391,6 +399,7 @@ def plot_training_summary(
         fig = plot_learning_rate(
             lr_values=df[lr_col].dropna().values,
             save_path=output_dir / f"learning_rate.{fmt}",
+            dpi=dpi,
         )
         plt.close(fig)
         generated.append(output_dir / f"learning_rate.{fmt}")

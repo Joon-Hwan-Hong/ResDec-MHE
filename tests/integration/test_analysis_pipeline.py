@@ -387,7 +387,7 @@ class TestCellHeterogeneityPipeline:
         n_cell_types,
     ):
         """Test cell heterogeneity analysis function."""
-        from scripts.run_cell_heterogeneity import analyze_cell_heterogeneity
+        from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity
 
         subject_ids = [f"subj_{i}" for i in range(n_subjects)]
 
@@ -418,7 +418,7 @@ class TestCellHeterogeneityPipeline:
         n_subjects,
     ):
         """cell_metadata columns are merged into high_attention_df and all_scores_df."""
-        from scripts.run_cell_heterogeneity import analyze_cell_heterogeneity
+        from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity
 
         n_cell_types_actual = synthetic_pma_attention.shape[1]
         max_cells = synthetic_pma_attention.shape[2]

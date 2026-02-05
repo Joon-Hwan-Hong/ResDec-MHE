@@ -696,3 +696,164 @@ class TestRegionalAnalysisRoundTrip:
             loaded.reset_index(drop=True),
             check_dtype=False,  # CSV may change dtypes
         )
+
+
+# =============================================================================
+# _compute_per_subject_attention Tests (I10)
+# =============================================================================
+
+
+class TestComputePerSubjectAttention:
+    """Test _compute_per_subject_attention method."""
+
+    def test_returns_dataframe_with_correct_schema(
+        self, sample_region_attention, sample_region_names
+    ):
+        """Output DataFrame has columns: subject_id, region, attention_weight."""
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention,
+            region_names=sample_region_names,
+        )
+        df = analyzer._compute_per_subject_attention()
+
+        assert df is not None
+        assert list(df.columns) == ["subject_id", "region", "attention_weight"]
+        assert df["attention_weight"].dtype == np.float64
+
+    def test_correct_row_count(
+        self, sample_region_attention, sample_region_names
+    ):
+        """Output has n_subjects * n_regions rows."""
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention,
+            region_names=sample_region_names,
+        )
+        df = analyzer._compute_per_subject_attention()
+
+        n_subjects = sample_region_attention.shape[0]
+        n_regions = len(sample_region_names)
+        assert len(df) == n_subjects * n_regions
+
+    def test_uses_provided_subject_ids(
+        self, sample_region_attention, sample_region_names
+    ):
+        """Output uses real subject IDs when provided."""
+        n_subjects = sample_region_attention.shape[0]
+        subject_ids = [f"ROSMAP_{i:04d}" for i in range(n_subjects)]
+
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention,
+            region_names=sample_region_names,
+            subject_ids=subject_ids,
+        )
+        df = analyzer._compute_per_subject_attention()
+
+        assert set(df["subject_id"].unique()) == set(subject_ids)
+
+    def test_synthetic_subject_ids_when_none(
+        self, sample_region_attention, sample_region_names
+    ):
+        """Falls back to subject_0, subject_1, ... when no subject_ids."""
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention,
+            region_names=sample_region_names,
+        )
+        df = analyzer._compute_per_subject_attention()
+
+        n_subjects = sample_region_attention.shape[0]
+        expected_ids = {f"subject_{i}" for i in range(n_subjects)}
+        assert set(df["subject_id"].unique()) == expected_ids
+
+    def test_all_regions_present(
+        self, sample_region_attention, sample_region_names
+    ):
+        """Every region appears in the output for each subject."""
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention,
+            region_names=sample_region_names,
+        )
+        df = analyzer._compute_per_subject_attention()
+
+        assert set(df["region"].unique()) == set(sample_region_names)
+
+    def test_handles_3d_input(
+        self, sample_region_attention, sample_region_names
+    ):
+        """3D attention [n_subjects, n_regions, n_cell_types] is mean-pooled over axis 2."""
+        assert sample_region_attention.ndim == 3
+
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention,
+            region_names=sample_region_names,
+        )
+        df = analyzer._compute_per_subject_attention()
+
+        # Verify a specific value matches manual mean-pool
+        expected = float(sample_region_attention[0, 0, :].mean())
+        actual = df.loc[
+            (df["subject_id"] == "subject_0") & (df["region"] == sample_region_names[0]),
+            "attention_weight",
+        ].iloc[0]
+        np.testing.assert_almost_equal(actual, expected)
+
+    def test_handles_2d_input(
+        self, sample_region_attention_2d, sample_region_names
+    ):
+        """2D attention [n_subjects, n_regions] used directly."""
+        assert sample_region_attention_2d.ndim == 2
+
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention_2d,
+            region_names=sample_region_names,
+        )
+        df = analyzer._compute_per_subject_attention()
+
+        expected = float(sample_region_attention_2d[0, 0])
+        actual = df.loc[
+            (df["subject_id"] == "subject_0") & (df["region"] == sample_region_names[0]),
+            "attention_weight",
+        ].iloc[0]
+        np.testing.assert_almost_equal(actual, expected)
+
+    def test_returns_none_when_no_attention(self, sample_region_names):
+        """Returns None when region_attention is None."""
+        analyzer = RegionalAnalyzer(
+            region_attention=None,
+            region_names=sample_region_names,
+        )
+        result = analyzer._compute_per_subject_attention()
+        assert result is None
+
+    def test_integrated_through_analyze(
+        self, sample_region_attention, sample_region_names
+    ):
+        """per_subject_attention is populated in RegionalAnalysisResult.analyze()."""
+        subject_ids = [f"subj_{i}" for i in range(sample_region_attention.shape[0])]
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention,
+            region_names=sample_region_names,
+            subject_ids=subject_ids,
+        )
+        result = analyzer.analyze()
+
+        assert result.per_subject_attention is not None
+        assert len(result.per_subject_attention) == len(subject_ids) * len(sample_region_names)
+
+    def test_round_trip_parquet(
+        self, sample_region_attention, sample_region_names, tmp_path
+    ):
+        """per_subject_attention survives parquet save/load."""
+        analyzer = RegionalAnalyzer(
+            region_attention=sample_region_attention,
+            region_names=sample_region_names,
+        )
+        result = analyzer.analyze()
+        saved_files = analyzer.save(result, tmp_path, formats=["parquet"])
+
+        key = "per_subject_attention_parquet"
+        if key in saved_files:
+            loaded = pd.read_parquet(saved_files[key])
+            pd.testing.assert_frame_equal(
+                result.per_subject_attention.reset_index(drop=True),
+                loaded.reset_index(drop=True),
+            )

@@ -27,8 +27,6 @@ from src.inference.predict import (
     PredictionResult,
     Predictor,
     predict_from_checkpoint,
-    save_predictions_parquet,
-    load_predictions_parquet,
 )
 
 
@@ -165,7 +163,7 @@ class TestPredictionResultDataclass:
             "attention_weights", "gene_gate_weights", "cell_type_selection",
             "hgt_attention", "pma_attention", "region_weights",
             "region_pseudobulk_mean", "region_attention", "cell_barcodes",
-            "gene_names", "embeddings", "metadata"
+            "cell_counts", "gene_names", "embeddings", "metadata"
         }
         actual_fields = {f.name for f in fields(sample_prediction_result)}
         assert expected_fields == actual_fields
@@ -255,79 +253,6 @@ class TestPredictor:
 # ============================================================================
 
 
-class TestSerializationParquet:
-    """Tests for Parquet save/load."""
-
-    def test_save_predictions_parquet_creates_file(self, sample_prediction_result):
-        """save_predictions_parquet creates a parquet file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.parquet"
-            save_predictions_parquet(sample_prediction_result, path)
-            assert path.exists()
-
-    def test_save_load_parquet_roundtrip(self, sample_prediction_result):
-        """Parquet save/load preserves prediction data."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.parquet"
-            save_predictions_parquet(sample_prediction_result, path)
-            df = load_predictions_parquet(path)
-
-        assert len(df) == len(sample_prediction_result.subject_ids)
-        assert "subject_id" in df.columns
-        assert "predicted_mean" in df.columns
-        assert "predicted_std" in df.columns
-
-    def test_parquet_contains_all_fields(self, sample_prediction_result):
-        """Parquet file contains all expected columns."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.parquet"
-            save_predictions_parquet(sample_prediction_result, path)
-            df = load_predictions_parquet(path)
-
-        expected_columns = {
-            "subject_id", "predicted_mean", "predicted_std",
-            "actual", "pathology"
-        }
-        assert expected_columns.issubset(set(df.columns))
-
-
-# ============================================================================
-# Schema Validation Tests
-# ============================================================================
-
-
-class TestOutputSchemaValidation:
-    """Tests validating output schemas."""
-
-    def test_parquet_schema(self, sample_prediction_result):
-        """Parquet output has expected schema."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.parquet"
-            save_predictions_parquet(sample_prediction_result, path)
-            df = load_predictions_parquet(path)
-
-        # Type validation
-        assert df["subject_id"].dtype == object
-        assert np.issubdtype(df["predicted_mean"].dtype, np.floating)
-        assert np.issubdtype(df["predicted_std"].dtype, np.floating)
-
-    def test_parquet_no_missing_subject_ids(self, sample_prediction_result):
-        """Parquet output has no missing subject IDs."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.parquet"
-            save_predictions_parquet(sample_prediction_result, path)
-            df = load_predictions_parquet(path)
-
-        assert df["subject_id"].notna().all()
-
-    def test_parquet_std_positive(self, sample_prediction_result):
-        """Predicted std values are positive."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.parquet"
-            save_predictions_parquet(sample_prediction_result, path)
-            df = load_predictions_parquet(path)
-
-        assert (df["predicted_std"] > 0).all()
 
 
 # ============================================================================
@@ -357,26 +282,6 @@ class TestPropertyBased:
         assert len(result.std) == n_samples
         assert result.attention_weights.shape[0] == n_samples
 
-    @given(n_samples=st.integers(min_value=1, max_value=20))
-    @settings(max_examples=10)
-    def test_parquet_roundtrip_preserves_length(self, n_samples):
-        """Parquet round-trip preserves number of samples."""
-        result = PredictionResult(
-            subject_ids=[f"s{i}" for i in range(n_samples)],
-            mean=np.random.randn(n_samples).astype(np.float32),
-            std=np.abs(np.random.randn(n_samples)).astype(np.float32) + 0.01,
-            actual=None,
-            pathology=np.random.rand(n_samples).astype(np.float32),
-            attention_weights=np.random.rand(n_samples, 4, 31).astype(np.float32),
-            gene_gate_weights=np.random.rand(31, 100).astype(np.float32),
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "pred.parquet"
-            save_predictions_parquet(result, path)
-            df = load_predictions_parquet(path)
-
-        assert len(df) == n_samples
 
 
 # ============================================================================
@@ -417,26 +322,6 @@ class TestEdgeCases:
         result = predictor.predict(dataloader, show_progress=False)
         assert result.actual is None
 
-    def test_parquet_with_none_actual(self):
-        """Parquet save/load handles None actual values."""
-        result = PredictionResult(
-            subject_ids=["a", "b"],
-            mean=np.array([1.0, 2.0]),
-            std=np.array([0.1, 0.2]),
-            actual=None,  # No ground truth
-            pathology=np.array([0.5, 0.6]),
-            attention_weights=np.zeros((2, 4, 31)),
-            gene_gate_weights=np.zeros((31, 100)),
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "pred.parquet"
-            save_predictions_parquet(result, path)
-            df = load_predictions_parquet(path)
-
-        # actual column should exist but have NaN values
-        assert "actual" in df.columns
-        assert df["actual"].isna().all()
 
 
 # ============================================================================
@@ -820,3 +705,82 @@ class TestPredictFromCheckpointDefaults:
         sig = inspect.signature(predict_from_checkpoint)
         param = sig.parameters["extract_embeddings"]
         assert param.default is True
+
+    def test_predict_from_checkpoint_defaults_hgt_attention_true(self):
+        """predict_from_checkpoint has extract_hgt_attention=True by default."""
+        import inspect
+        sig = inspect.signature(predict_from_checkpoint)
+        param = sig.parameters["extract_hgt_attention"]
+        assert param.default is True
+
+    def test_predict_from_checkpoint_defaults_pma_attention_true(self):
+        """predict_from_checkpoint has extract_pma_attention=True by default."""
+        import inspect
+        sig = inspect.signature(predict_from_checkpoint)
+        param = sig.parameters["extract_pma_attention"]
+        assert param.default is True
+
+
+# ============================================================================
+# Cell Counts Tests (Phase 6 Review Round 7 — M2)
+# ============================================================================
+
+
+class TestCellCounts:
+    """Tests for cell_counts derivation and persistence."""
+
+    def test_cell_counts_from_cell_mask(self, mock_model, mock_config):
+        """predict() derives cell_counts from cell_mask in batch."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        # Create batch with cell_mask: [B, n_cell_types, max_cells]
+        max_cells = 50
+        cell_mask = torch.zeros(3, N_CELL_TYPES, max_cells, dtype=torch.bool)
+        # Subject 0: 10 cells in type 0, 5 in type 1
+        cell_mask[0, 0, :10] = True
+        cell_mask[0, 1, :5] = True
+        # Subject 1: 20 cells in type 0
+        cell_mask[1, 0, :20] = True
+        # Subject 2: all zeros
+
+        batch = {
+            "pseudobulk": torch.randn(3, N_CELL_TYPES, 100),
+            "subject_ids": ["a", "b", "c"],
+            "pathology": torch.rand(3, 3),
+            "cell_mask": cell_mask,
+        }
+
+        result = predictor.predict([batch], show_progress=False)
+        assert result.cell_counts is not None
+        assert result.cell_counts.shape == (3, N_CELL_TYPES)
+        assert result.cell_counts[0, 0] == 10
+        assert result.cell_counts[0, 1] == 5
+        assert result.cell_counts[1, 0] == 20
+        assert result.cell_counts[2, 0] == 0
+
+    def test_cell_counts_none_without_cell_mask(self, mock_model, mock_config):
+        """predict() returns cell_counts=None when no cell_mask in batch."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "subject_ids": ["a", "b"],
+            "pathology": torch.rand(2, 3),
+        }
+
+        result = predictor.predict([batch], show_progress=False)
+        assert result.cell_counts is None
+
+    def test_cell_counts_hdf5_roundtrip(self):
+        """cell_counts survives HDF5 save/load roundtrip."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        cell_counts = np.array([[10, 5, 0], [20, 15, 8]], dtype=np.int64)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attn.h5"
+            save_attention_weights(path, cell_counts=cell_counts)
+            loaded = load_attention_weights(path)
+
+        assert "cell_counts" in loaded
+        np.testing.assert_array_equal(loaded["cell_counts"], cell_counts)

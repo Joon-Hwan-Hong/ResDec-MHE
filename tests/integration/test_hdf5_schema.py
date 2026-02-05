@@ -15,7 +15,7 @@ import h5py
 import numpy as np
 import pytest
 
-from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES
+from src.data.constants import CELL_TYPE_ORDER
 from src.inference.extract_attention import aggregate_hgt_attention
 
 
@@ -37,11 +37,6 @@ def n_layers() -> int:
 @pytest.fixture
 def n_heads() -> int:
     return 4
-
-
-@pytest.fixture
-def n_edge_types() -> int:
-    return len(ALL_EDGE_TYPES)
 
 
 @pytest.fixture
@@ -298,7 +293,9 @@ class TestEdgeCases:
                 sample_layers.append(layer_dict)
             hgt_attention.append(sample_layers)
 
-        result = aggregate_hgt_attention(hgt_attention, include_per_sample=True)
+        result = aggregate_hgt_attention(
+            hgt_attention, edge_types=[et1, et2], include_per_sample=True
+        )
 
         # Both edge types should be in the result
         assert len(result["edge_type_names"]) == 2

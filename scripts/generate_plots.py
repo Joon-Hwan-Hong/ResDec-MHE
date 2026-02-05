@@ -327,6 +327,9 @@ def generate_attention_plots(
     output_dir: Path,
     skip_plots: list[str],
     fmt: str = "png",
+    dpi: int = 600,
+    cell_type_names: list[str] | None = None,
+    gene_names: list[str] | None = None,
 ) -> list[str]:
     """
     Generate attention-related plots.
@@ -349,7 +352,7 @@ def generate_attention_plots(
             try:
                 fig = plot_cell_type_attention_heatmap(heatmap_df)
                 path = output_dir / f"cell_type_attention_heatmap.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -362,7 +365,7 @@ def generate_attention_plots(
             try:
                 fig = plot_cell_type_importance_bar(df)
                 path = output_dir / f"cell_type_importance_bar.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -372,12 +375,16 @@ def generate_attention_plots(
     if "attention_distribution" not in skip_plots:
         if "pathology_attention" in attention:
             try:
+                # Average over heads: [n_subjects, n_heads, n_cell_types] -> [n_subjects, n_cell_types]
+                patho_attn = attention["pathology_attention"]
+                if patho_attn.ndim == 3:
+                    patho_attn = patho_attn.mean(axis=1)
                 fig = plot_attention_distribution(
-                    attention["pathology_attention"],
-                    cell_type_names=list(CELL_TYPE_ORDER),
+                    patho_attn,
+                    cell_type_names=cell_type_names,
                 )
                 path = output_dir / f"attention_distribution.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -389,10 +396,11 @@ def generate_attention_plots(
             try:
                 fig = plot_gene_gate_heatmap(
                     attention["gene_gate"],
-                    cell_type_names=list(CELL_TYPE_ORDER),
+                    gene_names=gene_names,
+                    cell_type_names=cell_type_names,
                 )
                 path = output_dir / f"gene_gate_heatmap.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -406,6 +414,7 @@ def generate_resilience_plots(
     output_dir: Path,
     skip_plots: list[str],
     fmt: str = "png",
+    dpi: int = 600,
 ) -> list[str]:
     """Generate resilience signature plots."""
     generated = []
@@ -421,7 +430,7 @@ def generate_resilience_plots(
                 fig = plot_resilience_signature_heatmap(df)
                 suffix = f"_{pathology_name}" if pathology_name != "combined" else ""
                 path = output_dir / f"resilience_signature_heatmap{suffix}.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -435,6 +444,7 @@ def generate_importance_plots(
     output_dir: Path,
     skip_plots: list[str],
     fmt: str = "png",
+    dpi: int = 600,
 ) -> list[str]:
     """Generate gene/CCC importance plots."""
     generated = []
@@ -446,7 +456,7 @@ def generate_importance_plots(
             try:
                 fig = plot_top_genes_per_cell_type(df, n_genes=10)
                 path = output_dir / f"top_genes_per_cell_type.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -461,7 +471,7 @@ def generate_importance_plots(
                 try:
                     fig = plot_gene_importance_volcano(df)
                     path = output_dir / f"gene_importance_volcano.{fmt}"
-                    save_figure(fig, str(path), format=fmt)
+                    save_figure(fig, str(path), format=fmt, dpi=dpi)
                     generated.append(str(path))
                     logger.info(f"  Generated: {path.name}")
                 except Exception as e:
@@ -476,7 +486,7 @@ def generate_importance_plots(
             try:
                 fig = plot_ccc_network_summary(df)
                 path = output_dir / f"ccc_network_summary.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -491,7 +501,7 @@ def generate_importance_plots(
             try:
                 fig = plot_top_interactions_heatmap(df, top_k=20)
                 path = output_dir / f"top_interactions_heatmap.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -504,7 +514,7 @@ def generate_importance_plots(
             try:
                 fig = plot_regional_gene_importance(df)
                 path = output_dir / f"regional_gene_importance.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -518,6 +528,7 @@ def generate_prediction_plots(
     output_dir: Path,
     skip_plots: list[str],
     fmt: str = "png",
+    dpi: int = 600,
 ) -> list[str]:
     """Generate prediction and uncertainty plots."""
     generated = []
@@ -535,7 +546,7 @@ def generate_prediction_plots(
                     predictions["actual"].values,
                 )
                 path = output_dir / f"predicted_vs_actual.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -548,7 +559,7 @@ def generate_prediction_plots(
             try:
                 fig = plot_calibration_curve(cal_df)
                 path = output_dir / f"calibration_curve.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -563,7 +574,7 @@ def generate_prediction_plots(
                     predictions["actual"].values,
                 )
                 path = output_dir / f"residuals.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -579,7 +590,7 @@ def generate_prediction_plots(
                     predictions["predicted_std"].values,
                 )
                 path = output_dir / f"uncertainty_vs_error.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -592,7 +603,7 @@ def generate_prediction_plots(
             try:
                 fig = plot_uncertainty_correlates(unc_df)
                 path = output_dir / f"uncertainty_correlates.{fmt}"
-                save_figure(fig, str(path), format=fmt)
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -606,6 +617,7 @@ def generate_embedding_plots(
     output_dir: Path,
     skip_plots: list[str],
     fmt: str = "png",
+    dpi: int = 600,
 ) -> list[str]:
     """Generate embedding analysis plots."""
     generated = []
@@ -638,7 +650,7 @@ def generate_embedding_plots(
 
             fig = plot_umap_scatter(umap_with_cluster, color_by=color_by)
             path = output_dir / f"umap_scatter.{fmt}"
-            save_figure(fig, str(path), format=fmt)
+            save_figure(fig, str(path), format=fmt, dpi=dpi)
             generated.append(str(path))
             logger.info(f"  Generated: {path.name}")
         except Exception as e:
@@ -651,7 +663,7 @@ def generate_embedding_plots(
                 fig = plot_cluster_composition(cluster_df)
                 if fig is not None:
                     path = output_dir / f"cluster_composition.{fmt}"
-                    save_figure(fig, str(path), format=fmt)
+                    save_figure(fig, str(path), format=fmt, dpi=dpi)
                     generated.append(str(path))
                     logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -664,7 +676,7 @@ def generate_embedding_plots(
                 fig = plot_linear_probe_results(probe_df)
                 if fig is not None:
                     path = output_dir / f"linear_probe_results.{fmt}"
-                    save_figure(fig, str(path), format=fmt)
+                    save_figure(fig, str(path), format=fmt, dpi=dpi)
                     generated.append(str(path))
                     logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -679,7 +691,7 @@ def generate_embedding_plots(
                 probe_df=probe_df,
             )
             path = output_dir / f"embedding_summary.{fmt}"
-            save_figure(fig, str(path), format=fmt)
+            save_figure(fig, str(path), format=fmt, dpi=dpi)
             generated.append(str(path))
             logger.info(f"  Generated: {path.name}")
         except Exception as e:
@@ -693,6 +705,7 @@ def generate_training_plots(
     output_dir: Path,
     skip_plots: list[str],
     fmt: str = "png",
+    dpi: int = 600,
 ) -> list[str]:
     """Generate training curve plots."""
     generated = []
@@ -708,6 +721,7 @@ def generate_training_plots(
                 log_dir=log_dir,
                 output_dir=output_dir,
                 fmt=fmt,
+                dpi=dpi,
             )
             for p in paths:
                 generated.append(str(p))
@@ -757,6 +771,19 @@ def main():
         logger.error("No data found to plot. Check input paths.")
         return
 
+    # Extract metadata from HDF5 attention for cell type / gene names
+    cell_type_names = list(CELL_TYPE_ORDER)  # Default fallback
+    gene_names = None
+    if "metadata" in attention:
+        loaded_ct = attention["metadata"].get("cell_type_names")
+        if loaded_ct is not None and len(loaded_ct) > 0:
+            cell_type_names = list(loaded_ct)
+        loaded_gn = attention["metadata"].get("gene_names")
+        if loaded_gn is not None and len(loaded_gn) > 0:
+            gene_names = list(loaded_gn)
+
+    dpi = args.dpi
+
     # Determine which plot types to generate
     if "all" in args.plot_types:
         plot_categories = list(PLOT_TYPES.keys())
@@ -771,22 +798,25 @@ def main():
 
     if "attention" in plot_categories:
         logger.info("Generating attention plots...")
-        generated = generate_attention_plots(data, attention, output_dir, skip_plots, fmt)
+        generated = generate_attention_plots(
+            data, attention, output_dir, skip_plots, fmt,
+            dpi=dpi, cell_type_names=cell_type_names, gene_names=gene_names,
+        )
         all_generated.extend(generated)
 
     if "resilience" in plot_categories:
         logger.info("Generating resilience plots...")
-        generated = generate_resilience_plots(data, output_dir, skip_plots, fmt)
+        generated = generate_resilience_plots(data, output_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)
 
     if "importance" in plot_categories:
         logger.info("Generating importance plots...")
-        generated = generate_importance_plots(data, output_dir, skip_plots, fmt)
+        generated = generate_importance_plots(data, output_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)
 
     if "prediction" in plot_categories:
         logger.info("Generating prediction plots...")
-        generated = generate_prediction_plots(data, output_dir, skip_plots, fmt)
+        generated = generate_prediction_plots(data, output_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)
 
     if "embedding" in plot_categories:
@@ -796,15 +826,15 @@ def main():
                 logger.info(f"  Embedding type: {emb_name}")
                 emb_output = output_dir / f"embedding_{emb_name}"
                 emb_output.mkdir(parents=True, exist_ok=True)
-                generated = generate_embedding_plots(emb_data, emb_output, skip_plots, fmt)
+                generated = generate_embedding_plots(emb_data, emb_output, skip_plots, fmt, dpi=dpi)
                 all_generated.extend(generated)
         else:
-            generated = generate_embedding_plots(data, output_dir, skip_plots, fmt)
+            generated = generate_embedding_plots(data, output_dir, skip_plots, fmt, dpi=dpi)
             all_generated.extend(generated)
 
     if "training" in plot_categories:
         logger.info("Generating training curve plots...")
-        generated = generate_training_plots(training_log_dir, output_dir, skip_plots, fmt)
+        generated = generate_training_plots(training_log_dir, output_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)
 
     # Summary

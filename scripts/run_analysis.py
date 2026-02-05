@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from src.utils.io import load_dataframe, load_attention_weights, unpack_hgt_for_ccc
+from src.utils.io import load_dataframe, load_attention_weights, save_dataframe, unpack_hgt_for_ccc
 from src.analysis import (
     CellTypeImportanceAnalyzer,
     GeneImportanceAnalyzer,
@@ -130,14 +130,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip embedding analysis (UMAP, clustering, linear probes)",
     )
+    analysis_group.add_argument(
+        "--skip-cell-heterogeneity",
+        action="store_true",
+        help="Skip within-cell-type heterogeneity analysis (PMA attention)",
+    )
 
     # Parameters
     param_group = parser.add_argument_group("Parameters")
     param_group.add_argument(
         "--top-k-genes",
         type=int,
-        default=50,
-        help="Number of top genes per cell type (default: 50)",
+        default=100,
+        help="Number of top genes per cell type (default: 100)",
     )
     param_group.add_argument(
         "--n-permutations",
@@ -155,6 +160,12 @@ def parse_args() -> argparse.Namespace:
         "--no-fdr",
         action="store_true",
         help="Disable FDR correction (report uncorrected p-values)",
+    )
+    param_group.add_argument(
+        "--top-percentile",
+        type=float,
+        default=10.0,
+        help="Top percentile for high-attention cells in heterogeneity analysis (default: 10.0)",
     )
     param_group.add_argument(
         "--run-ablation",
@@ -293,7 +304,7 @@ def run_gene_importance(
     cell_type_names: list[str],
     gene_names: list[str] | None = None,
     region_pseudobulk: dict[str, np.ndarray] | None = None,
-    top_k: int = 50,
+    top_k: int = 100,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -395,7 +406,8 @@ def run_regional_analysis(
     region_names: list[str] | None = None,
     cell_type_names: list[str] | None = None,
     gene_names: list[str] | None = None,
-    top_k_genes: int = 50,
+    subject_ids: list[str] | None = None,
+    top_k_genes: int = 100,
     output_dir: Path = None,
     formats: list[str] = None,
 ) -> None:
@@ -410,6 +422,7 @@ def run_regional_analysis(
         region_names=region_names,
         cell_type_names=cell_type_names,
         gene_names=gene_names,
+        subject_ids=subject_ids,
     )
 
     result = analyzer.analyze(top_k_genes=top_k_genes)
@@ -550,6 +563,7 @@ def main():
     region_attention = attention_weights.get("region_attention")
     region_pseudobulk_raw = attention_weights.get("region_pseudobulk")
     embeddings = attention_weights.get("embeddings")
+    cell_counts = attention_weights.get("cell_counts")  # [n_subjects, n_cell_types] or None
 
     # Convert region_pseudobulk array to dict format for analyzers
     region_pseudobulk_dict = None
@@ -568,11 +582,7 @@ def main():
     if hgt_raw is not None and isinstance(hgt_raw, dict):
         edge_attention_scores, hgt_edge_metadata, edge_type_names = unpack_hgt_for_ccc(hgt_raw)
 
-    # Note: PMA attention is NOT unpacked here. Cell-level heterogeneity analysis
-    # should use scripts/run_cell_heterogeneity.py which handles the per-cell-type
-    # PMA structure natively. CellAttentionAnalyzer expects [n_subjects, k_inducing,
-    # n_cells] but PMA data from HDF5 is per-cell-type [n_subjects, n_cell_types,
-    # max_cells] — a semantic mismatch.
+    # PMA attention is unpacked later for cell heterogeneity analysis (if enabled).
 
     # Load edge metadata for CCC analysis if available
     edge_metadata = None
@@ -758,6 +768,7 @@ def main():
             region_names=list(REGION_ORDER),
             cell_type_names=cell_type_names,
             gene_names=gene_names,
+            subject_ids=subject_ids,
             top_k_genes=args.top_k_genes,
             output_dir=output_dir,
             formats=args.formats,
@@ -795,6 +806,15 @@ def main():
                             covariates[col] = aligned
                     logger.info(f"  Added {len(meta_cov_cols)} metadata covariates: {meta_cov_cols}")
 
+            # Add cell counts as covariates (per-cell-type counts + total)
+            if cell_counts is not None and cell_counts.shape[0] == len(predictions_df):
+                if covariates is None:
+                    covariates = pd.DataFrame(index=range(len(predictions_df)))
+                for ct_idx, ct_name in enumerate(cell_type_names):
+                    covariates[f"cell_count_{ct_name}"] = cell_counts[:, ct_idx]
+                covariates["total_cell_count"] = cell_counts.sum(axis=1)
+                logger.info(f"  Added {len(cell_type_names) + 1} cell count covariates")
+
             run_uncertainty_analysis(
                 predicted_mean=predictions_df["predicted_mean"].values,
                 predicted_std=predictions_df["predicted_std"].values,
@@ -808,8 +828,40 @@ def main():
         else:
             logger.warning("Skipping uncertainty analysis: no predicted_std in predictions")
 
-    # Cell attention analysis: skipped here — use scripts/run_cell_heterogeneity.py
-    # for per-cell-type PMA analysis (see note in PMA section above).
+    # Cell heterogeneity analysis (PMA attention)
+    if not args.skip_cell_heterogeneity:
+        pma_raw = attention_weights.get("pma_attention")
+        if pma_raw is not None and isinstance(pma_raw, dict):
+            from src.utils.io import unpack_pma_attention
+            pma_3d = unpack_pma_attention(pma_raw, cell_type_names=cell_type_names)
+            if pma_3d is not None:
+                from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity
+
+                # Dict mapping "subj_idx_ct_idx" -> list[str] barcode lists, or None
+                cell_barcodes = attention_weights.get("cell_barcodes")
+                het_output_dir = output_dir / "cell_heterogeneity"
+                het_output_dir.mkdir(parents=True, exist_ok=True)
+
+                logger.info("Running cell heterogeneity analysis...")
+                summary_df, high_attn_df, all_scores_df = analyze_cell_heterogeneity(
+                    pma_attention=pma_3d,
+                    cell_type_names=cell_type_names,
+                    subject_ids=subject_ids,
+                    cell_barcodes=cell_barcodes,
+                    top_percentile=args.top_percentile,
+                )
+
+                for fmt in args.formats:
+                    save_dataframe(summary_df, het_output_dir / f"cell_attention_summary.{fmt}", fmt)
+                    save_dataframe(high_attn_df, het_output_dir / f"high_attention_cells.{fmt}", fmt)
+                    save_dataframe(all_scores_df, het_output_dir / f"cell_attention_scores.{fmt}", fmt)
+
+                analyses_run += 1
+                logger.info(f"Cell heterogeneity analysis saved to {het_output_dir}")
+            else:
+                logger.warning("Skipping cell heterogeneity: could not unpack PMA attention")
+        else:
+            logger.warning("Skipping cell heterogeneity: no pma_attention in HDF5")
 
     # Embedding analysis (requires subject embeddings)
     if not args.skip_embedding and embeddings is not None:

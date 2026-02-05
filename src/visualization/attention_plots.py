@@ -214,7 +214,7 @@ def plot_gene_gate_heatmap(
     gene_gate_weights: np.ndarray,
     gene_names: list[str] | None = None,
     cell_type_names: list[str] | None = None,
-    top_k_genes: int = 50,
+    top_k_genes: int = 100,
     figsize: tuple[float, float] = (14, 10),
     title: str = "Gene Attention Weights",
     save_path: str | Path | None = None,
