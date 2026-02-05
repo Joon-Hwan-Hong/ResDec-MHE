@@ -98,7 +98,7 @@ class TestGradientFlow:
 
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)  # All regions active
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -119,7 +119,7 @@ class TestGradientFlow:
         region_mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)
         region_mask[:, 0] = True  # Only region 0 active
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -149,7 +149,7 @@ class TestGradientFlow:
         region_mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)
         region_mask[:, :3] = True
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -182,7 +182,7 @@ class TestGradientFlow:
             [False, False, False, True, True, True],
         ])
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -219,7 +219,7 @@ class TestWeightEvolutionDuringTraining:
         # Training steps - minimize pooled sum (should increase weight on negative regions)
         for _ in range(10):
             optimizer.zero_grad()
-            pooled, _ = handler(x, region_mask)
+            pooled, _, _ = handler(x, region_mask)
             loss = pooled.sum()  # Minimize sum -> prefer negative regions
             loss.backward()
             optimizer.step()
@@ -247,7 +247,7 @@ class TestWeightEvolutionDuringTraining:
         # Multiple training steps
         for step in range(20):
             optimizer.zero_grad()
-            pooled, _ = handler(x, region_mask)
+            pooled, _, _ = handler(x, region_mask)
             loss = pooled.sum()
             loss.backward()
             optimizer.step()
@@ -289,7 +289,7 @@ class TestWeightEvolutionDuringTraining:
         # Train to minimize MSE loss
         for step in range(100):
             optimizer.zero_grad()
-            pooled, _ = handler(x, region_mask)
+            pooled, _, _ = handler(x, region_mask)
             loss = ((pooled - target) ** 2).mean()
             loss.backward()
             optimizer.step()
@@ -325,7 +325,7 @@ class TestWeightEvolutionDuringTraining:
         # Train for many steps
         for _ in range(200):
             optimizer.zero_grad()
-            pooled, _ = handler(x, region_mask)
+            pooled, _, _ = handler(x, region_mask)
             loss = ((pooled - target) ** 2).mean()
             loss.backward()
             optimizer.step()
@@ -335,7 +335,7 @@ class TestWeightEvolutionDuringTraining:
 
         for _ in range(10):
             optimizer.zero_grad()
-            pooled, _ = handler(x, region_mask)
+            pooled, _, _ = handler(x, region_mask)
             loss = ((pooled - target) ** 2).mean()
             loss.backward()
             optimizer.step()
@@ -481,7 +481,7 @@ class TestIntegrationWithFullModel:
         # Train
         for _ in range(20):
             optimizer.zero_grad()
-            pooled, _ = model(region_pseudobulk, region_mask)
+            pooled, _, _ = model(region_pseudobulk, region_mask)
             loss = ((pooled - target) ** 2).mean()
             loss.backward()
             optimizer.step()
@@ -512,9 +512,9 @@ class TestIntegrationWithFullModel:
         # Mask 3: All regions
         mask3 = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        _, context1 = handler(x, mask1)
-        _, context2 = handler(x, mask2)
-        _, context3 = handler(x, mask3)
+        _, context1, _ = handler(x, mask1)
+        _, context2, _ = handler(x, mask2)
+        _, context3, _ = handler(x, mask3)
 
         # Contexts should all be different (different region embeddings)
         assert not torch.allclose(context1, context2, atol=1e-5), (
@@ -544,8 +544,8 @@ class TestIntegrationWithFullModel:
         x = torch.randn(2, N_REGIONS, 5, 32)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled1, _ = handler1(x, region_mask)
-        pooled2, _ = handler2(x, region_mask)
+        pooled1, _, _ = handler1(x, region_mask)
+        pooled2, _, _ = handler2(x, region_mask)
 
         # Outputs should differ significantly
         assert not torch.allclose(pooled1, pooled2, atol=1e-3), (
@@ -586,7 +586,7 @@ class TestIntegrationWithFullModel:
         B, R, C, G = region_pseudobulk.shape
         encoded = encoder(region_pseudobulk.view(B * R, C, G))
         encoded = encoded.view(B, R, C, -1)
-        pooled, region_context = region_handler(encoded, region_mask)
+        pooled, region_context, _ = region_handler(encoded, region_mask)
 
         # Compute loss and backward
         loss = pooled.sum() + region_context.sum()
@@ -623,7 +623,7 @@ class TestEdgeCasesLearning:
         # Should not crash or produce NaN
         for _ in range(10):
             optimizer.zero_grad()
-            pooled, context = handler(x, region_mask)
+            pooled, context, _ = handler(x, region_mask)
             loss = pooled.sum()
             loss.backward()
             optimizer.step()
@@ -659,7 +659,7 @@ class TestEdgeCasesLearning:
         # Train
         for _ in range(20):
             optimizer.zero_grad()
-            pooled, _ = handler(x, region_mask)
+            pooled, _, _ = handler(x, region_mask)
             loss = pooled.sum()
             loss.backward()
             optimizer.step()
@@ -690,7 +690,7 @@ class TestEdgeCasesLearning:
         # Accumulate gradients from multiple forward passes
         optimizer.zero_grad()
         for _ in range(3):
-            pooled, _ = handler(x, region_mask)
+            pooled, _, _ = handler(x, region_mask)
             loss = pooled.sum() / 3
             loss.backward()
 

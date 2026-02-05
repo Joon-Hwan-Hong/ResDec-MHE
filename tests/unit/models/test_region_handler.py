@@ -141,10 +141,48 @@ class TestForwardPass:
         x = torch.randn(B, R, C, D)
         region_mask = torch.ones(B, R, dtype=torch.bool)
 
-        pooled, region_context = small_handler(x, region_mask)
+        pooled, region_context, _ = small_handler(x, region_mask)
 
         assert pooled.shape == (B, C, D), f"Expected pooled shape {(B, C, D)}, got {pooled.shape}"
         assert region_context.shape == (B, D), f"Expected region_context shape {(B, D)}, got {region_context.shape}"
+
+    def test_returns_normalized_weights(self):
+        """Forward should return normalized_weights as third value."""
+        from src.models.components.region_handler import RegionHandler
+
+        handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
+        B, R, C, D = 4, N_REGIONS, N_CELL_TYPES, 32
+        x = torch.randn(B, R, C, D)
+        region_mask = torch.ones(B, R, dtype=torch.bool)
+
+        pooled, region_context, normalized_weights = handler(x, region_mask)
+
+        assert normalized_weights.shape == (B, R)
+        # Should sum to 1 per sample (softmax + renormalize)
+        assert torch.allclose(normalized_weights.sum(dim=1), torch.ones(B), atol=1e-6)
+        # All weights should be positive
+        assert (normalized_weights >= 0).all()
+
+    def test_normalized_weights_with_partial_mask(self):
+        """normalized_weights should be zero for masked regions and sum to 1 for valid."""
+        from src.models.components.region_handler import RegionHandler
+
+        handler = RegionHandler(d_model=16, n_regions=N_REGIONS)
+        B, R, C, D = 2, N_REGIONS, 5, 16
+        x = torch.randn(B, R, C, D)
+        region_mask = torch.zeros(B, R, dtype=torch.bool)
+        region_mask[:, 0] = True
+        region_mask[:, 2] = True
+
+        _, _, normalized_weights = handler(x, region_mask)
+
+        # Masked regions should have zero weight
+        assert torch.allclose(normalized_weights[:, 1], torch.zeros(B), atol=1e-6)
+        assert torch.allclose(normalized_weights[:, 3], torch.zeros(B), atol=1e-6)
+        assert torch.allclose(normalized_weights[:, 4], torch.zeros(B), atol=1e-6)
+        assert torch.allclose(normalized_weights[:, 5], torch.zeros(B), atol=1e-6)
+        # Valid regions should sum to 1
+        assert torch.allclose(normalized_weights.sum(dim=1), torch.ones(B), atol=1e-6)
 
     def test_single_region_mask_returns_that_region(self):
         """With only region 0 available, pooled should equal x[:, 0]."""
@@ -156,7 +194,7 @@ class TestForwardPass:
         region_mask = torch.zeros(B, R, dtype=torch.bool)
         region_mask[:, 0] = True  # Only PFC available
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
 
         # After renormalization, weight for region 0 should be 1.0
         assert torch.allclose(pooled, x[:, 0], atol=1e-6)
@@ -170,7 +208,7 @@ class TestForwardPass:
         x = torch.randn(B, R, C, D)
         region_mask = torch.ones(B, R, dtype=torch.bool)
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
 
         # With uniform init, weights are equal, so should be simple mean
         expected = x.mean(dim=1)
@@ -186,7 +224,7 @@ class TestForwardPass:
         region_mask = torch.zeros(B, R, dtype=torch.bool)
         region_mask[:, 0] = True  # Only PFC
 
-        _, region_context = handler(x, region_mask)
+        _, region_context, _ = handler(x, region_mask)
 
         expected = handler.region_embedding.weight[0].unsqueeze(0).expand(B, -1)
         assert torch.allclose(region_context, expected, atol=1e-6)
@@ -200,7 +238,7 @@ class TestForwardPass:
         x = torch.randn(B, R, C, D)
         region_mask = torch.ones(B, R, dtype=torch.bool)
 
-        _, region_context = handler(x, region_mask)
+        _, region_context, _ = handler(x, region_mask)
 
         expected = handler.region_embedding.weight.mean(dim=0).unsqueeze(0).expand(B, -1)
         assert torch.allclose(region_context, expected, atol=1e-6)
@@ -217,7 +255,7 @@ class TestForwardPass:
         region_mask[1, :] = True  # Sample 1: all regions
         region_mask[2, :3] = True  # Sample 2: first 3 regions
 
-        pooled, region_context = handler(x, region_mask)
+        pooled, region_context, _ = handler(x, region_mask)
 
         # Sample 0 should equal x[0, 0]
         assert torch.allclose(pooled[0], x[0, 0], atol=1e-6)
@@ -266,7 +304,7 @@ class TestForwardPass:
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 32)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, region_context = handler(x, region_mask)
+        pooled, region_context, _ = handler(x, region_mask)
         assert pooled.shape == (2, N_CELL_TYPES, 32)
 
     def test_accepts_float_mask(self):
@@ -277,7 +315,7 @@ class TestForwardPass:
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 32)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.float32)
 
-        pooled, region_context = handler(x, region_mask)
+        pooled, region_context, _ = handler(x, region_mask)
         assert pooled.shape == (2, N_CELL_TYPES, 32)
 
 
@@ -296,7 +334,7 @@ class TestGradientFlow:
         x = torch.randn(2, N_REGIONS, 5, 16, requires_grad=True)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, region_context = handler(x, region_mask)
+        pooled, region_context, _ = handler(x, region_mask)
         loss = pooled.sum() + region_context.sum()
         loss.backward()
 
@@ -311,7 +349,7 @@ class TestGradientFlow:
         x = torch.randn(2, N_REGIONS, 5, 16)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -326,7 +364,7 @@ class TestGradientFlow:
         x = torch.randn(2, N_REGIONS, 5, 16)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        _, region_context = handler(x, region_mask)
+        _, region_context, _ = handler(x, region_mask)
         loss = region_context.sum()
         loss.backward()
 
@@ -347,7 +385,7 @@ class TestGradientFlow:
         region_mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)
         region_mask[:, 0] = True  # Only PFC
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -368,7 +406,7 @@ class TestGradientFlow:
         x = torch.arange(N_REGIONS).float().view(1, N_REGIONS, 1, 1).expand(2, N_REGIONS, 5, 16) + torch.randn(2, N_REGIONS, 5, 16)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -459,7 +497,7 @@ class TestEdgeCases:
         x = torch.randn(0, N_REGIONS, N_CELL_TYPES, 32)
         region_mask = torch.ones(0, N_REGIONS, dtype=torch.bool)
 
-        pooled, region_context = handler(x, region_mask)
+        pooled, region_context, _ = handler(x, region_mask)
 
         assert pooled.shape == (0, N_CELL_TYPES, 32)
         assert region_context.shape == (0, 32)
@@ -472,7 +510,7 @@ class TestEdgeCases:
         x = torch.randn(2, N_REGIONS, 1, 16)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, region_context = handler(x, region_mask)
+        pooled, region_context, _ = handler(x, region_mask)
 
         assert pooled.shape == (2, 1, 16)
         assert region_context.shape == (2, 16)
@@ -488,7 +526,7 @@ class TestEdgeCases:
         x = torch.randn(2, N_REGIONS, 5, 16)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, region_context = handler(x, region_mask)
+        pooled, region_context, _ = handler(x, region_mask)
 
         # With large weight on region 0, pooled should be close to x[:, 0]
         assert not torch.any(torch.isnan(pooled))
@@ -505,7 +543,7 @@ class TestEdgeCases:
         x = single_region.expand(2, N_REGIONS, 5, 16).clone()
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, _ = handler(x, region_mask)
+        pooled, _, _ = handler(x, region_mask)
 
         # Weighted mean of identical values = that value
         assert torch.allclose(pooled, single_region.squeeze(1), atol=1e-6)
@@ -528,8 +566,8 @@ class TestDeterminism:
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 32)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled1, context1 = handler(x, region_mask)
-        pooled2, context2 = handler(x, region_mask)
+        pooled1, context1, _ = handler(x, region_mask)
+        pooled2, context2, _ = handler(x, region_mask)
 
         assert torch.allclose(pooled1, pooled2)
         assert torch.allclose(context1, context2)
@@ -543,10 +581,10 @@ class TestDeterminism:
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
         handler.train()
-        pooled_train, context_train = handler(x, region_mask)
+        pooled_train, context_train, _ = handler(x, region_mask)
 
         handler.eval()
-        pooled_eval, context_eval = handler(x, region_mask)
+        pooled_eval, context_eval, _ = handler(x, region_mask)
 
         assert torch.allclose(pooled_train, pooled_eval)
         assert torch.allclose(context_train, context_eval)
@@ -570,7 +608,7 @@ class TestAllMaskedRegions:
         mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)  # All regions masked
 
         with torch.no_grad():
-            pooled, region_context = handler(x, mask)
+            pooled, region_context, _ = handler(x, mask)
 
         # Output should be finite
         assert torch.isfinite(pooled).all(), "All-masked pooled output has NaN/Inf"
@@ -598,7 +636,7 @@ class TestAllMaskedRegions:
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 64, requires_grad=True)
         mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, region_context = handler(x, mask)
+        pooled, region_context, _ = handler(x, mask)
         loss = pooled.sum() + region_context.sum()
         loss.backward()
 
@@ -628,7 +666,7 @@ class TestAllMaskedRegions:
         mask[2, :] = True     # Sample 2: all valid
 
         with torch.no_grad():
-            pooled, region_context = handler(x, mask)
+            pooled, region_context, _ = handler(x, mask)
 
         # All outputs should be finite
         assert torch.isfinite(pooled).all()

@@ -151,6 +151,7 @@ class TestPredictionResultDataclass:
             "subject_ids", "mean", "std", "actual", "pathology",
             "attention_weights", "gene_gate_weights", "hgt_attention",
             "pma_attention", "region_weights", "region_pseudobulk_mean",
+            "region_attention", "cell_barcodes",
             "gene_names", "metadata"
         }
         actual_fields = {f.name for f in fields(sample_prediction_result)}
@@ -479,3 +480,88 @@ class TestEdgeCases:
             path = Path(tmpdir) / "predictions.h5"
             save_predictions_hdf5(sample_prediction_result, path)
             assert path.exists()
+
+
+# ============================================================================
+# Region Pseudobulk Masking Tests
+# ============================================================================
+
+
+class TestRegionPseudobulkMasking:
+    """Tests for region_pseudobulk_mean masked computation (Finding 1)."""
+
+    def test_masked_mean_ignores_zero_padded_regions(self):
+        """region_pseudobulk_mean should ignore regions where region_mask is False."""
+        # Simulate 3 subjects, 4 regions, 2 cell types, 3 genes
+        # Subject 0: only regions 0,1 valid. Subject 1: all 4. Subject 2: only region 0.
+        stacked = np.zeros((3, 4, 2, 3), dtype=np.float32)
+        stacked_mask = np.zeros((3, 4), dtype=bool)
+
+        # Subject 0: regions 0,1 valid with value 1.0
+        stacked[0, 0] = 1.0
+        stacked[0, 1] = 1.0
+        stacked_mask[0, :2] = True
+
+        # Subject 1: all regions valid with value 2.0
+        stacked[1] = 2.0
+        stacked_mask[1] = True
+
+        # Subject 2: only region 0 valid with value 3.0
+        stacked[2, 0] = 3.0
+        stacked_mask[2, 0] = True
+
+        # Compute masked mean (same logic as predict.py)
+        mask_expanded = stacked_mask[:, :, np.newaxis, np.newaxis]
+        masked = np.where(mask_expanded, stacked, np.nan)
+        result = np.nanmean(masked, axis=0)  # [R, C, G]
+        result = np.nan_to_num(result, nan=0.0)
+
+        # Region 0: all 3 subjects have it -> mean of 1.0, 2.0, 3.0 = 2.0
+        np.testing.assert_allclose(result[0], 2.0)
+        # Region 1: subjects 0,1 have it -> mean of 1.0, 2.0 = 1.5
+        np.testing.assert_allclose(result[1], 1.5)
+        # Region 2: only subject 1 has it -> 2.0
+        np.testing.assert_allclose(result[2], 2.0)
+        # Region 3: only subject 1 has it -> 2.0
+        np.testing.assert_allclose(result[3], 2.0)
+
+    def test_all_masked_region_gets_zero(self):
+        """A region masked for ALL subjects should get 0.0 (not NaN)."""
+        stacked = np.ones((2, 3, 2, 2), dtype=np.float32)
+        stacked_mask = np.zeros((2, 3), dtype=bool)
+        stacked_mask[:, :2] = True  # Only first 2 regions valid
+
+        mask_expanded = stacked_mask[:, :, np.newaxis, np.newaxis]
+        masked = np.where(mask_expanded, stacked, np.nan)
+        result = np.nanmean(masked, axis=0)
+        result = np.nan_to_num(result, nan=0.0)
+
+        # Region 2 should be 0.0 (all masked)
+        np.testing.assert_allclose(result[2], 0.0)
+        # Regions 0,1 should be 1.0
+        np.testing.assert_allclose(result[0], 1.0)
+        np.testing.assert_allclose(result[1], 1.0)
+
+    def test_unmasked_mean_would_be_biased(self):
+        """Without masking, zeros from padded regions bias the mean downward."""
+        # Subject 0: region 1 valid (10.0), region 0 padded (0.0)
+        # Subject 1: both regions valid (10.0)
+        stacked = np.zeros((2, 2, 1, 1), dtype=np.float32)
+        stacked_mask = np.zeros((2, 2), dtype=bool)
+
+        stacked[0, 1] = 10.0
+        stacked_mask[0, 1] = True
+        stacked[1, :] = 10.0
+        stacked_mask[1, :] = True
+
+        # Unmasked mean for region 0: (0 + 10) / 2 = 5.0 — biased!
+        # (Subject 0 has 0.0 because region 0 is padded)
+        unmasked = stacked.mean(axis=0)
+        assert unmasked[0, 0, 0] == 5.0  # biased downward
+
+        # Masked mean for region 0: only subject 1 → 10.0
+        mask_expanded = stacked_mask[:, :, np.newaxis, np.newaxis]
+        masked = np.where(mask_expanded, stacked, np.nan)
+        correct = np.nanmean(masked, axis=0)
+        correct = np.nan_to_num(correct, nan=0.0)
+        assert correct[0, 0, 0] == 10.0  # correct

@@ -41,6 +41,7 @@ def mock_experiment_dir(tmp_path):
         f.create_dataset("pathology_attention", data=np.random.rand(20, 4, 8))
         f.create_dataset("region_weights", data=np.random.rand(6))
         f.create_dataset("region_pseudobulk", data=np.random.rand(6, 8, 100))
+        f.create_dataset("region_attention", data=np.random.rand(20, 6))
         vlen_str = h5py.special_dtype(vlen=str)
         f.create_dataset("cell_type_names", data=np.array(
             ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"], dtype=object
@@ -681,3 +682,72 @@ class TestRegionPseudobulkRoundtrip:
         np.testing.assert_array_almost_equal(
             loaded["region_pseudobulk"], region_pseudobulk
         )
+
+
+# =============================================================================
+# Gene Importance with Region Pseudobulk Tests
+# =============================================================================
+
+
+class TestGeneImportanceWithRegionPseudobulk:
+    """Test run_gene_importance with region_pseudobulk produces by-region file (Finding 3)."""
+
+    def test_produces_gene_importance_by_region(self, tmp_path):
+        """run_gene_importance with region_pseudobulk should produce by-region CSV."""
+        from scripts.run_analysis import run_gene_importance
+
+        np.random.seed(42)
+        n_cell_types = 8
+        n_genes = 50
+        n_regions = 6
+
+        gene_gate = np.random.rand(n_cell_types, n_genes).astype(np.float32)
+        cell_type_names = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        region_names = ["PFC", "AG", "MTC", "EC", "HC", "TH"]
+
+        # Create region pseudobulk dict: {region_name: [n_cell_types, n_genes]}
+        region_pseudobulk = {
+            name: np.random.rand(n_cell_types, n_genes).astype(np.float32)
+            for name in region_names
+        }
+
+        run_gene_importance(
+            gene_gate_weights=gene_gate,
+            cell_type_names=cell_type_names,
+            gene_names=gene_names,
+            top_k=5,
+            output_dir=tmp_path,
+            formats=["csv"],
+            region_pseudobulk=region_pseudobulk,
+        )
+
+        # Should produce gene_importance_by_celltype.csv (always)
+        assert (tmp_path / "gene_importance_by_celltype.csv").exists()
+        # Should also produce gene_importance_by_region.csv or regional_gene_importance.csv
+        has_by_region = (
+            (tmp_path / "gene_importance_by_region.csv").exists()
+            or (tmp_path / "regional_gene_importance.csv").exists()
+        )
+        assert has_by_region, "Expected gene_importance_by_region.csv or regional_gene_importance.csv"
+
+    def test_without_region_pseudobulk_no_region_file(self, tmp_path):
+        """run_gene_importance without region_pseudobulk should NOT produce by-region file."""
+        from scripts.run_analysis import run_gene_importance
+
+        gene_gate = np.random.rand(8, 50).astype(np.float32)
+        cell_type_names = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
+        gene_names = [f"GENE{i}" for i in range(50)]
+
+        run_gene_importance(
+            gene_gate_weights=gene_gate,
+            cell_type_names=cell_type_names,
+            gene_names=gene_names,
+            top_k=5,
+            output_dir=tmp_path,
+            formats=["csv"],
+        )
+
+        assert (tmp_path / "gene_importance_by_celltype.csv").exists()
+        assert not (tmp_path / "gene_importance_by_region.csv").exists()
+        assert not (tmp_path / "regional_gene_importance.csv").exists()

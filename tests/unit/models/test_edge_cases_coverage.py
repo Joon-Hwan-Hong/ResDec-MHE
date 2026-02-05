@@ -202,7 +202,7 @@ class TestRegionContextGradientFlow:
         pathology = torch.randn(2, 3)
 
         # Forward through handler and encoder
-        pooled, region_context = handler(x, mask)
+        pooled, region_context, _ = handler(x, mask)
         path_emb = encoder(pathology, region_context)
 
         # Backward
@@ -225,7 +225,7 @@ class TestRegionContextGradientFlow:
         mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
         pathology = torch.randn(2, 3)
 
-        pooled, region_context = handler(x, mask)
+        pooled, region_context, _ = handler(x, mask)
         path_emb = encoder(pathology, region_context)
 
         loss = path_emb.sum()
@@ -246,7 +246,7 @@ class TestAllRegionsMaskedEdgeCase:
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 64)
         mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)  # All masked!
 
-        pooled, region_context = handler(x, mask)
+        pooled, region_context, _ = handler(x, mask)
 
         # Should produce output (even if near-zero due to clamping)
         assert pooled.shape == (2, N_CELL_TYPES, 64)
@@ -261,7 +261,7 @@ class TestAllRegionsMaskedEdgeCase:
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 64)
         mask = torch.zeros(2, N_REGIONS, dtype=torch.bool)  # All masked!
 
-        pooled, region_context = handler(x, mask)
+        pooled, region_context, _ = handler(x, mask)
 
         # Pooled should be near zero (masked weights sum to ~0, clamped)
         assert pooled.abs().max() < 1e-5
@@ -279,7 +279,7 @@ class TestAllRegionsMaskedEdgeCase:
             [True, False, True, False, True, False],  # Partial
         ], dtype=torch.bool)
 
-        pooled, region_context = handler(x, mask)
+        pooled, region_context, _ = handler(x, mask)
 
         # All samples should produce valid output
         assert torch.isfinite(pooled).all()

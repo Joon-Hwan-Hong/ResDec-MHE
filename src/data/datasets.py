@@ -231,7 +231,7 @@ class CognitiveResilienceDataset(Dataset):
         # ─────────────────────────────────────────────────────────────────────
         # Cell-level data for Set Transformer
         # ─────────────────────────────────────────────────────────────────────
-        cells, cell_mask = self._get_cell_level_data(adata_subject)
+        cells, cell_mask, cell_barcodes = self._get_cell_level_data(adata_subject)
 
         # ─────────────────────────────────────────────────────────────────────
         # CCC graph features
@@ -259,6 +259,7 @@ class CognitiveResilienceDataset(Dataset):
             # Cell-level data for ALL 31 types (model selects which to use)
             "cells": torch.from_numpy(cells).float(),
             "cell_mask": torch.from_numpy(cell_mask).bool(),
+            "cell_barcodes": cell_barcodes,
             # Graph features (CCC = cell-cell communication)
             "ccc_edge_index": torch.from_numpy(edge_index).long(),
             "ccc_edge_type": torch.from_numpy(edge_type).long(),
@@ -381,17 +382,25 @@ class CognitiveResilienceDataset(Dataset):
 
         return region_mask
 
-    def _get_cell_level_data(self, adata_subject: AnnData) -> tuple[np.ndarray, np.ndarray]:
+    def _get_cell_level_data(
+        self, adata_subject: AnnData,
+    ) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
         """
         Get cell-level expression for ALL cell types using CellSampler.
 
         Returns data for all 31 cell types. Cell types with fewer cells than
         min_cells_threshold will have empty data (all-False mask). The model's
         CellTypeSelector learns which types to use for prediction.
+
+        Returns:
+            cells: [n_cell_types, max_cells, n_genes] expression data
+            cell_mask: [n_cell_types, max_cells] valid cell mask
+            cell_barcodes: list of lists of barcode strings per cell type
         """
         # Allocate for ALL cell types (not just a subset)
         cells = np.zeros((self.n_cell_types, self.max_cells_per_type, self.n_genes), dtype=np.float32)
         cell_mask = np.zeros((self.n_cell_types, self.max_cells_per_type), dtype=bool)
+        cell_barcodes: list[list[str]] = [[] for _ in range(self.n_cell_types)]
 
         # Use CellSampler for reproducible sampling across ALL cell types
         sampled_indices = self.sampler.sample(
@@ -400,10 +409,11 @@ class CognitiveResilienceDataset(Dataset):
             cell_types=self.cell_type_order,  # ALL 31 types
         )
 
-        # Get expression matrix
+        # Get expression matrix and obs index for barcodes
         X = adata_subject.X
         if hasattr(X, "toarray"):
             X = X.toarray()
+        obs_index = adata_subject.obs.index
 
         for i, ct_name in enumerate(self.cell_type_order):
             indices = sampled_indices.get(ct_name, np.array([], dtype=np.int64))
@@ -412,8 +422,9 @@ class CognitiveResilienceDataset(Dataset):
             if n_sampled > 0:
                 cells[i, :n_sampled] = X[indices]
                 cell_mask[i, :n_sampled] = True
+                cell_barcodes[i] = [str(obs_index[idx]) for idx in indices]
 
-        return cells, cell_mask
+        return cells, cell_mask, cell_barcodes
 
     def _get_graph_features(self, subject_id: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Get CCC graph features from LIANA+ results."""

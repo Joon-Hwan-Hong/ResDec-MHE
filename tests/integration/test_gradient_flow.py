@@ -46,7 +46,7 @@ class TestRegionHandlerGradientFlow:
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, D_EMBED, requires_grad=True)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, context = region_handler(x, region_mask)
+        pooled, context, _ = region_handler(x, region_mask)
         loss = pooled.sum() + context.sum()
         loss.backward()
 
@@ -60,7 +60,7 @@ class TestRegionHandlerGradientFlow:
         region_mask = torch.zeros(1, N_REGIONS, dtype=torch.bool)
         region_mask[0, 0] = True  # Only PFC
 
-        pooled, context = region_handler(x, region_mask)
+        pooled, context, _ = region_handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -80,7 +80,7 @@ class TestRegionHandlerGradientFlow:
         # All regions available
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, context = region_handler(x, region_mask)
+        pooled, context, _ = region_handler(x, region_mask)
         loss = pooled.sum()
         loss.backward()
 
@@ -93,7 +93,7 @@ class TestRegionHandlerGradientFlow:
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, D_EMBED)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        pooled, context = region_handler(x, region_mask)
+        pooled, context, _ = region_handler(x, region_mask)
         loss = context.sum()  # Only use context for gradient
         loss.backward()
 

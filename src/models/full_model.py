@@ -347,6 +347,7 @@ class CognitiveResilienceModel(nn.Module):
         # Interpretability options
         return_hgt_attention: bool = False,
         return_pma_attention: bool = False,
+        return_region_attention: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass through the full model.
@@ -384,6 +385,7 @@ class CognitiveResilienceModel(nn.Module):
                 - 'attention_weights': [B, n_heads, n_cell_types] pathology attention
                 - 'hgt_attention': List of attention dicts per layer (if return_hgt_attention)
                 - 'pma_attention': List of [B, n_heads, n_seeds, max_cells] per cell type (if return_pma_attention)
+                - 'region_attention': [B, n_regions] normalized region weights (if return_region_attention)
         """
         # ─────────────────────────────────────────────────────────────────────
         # Handle single-region vs multi-region input
@@ -427,8 +429,8 @@ class CognitiveResilienceModel(nn.Module):
         # [B, n_regions, n_cell_types, n_genes] -> [B, n_regions, n_cell_types, d_embed]
         region_encoded = self._encode_pseudobulk_per_region(region_pseudobulk, region_mask)
 
-        # Pool across regions: [B, n_cell_types, d_embed] + [B, d_embed]
-        pseudobulk_emb, region_context = self.region_handler(region_encoded, region_mask)
+        # Pool across regions: [B, n_cell_types, d_embed] + [B, d_embed] + [B, n_regions]
+        pseudobulk_emb, region_context, region_attn = self.region_handler(region_encoded, region_mask)
 
         # ─────────────────────────────────────────────────────────────────────
         # Branch 2: HGT encoding (cell-cell communication) - Per-sample graphs
@@ -515,6 +517,9 @@ class CognitiveResilienceModel(nn.Module):
 
         if return_pma_attention and pma_attention is not None:
             output['pma_attention'] = pma_attention
+
+        if return_region_attention:
+            output['region_attention'] = region_attn
 
         if self.use_bayesian_head:
             mean, std = self.prediction_head(attended, cognition)

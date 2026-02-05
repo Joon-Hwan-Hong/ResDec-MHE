@@ -271,6 +271,7 @@ def run_gene_importance(
     gene_gate_weights: np.ndarray,
     cell_type_names: list[str],
     gene_names: list[str] | None = None,
+    region_pseudobulk: dict[str, np.ndarray] | None = None,
     top_k: int = 50,
     output_dir: Path = None,
     formats: list[str] = None,
@@ -282,6 +283,7 @@ def run_gene_importance(
         gene_gate_weights=gene_gate_weights,
         cell_type_names=cell_type_names,
         gene_names=gene_names,
+        region_pseudobulk=region_pseudobulk,
     )
 
     result = analyzer.analyze(top_k=top_k)
@@ -543,8 +545,19 @@ def main():
     gene_gate = attention_weights.get("gene_gate")
     hgt_raw = attention_weights.get("hgt_attention")
     region_weights = attention_weights.get("region_weights")
+    region_attention = attention_weights.get("region_attention")
     region_pseudobulk_raw = attention_weights.get("region_pseudobulk")
     embeddings = attention_weights.get("embeddings")
+
+    # Convert region_pseudobulk array to dict format for analyzers
+    region_pseudobulk_dict = None
+    if region_pseudobulk_raw is not None:
+        region_names_list = list(REGION_ORDER)
+        region_pseudobulk_dict = {}
+        for i, rname in enumerate(region_names_list):
+            if i < region_pseudobulk_raw.shape[0]:
+                region_pseudobulk_dict[rname] = region_pseudobulk_raw[i]
+        logger.info(f"Loaded region pseudobulk for {len(region_pseudobulk_dict)} regions")
 
     # Unpack HGT for CCC analyzer
     edge_attention_scores = None
@@ -629,6 +642,7 @@ def main():
             gene_gate_weights=gene_gate,
             cell_type_names=cell_type_names,
             gene_names=gene_names,
+            region_pseudobulk=region_pseudobulk_dict,
             top_k=args.top_k_genes,
             output_dir=output_dir,
             formats=args.formats,
@@ -733,17 +747,8 @@ def main():
 
     # Regional analysis
     if not args.skip_regional and region_weights is not None:
-        # Convert region_pseudobulk array to dict format for RegionalAnalyzer
-        region_pseudobulk_dict = None
-        if region_pseudobulk_raw is not None:
-            region_names_list = list(REGION_ORDER)
-            region_pseudobulk_dict = {}
-            for i, rname in enumerate(region_names_list):
-                if i < region_pseudobulk_raw.shape[0]:
-                    region_pseudobulk_dict[rname] = region_pseudobulk_raw[i]
-            logger.info(f"Loaded region pseudobulk for {len(region_pseudobulk_dict)} regions")
-
         run_regional_analysis(
+            region_attention=region_attention,
             region_weights=region_weights,
             gene_gate_weights=gene_gate,
             region_pseudobulk=region_pseudobulk_dict,

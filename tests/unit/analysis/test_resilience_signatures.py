@@ -1004,3 +1004,106 @@ class TestCohensD_CI:
         if result.by_region is not None:
             assert "cohens_d_ci_lower" in result.by_region.columns
             assert "cohens_d_ci_upper" in result.by_region.columns
+
+
+# ============================================================================
+# NaN Handling Tests
+# ============================================================================
+
+
+class TestNaNHandling:
+    """Tests for NaN handling in resilience analysis (Finding 4)."""
+
+    def test_nan_pathology_excluded_from_groups(self):
+        """Subjects with NaN pathology should be excluded from all groups."""
+        np.random.seed(42)
+        n_subjects = 30
+        attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
+        pathology = np.random.rand(n_subjects).astype(np.float32)
+        cognition = np.random.rand(n_subjects).astype(np.float32)
+
+        # Set some subjects to NaN
+        pathology[0] = np.nan
+        pathology[5] = np.nan
+        pathology[10] = np.nan
+
+        analyzer = ResilienceSignatureAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+            cell_type_names=[f"type_{i}" for i in range(5)],
+        )
+        result = analyzer.analyze(n_permutations=0)
+
+        assert result.signature is not None
+        # NaN subjects should NOT appear in any group
+        assert not analyzer.resilient_mask[0]
+        assert not analyzer.resilient_mask[5]
+        assert not analyzer.resilient_mask[10]
+        assert not analyzer.vulnerable_mask[0]
+        assert not analyzer.vulnerable_mask[5]
+        assert not analyzer.vulnerable_mask[10]
+
+    def test_nan_cognition_excluded_from_groups(self):
+        """Subjects with NaN cognition should be excluded from all groups."""
+        np.random.seed(42)
+        n_subjects = 30
+        attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
+        pathology = np.random.rand(n_subjects).astype(np.float32)
+        cognition = np.random.rand(n_subjects).astype(np.float32)
+
+        cognition[3] = np.nan
+        cognition[7] = np.nan
+
+        analyzer = ResilienceSignatureAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+            cell_type_names=[f"type_{i}" for i in range(5)],
+        )
+        result = analyzer.analyze(n_permutations=0)
+
+        assert result.signature is not None
+        assert not analyzer.resilient_mask[3]
+        assert not analyzer.vulnerable_mask[3]
+
+    def test_all_nan_raises_or_handles_gracefully(self):
+        """All NaN scores should be handled gracefully."""
+        np.random.seed(42)
+        attention = np.random.rand(10, 4, 5).astype(np.float32)
+        pathology = np.full(10, np.nan)
+        cognition = np.random.rand(10).astype(np.float32)
+
+        # Should handle gracefully (either raise or produce empty groups)
+        try:
+            analyzer = ResilienceSignatureAnalyzer(
+                attention=attention,
+                pathology_scores=pathology,
+                cognition_scores=cognition,
+                cell_type_names=[f"type_{i}" for i in range(5)],
+            )
+            result = analyzer.analyze(n_permutations=0)
+            # If it doesn't raise, signature should still be produced
+            assert result.signature is not None
+        except (ValueError, RuntimeWarning):
+            pass  # Acceptable to raise on all-NaN input
+
+    def test_nan_warning_logged(self, caplog):
+        """NaN values in input should trigger a warning."""
+        import logging
+        np.random.seed(42)
+        n_subjects = 20
+        attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
+        pathology = np.random.rand(n_subjects).astype(np.float32)
+        cognition = np.random.rand(n_subjects).astype(np.float32)
+        pathology[0] = np.nan
+
+        with caplog.at_level(logging.WARNING):
+            analyzer = ResilienceSignatureAnalyzer(
+                attention=attention,
+                pathology_scores=pathology,
+                cognition_scores=cognition,
+                cell_type_names=[f"type_{i}" for i in range(5)],
+            )
+
+        assert any("NaN" in record.message for record in caplog.records)

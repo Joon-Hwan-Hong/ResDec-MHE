@@ -110,9 +110,11 @@ def save_attention_weights(
     pathology_attention: np.ndarray | None = None,
     cell_type_selection: np.ndarray | None = None,
     region_weights: np.ndarray | None = None,
+    region_attention: np.ndarray | None = None,
     region_pseudobulk: np.ndarray | None = None,
     hgt_attention: dict | None = None,
     pma_attention: list[np.ndarray] | None = None,
+    cell_barcodes: list[list[list[str]]] | None = None,
     subject_ids: list[str] | None = None,
     cell_type_names: list[str] | None = None,
     gene_names: list[str] | None = None,
@@ -131,10 +133,13 @@ def save_attention_weights(
         pathology_attention: Pathology attention [n_subjects, n_heads, n_cell_types]
         cell_type_selection: Cell type selection weights [n_cell_types]
         region_weights: Region importance weights [n_regions]
+        region_attention: Per-subject normalized region weights [n_subjects, n_regions]
         region_pseudobulk: Mean region pseudobulk [n_regions, n_cell_types, n_genes]
         hgt_attention: HGT attention dict from aggregate_hgt_attention()
         pma_attention: PMA attention as list of per-cell-type arrays
                        [n_cell_types][n_subjects, n_heads, n_seeds, max_cells]
+        cell_barcodes: Per-subject, per-cell-type barcode lists
+                       [n_subjects][n_cell_types][barcodes]
         subject_ids: Subject identifier strings
         cell_type_names: Cell type name strings
         gene_names: Gene name strings
@@ -166,6 +171,11 @@ def save_attention_weights(
         if region_weights is not None:
             ds = f.create_dataset("region_weights", data=region_weights)
             ds.attrs["shape"] = "[n_regions]"
+
+        if region_attention is not None:
+            ds = f.create_dataset("region_attention", data=region_attention,
+                                  compression=compression, compression_opts=compression_opts)
+            ds.attrs["shape"] = "[n_subjects, n_regions]"
 
         if region_pseudobulk is not None:
             ds = f.create_dataset("region_pseudobulk", data=region_pseudobulk,
@@ -277,6 +287,23 @@ def save_attention_weights(
                 compression=compression, compression_opts=compression_opts,
             )
             ds.attrs["shape"] = "[n_cell_types, max_cells]"
+
+        # --- Cell barcodes group ---
+        if cell_barcodes is not None:
+            vlen_str_bc = h5py.special_dtype(vlen=str)
+            bc_group = f.create_group("cell_barcodes")
+            bc_group.attrs["description"] = "Per-subject, per-cell-type cell barcodes"
+            bc_group.attrs["n_subjects"] = len(cell_barcodes)
+            for subj_idx, subj_barcodes in enumerate(cell_barcodes):
+                if subj_barcodes is not None:
+                    for ct_idx, ct_barcodes in enumerate(subj_barcodes):
+                        if ct_barcodes:
+                            key = f"{subj_idx}_{ct_idx}"
+                            bc_group.create_dataset(
+                                key,
+                                data=np.array(ct_barcodes, dtype=object),
+                                dtype=vlen_str_bc,
+                            )
 
         # --- File-level metadata attributes ---
         if metadata:

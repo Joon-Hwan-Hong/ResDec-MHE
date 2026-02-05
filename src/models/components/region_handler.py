@@ -63,7 +63,7 @@ class RegionHandler(nn.Module):
         self,
         x: torch.Tensor,
         region_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Pool multi-region embeddings.
 
@@ -74,6 +74,7 @@ class RegionHandler(nn.Module):
         Returns:
             pooled: Weighted combination [B, 31, d_model]
             region_context: Region identity encoding [B, d_model]
+            normalized_weights: Per-subject region attention [B, n_regions]
         """
         # Input validation
         if x.dim() != 4:
@@ -103,7 +104,7 @@ class RegionHandler(nn.Module):
         region_count = mask_float.sum(dim=1, keepdim=True).clamp(min=1)  # [B, 1]
         region_context = masked_emb.sum(dim=1) / region_count  # [B, d_model]
 
-        return pooled, region_context
+        return pooled, region_context, normalized_weights
 
     def get_region_weights(self) -> torch.Tensor:
         """Get normalized region importance weights [n_regions]."""

@@ -251,6 +251,7 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "region_mask": region_mask,
         # Metadata
         "subject_ids": subject_ids,
+        "cell_barcodes": [s.get("cell_barcodes") for s in batch],
         "batch_size": batch_size,
     }
 
@@ -406,6 +407,7 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "region_mask": region_mask,
         # Metadata
         "subject_ids": subject_ids,
+        "cell_barcodes": [s.get("cell_barcodes") for s in batch],
         "batch_size": batch_size,
         # Include metadata for model
         "node_types": sanitized_cell_types,

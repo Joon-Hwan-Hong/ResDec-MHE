@@ -210,7 +210,7 @@ class TestAutocastForward:
             with torch.amp.autocast('cuda'):
                 x = torch.randn(4, N_REGIONS, N_CELL_TYPES, 64, device=cuda_device)
                 mask = torch.ones(4, N_REGIONS, dtype=torch.bool, device=cuda_device)
-                pooled, ctx = region(x, mask)
+                pooled, ctx, _ = region(x, mask)
 
         assert pooled.shape == (4, N_CELL_TYPES, 64)
         assert ctx.shape == (4, 64)

@@ -989,7 +989,7 @@ class TestComponentScale:
         region_mask = torch.ones(B, n_regions, dtype=torch.bool, device=cpu_device)
 
         with torch.no_grad():
-            pooled, region_context = handler(x, region_mask)
+            pooled, region_context, _ = handler(x, region_mask)
 
         assert pooled.shape == (B, n_cell_types, d_model)
         assert region_context.shape == (B, d_model)
@@ -1193,7 +1193,7 @@ class TestScaleEdgeCases:
         region_mask[:, 0] = True
 
         with torch.no_grad():
-            pooled, region_context = handler(x, region_mask)
+            pooled, region_context, _ = handler(x, region_mask)
 
         assert not torch.isnan(pooled).any()
         assert not torch.isnan(region_context).any()

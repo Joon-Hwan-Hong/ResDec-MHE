@@ -872,12 +872,12 @@ class TestCPUGPUConsistency:
         # CPU forward
         handler_cpu.eval()
         with torch.no_grad():
-            pooled_cpu, context_cpu = handler_cpu(x, mask)
+            pooled_cpu, context_cpu, _ = handler_cpu(x, mask)
 
         # GPU forward
         handler_gpu.eval()
         with torch.no_grad():
-            pooled_gpu, context_gpu = handler_gpu(
+            pooled_gpu, context_gpu, _ = handler_gpu(
                 x.to(cuda_device),
                 mask.to(cuda_device)
             )

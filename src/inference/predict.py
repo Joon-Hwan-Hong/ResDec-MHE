@@ -65,7 +65,9 @@ class PredictionResult:
     hgt_attention: list[dict] | None = None
     pma_attention: list[np.ndarray] | None = None
     region_weights: np.ndarray | None = None
+    region_attention: np.ndarray | None = None  # [n_subjects, n_regions]
     region_pseudobulk_mean: np.ndarray | None = None  # [n_regions, n_cell_types, n_genes]
+    cell_barcodes: list[list[list[str]]] | None = None  # [n_subjects][n_cell_types][barcodes]
     gene_names: list[str] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -265,6 +267,7 @@ class Predictor:
         batch: dict[str, Any],
         extract_hgt_attention: bool = False,
         extract_pma_attention: bool = False,
+        extract_region_attention: bool = False,
     ) -> dict[str, Any]:
         """
         Run inference on a single batch.
@@ -273,6 +276,7 @@ class Predictor:
             batch: Batch dict from DataLoader
             extract_hgt_attention: Whether to extract HGT attention weights
             extract_pma_attention: Whether to extract PMA cell-level attention weights
+            extract_region_attention: Whether to extract per-subject region attention
 
         Returns:
             Dict with predictions and attention weights
@@ -291,6 +295,7 @@ class Predictor:
             pathology=batch.get("pathology"),
             return_hgt_attention=extract_hgt_attention,
             return_pma_attention=extract_pma_attention,
+            return_region_attention=extract_region_attention,
         )
 
         result = {
@@ -310,6 +315,9 @@ class Predictor:
                 attn.cpu().numpy() for attn in output["pma_attention"]
             ]
 
+        if extract_region_attention and "region_attention" in output:
+            result["region_attention"] = output["region_attention"].cpu().numpy()
+
         # Include metadata from batch
         if "subject_id" in batch:
             result["subject_ids"] = batch["subject_id"]
@@ -317,6 +325,8 @@ class Predictor:
             result["actual"] = batch["cognition"].cpu().numpy()
         if "pathology" in batch:
             result["pathology"] = batch["pathology"].cpu().numpy()
+        if "cell_barcodes" in batch:
+            result["cell_barcodes"] = batch["cell_barcodes"]
 
         return result
 
@@ -326,6 +336,7 @@ class Predictor:
         dataloader: DataLoader,
         extract_hgt_attention: bool = False,
         extract_pma_attention: bool = False,
+        extract_region_attention: bool = False,
         show_progress: bool = True,
     ) -> PredictionResult:
         """
@@ -335,6 +346,7 @@ class Predictor:
             dataloader: DataLoader yielding batches
             extract_hgt_attention: Whether to extract HGT attention weights
             extract_pma_attention: Whether to extract PMA cell-level attention weights
+            extract_region_attention: Whether to extract per-subject region attention
             show_progress: Whether to show progress bar
 
         Returns:
@@ -354,13 +366,18 @@ class Predictor:
 
         # Region pseudobulk accumulation for regional analysis
         all_region_pseudobulk = []
+        all_region_mask = []  # Track which regions are valid per subject
+        all_region_attention = [] if extract_region_attention else None
+        all_cell_barcodes = []
 
         iterator: Iterator = dataloader
         if show_progress:
             iterator = tqdm(dataloader, desc="Predicting", unit="batch")
 
         for batch in iterator:
-            result = self.predict_batch(batch, extract_hgt_attention, extract_pma_attention)
+            result = self.predict_batch(
+                batch, extract_hgt_attention, extract_pma_attention, extract_region_attention
+            )
 
             all_mean.append(result["mean"])
             all_attention.append(result["attention_weights"])
@@ -379,13 +396,23 @@ class Predictor:
                 # result["pma_attention"] is list of [B, n_heads, n_seeds, max_cells] per cell type
                 for ct_idx, ct_attn in enumerate(result["pma_attention"]):
                     all_pma_attention[ct_idx].append(ct_attn)
+            if extract_region_attention and "region_attention" in result:
+                all_region_attention.append(result["region_attention"])
+            if "cell_barcodes" in result and result["cell_barcodes"] is not None:
+                all_cell_barcodes.extend(result["cell_barcodes"])
 
-            # Accumulate region pseudobulk (input data, for regional analysis)
+            # Accumulate region pseudobulk and mask (input data, for regional analysis)
             if "region_pseudobulk" in batch:
                 rpb = batch["region_pseudobulk"]
                 if isinstance(rpb, torch.Tensor):
                     rpb = rpb.cpu().numpy()
                 all_region_pseudobulk.append(rpb)
+                # Capture region_mask to know which regions are valid per subject
+                if "region_mask" in batch:
+                    rm = batch["region_mask"]
+                    if isinstance(rm, torch.Tensor):
+                        rm = rm.cpu().numpy()
+                    all_region_mask.append(rm)
 
         # Concatenate results
         mean = np.concatenate(all_mean, axis=0)
@@ -415,11 +442,27 @@ class Predictor:
                 np.concatenate(ct_batches, axis=0) for ct_batches in all_pma_attention
             ]
 
+        # Concatenate region attention per subject
+        region_attention = None
+        if extract_region_attention and all_region_attention:
+            region_attention = np.concatenate(all_region_attention, axis=0)  # [N, n_regions]
+
         # Compute mean region_pseudobulk across subjects for regional analysis
+        # Use region_mask to exclude zero-padded missing regions from the mean
         region_pseudobulk_mean = None
         if all_region_pseudobulk:
             stacked = np.concatenate(all_region_pseudobulk, axis=0)  # [N, n_regions, n_cell_types, n_genes]
-            region_pseudobulk_mean = stacked.mean(axis=0)  # [n_regions, n_cell_types, n_genes]
+            if all_region_mask:
+                stacked_mask = np.concatenate(all_region_mask, axis=0)  # [N, n_regions]
+                # Expand mask to broadcast: [N, n_regions, 1, 1]
+                mask_expanded = stacked_mask[:, :, np.newaxis, np.newaxis]
+                masked = np.where(mask_expanded, stacked, np.nan)
+                region_pseudobulk_mean = np.nanmean(masked, axis=0)  # [n_regions, n_cell_types, n_genes]
+                # Replace NaN for all-missing regions with 0
+                region_pseudobulk_mean = np.nan_to_num(region_pseudobulk_mean, nan=0.0)
+            else:
+                # Fallback if no mask available (shouldn't happen with proper collate)
+                region_pseudobulk_mean = stacked.mean(axis=0)
 
         # Build metadata
         metadata = {
@@ -447,7 +490,9 @@ class Predictor:
             hgt_attention=all_hgt_attention,
             pma_attention=pma_attention,
             region_weights=region_weights,
+            region_attention=region_attention,
             region_pseudobulk_mean=region_pseudobulk_mean,
+            cell_barcodes=all_cell_barcodes if all_cell_barcodes else None,
             gene_names=gene_names,
             metadata=metadata,
         )
@@ -547,9 +592,11 @@ class Predictor:
             gene_gate=results.gene_gate_weights,
             pathology_attention=results.attention_weights,
             region_weights=results.region_weights,
+            region_attention=results.region_attention,
             region_pseudobulk=results.region_pseudobulk_mean,
             hgt_attention=hgt_agg,
             pma_attention=results.pma_attention,
+            cell_barcodes=results.cell_barcodes,
             subject_ids=results.subject_ids,
             cell_type_names=list(CELL_TYPE_ORDER),
             gene_names=results.gene_names,
@@ -567,6 +614,7 @@ def predict_from_checkpoint(
     device: str = "auto",
     extract_hgt_attention: bool = False,
     extract_pma_attention: bool = False,
+    extract_region_attention: bool = False,
 ) -> PredictionResult:
     """
     Convenience function: load checkpoint, run inference, save results.
@@ -578,6 +626,7 @@ def predict_from_checkpoint(
         device: Device for inference
         extract_hgt_attention: Whether to extract HGT attention
         extract_pma_attention: Whether to extract PMA cell-level attention
+        extract_region_attention: Whether to extract per-subject region attention
 
     Returns:
         PredictionResult with all outputs
@@ -587,6 +636,7 @@ def predict_from_checkpoint(
         dataloader,
         extract_hgt_attention=extract_hgt_attention,
         extract_pma_attention=extract_pma_attention,
+        extract_region_attention=extract_region_attention,
     )
     predictor.save_predictions(results, output_dir)
     return results

@@ -147,19 +147,29 @@ class ResilienceSignatureAnalyzer:
                 f"but attention has {n_subjects} subjects"
             )
 
+        # Warn about NaN values (will be excluded from group assignment)
+        n_nan_path = int(np.sum(np.isnan(self.pathology_scores)))
+        n_nan_cog = int(np.sum(np.isnan(self.cognition_scores)))
+        if n_nan_path > 0 or n_nan_cog > 0:
+            logger.warning(
+                f"Input arrays contain NaN values: {n_nan_path} pathology, "
+                f"{n_nan_cog} cognition. NaN subjects will be excluded from "
+                f"group assignment."
+            )
+
     def _identify_groups(self) -> None:
         """Identify resilient and vulnerable subject groups."""
         n_subjects = len(self.pathology_scores)
 
         # High pathology threshold (top tertile)
-        pathology_threshold = np.percentile(
+        pathology_threshold = np.nanpercentile(
             self.pathology_scores, self.pathology_threshold_percentile
         )
         self.high_pathology_mask = self.pathology_scores >= pathology_threshold
 
         # Pathology tertile masks (low/medium/high)
-        path_33 = np.percentile(self.pathology_scores, 33.3)
-        path_67 = np.percentile(self.pathology_scores, 66.7)
+        path_33 = np.nanpercentile(self.pathology_scores, 33.3)
+        path_67 = np.nanpercentile(self.pathology_scores, 66.7)
         self.pathology_low_mask = self.pathology_scores < path_33
         self.pathology_med_mask = (self.pathology_scores >= path_33) & (self.pathology_scores < path_67)
         self.pathology_high_mask = self.pathology_scores >= path_67
@@ -170,8 +180,8 @@ class ResilienceSignatureAnalyzer:
 
         # Resilient = top tertile cognition among high pathology
         # Vulnerable = bottom tertile cognition among high pathology
-        cog_33 = np.percentile(high_path_cognition, 33.3)
-        cog_67 = np.percentile(high_path_cognition, 66.7)
+        cog_33 = np.nanpercentile(high_path_cognition, 33.3)
+        cog_67 = np.nanpercentile(high_path_cognition, 66.7)
 
         self.resilient_mask = np.zeros(n_subjects, dtype=bool)
         self.vulnerable_mask = np.zeros(n_subjects, dtype=bool)
@@ -495,8 +505,8 @@ class ResilienceSignatureAnalyzer:
             region_cognition = self.cognition_scores[region_indices]
 
             # Split into resilient/vulnerable by cognition tertiles within region
-            cog_33 = np.percentile(region_cognition, 33.3)
-            cog_67 = np.percentile(region_cognition, 66.7)
+            cog_33 = np.nanpercentile(region_cognition, 33.3)
+            cog_67 = np.nanpercentile(region_cognition, 66.7)
 
             region_resilient_mask = np.zeros(len(self.pathology_scores), dtype=bool)
             region_vulnerable_mask = np.zeros(len(self.pathology_scores), dtype=bool)

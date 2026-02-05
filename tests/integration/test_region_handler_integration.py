@@ -47,7 +47,7 @@ class TestPseudobulkRegionHandlerIntegration:
         encoded = encoded.view(B, R, C, -1)
 
         # Pool across regions
-        pooled, region_context = region_handler(encoded, region_mask)
+        pooled, region_context, _ = region_handler(encoded, region_mask)
 
         # Verify shapes
         assert pooled.shape == (batch_size, n_cell_types, d_embed)
@@ -89,7 +89,7 @@ class TestPseudobulkRegionHandlerIntegration:
         B, R, C, G = region_pseudobulk.shape
         encoded = encoder(region_pseudobulk.view(B * R, C, G))
         encoded = encoded.view(B, R, C, -1)
-        pooled, _ = region_handler(encoded, region_mask)
+        pooled, _, _ = region_handler(encoded, region_mask)
 
         # Should be identical
         assert torch.allclose(pooled, direct_encoded, atol=1e-5)
@@ -108,7 +108,7 @@ class TestPseudobulkRegionHandlerIntegration:
         B, R, C, G = region_pseudobulk.shape
         encoded = encoder(region_pseudobulk.view(B * R, C, G))
         encoded = encoded.view(B, R, C, -1)
-        pooled, region_context = region_handler(encoded, region_mask)
+        pooled, region_context, _ = region_handler(encoded, region_mask)
 
         loss = pooled.sum() + region_context.sum()
         loss.backward()
@@ -143,7 +143,7 @@ class TestRegionHandlerWithCellTransformerOutput:
         stacked_cell_embs = torch.randn(batch_size, N_REGIONS, N_CELL_TYPES, d_embed)
         region_mask = torch.ones(batch_size, N_REGIONS, dtype=torch.bool)
 
-        pooled, region_context = region_handler(stacked_cell_embs, region_mask)
+        pooled, region_context, _ = region_handler(stacked_cell_embs, region_mask)
 
         assert pooled.shape == (batch_size, N_CELL_TYPES, d_embed)
         assert region_context.shape == (batch_size, d_embed)
@@ -166,8 +166,8 @@ class TestRegionHandlerWithCellTransformerOutput:
         partial_mask = torch.zeros(batch_size, N_REGIONS, dtype=torch.bool)
         partial_mask[:, 0] = True  # PFC only
 
-        pooled_full, _ = region_handler(stacked, full_mask)
-        pooled_partial, _ = region_handler(stacked, partial_mask)
+        pooled_full, _, _ = region_handler(stacked, full_mask)
+        pooled_partial, _, _ = region_handler(stacked, partial_mask)
 
         assert not torch.allclose(pooled_full, pooled_partial, atol=1e-6), \
             "Full-mask and partial-mask outputs should differ"
@@ -196,7 +196,7 @@ class TestRegionHandlerToDownstreamComponents:
         mask = torch.ones(batch_size, N_REGIONS, dtype=torch.bool)
         pathology = torch.randn(batch_size, 3)
 
-        _, region_context = handler(x, mask)
+        _, region_context, _ = handler(x, mask)
         path_emb = encoder(pathology, region_context)
 
         assert path_emb.shape == (batch_size, d_cond)
@@ -224,7 +224,7 @@ class TestRegionHandlerToDownstreamComponents:
         x = torch.randn(batch_size, N_REGIONS, N_CELL_TYPES, d_embed)
         mask = torch.ones(batch_size, N_REGIONS, dtype=torch.bool)
 
-        pooled, _ = handler(x, mask)
+        pooled, _, _ = handler(x, mask)
 
         # pooled can serve as one of the three branch inputs to FusionLayer
         hgt_emb = torch.randn(batch_size, N_CELL_TYPES, d_embed)

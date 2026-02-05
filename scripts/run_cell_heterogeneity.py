@@ -150,6 +150,22 @@ def load_pma_attention(path: Path) -> dict:
     elif "metadata" in raw and "subject_ids" in raw["metadata"]:
         weights["subject_ids"] = list(raw["metadata"]["subject_ids"])
 
+    # Pass through cell barcodes if present, decoding bytes from HDF5
+    cell_barcodes_raw = raw.get("cell_barcodes")
+    if cell_barcodes_raw is not None and isinstance(cell_barcodes_raw, dict):
+        decoded_barcodes = {}
+        for k, v in cell_barcodes_raw.items():
+            if k == "attrs":
+                continue
+            if isinstance(v, np.ndarray):
+                decoded_barcodes[k] = [
+                    x.decode("utf-8") if isinstance(x, bytes) else str(x)
+                    for x in v
+                ]
+            else:
+                decoded_barcodes[k] = v
+        weights["cell_barcodes"] = decoded_barcodes
+
     if pma_raw is not None:
         if isinstance(pma_raw, dict):
             # Nested group from predictor — unpack to 3D

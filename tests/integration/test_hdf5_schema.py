@@ -454,3 +454,123 @@ class TestSaveLoadRoundTrip:
                 loaded["region_pseudobulk"], region_pb
             )
             assert loaded["region_pseudobulk"].shape == (6, 8, 100)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Region Attention Round-Trip Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestRegionAttentionRoundTrip:
+    """Test region_attention save/load round-trip (Finding 2)."""
+
+    def test_region_attention_roundtrip(self):
+        """region_attention survives save/load round-trip."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        np.random.seed(42)
+        n_subjects = 10
+        n_regions = 6
+        region_attention = np.random.rand(n_subjects, n_regions).astype(np.float32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attention_weights.h5"
+
+            save_attention_weights(
+                path=path,
+                gene_gate=np.random.rand(8, 100).astype(np.float32),
+                region_attention=region_attention,
+            )
+
+            loaded = load_attention_weights(path)
+            assert "region_attention" in loaded
+            np.testing.assert_array_almost_equal(
+                loaded["region_attention"], region_attention
+            )
+            assert loaded["region_attention"].shape == (n_subjects, n_regions)
+
+    def test_region_attention_shape_attr(self):
+        """region_attention should have shape attribute in HDF5."""
+        from src.utils.io import save_attention_weights
+
+        np.random.seed(42)
+        region_attention = np.random.rand(10, 6).astype(np.float32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attention_weights.h5"
+            save_attention_weights(
+                path=path,
+                gene_gate=np.random.rand(8, 100).astype(np.float32),
+                region_attention=region_attention,
+            )
+
+            with h5py.File(path, "r") as f:
+                assert "region_attention" in f
+                assert "shape" in f["region_attention"].attrs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cell Barcodes Round-Trip Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCellBarcodesRoundTrip:
+    """Test cell_barcodes save/load round-trip (Finding 5)."""
+
+    def test_cell_barcodes_roundtrip(self):
+        """cell_barcodes survives save/load round-trip."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        # 2 subjects, 3 cell types each
+        cell_barcodes = [
+            [["barcode_0_0_a", "barcode_0_0_b"], ["barcode_0_1_a"], ["barcode_0_2_a", "barcode_0_2_b", "barcode_0_2_c"]],
+            [["barcode_1_0_a"], ["barcode_1_1_a", "barcode_1_1_b"], []],
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attention_weights.h5"
+            save_attention_weights(
+                path=path,
+                gene_gate=np.random.rand(3, 50).astype(np.float32),
+                cell_barcodes=cell_barcodes,
+            )
+
+            loaded = load_attention_weights(path)
+            assert "cell_barcodes" in loaded
+            bc_group = loaded["cell_barcodes"]
+
+            # Check key "0_0" has the correct barcodes
+            assert "0_0" in bc_group
+            loaded_barcodes = bc_group["0_0"]
+            # May be bytes from HDF5, decode if needed
+            decoded = [b.decode("utf-8") if isinstance(b, bytes) else str(b) for b in loaded_barcodes]
+            assert decoded == ["barcode_0_0_a", "barcode_0_0_b"]
+
+            # Check key "0_2" has 3 barcodes
+            assert "0_2" in bc_group
+            loaded_02 = bc_group["0_2"]
+            decoded_02 = [b.decode("utf-8") if isinstance(b, bytes) else str(b) for b in loaded_02]
+            assert len(decoded_02) == 3
+
+    def test_empty_barcodes_not_stored(self):
+        """Empty barcode lists should not create datasets."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        # Subject 0 ct 0: has barcodes, ct 1: empty
+        cell_barcodes = [[["bc1", "bc2"], []], [["bc3"], ["bc4"]]]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attention_weights.h5"
+            save_attention_weights(
+                path=path,
+                gene_gate=np.random.rand(2, 50).astype(np.float32),
+                cell_barcodes=cell_barcodes,
+            )
+
+            loaded = load_attention_weights(path)
+            bc_group = loaded["cell_barcodes"]
+
+            # "0_1" should not be stored (empty)
+            assert "0_1" not in bc_group
+            # "0_0" should exist
+            assert "0_0" in bc_group
