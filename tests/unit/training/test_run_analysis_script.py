@@ -751,3 +751,43 @@ class TestGeneImportanceWithRegionPseudobulk:
         assert (tmp_path / "gene_importance_by_celltype.csv").exists()
         assert not (tmp_path / "gene_importance_by_region.csv").exists()
         assert not (tmp_path / "regional_gene_importance.csv").exists()
+
+
+# =============================================================================
+# Phase 6 Review Round 5 Tests
+# =============================================================================
+
+
+class TestAlignPredictionsToSubjects:
+    """Test _align_predictions_to_subjects helper."""
+
+    def test_matching_order(self):
+        """Matching order returns identical data."""
+        from scripts.run_analysis import _align_predictions_to_subjects
+        df = pd.DataFrame({"subject_id": ["A", "B", "C"], "val": [1, 2, 3]})
+        result = _align_predictions_to_subjects(df, ["A", "B", "C"])
+        pd.testing.assert_frame_equal(result, df)
+
+    def test_reversed_order(self):
+        """Reversed target order reorders rows."""
+        from scripts.run_analysis import _align_predictions_to_subjects
+        df = pd.DataFrame({"subject_id": ["A", "B", "C"], "val": [1, 2, 3]})
+        result = _align_predictions_to_subjects(df, ["C", "B", "A"])
+        assert result["subject_id"].tolist() == ["C", "B", "A"]
+        assert result["val"].tolist() == [3, 2, 1]
+
+    def test_missing_subjects_get_nan(self):
+        """Subjects in target but not in predictions_df get NaN rows."""
+        from scripts.run_analysis import _align_predictions_to_subjects
+        df = pd.DataFrame({"subject_id": ["A", "C"], "val": [1.0, 3.0]})
+        result = _align_predictions_to_subjects(df, ["A", "B", "C"])
+        assert len(result) == 3
+        assert result["subject_id"].tolist() == ["A", "B", "C"]
+        assert np.isnan(result["val"].iloc[1])
+
+    def test_no_subject_id_column_returns_unchanged(self):
+        """No subject_id column returns DataFrame unchanged with warning."""
+        from scripts.run_analysis import _align_predictions_to_subjects
+        df = pd.DataFrame({"id": ["A", "B"], "val": [1, 2]})
+        result = _align_predictions_to_subjects(df, ["B", "A"])
+        pd.testing.assert_frame_equal(result, df)

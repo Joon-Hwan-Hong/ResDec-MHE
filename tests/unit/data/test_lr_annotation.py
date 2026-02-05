@@ -237,6 +237,27 @@ class TestExtractLRPairsByEdge:
             # Parts should be non-empty
             assert all(p for p in parts)
 
+    def test_edge_key_sanitizes_cell_type_names(self):
+        """Cell type names with special characters are sanitized in edge keys (F3)."""
+        df = pd.DataFrame({
+            "source": ["Upper-layer intratelencephalic", "L6b/CT"],
+            "target": ["Microglia", "Upper-layer intratelencephalic"],
+            "ligand_complex": ["IL1B", "BDNF"],
+            "receptor_complex": ["IL1R1", "NTRK2"],
+            "magnitude_rank": [0.01, 0.02],
+            "edge_type_name": ["Secreted_Signaling", "Secreted_Signaling"],
+        })
+
+        lr_mapping = extract_lr_pairs_by_edge(df)
+
+        # Hyphens and slashes should be sanitized to underscores
+        assert "Upper_layer_intratelencephalic|Microglia|Secreted_Signaling" in lr_mapping
+        assert "L6b_CT|Upper_layer_intratelencephalic|Secreted_Signaling" in lr_mapping
+
+        # Raw (unsanitized) keys should NOT be present
+        assert "Upper-layer intratelencephalic|Microglia|Secreted_Signaling" not in lr_mapping
+        assert "L6b/CT|Upper-layer intratelencephalic|Secreted_Signaling" not in lr_mapping
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests for aggregate_lr_mapping_across_subjects

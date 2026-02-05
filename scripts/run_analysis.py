@@ -38,7 +38,6 @@ from src.analysis import (
     RegionalAnalyzer,
     UncertaintyAnalyzer,
     compute_expected_calibration_error,
-    CellAttentionAnalyzer,
     EmbeddingAnalyzer,
 )
 from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
@@ -125,11 +124,6 @@ def parse_args() -> argparse.Namespace:
         "--skip-uncertainty",
         action="store_true",
         help="Skip uncertainty analysis",
-    )
-    analysis_group.add_argument(
-        "--skip-cell-attention",
-        action="store_true",
-        help="Skip cell-level attention analysis (PMA attention)",
     )
     analysis_group.add_argument(
         "--skip-embedding",
@@ -242,6 +236,33 @@ def _align_array_by_subject_id(
     return np.array(aligned, dtype=float)
 
 
+def _align_predictions_to_subjects(
+    predictions_df: pd.DataFrame,
+    target_subject_ids: list[str],
+) -> pd.DataFrame:
+    """Reindex predictions_df to match target_subject_ids order.
+
+    If predictions_df has a 'subject_id' column, rows are reordered (and
+    potentially subset/extended with NaN) to match target_subject_ids.
+    If no 'subject_id' column, returns unchanged with a warning.
+    """
+    if "subject_id" not in predictions_df.columns:
+        logger.warning(
+            "predictions_df has no 'subject_id' column — cannot align "
+            "to attention_weights subject order. Assuming positional match."
+        )
+        return predictions_df
+
+    aligned = predictions_df.set_index("subject_id").reindex(target_subject_ids).reset_index()
+    n_missing = aligned.isna().all(axis=1).sum()
+    if n_missing > 0:
+        logger.warning(
+            f"{n_missing}/{len(target_subject_ids)} attention subjects not found "
+            "in predictions_df"
+        )
+    return aligned
+
+
 def run_cell_type_importance(
     pathology_attention: np.ndarray,
     cell_type_names: list[str],
@@ -332,6 +353,7 @@ def run_resilience_signature(
     n_permutations: int = 1000,
     random_seed: int | None = None,
     apply_fdr_correction: bool = True,
+    fdr_threshold: float = 0.05,
     run_ablation: bool = False,
     ablation_method: str = "both",
     region_labels: np.ndarray | None = None,
@@ -355,6 +377,7 @@ def run_resilience_signature(
         n_permutations=n_permutations,
         random_seed=random_seed,
         apply_fdr_correction=apply_fdr_correction,
+        fdr_threshold=fdr_threshold,
         run_ablation=run_ablation,
         ablation_method=ablation_method,
     )
@@ -427,32 +450,6 @@ def run_uncertainty_analysis(
         ece = compute_expected_calibration_error(predicted_mean, predicted_std, actual)
         logger.info(f"  Expected Calibration Error (ECE): {ece:.4f}")
 
-
-def run_cell_attention(
-    pma_attention: np.ndarray,
-    cell_ids: list[str] | None = None,
-    cell_types: list[str] | None = None,
-    subject_ids: list[str] | None = None,
-    aggregation: str = "mean",
-    output_dir: Path = None,
-    formats: list[str] = None,
-) -> None:
-    """Run cell-level attention analysis from PMA."""
-    logger.info("Running cell attention analysis...")
-
-    analyzer = CellAttentionAnalyzer(
-        pma_attention=pma_attention,
-        cell_ids=cell_ids,
-        cell_types=cell_types,
-        subject_ids=subject_ids,
-        aggregation=aggregation,
-    )
-
-    result = analyzer.analyze()
-
-    if output_dir:
-        analyzer.save(result, output_dir, formats=formats)
-        logger.info(f"  Saved cell attention analysis to {output_dir}")
 
 
 def run_embedding_analysis(
@@ -529,6 +526,11 @@ def main():
     subject_ids = metadata.get("subject_ids")
     if subject_ids is not None:
         subject_ids = list(subject_ids)
+
+    # Align predictions_df to attention_weights subject order
+    if predictions_df is not None and subject_ids is not None:
+        predictions_df = _align_predictions_to_subjects(predictions_df, subject_ids)
+        logger.info("  Aligned predictions_df to attention_weights subject order")
 
     # Load metadata if provided
     metadata_df = None
@@ -729,6 +731,7 @@ def main():
                         cell_type_names=cell_type_names,
                         n_permutations=args.n_permutations,
                         apply_fdr_correction=not args.no_fdr,
+                        fdr_threshold=args.fdr_threshold,
                         run_ablation=args.run_ablation,
                         ablation_method=args.ablation_method,
                         region_labels=region_labels,
@@ -818,14 +821,41 @@ def main():
             if cov_cols:
                 covariates = predictions_df[cov_cols]
 
-        run_embedding_analysis(
-            embeddings=embeddings,
-            subject_ids=subject_ids,
-            covariates=covariates,
-            output_dir=output_dir,
-            formats=args.formats,
-        )
-        analyses_run += 1
+        if isinstance(embeddings, dict):
+            # Multiple embedding types (pseudobulk, hgt, cell, fused, attended)
+            for emb_name, emb_array in embeddings.items():
+                if emb_array is None:
+                    continue
+                # Mean-pool 3D branch embeddings to 2D for analysis
+                if emb_array.ndim == 3:
+                    emb_2d = emb_array.mean(axis=1)
+                elif emb_array.ndim == 2:
+                    emb_2d = emb_array
+                else:
+                    logger.warning(f"Skipping embedding '{emb_name}' with {emb_array.ndim}D shape")
+                    continue
+
+                emb_output_dir = output_dir / f"embedding_{emb_name}"
+                logger.info(f"  Running embedding analysis for '{emb_name}' "
+                           f"(shape {emb_2d.shape}) → {emb_output_dir}")
+                run_embedding_analysis(
+                    embeddings=emb_2d,
+                    subject_ids=subject_ids,
+                    covariates=covariates,
+                    output_dir=emb_output_dir,
+                    formats=args.formats,
+                )
+                analyses_run += 1
+        else:
+            # Single embedding array (backward compat)
+            run_embedding_analysis(
+                embeddings=embeddings,
+                subject_ids=subject_ids,
+                covariates=covariates,
+                output_dir=output_dir,
+                formats=args.formats,
+            )
+            analyses_run += 1
 
     logger.info(f"Completed {analyses_run} analyses")
     logger.info(f"Results saved to: {output_dir}")

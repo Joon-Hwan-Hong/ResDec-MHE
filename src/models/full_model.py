@@ -348,6 +348,7 @@ class CognitiveResilienceModel(nn.Module):
         return_hgt_attention: bool = False,
         return_pma_attention: bool = False,
         return_region_attention: bool = False,
+        return_embeddings: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass through the full model.
@@ -386,6 +387,7 @@ class CognitiveResilienceModel(nn.Module):
                 - 'hgt_attention': List of attention dicts per layer (if return_hgt_attention)
                 - 'pma_attention': List of [B, n_heads, n_seeds, max_cells] per cell type (if return_pma_attention)
                 - 'region_attention': [B, n_regions] normalized region weights (if return_region_attention)
+                - 'embeddings': dict of branch/fused/attended embeddings (if return_embeddings)
         """
         # ─────────────────────────────────────────────────────────────────────
         # Handle single-region vs multi-region input
@@ -520,6 +522,15 @@ class CognitiveResilienceModel(nn.Module):
 
         if return_region_attention:
             output['region_attention'] = region_attn
+
+        if return_embeddings:
+            output['embeddings'] = {
+                'pseudobulk': pseudobulk_emb,  # [B, n_cell_types, d_embed]
+                'hgt': hgt_emb,                # [B, n_cell_types, d_embed]
+                'cell': cell_emb,              # [B, n_cell_types, d_embed]
+                'fused': fused,                # [B, n_cell_types, d_fused]
+                'attended': attended,           # [B, d_fused]
+            }
 
         if self.use_bayesian_head:
             mean, std = self.prediction_head(attended, cognition)

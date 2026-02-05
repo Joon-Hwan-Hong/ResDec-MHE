@@ -557,6 +557,33 @@ class TestGeneratePlotsEdgeCases:
 
 
 # =============================================================================
+# Phase 6 Review Round 5 Tests
+# =============================================================================
+
+
+class TestUncertaintyCorrelatesDataSource:
+    """Test that uncertainty_correlates plot uses the correct data file."""
+
+    def test_load_analysis_data_includes_correlates(self, mock_analysis_dir):
+        """load_analysis_data should load uncertainty_correlates.parquet."""
+        from scripts.generate_plots import load_analysis_data
+        data = load_analysis_data(mock_analysis_dir)
+        assert "uncertainty_correlates" in data
+        assert "covariate" in data["uncertainty_correlates"].columns
+        assert "correlation" in data["uncertainty_correlates"].columns
+
+    def test_correlates_plot_uses_correct_key(self, mock_analysis_dir):
+        """generate_analysis_plots should use uncertainty_correlates key, not uncertainty."""
+        from scripts.generate_plots import load_analysis_data
+        data = load_analysis_data(mock_analysis_dir)
+        # The uncertainty_correlates key should be present for the plot
+        assert "uncertainty_correlates" in data
+        # The old "uncertainty" key (prediction_uncertainty.parquet) should NOT have correlates columns
+        if "uncertainty" in data:
+            assert "covariate" not in data["uncertainty"].columns
+
+
+# =============================================================================
 # Cleanup
 # =============================================================================
 

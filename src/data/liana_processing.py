@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from anndata import AnnData
 
-from src.data.constants import CELLCHATDB_EDGE_TYPES, CELLCHATDB_PATH, EDGE_TYPE_NOVEL, ALL_EDGE_TYPES
+from src.data.constants import CELLCHATDB_EDGE_TYPES, CELLCHATDB_PATH, EDGE_TYPE_NOVEL, ALL_EDGE_TYPES, sanitize_key
 
 
 def _normalize_annotation(annotation: str) -> str:
@@ -631,7 +631,7 @@ def extract_lr_pairs_by_edge(
             continue
 
         # Create edge key
-        edge_key = f"{src}|{tgt}|{et_name}"
+        edge_key = f"{sanitize_key(src)}|{sanitize_key(tgt)}|{et_name}"
         lr_pair = f"{ligand}_{receptor}"
 
         # Add to mapping (respecting max_pairs_per_edge)

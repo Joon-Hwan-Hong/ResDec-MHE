@@ -351,6 +351,20 @@ def analyze_cell_heterogeneity(
             ascending=[True, False]
         ).reset_index(drop=True)
 
+    # Enrich with cell metadata if available
+    if cell_metadata is not None and "cell_barcode" in high_attention_df.columns:
+        meta_cols = [c for c in cell_metadata.columns if c not in high_attention_df.columns]
+        if meta_cols:
+            high_attention_df = high_attention_df.merge(
+                cell_metadata[meta_cols], left_on="cell_barcode", right_index=True, how="left"
+            )
+    if cell_metadata is not None and "cell_barcode" in all_scores_df.columns:
+        meta_cols = [c for c in cell_metadata.columns if c not in all_scores_df.columns]
+        if meta_cols:
+            all_scores_df = all_scores_df.merge(
+                cell_metadata[meta_cols], left_on="cell_barcode", right_index=True, how="left"
+            )
+
     return summary_df, high_attention_df, all_scores_df
 
 

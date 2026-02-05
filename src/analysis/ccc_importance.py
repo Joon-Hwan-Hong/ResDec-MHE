@@ -172,14 +172,11 @@ class CCCImportanceAnalyzer:
             n_attention = len(mean_attention)
             n_metadata = len(result)
             if n_attention != n_metadata:
-                logger.warning(
-                    f"Attention length ({n_attention}) differs from edge metadata "
-                    f"length ({n_metadata}). Truncating to shorter length."
+                raise ValueError(
+                    f"Attention length ({n_attention}) does not match edge metadata "
+                    f"length ({n_metadata}). Ensure edge_metadata was computed from "
+                    f"the same HGT attention data."
                 )
-                min_len = min(n_attention, n_metadata)
-                result = result.iloc[:min_len].copy()
-                mean_attention = mean_attention[:min_len]
-                std_attention = std_attention[:min_len]
             result["mean_attention"] = mean_attention
             result["std_attention"] = std_attention
         else:

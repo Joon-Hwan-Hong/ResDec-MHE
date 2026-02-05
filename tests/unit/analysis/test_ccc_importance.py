@@ -433,3 +433,44 @@ class TestEdgeCases:
         )
         result = analyzer.analyze(top_k=1000)  # Much larger than actual edges
         assert len(result.top_interactions) == len(sample_edge_metadata)
+
+
+# ============================================================================
+# CCC Length Validation Tests (Phase 6 Review Round 5)
+# ============================================================================
+
+
+class TestCCCLengthValidation:
+    """Test CCC analyzer rejects mismatched attention/metadata lengths."""
+
+    def test_mismatched_lengths_raises_error(self):
+        """Mismatched attention and edge_metadata lengths should raise ValueError."""
+        attention = np.random.rand(10, 5)  # 10 subjects, 5 edges
+        metadata = pd.DataFrame({
+            "source": ["A"] * 3,  # only 3 edges
+            "target": ["B"] * 3,
+            "edge_type": ["Secreted_Signaling"] * 3,
+        })
+        analyzer = CCCImportanceAnalyzer(
+            edge_attention_scores=attention,
+            edge_metadata=metadata,
+            cell_type_names=["A", "B"],
+        )
+        with pytest.raises(ValueError, match="does not match edge metadata"):
+            analyzer.analyze()
+
+    def test_matching_lengths_succeeds(self):
+        """Matching attention and edge_metadata lengths should work."""
+        attention = np.random.rand(10, 5)  # 10 subjects, 5 edges
+        metadata = pd.DataFrame({
+            "source": ["A"] * 5,
+            "target": ["B"] * 5,
+            "edge_type": ["Secreted_Signaling"] * 5,
+        })
+        analyzer = CCCImportanceAnalyzer(
+            edge_attention_scores=attention,
+            edge_metadata=metadata,
+            cell_type_names=["A", "B"],
+        )
+        result = analyzer.analyze()
+        assert result.edge_importance is not None

@@ -118,6 +118,7 @@ def save_attention_weights(
     subject_ids: list[str] | None = None,
     cell_type_names: list[str] | None = None,
     gene_names: list[str] | None = None,
+    embeddings: dict[str, np.ndarray] | None = None,
     metadata: dict | None = None,
     compression: str = "gzip",
     compression_opts: int = 4,
@@ -140,6 +141,7 @@ def save_attention_weights(
                        [n_cell_types][n_subjects, n_heads, n_seeds, max_cells]
         cell_barcodes: Per-subject, per-cell-type barcode lists
                        [n_subjects][n_cell_types][barcodes]
+        embeddings: Dict of embeddings {name: array} (e.g., pseudobulk, hgt, cell, fused, attended)
         subject_ids: Subject identifier strings
         cell_type_names: Cell type name strings
         gene_names: Gene name strings
@@ -305,6 +307,19 @@ def save_attention_weights(
                                 dtype=vlen_str_bc,
                             )
 
+        # --- Embeddings group ---
+        if embeddings is not None:
+            emb_group = f.create_group("embeddings")
+            for emb_name, emb_array in embeddings.items():
+                ds = emb_group.create_dataset(
+                    emb_name, data=emb_array,
+                    compression=compression, compression_opts=compression_opts,
+                )
+                if emb_array.ndim == 3:
+                    ds.attrs["shape"] = "[n_subjects, n_cell_types, d_embed]"
+                elif emb_array.ndim == 2:
+                    ds.attrs["shape"] = "[n_subjects, d_embed]"
+
         # --- File-level metadata attributes ---
         if metadata:
             for key, value in metadata.items():
@@ -382,6 +397,13 @@ def load_attention_weights(path: str | Path) -> dict[str, np.ndarray | dict]:
     # Alias gene_gate_weights → gene_gate for backward compat
     if "gene_gate_weights" in result and "gene_gate" not in result:
         result["gene_gate"] = result["gene_gate_weights"]
+
+    # Clean up embeddings group: strip 'attrs' key, keep only arrays
+    if "embeddings" in result and isinstance(result["embeddings"], dict):
+        result["embeddings"] = {
+            k: v for k, v in result["embeddings"].items()
+            if k != "attrs" and isinstance(v, np.ndarray)
+        }
 
     return result
 

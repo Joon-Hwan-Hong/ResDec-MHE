@@ -207,7 +207,7 @@ class CellTypeImportanceAnalyzer:
             raise ValueError("pathology_scores required for pathology stratification")
 
         # Compute tertile boundaries
-        tertile_edges = np.percentile(
+        tertile_edges = np.nanpercentile(
             self.pathology_scores,
             [100 * i / n_tertiles for i in range(n_tertiles + 1)]
         )

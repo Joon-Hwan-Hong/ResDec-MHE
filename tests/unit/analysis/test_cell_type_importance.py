@@ -675,3 +675,24 @@ class TestEdgeCases:
         """load_cell_type_importance raises for unsupported format."""
         with pytest.raises(ValueError, match="Unsupported"):
             load_cell_type_importance(Path("/fake/path.xyz"))
+
+    def test_pathology_stratification_with_nans(self):
+        """Pathology stratification handles NaN values from subject alignment."""
+        n_subjects = 20
+        attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
+        # Insert NaN in pathology scores (simulating missing subjects after alignment)
+        pathology = np.random.rand(n_subjects).astype(np.float32)
+        pathology[3] = np.nan
+        pathology[7] = np.nan
+        pathology[15] = np.nan
+
+        analyzer = CellTypeImportanceAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cell_type_names=[f"type_{i}" for i in range(5)],
+        )
+        result = analyzer.analyze()
+
+        # Should produce valid result, not NaN-filled
+        assert result.by_pathology is not None
+        assert not result.by_pathology["mean_attention"].isna().any()

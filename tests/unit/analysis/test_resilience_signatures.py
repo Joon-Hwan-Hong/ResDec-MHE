@@ -241,7 +241,7 @@ class TestPermutationTest:
     def test_permutation_pvalues_has_expected_columns(self, analyzer):
         """permutation_pvalues has expected columns."""
         result = analyzer.analyze(n_permutations=100)
-        expected_cols = {"cell_type", "p_value", "fdr_corrected", "significant_005", "significant_001"}
+        expected_cols = {"cell_type", "p_value", "fdr_corrected", "significant", "significant_005", "significant_001"}
         assert set(result.permutation_pvalues.columns) == expected_cols
 
     def test_pvalues_bounded(self, analyzer):
@@ -1067,6 +1067,7 @@ class TestNaNHandling:
         assert not analyzer.resilient_mask[3]
         assert not analyzer.vulnerable_mask[3]
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_all_nan_raises_or_handles_gracefully(self):
         """All NaN scores should be handled gracefully."""
         np.random.seed(42)
@@ -1107,3 +1108,74 @@ class TestNaNHandling:
             )
 
         assert any("NaN" in record.message for record in caplog.records)
+
+
+# ============================================================================
+# FDR Threshold Tests (Phase 6 Review Round 5)
+# ============================================================================
+
+
+class TestFDRThreshold:
+    """Test that fdr_threshold parameter is threaded through."""
+
+    def test_custom_fdr_threshold_affects_significance(self):
+        """Custom fdr_threshold should affect the 'significant' column."""
+        np.random.seed(42)
+        n = 40
+        attention = np.random.rand(n, 4, 5).astype(np.float32)
+        pathology = np.random.rand(n)
+        cognition = np.random.rand(n)
+        cell_types = [f"type_{i}" for i in range(5)]
+
+        analyzer = ResilienceSignatureAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+            cell_type_names=cell_types,
+        )
+
+        # With very permissive threshold
+        result_permissive = analyzer.analyze(
+            n_permutations=100, fdr_threshold=0.99, random_seed=42
+        )
+        # With very strict threshold
+        result_strict = analyzer.analyze(
+            n_permutations=100, fdr_threshold=0.001, random_seed=42
+        )
+
+        if result_permissive.permutation_pvalues is not None and result_strict.permutation_pvalues is not None:
+            # The 'significant' column should differ between thresholds
+            # (permissive should have >= as many True as strict)
+            n_sig_permissive = result_permissive.permutation_pvalues["significant"].sum()
+            n_sig_strict = result_strict.permutation_pvalues["significant"].sum()
+            assert n_sig_permissive >= n_sig_strict
+
+            # Fixed reference columns should be identical between runs
+            pd.testing.assert_series_equal(
+                result_permissive.permutation_pvalues["significant_005"],
+                result_strict.permutation_pvalues["significant_005"],
+            )
+
+    def test_fdr_threshold_default_matches_005(self):
+        """Default fdr_threshold=0.05 should make 'significant' match 'significant_005'."""
+        np.random.seed(42)
+        n = 40
+        attention = np.random.rand(n, 4, 5).astype(np.float32)
+        pathology = np.random.rand(n)
+        cognition = np.random.rand(n)
+        cell_types = [f"type_{i}" for i in range(5)]
+
+        analyzer = ResilienceSignatureAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+            cell_type_names=cell_types,
+        )
+        result = analyzer.analyze(n_permutations=100, random_seed=42)
+
+        if result.permutation_pvalues is not None:
+            pd.testing.assert_series_equal(
+                result.permutation_pvalues["significant"],
+                result.permutation_pvalues["significant_005"],
+                check_names=False,
+            )

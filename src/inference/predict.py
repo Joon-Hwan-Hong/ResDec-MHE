@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-import h5py
 import numpy as np
 import pandas as pd
 import torch
@@ -69,6 +68,8 @@ class PredictionResult:
     region_pseudobulk_mean: np.ndarray | None = None  # [n_regions, n_cell_types, n_genes]
     cell_barcodes: list[list[list[str]]] | None = None  # [n_subjects][n_cell_types][barcodes]
     gene_names: list[str] | None = None
+    cell_type_selection: np.ndarray | None = None  # [n_cell_types] selection weights
+    embeddings: dict[str, np.ndarray] | None = None  # {name: array} branch/fused/attended
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -268,6 +269,7 @@ class Predictor:
         extract_hgt_attention: bool = False,
         extract_pma_attention: bool = False,
         extract_region_attention: bool = False,
+        extract_embeddings: bool = False,
     ) -> dict[str, Any]:
         """
         Run inference on a single batch.
@@ -277,6 +279,7 @@ class Predictor:
             extract_hgt_attention: Whether to extract HGT attention weights
             extract_pma_attention: Whether to extract PMA cell-level attention weights
             extract_region_attention: Whether to extract per-subject region attention
+            extract_embeddings: Whether to extract branch/fused/attended embeddings
 
         Returns:
             Dict with predictions and attention weights
@@ -296,6 +299,7 @@ class Predictor:
             return_hgt_attention=extract_hgt_attention,
             return_pma_attention=extract_pma_attention,
             return_region_attention=extract_region_attention,
+            return_embeddings=extract_embeddings,
         )
 
         result = {
@@ -318,9 +322,15 @@ class Predictor:
         if extract_region_attention and "region_attention" in output:
             result["region_attention"] = output["region_attention"].cpu().numpy()
 
+        if extract_embeddings and "embeddings" in output:
+            result["embeddings"] = {
+                name: emb.cpu().numpy()
+                for name, emb in output["embeddings"].items()
+            }
+
         # Include metadata from batch
-        if "subject_id" in batch:
-            result["subject_ids"] = batch["subject_id"]
+        if "subject_ids" in batch:
+            result["subject_ids"] = batch["subject_ids"]
         if "cognition" in batch:
             result["actual"] = batch["cognition"].cpu().numpy()
         if "pathology" in batch:
@@ -337,6 +347,7 @@ class Predictor:
         extract_hgt_attention: bool = False,
         extract_pma_attention: bool = False,
         extract_region_attention: bool = False,
+        extract_embeddings: bool = False,
         show_progress: bool = True,
     ) -> PredictionResult:
         """
@@ -347,6 +358,7 @@ class Predictor:
             extract_hgt_attention: Whether to extract HGT attention weights
             extract_pma_attention: Whether to extract PMA cell-level attention weights
             extract_region_attention: Whether to extract per-subject region attention
+            extract_embeddings: Whether to extract branch/fused/attended embeddings
             show_progress: Whether to show progress bar
 
         Returns:
@@ -369,6 +381,10 @@ class Predictor:
         all_region_mask = []  # Track which regions are valid per subject
         all_region_attention = [] if extract_region_attention else None
         all_cell_barcodes = []
+        _embedding_names = ['pseudobulk', 'hgt', 'cell', 'fused', 'attended']
+        all_embeddings: dict[str, list[np.ndarray]] | None = None
+        if extract_embeddings:
+            all_embeddings = {name: [] for name in _embedding_names}
 
         iterator: Iterator = dataloader
         if show_progress:
@@ -376,7 +392,8 @@ class Predictor:
 
         for batch in iterator:
             result = self.predict_batch(
-                batch, extract_hgt_attention, extract_pma_attention, extract_region_attention
+                batch, extract_hgt_attention, extract_pma_attention,
+                extract_region_attention, extract_embeddings,
             )
 
             all_mean.append(result["mean"])
@@ -400,6 +417,10 @@ class Predictor:
                 all_region_attention.append(result["region_attention"])
             if "cell_barcodes" in result and result["cell_barcodes"] is not None:
                 all_cell_barcodes.extend(result["cell_barcodes"])
+            if extract_embeddings and "embeddings" in result:
+                for name in _embedding_names:
+                    if name in result["embeddings"]:
+                        all_embeddings[name].append(result["embeddings"][name])
 
             # Accumulate region pseudobulk and mask (input data, for regional analysis)
             if "region_pseudobulk" in batch:
@@ -413,6 +434,14 @@ class Predictor:
                     if isinstance(rm, torch.Tensor):
                         rm = rm.cpu().numpy()
                     all_region_mask.append(rm)
+            elif "region_pseudobulk" not in batch and "pseudobulk" in batch:
+                # Single-region fallback: wrap pseudobulk as 1-region
+                pb = batch["pseudobulk"]
+                if isinstance(pb, torch.Tensor):
+                    pb = pb.cpu().numpy()
+                # [B, n_cell_types, n_genes] -> [B, 1, n_cell_types, n_genes]
+                all_region_pseudobulk.append(pb[:, np.newaxis, :, :])
+                all_region_mask.append(np.ones((pb.shape[0], 1), dtype=bool))
 
         # Concatenate results
         mean = np.concatenate(all_mean, axis=0)
@@ -424,6 +453,10 @@ class Predictor:
         # Get static gene gate weights
         gene_gate_weights = self.model.pseudobulk_encoder.gene_gate.get_gate_weights()
         gene_gate_weights = gene_gate_weights.cpu().numpy()
+
+        # Get cell type selection weights
+        cell_type_selection = self.model.cell_transformer.get_selection_weights()
+        cell_type_selection = cell_type_selection.cpu().numpy()
 
         # Get region importance weights
         region_importance = self.model.get_region_importance()
@@ -464,6 +497,14 @@ class Predictor:
                 # Fallback if no mask available (shouldn't happen with proper collate)
                 region_pseudobulk_mean = stacked.mean(axis=0)
 
+        # Concatenate embeddings
+        embeddings_dict = None
+        if extract_embeddings and all_embeddings:
+            embeddings_dict = {}
+            for name in _embedding_names:
+                if all_embeddings[name]:
+                    embeddings_dict[name] = np.concatenate(all_embeddings[name], axis=0)
+
         # Build metadata
         metadata = {
             "checkpoint_path": self.checkpoint_path,
@@ -487,6 +528,7 @@ class Predictor:
             pathology=pathology,
             attention_weights=attention_weights,
             gene_gate_weights=gene_gate_weights,
+            cell_type_selection=cell_type_selection,
             hgt_attention=all_hgt_attention,
             pma_attention=pma_attention,
             region_weights=region_weights,
@@ -494,6 +536,7 @@ class Predictor:
             region_pseudobulk_mean=region_pseudobulk_mean,
             cell_barcodes=all_cell_barcodes if all_cell_barcodes else None,
             gene_names=gene_names,
+            embeddings=embeddings_dict,
             metadata=metadata,
         )
 
@@ -590,6 +633,7 @@ class Predictor:
         _io_save_attention_weights(
             path=path,
             gene_gate=results.gene_gate_weights,
+            cell_type_selection=results.cell_type_selection,
             pathology_attention=results.attention_weights,
             region_weights=results.region_weights,
             region_attention=results.region_attention,
@@ -600,6 +644,7 @@ class Predictor:
             subject_ids=results.subject_ids,
             cell_type_names=list(CELL_TYPE_ORDER),
             gene_names=results.gene_names,
+            embeddings=results.embeddings,
             metadata={
                 "n_subjects": results.n_subjects,
                 "checkpoint_path": results.metadata.get("checkpoint_path", ""),
@@ -614,7 +659,8 @@ def predict_from_checkpoint(
     device: str = "auto",
     extract_hgt_attention: bool = False,
     extract_pma_attention: bool = False,
-    extract_region_attention: bool = False,
+    extract_region_attention: bool = True,
+    extract_embeddings: bool = False,
 ) -> PredictionResult:
     """
     Convenience function: load checkpoint, run inference, save results.
@@ -627,6 +673,7 @@ def predict_from_checkpoint(
         extract_hgt_attention: Whether to extract HGT attention
         extract_pma_attention: Whether to extract PMA cell-level attention
         extract_region_attention: Whether to extract per-subject region attention
+        extract_embeddings: Whether to extract branch/fused/attended embeddings
 
     Returns:
         PredictionResult with all outputs
@@ -637,6 +684,7 @@ def predict_from_checkpoint(
         extract_hgt_attention=extract_hgt_attention,
         extract_pma_attention=extract_pma_attention,
         extract_region_attention=extract_region_attention,
+        extract_embeddings=extract_embeddings,
     )
     predictor.save_predictions(results, output_dir)
     return results
@@ -676,61 +724,6 @@ def save_predictions_parquet(
     df.to_parquet(path, index=False)
     logger.info(f"Saved predictions to {path}")
 
-
-def save_predictions_hdf5(
-    results: PredictionResult,
-    path: str | Path,
-) -> None:
-    """
-    Save prediction attention weights to HDF5 file.
-
-    Args:
-        results: PredictionResult to save
-        path: Output HDF5 path
-    """
-    import json
-
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with h5py.File(path, "w") as f:
-        # Schema version
-        f.attrs["schema_version"] = "2.0"
-        f.attrs["n_subjects"] = results.n_subjects
-
-        # Predictions
-        f.create_dataset("mean", data=results.mean)
-        if results.std is not None:
-            f.create_dataset("std", data=results.std)
-
-        # Attention weights
-        f.create_dataset(
-            "attention_weights",
-            data=results.attention_weights,
-            compression="gzip",
-            compression_opts=4,
-        )
-
-        f.create_dataset(
-            "gene_gate",
-            data=results.gene_gate_weights,
-            compression="gzip",
-            compression_opts=4,
-        )
-
-        # Subject IDs (variable-length strings)
-        vlen_str = h5py.special_dtype(vlen=str)
-        f.create_dataset("subject_ids", data=np.array(results.subject_ids, dtype=object), dtype=vlen_str)
-
-        # Metadata as JSON attribute
-        if results.metadata:
-            try:
-                f.attrs["metadata"] = json.dumps(results.metadata, default=str)
-            except (TypeError, ValueError):
-                # Skip unserializable metadata
-                pass
-
-    logger.info(f"Saved predictions HDF5 to {path}")
 
 
 def load_predictions_parquet(path: str | Path) -> pd.DataFrame:

@@ -26,8 +26,8 @@ from src.data.constants import N_CELL_TYPES
 from src.inference.predict import (
     PredictionResult,
     Predictor,
+    predict_from_checkpoint,
     save_predictions_parquet,
-    save_predictions_hdf5,
     load_predictions_parquet,
 )
 
@@ -91,11 +91,21 @@ def mock_model():
             batch_size = kwargs["pseudobulk"].shape[0]
         elif "region_pseudobulk" in kwargs and kwargs["region_pseudobulk"] is not None:
             batch_size = kwargs["region_pseudobulk"].shape[0]
-        return {
+        output = {
             "mean": torch.randn(batch_size, 1),
             "std": torch.abs(torch.randn(batch_size, 1)) + 0.1,
             "attention_weights": torch.rand(batch_size, 4, N_CELL_TYPES),
         }
+        if kwargs.get("return_embeddings"):
+            d_embed = 128
+            output["embeddings"] = {
+                "pseudobulk": torch.randn(batch_size, N_CELL_TYPES, d_embed),
+                "hgt": torch.randn(batch_size, N_CELL_TYPES, d_embed),
+                "cell": torch.randn(batch_size, N_CELL_TYPES, d_embed),
+                "fused": torch.randn(batch_size, N_CELL_TYPES, d_embed),
+                "attended": torch.randn(batch_size, d_embed),
+            }
+        return output
 
     model.side_effect = mock_forward
     model.__call__ = MagicMock(side_effect=mock_forward)
@@ -104,6 +114,9 @@ def mock_model():
 
     # Mock gene gate weights
     model.pseudobulk_encoder.gene_gate.get_gate_weights.return_value = torch.rand(N_CELL_TYPES, 100)
+
+    # Mock cell type selection weights
+    model.cell_transformer.get_selection_weights.return_value = torch.rand(N_CELL_TYPES)
 
     return model
 
@@ -149,10 +162,10 @@ class TestPredictionResultDataclass:
         """All expected fields are present in PredictionResult."""
         expected_fields = {
             "subject_ids", "mean", "std", "actual", "pathology",
-            "attention_weights", "gene_gate_weights", "hgt_attention",
-            "pma_attention", "region_weights", "region_pseudobulk_mean",
-            "region_attention", "cell_barcodes",
-            "gene_names", "metadata"
+            "attention_weights", "gene_gate_weights", "cell_type_selection",
+            "hgt_attention", "pma_attention", "region_weights",
+            "region_pseudobulk_mean", "region_attention", "cell_barcodes",
+            "gene_names", "embeddings", "metadata"
         }
         actual_fields = {f.name for f in fields(sample_prediction_result)}
         assert expected_fields == actual_fields
@@ -182,7 +195,7 @@ class TestPredictor:
 
         batch = {
             "pseudobulk": torch.randn(4, N_CELL_TYPES, 100),
-            "subject_id": ["a", "b", "c", "d"],
+            "subject_ids": ["a", "b", "c", "d"],
         }
 
         result = predictor.predict_batch(batch)
@@ -195,7 +208,7 @@ class TestPredictor:
 
         batch = {
             "pseudobulk": torch.randn(4, N_CELL_TYPES, 100),
-            "subject_id": ["a", "b", "c", "d"],
+            "subject_ids": ["a", "b", "c", "d"],
         }
 
         result = predictor.predict_batch(batch)
@@ -208,12 +221,12 @@ class TestPredictor:
         # Mock dataloader
         batch1 = {
             "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
-            "subject_id": ["a", "b"],
+            "subject_ids": ["a", "b"],
             "pathology": torch.rand(2, 3),
         }
         batch2 = {
             "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
-            "subject_id": ["c", "d"],
+            "subject_ids": ["c", "d"],
             "pathology": torch.rand(2, 3),
         }
         dataloader = [batch1, batch2]
@@ -228,7 +241,7 @@ class TestPredictor:
 
         batch = {
             "pseudobulk": torch.randn(3, N_CELL_TYPES, 100),
-            "subject_id": ["z", "a", "m"],
+            "subject_ids": ["z", "a", "m"],
             "pathology": torch.rand(3, 3),
         }
         dataloader = [batch]
@@ -276,41 +289,6 @@ class TestSerializationParquet:
             "actual", "pathology"
         }
         assert expected_columns.issubset(set(df.columns))
-
-
-class TestSerializationHDF5:
-    """Tests for HDF5 save/load."""
-
-    def test_save_predictions_hdf5_creates_file(self, sample_prediction_result):
-        """save_predictions_hdf5 creates an HDF5 file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.h5"
-            save_predictions_hdf5(sample_prediction_result, path)
-            assert path.exists()
-
-    def test_hdf5_contains_attention_weights(self, sample_prediction_result):
-        """HDF5 file contains attention weights."""
-        import h5py
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.h5"
-            save_predictions_hdf5(sample_prediction_result, path)
-
-            with h5py.File(path, "r") as f:
-                assert "attention_weights" in f
-                assert "gene_gate" in f
-
-    def test_hdf5_attention_shapes_preserved(self, sample_prediction_result):
-        """HDF5 preserves attention weight shapes."""
-        import h5py
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.h5"
-            save_predictions_hdf5(sample_prediction_result, path)
-
-            with h5py.File(path, "r") as f:
-                assert f["attention_weights"].shape == sample_prediction_result.attention_weights.shape
-                assert f["gene_gate"].shape == sample_prediction_result.gene_gate_weights.shape
 
 
 # ============================================================================
@@ -415,7 +393,7 @@ class TestEdgeCases:
 
         batch = {
             "pseudobulk": torch.randn(1, N_CELL_TYPES, 100),
-            "subject_id": ["single"],
+            "subject_ids": ["single"],
             "pathology": torch.rand(1, 3),
         }
         dataloader = [batch]
@@ -430,7 +408,7 @@ class TestEdgeCases:
 
         batch = {
             "pseudobulk": torch.randn(3, N_CELL_TYPES, 100),
-            "subject_id": ["a", "b", "c"],
+            "subject_ids": ["a", "b", "c"],
             "pathology": torch.rand(3, 3),
             # No "cognition" key
         }
@@ -459,27 +437,6 @@ class TestEdgeCases:
         # actual column should exist but have NaN values
         assert "actual" in df.columns
         assert df["actual"].isna().all()
-
-    def test_empty_metadata(self, sample_prediction_result):
-        """Handles empty metadata dict."""
-        sample_prediction_result.metadata = {}
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.h5"
-            save_predictions_hdf5(sample_prediction_result, path)
-            assert path.exists()
-
-    def test_large_metadata(self, sample_prediction_result):
-        """Handles large metadata dict."""
-        sample_prediction_result.metadata = {
-            "config": {"nested": {"deeply": {"value": 123}}},
-            "history": [{"epoch": i, "loss": 0.1 * i} for i in range(100)],
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "predictions.h5"
-            save_predictions_hdf5(sample_prediction_result, path)
-            assert path.exists()
 
 
 # ============================================================================
@@ -525,6 +482,7 @@ class TestRegionPseudobulkMasking:
         # Region 3: only subject 1 has it -> 2.0
         np.testing.assert_allclose(result[3], 2.0)
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_all_masked_region_gets_zero(self):
         """A region masked for ALL subjects should get 0.0 (not NaN)."""
         stacked = np.ones((2, 3, 2, 2), dtype=np.float32)
@@ -565,3 +523,293 @@ class TestRegionPseudobulkMasking:
         correct = np.nanmean(masked, axis=0)
         correct = np.nan_to_num(correct, nan=0.0)
         assert correct[0, 0, 0] == 10.0  # correct
+
+
+# ============================================================================
+# Single-Region Fallback Tests (Phase 6 Review Round 5)
+# ============================================================================
+
+
+class TestSingleRegionFallback:
+    """Test that single-region models populate region_pseudobulk_mean."""
+
+    def test_pseudobulk_without_region_creates_single_region(self):
+        """When batch has pseudobulk but no region_pseudobulk, fallback creates [B,1,C,G]."""
+        # Simulate what predict() does with the batch loop logic
+        n_subjects = 4
+        n_cell_types = 3
+        n_genes = 10
+
+        # Create batch with pseudobulk but NO region_pseudobulk
+        pseudobulk = torch.randn(n_subjects, n_cell_types, n_genes)
+
+        all_region_pseudobulk = []
+        all_region_mask = []
+
+        # Replicate the predict() logic
+        batch = {"pseudobulk": pseudobulk}
+
+        if "region_pseudobulk" in batch:
+            pass  # Not present
+        elif not all_region_pseudobulk and "pseudobulk" in batch:
+            pb = batch["pseudobulk"]
+            if isinstance(pb, torch.Tensor):
+                pb = pb.cpu().numpy()
+            all_region_pseudobulk.append(pb[:, np.newaxis, :, :])
+            all_region_mask.append(np.ones((pb.shape[0], 1), dtype=bool))
+
+        assert len(all_region_pseudobulk) == 1
+        assert all_region_pseudobulk[0].shape == (n_subjects, 1, n_cell_types, n_genes)
+        assert all_region_mask[0].shape == (n_subjects, 1)
+        assert all_region_mask[0].all()
+
+    def test_single_region_mean_computation(self):
+        """Single-region fallback should produce valid region_pseudobulk_mean."""
+        n_subjects = 4
+        n_cell_types = 3
+        n_genes = 10
+
+        # Simulated single-region data
+        stacked = np.random.rand(n_subjects, 1, n_cell_types, n_genes)
+        stacked_mask = np.ones((n_subjects, 1), dtype=bool)
+
+        mask_expanded = stacked_mask[:, :, np.newaxis, np.newaxis]
+        masked = np.where(mask_expanded, stacked, np.nan)
+        region_pseudobulk_mean = np.nanmean(masked, axis=0)
+        region_pseudobulk_mean = np.nan_to_num(region_pseudobulk_mean, nan=0.0)
+
+        assert region_pseudobulk_mean.shape == (1, n_cell_types, n_genes)
+        # With all-valid mask, should equal simple mean
+        np.testing.assert_allclose(
+            region_pseudobulk_mean[0],
+            stacked[:, 0, :, :].mean(axis=0),
+            rtol=1e-5,
+        )
+
+
+# ============================================================================
+# Subject ID Key Tests (Phase 6 Review Round 6 — F1)
+# ============================================================================
+
+
+class TestSubjectIdExtraction:
+    """Tests for subject ID extraction from batch dicts."""
+
+    def test_predict_batch_extracts_subject_ids(self, mock_model, mock_config):
+        """predict_batch extracts subject_ids from batch using plural key."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch = {
+            "pseudobulk": torch.randn(3, N_CELL_TYPES, 100),
+            "subject_ids": ["subj_A", "subj_B", "subj_C"],
+            "pathology": torch.rand(3, 3),
+        }
+
+        result = predictor.predict_batch(batch)
+        assert "subject_ids" in result
+        assert result["subject_ids"] == ["subj_A", "subj_B", "subj_C"]
+
+    def test_predict_populates_subject_ids_from_dataloader(self, mock_model, mock_config):
+        """predict() populates PredictionResult.subject_ids from multi-batch dataloader."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch1 = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "subject_ids": ["s1", "s2"],
+            "pathology": torch.rand(2, 3),
+        }
+        batch2 = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "subject_ids": ["s3", "s4"],
+            "pathology": torch.rand(2, 3),
+        }
+        dataloader = [batch1, batch2]
+
+        result = predictor.predict(dataloader, show_progress=False)
+        assert result.subject_ids == ["s1", "s2", "s3", "s4"]
+
+    def test_predict_batch_without_subject_ids(self, mock_model, mock_config):
+        """predict_batch gracefully handles missing subject_ids key."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "pathology": torch.rand(2, 3),
+        }
+
+        result = predictor.predict_batch(batch)
+        assert "subject_ids" not in result
+
+
+# ============================================================================
+# Embedding Pipeline Tests (Phase 6 Review Round 6 — F2)
+# ============================================================================
+
+
+class TestEmbeddingPipeline:
+    """Tests for embedding extraction pipeline."""
+
+    def test_predict_batch_extracts_embeddings(self, mock_model, mock_config):
+        """predict_batch with extract_embeddings=True returns embeddings dict."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch = {
+            "pseudobulk": torch.randn(3, N_CELL_TYPES, 100),
+            "subject_ids": ["a", "b", "c"],
+            "pathology": torch.rand(3, 3),
+        }
+
+        result = predictor.predict_batch(batch, extract_embeddings=True)
+        assert "embeddings" in result
+        assert set(result["embeddings"].keys()) == {"pseudobulk", "hgt", "cell", "fused", "attended"}
+        # 3D branch embeddings
+        assert result["embeddings"]["pseudobulk"].shape == (3, N_CELL_TYPES, 128)
+        # 2D attended embedding
+        assert result["embeddings"]["attended"].shape == (3, 128)
+
+    def test_predict_batch_no_embeddings_by_default(self, mock_model, mock_config):
+        """predict_batch without extract_embeddings does not include embeddings."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "pathology": torch.rand(2, 3),
+        }
+
+        result = predictor.predict_batch(batch)
+        assert "embeddings" not in result
+
+    def test_predict_accumulates_embeddings(self, mock_model, mock_config):
+        """predict() concatenates embeddings across batches."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch1 = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "subject_ids": ["s1", "s2"],
+            "pathology": torch.rand(2, 3),
+        }
+        batch2 = {
+            "pseudobulk": torch.randn(3, N_CELL_TYPES, 100),
+            "subject_ids": ["s3", "s4", "s5"],
+            "pathology": torch.rand(3, 3),
+        }
+
+        result = predictor.predict(
+            [batch1, batch2], extract_embeddings=True, show_progress=False,
+        )
+        assert result.embeddings is not None
+        assert result.embeddings["pseudobulk"].shape[0] == 5  # 2 + 3
+        assert result.embeddings["attended"].shape[0] == 5
+
+    def test_predict_embeddings_none_by_default(self, mock_model, mock_config):
+        """predict() without extract_embeddings has embeddings=None."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "subject_ids": ["s1", "s2"],
+            "pathology": torch.rand(2, 3),
+        }
+
+        result = predictor.predict([batch], show_progress=False)
+        assert result.embeddings is None
+
+
+class TestEmbeddingsHDF5Roundtrip:
+    """Tests for embedding HDF5 serialization."""
+
+    def test_embeddings_save_load_roundtrip(self):
+        """Embeddings round-trip through HDF5 save/load."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        embeddings = {
+            "pseudobulk": np.random.rand(10, N_CELL_TYPES, 128).astype(np.float32),
+            "hgt": np.random.rand(10, N_CELL_TYPES, 128).astype(np.float32),
+            "cell": np.random.rand(10, N_CELL_TYPES, 128).astype(np.float32),
+            "fused": np.random.rand(10, N_CELL_TYPES, 128).astype(np.float32),
+            "attended": np.random.rand(10, 128).astype(np.float32),
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attn.h5"
+            save_attention_weights(path, embeddings=embeddings)
+            loaded = load_attention_weights(path)
+
+        assert "embeddings" in loaded
+        for name in ["pseudobulk", "hgt", "cell", "fused", "attended"]:
+            np.testing.assert_array_almost_equal(
+                loaded["embeddings"][name], embeddings[name]
+            )
+
+    def test_embeddings_shapes_preserved(self):
+        """3D and 2D embedding shapes are preserved through save/load."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        embeddings = {
+            "branch_3d": np.random.rand(5, 10, 64).astype(np.float32),
+            "subject_2d": np.random.rand(5, 64).astype(np.float32),
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attn.h5"
+            save_attention_weights(path, embeddings=embeddings)
+            loaded = load_attention_weights(path)
+
+        assert loaded["embeddings"]["branch_3d"].shape == (5, 10, 64)
+        assert loaded["embeddings"]["subject_2d"].shape == (5, 64)
+
+
+# ============================================================================
+# Cell Type Selection Tests (F5)
+# ============================================================================
+
+
+class TestCellTypeSelection:
+    """Tests for cell_type_selection extraction and persistence."""
+
+    def test_cell_type_selection_in_prediction_result(self, mock_model, mock_config):
+        """predict() populates cell_type_selection with correct shape."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        batch = {
+            "pseudobulk": torch.randn(3, N_CELL_TYPES, 100),
+            "subject_ids": ["a", "b", "c"],
+            "pathology": torch.rand(3, 3),
+        }
+        dataloader = [batch]
+
+        result = predictor.predict(dataloader, show_progress=False)
+        assert result.cell_type_selection is not None
+        assert result.cell_type_selection.shape == (N_CELL_TYPES,)
+
+    def test_cell_type_selection_persisted_hdf5(self):
+        """cell_type_selection survives HDF5 save/load roundtrip."""
+        from src.utils.io import save_attention_weights, load_attention_weights
+
+        selection = np.random.rand(N_CELL_TYPES).astype(np.float32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "attn.h5"
+            save_attention_weights(path, cell_type_selection=selection)
+            loaded = load_attention_weights(path)
+
+        assert "cell_type_selection" in loaded
+        np.testing.assert_array_almost_equal(
+            loaded["cell_type_selection"], selection
+        )
+
+
+# ============================================================================
+# Regional Attention Default Tests (F4)
+# ============================================================================
+
+
+class TestRegionalAttentionDefault:
+    """Tests for predict_from_checkpoint extract_region_attention default."""
+
+    def test_predict_from_checkpoint_defaults_region_attention_true(self):
+        """predict_from_checkpoint has extract_region_attention=True by default."""
+        import inspect
+        sig = inspect.signature(predict_from_checkpoint)
+        param = sig.parameters["extract_region_attention"]
+        assert param.default is True

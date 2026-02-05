@@ -272,27 +272,51 @@ def load_analysis_data(analysis_dir: Path) -> dict:
         data["uncertainty"] = load_dataframe(uncertainty_path)
         logger.info(f"  Loaded uncertainty: {len(data['uncertainty'])} rows")
 
+    # Uncertainty correlates (for correlation bar chart)
+    unc_correlates_path = analysis_dir / "uncertainty_correlates.parquet"
+    if unc_correlates_path.exists():
+        data["uncertainty_correlates"] = load_dataframe(unc_correlates_path)
+        logger.info(f"  Loaded uncertainty_correlates: {len(data['uncertainty_correlates'])} rows")
+
     # Calibration
     calibration_path = analysis_dir / "calibration_summary.parquet"
     if calibration_path.exists():
         data["calibration"] = load_dataframe(calibration_path)
         logger.info(f"  Loaded calibration: {len(data['calibration'])} rows")
 
-    # Embedding analysis
-    umap_path = analysis_dir / "umap_projection.parquet"
-    if umap_path.exists():
-        data["umap_projection"] = load_dataframe(umap_path)
-        logger.info(f"  Loaded umap_projection: {len(data['umap_projection'])} rows")
+    # Embedding analysis — check for embedding_* subdirectories (multi-embedding)
+    # or top-level files (legacy single-embedding)
+    emb_dirs = sorted(analysis_dir.glob("embedding_*"))
+    if emb_dirs:
+        data["embedding_dirs"] = {}
+        for emb_dir in emb_dirs:
+            if not emb_dir.is_dir():
+                continue
+            emb_name = emb_dir.name.replace("embedding_", "")
+            emb_data = {}
+            for fname in ("umap_projection", "cluster_assignments", "linear_probe_results"):
+                fpath = emb_dir / f"{fname}.parquet"
+                if fpath.exists():
+                    emb_data[fname] = load_dataframe(fpath)
+            if emb_data:
+                data["embedding_dirs"][emb_name] = emb_data
+                logger.info(f"  Loaded embedding '{emb_name}': {list(emb_data.keys())}")
+    else:
+        # Legacy: top-level embedding files
+        umap_path = analysis_dir / "umap_projection.parquet"
+        if umap_path.exists():
+            data["umap_projection"] = load_dataframe(umap_path)
+            logger.info(f"  Loaded umap_projection: {len(data['umap_projection'])} rows")
 
-    cluster_path = analysis_dir / "cluster_assignments.parquet"
-    if cluster_path.exists():
-        data["cluster_assignments"] = load_dataframe(cluster_path)
-        logger.info(f"  Loaded cluster_assignments: {len(data['cluster_assignments'])} rows")
+        cluster_path = analysis_dir / "cluster_assignments.parquet"
+        if cluster_path.exists():
+            data["cluster_assignments"] = load_dataframe(cluster_path)
+            logger.info(f"  Loaded cluster_assignments: {len(data['cluster_assignments'])} rows")
 
-    probe_path = analysis_dir / "linear_probe_results.parquet"
-    if probe_path.exists():
-        data["linear_probe_results"] = load_dataframe(probe_path)
-        logger.info(f"  Loaded linear_probe_results: {len(data['linear_probe_results'])} rows")
+        probe_path = analysis_dir / "linear_probe_results.parquet"
+        if probe_path.exists():
+            data["linear_probe_results"] = load_dataframe(probe_path)
+            logger.info(f"  Loaded linear_probe_results: {len(data['linear_probe_results'])} rows")
 
     return data
 
@@ -563,8 +587,8 @@ def generate_prediction_plots(
 
     # Uncertainty correlates
     if "uncertainty_correlates" not in skip_plots:
-        if "uncertainty" in data:
-            unc_df = data["uncertainty"]
+        if "uncertainty_correlates" in data:
+            unc_df = data["uncertainty_correlates"]
             try:
                 fig = plot_uncertainty_correlates(unc_df)
                 path = output_dir / f"uncertainty_correlates.{fmt}"
@@ -767,8 +791,16 @@ def main():
 
     if "embedding" in plot_categories:
         logger.info("Generating embedding plots...")
-        generated = generate_embedding_plots(data, output_dir, skip_plots, fmt)
-        all_generated.extend(generated)
+        if "embedding_dirs" in data:
+            for emb_name, emb_data in data["embedding_dirs"].items():
+                logger.info(f"  Embedding type: {emb_name}")
+                emb_output = output_dir / f"embedding_{emb_name}"
+                emb_output.mkdir(parents=True, exist_ok=True)
+                generated = generate_embedding_plots(emb_data, emb_output, skip_plots, fmt)
+                all_generated.extend(generated)
+        else:
+            generated = generate_embedding_plots(data, output_dir, skip_plots, fmt)
+            all_generated.extend(generated)
 
     if "training" in plot_categories:
         logger.info("Generating training curve plots...")

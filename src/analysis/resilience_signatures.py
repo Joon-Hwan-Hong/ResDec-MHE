@@ -213,6 +213,7 @@ class ResilienceSignatureAnalyzer:
         ablation_method: Literal["both", "zero_embedding", "node_removal"] = "both",
         embeddings: np.ndarray | None = None,
         apply_fdr_correction: bool = True,
+        fdr_threshold: float = 0.05,
     ) -> ResilienceSignatureResult:
         """
         Run resilience signature analysis.
@@ -224,6 +225,7 @@ class ResilienceSignatureAnalyzer:
             ablation_method: Which ablation method(s) to run
             embeddings: Optional embeddings for ablation [n_subjects, n_cell_types, embed_dim]
             apply_fdr_correction: Whether to apply Benjamini-Hochberg FDR correction (default: True)
+            fdr_threshold: Significance threshold for FDR correction (default: 0.05)
 
         Returns:
             ResilienceSignatureResult with signature and statistics
@@ -236,7 +238,8 @@ class ResilienceSignatureAnalyzer:
         permutation_null = None
         if n_permutations > 0 and self.n_resilient > 0 and self.n_vulnerable > 0:
             pvalues_df, permutation_null = self._permutation_test(
-                n_permutations, random_seed, apply_fdr_correction
+                n_permutations, random_seed, apply_fdr_correction,
+                fdr_threshold=fdr_threshold,
             )
 
         # Group statistics
@@ -389,6 +392,7 @@ class ResilienceSignatureAnalyzer:
         n_permutations: int,
         random_seed: int | None,
         apply_fdr_correction: bool = True,
+        fdr_threshold: float = 0.05,
     ) -> tuple[pd.DataFrame, np.ndarray]:
         """
         Permutation test for signature significance.
@@ -399,6 +403,7 @@ class ResilienceSignatureAnalyzer:
             n_permutations: Number of permutations
             random_seed: Random seed
             apply_fdr_correction: Whether to apply Benjamini-Hochberg FDR correction
+            fdr_threshold: Significance threshold (default: 0.05)
 
         Returns:
             Tuple of (DataFrame with p-values, null distribution array [n_permutations, n_cell_types])
@@ -446,6 +451,7 @@ class ResilienceSignatureAnalyzer:
                 "cell_type": self.cell_type_names,
                 "p_value": p_values,
                 "fdr_corrected": fdr_corrected,
+                "significant": fdr_corrected < fdr_threshold,
                 "significant_005": fdr_corrected < 0.05,
                 "significant_001": fdr_corrected < 0.01,
             })
@@ -455,6 +461,7 @@ class ResilienceSignatureAnalyzer:
                 "cell_type": self.cell_type_names,
                 "p_value": p_values,
                 "fdr_corrected": p_values,  # Same as uncorrected for compatibility
+                "significant": p_values < fdr_threshold,
                 "significant_005": p_values < 0.05,
                 "significant_001": p_values < 0.01,
             })

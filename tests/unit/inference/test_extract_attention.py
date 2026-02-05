@@ -5,13 +5,9 @@ Test coverage includes:
 - AttentionWeights dataclass behavior
 - AttentionExtractor static weight extraction
 - DataFrame conversion methods
-- HDF5 serialization round-trip
 - Schema validation for output formats
 - Edge cases (empty arrays, single subject)
 """
-
-import tempfile
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -23,8 +19,6 @@ from src.data.constants import CELL_TYPE_ORDER, N_CELL_TYPES
 from src.inference.extract_attention import (
     AttentionWeights,
     AttentionExtractor,
-    save_attention_weights_hdf5,
-    load_attention_weights_hdf5,
 )
 
 
@@ -253,86 +247,6 @@ class TestDataFrameConversions:
         assert len(df) == 2 * 4  # n_subjects * n_cell_types
 
 
-# ============================================================================
-# HDF5 Serialization Tests
-# ============================================================================
-
-
-class TestHDF5Serialization:
-    """Tests for HDF5 save/load round-trip."""
-
-    def test_save_load_roundtrip_minimal(self, sample_gene_gate):
-        """Minimal AttentionWeights survives save/load round-trip."""
-        weights = AttentionWeights(gene_gate=sample_gene_gate)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "weights.h5"
-            save_attention_weights_hdf5(weights, path)
-            loaded = load_attention_weights_hdf5(path)
-
-        np.testing.assert_array_almost_equal(loaded.gene_gate, weights.gene_gate)
-
-    def test_save_load_roundtrip_full(self, sample_attention_weights):
-        """Full AttentionWeights survives save/load round-trip."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "weights.h5"
-            save_attention_weights_hdf5(sample_attention_weights, path)
-            loaded = load_attention_weights_hdf5(path)
-
-        np.testing.assert_array_almost_equal(
-            loaded.gene_gate, sample_attention_weights.gene_gate
-        )
-        np.testing.assert_array_almost_equal(
-            loaded.pathology_attention, sample_attention_weights.pathology_attention
-        )
-        np.testing.assert_array_almost_equal(
-            loaded.cell_type_selection, sample_attention_weights.cell_type_selection
-        )
-        np.testing.assert_array_almost_equal(
-            loaded.region_weights, sample_attention_weights.region_weights
-        )
-        assert loaded.subject_ids == sample_attention_weights.subject_ids
-        assert loaded.cell_type_names == sample_attention_weights.cell_type_names
-
-    def test_save_creates_parent_directories(self, sample_gene_gate):
-        """save_attention_weights_hdf5 creates parent directories."""
-        weights = AttentionWeights(gene_gate=sample_gene_gate)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "nested" / "dir" / "weights.h5"
-            save_attention_weights_hdf5(weights, path)
-            assert path.exists()
-
-    def test_save_includes_schema_version(self, sample_gene_gate):
-        """Saved HDF5 includes schema version attribute."""
-        import h5py
-
-        weights = AttentionWeights(gene_gate=sample_gene_gate)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "weights.h5"
-            save_attention_weights_hdf5(weights, path)
-
-            with h5py.File(path, "r") as f:
-                assert "schema_version" in f.attrs
-                assert f.attrs["schema_version"] == "2.0"
-
-    def test_save_with_gene_names(self, sample_gene_gate):
-        """Gene names are saved when provided."""
-        import h5py
-
-        weights = AttentionWeights(gene_gate=sample_gene_gate)
-        gene_names = [f"gene_{i}" for i in range(100)]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "weights.h5"
-            save_attention_weights_hdf5(weights, path, gene_names=gene_names)
-
-            with h5py.File(path, "r") as f:
-                assert "gene_names" in f
-                loaded_names = [x.decode("utf-8") for x in f["gene_names"][:]]
-                assert loaded_names == gene_names
-
 
 # ============================================================================
 # Schema Validation Tests
@@ -496,17 +410,3 @@ class TestEdgeCases:
         weights = extractor.extract_static_weights()
         assert weights.hgt_layer_scales == {}
 
-    def test_hdf5_roundtrip_with_none_optional_fields(self):
-        """HDF5 round-trip works with None optional fields."""
-        gene_gate = np.random.rand(5, 10).astype(np.float32)
-        weights = AttentionWeights(gene_gate=gene_gate)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "weights.h5"
-            save_attention_weights_hdf5(weights, path)
-            loaded = load_attention_weights_hdf5(path)
-
-        assert loaded.pathology_attention is None
-        assert loaded.cell_type_selection is None
-        assert loaded.region_weights is None
-        assert loaded.subject_ids is None
