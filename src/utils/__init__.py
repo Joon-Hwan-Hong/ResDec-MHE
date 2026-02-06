@@ -32,9 +32,6 @@ from src.utils.io import (
     save_dataframe,
     load_dataframe,
     save_dataframes_multi_format,
-    # HDF5 utilities
-    save_array_hdf5,
-    load_array_hdf5,
 )
 from src.utils.gpu import (
     get_available_gpus,
@@ -87,9 +84,6 @@ __all__ = [
     "save_dataframe",
     "load_dataframe",
     "save_dataframes_multi_format",
-    # HDF5 utilities
-    "save_array_hdf5",
-    "load_array_hdf5",
     # GPU
     "get_available_gpus",
     "get_gpu_memory_info",

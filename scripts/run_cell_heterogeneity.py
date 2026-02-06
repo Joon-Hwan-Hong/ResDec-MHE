@@ -270,8 +270,6 @@ def main():
         cell_metadata=cell_metadata,
         top_percentile=args.top_percentile,
         min_cells_per_type=args.min_cells_per_type,
-        cell_type_column=args.cell_type_column,
-        subject_column=args.subject_column,
     )
 
     # Save results

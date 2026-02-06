@@ -696,3 +696,59 @@ class TestEdgeCases:
         # Should produce valid result, not NaN-filled
         assert result.by_pathology is not None
         assert not result.by_pathology["mean_attention"].isna().any()
+
+
+# ============================================================================
+# Phase 6 Review Round 8 — H1 + M1 Fixes
+# ============================================================================
+
+
+class TestRegionLabelNoneHandling:
+    """Tests for empty-string region label filtering (H1 fix)."""
+
+    def test_empty_region_labels_excluded(self):
+        """Subjects with empty region labels are excluded from region stratification."""
+        np.random.seed(42)
+        n_subjects = 20
+        attention = np.random.rand(n_subjects, 4, N_CELL_TYPES).astype(np.float32)
+        # Mix of real regions and empty strings (simulating missing metadata)
+        region_labels = np.array(
+            ["PFC"] * 7 + ["AG"] * 7 + [""] * 6
+        )
+        analyzer = CellTypeImportanceAnalyzer(
+            attention=attention,
+            cell_type_names=[f"type_{i}" for i in range(N_CELL_TYPES)],
+            region_labels=region_labels,
+        )
+        result = analyzer.analyze()
+        assert result.by_region is not None
+        unique_result_regions = result.by_region["region"].unique()
+        assert "" not in unique_result_regions
+        assert "PFC" in unique_result_regions
+        assert "AG" in unique_result_regions
+
+
+class TestPathologyNaNExclusion:
+    """Tests for NaN pathology exclusion from tertiles (M1 fix)."""
+
+    def test_nan_pathology_excluded_from_tertile_counts(self):
+        """NaN pathology subjects should not be counted in any tertile group."""
+        np.random.seed(42)
+        n_subjects = 30
+        attention = np.random.rand(n_subjects, 4, N_CELL_TYPES).astype(np.float32)
+        pathology = np.random.rand(n_subjects).astype(np.float32)
+        # Set some pathology values to NaN
+        pathology[0] = np.nan
+        pathology[5] = np.nan
+        pathology[10] = np.nan
+
+        analyzer = CellTypeImportanceAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cell_type_names=[f"type_{i}" for i in range(N_CELL_TYPES)],
+        )
+        result = analyzer.analyze()
+        assert result.by_pathology is not None
+        # Total subjects across tertiles should be n_subjects - n_nan
+        total_in_tertiles = result.by_pathology.groupby("pathology_tertile")["n_subjects"].first().sum()
+        assert total_in_tertiles == n_subjects - 3

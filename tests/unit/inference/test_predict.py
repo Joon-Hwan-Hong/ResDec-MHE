@@ -784,3 +784,60 @@ class TestCellCounts:
 
         assert "cell_counts" in loaded
         np.testing.assert_array_equal(loaded["cell_counts"], cell_counts)
+
+
+# ============================================================================
+# Phase 6 Review Round 8 — H2: Use batch cell_counts over cell_mask
+# ============================================================================
+
+
+class TestCellCountsFromBatch:
+    """Tests that predict() prefers batch['cell_counts'] over deriving from cell_mask."""
+
+    def test_prefers_batch_cell_counts_over_cell_mask(self, mock_model, mock_config):
+        """When both cell_counts and cell_mask are present, cell_counts is used."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        max_cells = 50
+        # cell_mask says 10 cells for type 0 (clipped)
+        cell_mask = torch.zeros(2, N_CELL_TYPES, max_cells, dtype=torch.bool)
+        cell_mask[0, 0, :10] = True
+        cell_mask[1, 0, :10] = True
+
+        # But true cell_counts say 200 cells (pre-clipping)
+        true_counts = torch.zeros(2, N_CELL_TYPES, dtype=torch.long)
+        true_counts[0, 0] = 200
+        true_counts[1, 0] = 150
+
+        batch = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "subject_ids": ["a", "b"],
+            "pathology": torch.rand(2, 3),
+            "cell_mask": cell_mask,
+            "cell_counts": true_counts,
+        }
+
+        result = predictor.predict([batch], show_progress=False)
+        assert result.cell_counts is not None
+        # Should use true counts, not clipped cell_mask counts
+        assert result.cell_counts[0, 0] == 200
+        assert result.cell_counts[1, 0] == 150
+
+    def test_falls_back_to_cell_mask_when_no_cell_counts(self, mock_model, mock_config):
+        """When cell_counts is absent but cell_mask is present, derives from mask."""
+        predictor = Predictor(mock_model, config=mock_config, device="cpu")
+
+        max_cells = 50
+        cell_mask = torch.zeros(2, N_CELL_TYPES, max_cells, dtype=torch.bool)
+        cell_mask[0, 0, :10] = True
+
+        batch = {
+            "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
+            "subject_ids": ["a", "b"],
+            "pathology": torch.rand(2, 3),
+            "cell_mask": cell_mask,
+        }
+
+        result = predictor.predict([batch], show_progress=False)
+        assert result.cell_counts is not None
+        assert result.cell_counts[0, 0] == 10

@@ -367,9 +367,12 @@ def load_gene_gate_weights_hdf5(path: str | Path) -> tuple[np.ndarray, list[str]
     Returns:
         Tuple of (gene_gate_weights, gene_names, cell_type_names)
     """
+    def _safe_decode(x):
+        return x.decode("utf-8") if isinstance(x, bytes) else str(x)
+
     with h5py.File(path, "r") as f:
         gene_gate_weights = f["gene_gate"][:]
-        gene_names = [x.decode("utf-8") for x in f["gene_names"][:]]
-        cell_type_names = [x.decode("utf-8") for x in f["cell_type_names"][:]]
+        gene_names = [_safe_decode(x) for x in f["gene_names"][:]]
+        cell_type_names = [_safe_decode(x) for x in f["cell_type_names"][:]]
 
     return gene_gate_weights, gene_names, cell_type_names

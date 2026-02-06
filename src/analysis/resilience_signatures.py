@@ -27,7 +27,13 @@ from scipy import stats
 
 from src.data.constants import CELL_TYPE_ORDER, N_CELL_TYPES
 from src.utils.io import save_dataframe
-from src.utils.statistics import benjamini_hochberg, cohens_d_with_ci, attention_entropy
+from src.utils.statistics import (
+    benjamini_hochberg,
+    cohens_d_with_ci,
+    cohens_d_vectorized,
+    cohens_d_ci_vectorized,
+    attention_entropy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -332,10 +338,7 @@ class ResilienceSignatureAnalyzer:
         # Positive = more important for resilience
         signature = resilient_mean - vulnerable_mean
 
-        # Cohen's d: (mean1 - mean2) / pooled_std
-        # Pooled std: sqrt(((n1-1)*s1^2 + (n2-1)*s2^2) / (n1+n2-2))
-        # Note: This is a vectorized implementation of the formula in
-        # src.utils.statistics.cohens_d_with_ci for performance across cell types.
+        # Vectorized Cohen's d + CI using shared statistics utility
         cohens_d = np.zeros(len(self.cell_type_names))
         ci_lower = np.zeros(len(self.cell_type_names))
         ci_upper = np.zeros(len(self.cell_type_names))
@@ -344,27 +347,22 @@ class ResilienceSignatureAnalyzer:
 
         if self.n_resilient > 1 and self.n_vulnerable > 1:
             n1, n2 = self.n_resilient, self.n_vulnerable
-            pooled_var = ((n1 - 1) * resilient_std**2 + (n2 - 1) * vulnerable_std**2) / (n1 + n2 - 2)
-            pooled_std = np.sqrt(pooled_var)
-
-            # Avoid division by zero
-            nonzero_mask = pooled_std > 1e-10
-            cohens_d[nonzero_mask] = signature[nonzero_mask] / pooled_std[nonzero_mask]
+            cohens_d, pooled_std = cohens_d_vectorized(
+                resilient_mean, resilient_std, n1,
+                vulnerable_mean, vulnerable_std, n2,
+            )
 
             # 95% CI for mean difference using pooled SE
-            # SE = pooled_std * sqrt(1/n1 + 1/n2)
             se = pooled_std * np.sqrt(1/n1 + 1/n2)
-            # t critical value for 95% CI with df = n1 + n2 - 2
             df = n1 + n2 - 2
             t_crit = stats.t.ppf(0.975, df)
             ci_lower = signature - t_crit * se
             ci_upper = signature + t_crit * se
 
-            # 95% CI for Cohen's d using Hedges & Olkin (1985) approximation
-            # SE(d) ≈ sqrt((n1+n2)/(n1*n2) + d^2/(2*(n1+n2)))
-            se_d = np.sqrt((n1 + n2) / (n1 * n2) + cohens_d**2 / (2 * (n1 + n2)))
-            cohens_d_ci_lower = cohens_d - t_crit * se_d
-            cohens_d_ci_upper = cohens_d + t_crit * se_d
+            # 95% CI for Cohen's d
+            cohens_d_ci_lower, cohens_d_ci_upper = cohens_d_ci_vectorized(
+                cohens_d, n1, n2,
+            )
 
         df = pd.DataFrame({
             "cell_type": self.cell_type_names,
@@ -489,7 +487,8 @@ class ResilienceSignatureAnalyzer:
         # Average attention across heads: [n_subjects, n_cell_types]
         attention_per_subject = self.attention.mean(axis=1)
 
-        unique_regions = np.unique(self.region_labels)
+        # Filter out empty strings (subjects with no region label)
+        unique_regions = [r for r in np.unique(self.region_labels) if r]
         rows = []
 
         for region in unique_regions:

@@ -219,12 +219,20 @@ class UncertaintyAnalyzer:
             if not np.issubdtype(values.dtype, np.number):
                 continue
 
+            # Filter NaN values for safe correlation
+            valid = ~(np.isnan(self.predicted_std) | np.isnan(values))
+            if valid.sum() < 3:
+                continue
+
+            pred_valid = self.predicted_std[valid]
+            values_valid = values[valid]
+
             # Skip columns with no variance
-            if np.std(values) == 0:
+            if np.std(values_valid) == 0:
                 continue
 
             # Compute Spearman correlation (more robust to outliers)
-            corr, pval = stats.spearmanr(self.predicted_std, values)
+            corr, pval = stats.spearmanr(pred_valid, values_valid)
 
             # Interpretation
             if pval > 0.05:

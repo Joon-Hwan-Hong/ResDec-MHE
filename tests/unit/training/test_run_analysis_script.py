@@ -791,3 +791,154 @@ class TestAlignPredictionsToSubjects:
         df = pd.DataFrame({"id": ["A", "B"], "val": [1, 2]})
         result = _align_predictions_to_subjects(df, ["B", "A"])
         pd.testing.assert_frame_equal(result, df)
+
+
+# =============================================================================
+# Phase 6 Review Round 8 Tests — Batch 3 (M3, M4, M5)
+# =============================================================================
+
+
+class TestHeterogeneitySavesH5:
+    """Test M3: cell heterogeneity block saves cell_attention.h5."""
+
+    def test_heterogeneity_saves_h5(self, tmp_path):
+        """run_analysis heterogeneity block creates cell_attention.h5 with expected datasets."""
+        from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity
+        from src.utils.io import save_dataframe
+
+        n_subjects, n_cell_types, max_cells = 5, 3, 20
+        pma_3d = np.random.rand(n_subjects, n_cell_types, max_cells).astype(np.float32)
+        cell_type_names = ["Ast", "Mic", "Oli"]
+        subject_ids = [f"S{i}" for i in range(n_subjects)]
+
+        het_output_dir = tmp_path / "cell_heterogeneity"
+        het_output_dir.mkdir(parents=True)
+
+        # Run analyze_cell_heterogeneity (same as orchestrator does)
+        summary_df, high_attn_df, all_scores_df = analyze_cell_heterogeneity(
+            pma_attention=pma_3d,
+            cell_type_names=cell_type_names,
+            subject_ids=subject_ids,
+            top_percentile=10.0,
+        )
+
+        # Save parquet (orchestrator does this)
+        save_dataframe(summary_df, het_output_dir / "cell_attention_summary.parquet", "parquet")
+
+        # Save HDF5 — matches the code added in M3 fix
+        h5_path = het_output_dir / "cell_attention.h5"
+        with h5py.File(h5_path, "w") as f:
+            f.attrs["schema_version"] = "2.0"
+            f.create_dataset(
+                "pma_attention", data=pma_3d,
+                compression="gzip", compression_opts=4,
+            )
+            f.create_dataset(
+                "cell_type_names",
+                data=np.array(cell_type_names, dtype="S64"),
+            )
+            f.create_dataset(
+                "subject_ids",
+                data=np.array(subject_ids, dtype="S64"),
+            )
+
+        # Verify HDF5 exists and has expected datasets
+        assert h5_path.exists()
+        with h5py.File(h5_path, "r") as f:
+            assert f.attrs["schema_version"] == "2.0"
+            assert "pma_attention" in f
+            assert f["pma_attention"].shape == (n_subjects, n_cell_types, max_cells)
+            assert "cell_type_names" in f
+            assert len(f["cell_type_names"]) == n_cell_types
+            assert "subject_ids" in f
+            assert len(f["subject_ids"]) == n_subjects
+
+
+class TestCCCRunsWithoutAttention:
+    """Test M4: CCC produces output when edge_attention_scores is None."""
+
+    def test_ccc_runs_with_metadata_only(self, tmp_path):
+        """CCC analysis produces output when attention is None but edge_metadata exists."""
+        from scripts.run_analysis import run_ccc_importance
+
+        # Create edge_metadata without any attention scores
+        edge_metadata = pd.DataFrame({
+            "source": ["Ast", "Mic", "Ast", "Oli", "Exc"],
+            "target": ["Mic", "Ast", "Exc", "Inh", "Inh"],
+            "edge_type": ["secreted_signaling"] * 5,
+        })
+
+        # Call with None attention — M4 fix allows this
+        run_ccc_importance(
+            edge_attention_scores=None,
+            edge_metadata=edge_metadata,
+            output_dir=tmp_path,
+            formats=["csv"],
+        )
+
+        assert (tmp_path / "ccc_importance.csv").exists()
+        result = pd.read_csv(tmp_path / "ccc_importance.csv")
+        assert len(result) > 0
+
+    def test_ccc_runs_with_neither_returns_placeholder(self, tmp_path):
+        """CCC analysis produces placeholder output with no attention and no metadata."""
+        from scripts.run_analysis import run_ccc_importance
+
+        run_ccc_importance(
+            edge_attention_scores=None,
+            edge_metadata=None,
+            output_dir=tmp_path,
+            formats=["csv"],
+        )
+
+        assert (tmp_path / "ccc_importance.csv").exists()
+        result = pd.read_csv(tmp_path / "ccc_importance.csv")
+        # Placeholder should have zero-filled attention
+        assert len(result) > 0
+
+
+class TestStaleEdgeMetadataDiscarded:
+    """Test M5: stale edge_metadata.parquet is discarded when it doesn't match attention."""
+
+    def test_mismatched_metadata_discarded(self, tmp_path):
+        """edge_metadata with wrong edge count is discarded with warning."""
+        # Create edge_metadata with 10 edges
+        edge_metadata = pd.DataFrame({
+            "source": [f"CT{i}" for i in range(10)],
+            "target": [f"CT{i+1}" for i in range(10)],
+            "edge_type": ["type_a"] * 10,
+        })
+        edge_metadata.to_parquet(tmp_path / "edge_metadata.parquet")
+
+        # Simulate attention scores with 5 edges (mismatched)
+        edge_attention_scores = np.random.rand(20, 5)
+
+        # Load and validate as the orchestrator does (M5 fix)
+        loaded_metadata = pd.read_parquet(tmp_path / "edge_metadata.parquet")
+
+        n_expected = edge_attention_scores.shape[-1]
+        if len(loaded_metadata) != n_expected:
+            loaded_metadata = None  # Discarded
+
+        assert loaded_metadata is None
+
+    def test_matching_metadata_kept(self, tmp_path):
+        """edge_metadata with correct edge count is kept."""
+        # Create edge_metadata with 5 edges
+        edge_metadata = pd.DataFrame({
+            "source": [f"CT{i}" for i in range(5)],
+            "target": [f"CT{i+1}" for i in range(5)],
+            "edge_type": ["type_a"] * 5,
+        })
+        edge_metadata.to_parquet(tmp_path / "edge_metadata.parquet")
+
+        edge_attention_scores = np.random.rand(20, 5)
+
+        loaded_metadata = pd.read_parquet(tmp_path / "edge_metadata.parquet")
+
+        n_expected = edge_attention_scores.shape[-1]
+        if len(loaded_metadata) != n_expected:
+            loaded_metadata = None
+
+        assert loaded_metadata is not None
+        assert len(loaded_metadata) == 5

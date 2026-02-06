@@ -93,6 +93,7 @@ class TestAggregateHGTAttention:
             "per_sample",
             "n_samples",
             "n_layers",
+            "n_samples_per_edge_type",
         }
         assert set(result.keys()) == expected_keys
 
@@ -198,22 +199,23 @@ class TestEdgeTypeOrdering:
         assert result["edge_type_names"] == expected_names
         assert result["mean_by_edge_type"].shape[0] == 2
 
-    def test_missing_edge_types_get_zeros(self):
-        """Edge types requested but not in data get zero attention."""
+    def test_missing_edge_types_get_nan(self):
+        """Edge types requested but not in data get NaN attention (not zero)."""
         # Create data with only one edge type
         data = _make_hgt_attention(n_samples=2, n_layers=1, edge_types=[EDGE_TYPE_A])
 
         # But request all 3 edge types explicitly
         result = aggregate_hgt_attention(data, edge_types=DEFAULT_EDGE_TYPES)
 
-        # EDGE_TYPE_A should have non-zero attention
-        et_a_idx = DEFAULT_EDGE_TYPES.index(EDGE_TYPE_A)
-        assert result["per_sample"][:, et_a_idx, :, :].sum() > 0
+        # EDGE_TYPE_A should have non-NaN attention
+        sorted_ets = sorted(DEFAULT_EDGE_TYPES, key=str)
+        et_a_idx = sorted_ets.index(EDGE_TYPE_A)
+        assert not np.any(np.isnan(result["per_sample"][:, et_a_idx, :, :]))
 
-        # Others should be zero
-        for idx, et in enumerate(DEFAULT_EDGE_TYPES):
+        # Others should be NaN (absent, not zero-biased)
+        for idx, et in enumerate(sorted_ets):
             if et != EDGE_TYPE_A:
-                assert result["per_sample"][:, idx, :, :].sum() == 0.0
+                assert np.all(np.isnan(result["per_sample"][:, idx, :, :]))
 
     def test_only_data_edge_types_when_no_explicit_list(self):
         """Without explicit edge_types, only data-present types appear in output."""
@@ -300,3 +302,75 @@ class TestEdgeCases:
         data = _make_hgt_attention(n_heads=1)
         result = aggregate_hgt_attention(data)
         assert result["mean_by_edge_type"].shape[-1] == 1
+
+
+# ============================================================================
+# Phase 6 Review Round 8 — H3: NaN-based absent edge type handling
+# ============================================================================
+
+
+class TestAbsentEdgeTypeNaN:
+    """Tests that absent edge types use NaN, not zero, to avoid biasing means."""
+
+    def test_absent_edge_type_is_nan_not_zero(self):
+        """Sample missing an edge type should have NaN in per_sample array."""
+        n_samples, n_layers, n_heads = 3, 2, 4
+        # Build attention where sample 0 is missing EDGE_TYPE_C
+        data = _make_hgt_attention(
+            n_samples=n_samples, n_layers=n_layers, n_heads=n_heads
+        )
+        # Remove EDGE_TYPE_C from sample 0's layers
+        for layer_attn in data[0]:
+            if EDGE_TYPE_C in layer_attn:
+                del layer_attn[EDGE_TYPE_C]
+
+        result = aggregate_hgt_attention(data, include_per_sample=True)
+        per_sample = result["per_sample"]
+        # Find index of EDGE_TYPE_C
+        sorted_ets = sorted(DEFAULT_EDGE_TYPES, key=str)
+        c_idx = sorted_ets.index(EDGE_TYPE_C)
+        # Sample 0 should be NaN for EDGE_TYPE_C
+        assert np.all(np.isnan(per_sample[0, c_idx, :, :]))
+        # Samples 1,2 should NOT be NaN for EDGE_TYPE_C
+        assert not np.any(np.isnan(per_sample[1, c_idx, :, :]))
+        assert not np.any(np.isnan(per_sample[2, c_idx, :, :]))
+
+    def test_sparse_edge_type_mean_excludes_absent(self):
+        """Edge type present in 2/5 samples → mean of 2 samples, not diluted."""
+        n_samples, n_layers, n_heads = 5, 1, 2
+        rng = np.random.RandomState(42)
+        # Only samples 0 and 1 have EDGE_TYPE_A
+        data = []
+        for s in range(n_samples):
+            layer_attn = {}
+            for et in DEFAULT_EDGE_TYPES:
+                if et == EDGE_TYPE_A and s >= 2:
+                    continue  # absent for samples 2,3,4
+                layer_attn[et] = rng.rand(10, n_heads)
+            data.append([layer_attn])
+
+        result = aggregate_hgt_attention(data, include_per_sample=True)
+        sorted_ets = sorted(DEFAULT_EDGE_TYPES, key=str)
+        a_idx = sorted_ets.index(EDGE_TYPE_A)
+
+        # Mean should be computed from only 2 samples, not 5
+        per_sample = result["per_sample"]
+        valid_vals = per_sample[:, a_idx, 0, :]  # [n_samples, n_heads]
+        expected_mean = np.nanmean(valid_vals, axis=0)
+        np.testing.assert_array_almost_equal(
+            result["mean_by_edge_type"][a_idx], expected_mean
+        )
+
+    def test_n_samples_per_edge_type_correct(self):
+        """n_samples_per_edge_type reflects actual edge type presence."""
+        n_samples = 5
+        data = _make_hgt_attention(n_samples=n_samples, n_layers=1)
+        # Remove EDGE_TYPE_B from samples 3 and 4
+        sorted_ets = sorted(DEFAULT_EDGE_TYPES, key=str)
+        for s in [3, 4]:
+            if EDGE_TYPE_B in data[s][0]:
+                del data[s][0][EDGE_TYPE_B]
+
+        result = aggregate_hgt_attention(data)
+        b_idx = sorted_ets.index(EDGE_TYPE_B)
+        assert result["n_samples_per_edge_type"][b_idx] == 3  # 5 - 2 removed

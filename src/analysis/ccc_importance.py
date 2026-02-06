@@ -274,7 +274,8 @@ class CCCImportanceAnalyzer:
         if self.edge_attention_scores.ndim != 2:
             raise ValueError("edge_attention_scores must be 2D for region stratification")
 
-        unique_regions = np.unique(self.region_labels)
+        # Filter out empty strings (subjects with no region label)
+        unique_regions = [r for r in np.unique(self.region_labels) if r]
 
         rows = []
         for region in unique_regions:

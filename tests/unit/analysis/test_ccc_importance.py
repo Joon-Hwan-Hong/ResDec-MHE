@@ -474,3 +474,39 @@ class TestCCCLengthValidation:
         )
         result = analyzer.analyze()
         assert result.edge_importance is not None
+
+
+# ============================================================================
+# Phase 6 Review Round 8 — H1: Empty region label filtering
+# ============================================================================
+
+
+class TestEmptyRegionLabelFiltering:
+    """Tests for empty-string region label filtering in CCC importance."""
+
+    def test_empty_region_labels_excluded_from_stratification(self):
+        """Subjects with empty region labels are excluded from by-region analysis."""
+        np.random.seed(42)
+        n_subjects, n_edges = 20, 10
+        attention = np.random.rand(n_subjects, n_edges).astype(np.float32)
+        metadata = pd.DataFrame({
+            "source": ["A"] * n_edges,
+            "target": ["B"] * n_edges,
+            "edge_type": ["Secreted_Signaling"] * n_edges,
+        })
+        # Mix of real regions and empty strings
+        region_labels = np.array(
+            ["PFC"] * 8 + ["AG"] * 8 + [""] * 4
+        )
+        analyzer = CCCImportanceAnalyzer(
+            edge_attention_scores=attention,
+            edge_metadata=metadata,
+            cell_type_names=["A", "B"],
+            region_labels=region_labels,
+        )
+        result = analyzer.analyze()
+        assert result.by_region is not None
+        unique_regions = result.by_region["region"].unique()
+        assert "" not in unique_regions
+        assert "PFC" in unique_regions
+        assert "AG" in unique_regions

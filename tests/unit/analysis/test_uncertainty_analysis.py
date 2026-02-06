@@ -743,3 +743,52 @@ class TestUncertaintyAnalysisEdgeCases:
         assert result.metadata["n_subjects"] == 50
         assert result.metadata["has_actual"] is True
         assert result.metadata["has_covariates"] is True
+
+
+# ============================================================================
+# Phase 6 Review Round 8 — M2: NaN-safe spearmanr
+# ============================================================================
+
+
+class TestSpearmanrNaNHandling:
+    """Tests for NaN-safe Spearman correlation in uncertainty correlates."""
+
+    def test_nan_in_covariates_does_not_crash(self):
+        """spearmanr with NaN covariate values should not crash or produce NaN."""
+        np.random.seed(42)
+        n = 50
+        predicted_std = np.random.rand(n)
+        covariates = pd.DataFrame({
+            "cell_count": np.random.rand(n),
+            "with_nans": np.where(np.arange(n) < 40, np.random.rand(n), np.nan),
+        })
+
+        analyzer = UncertaintyAnalyzer(
+            predicted_mean=np.random.rand(n),
+            predicted_std=predicted_std,
+            covariates=covariates,
+        )
+        result = analyzer.analyze()
+        if result.correlates is not None and len(result.correlates) > 0:
+            assert not result.correlates["correlation"].isna().any()
+
+    def test_few_valid_values_skips_correlation(self):
+        """Covariate with fewer than 3 valid values should be skipped."""
+        np.random.seed(42)
+        n = 10
+        predicted_std = np.random.rand(n)
+        covariates = pd.DataFrame({
+            "mostly_nan": np.full(n, np.nan),
+        })
+        covariates.loc[0, "mostly_nan"] = 1.0
+        covariates.loc[1, "mostly_nan"] = 2.0
+
+        analyzer = UncertaintyAnalyzer(
+            predicted_mean=np.random.rand(n),
+            predicted_std=predicted_std,
+            covariates=covariates,
+        )
+        result = analyzer.analyze()
+        # "mostly_nan" should be absent from correlates (too few valid values)
+        if result.correlates is not None and len(result.correlates) > 0:
+            assert "mostly_nan" not in result.correlates["covariate"].values

@@ -103,7 +103,8 @@ def aggregate_hgt_attention(
 
     # Collect per-sample per-layer attention summaries
     # Shape: [n_samples, n_edge_types, n_layers, n_heads]
-    per_sample_per_layer = np.zeros((n_samples, len(edge_types), n_layers, n_heads))
+    # NaN init: absent edge types stay NaN instead of biasing means to zero
+    per_sample_per_layer = np.full((n_samples, len(edge_types), n_layers, n_heads), np.nan)
 
     for sample_idx, sample_attn in enumerate(hgt_attention):
         for layer_idx, layer_attn in enumerate(sample_attn):
@@ -115,10 +116,21 @@ def aggregate_hgt_attention(
                     # Mean across edges for this edge type in this layer
                     per_sample_per_layer[sample_idx, et_idx, layer_idx, :] = attn.mean(axis=0)
 
-    # Aggregate: mean across layers, then across samples
-    attention_per_sample = per_sample_per_layer.mean(axis=2)  # [n_samples, n_edge_types, n_heads]
-    mean_by_edge_type = attention_per_sample.mean(axis=0)  # [n_edge_types, n_heads]
-    std_by_edge_type = attention_per_sample.std(axis=0)    # [n_edge_types, n_heads]
+    # Aggregate: nanmean across layers, then across samples
+    # (absent edge types excluded from aggregation, not treated as zero)
+    # Suppress "Mean of empty slice" warning — expected when edge type is
+    # absent from all layers for a given sample (NaN output is correct).
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        attention_per_sample = np.nanmean(per_sample_per_layer, axis=2)  # [n_samples, n_edge_types, n_heads]
+        mean_by_edge_type = np.nanmean(attention_per_sample, axis=0)  # [n_edge_types, n_heads]
+        std_by_edge_type = np.nanstd(attention_per_sample, axis=0)    # [n_edge_types, n_heads]
+
+    # Count non-NaN samples per edge type (for downstream transparency)
+    n_samples_per_edge_type = np.sum(
+        ~np.isnan(attention_per_sample[:, :, 0]), axis=0
+    )  # [n_edge_types]
 
     return {
         "edge_type_names": edge_type_names,
@@ -127,4 +139,5 @@ def aggregate_hgt_attention(
         "per_sample": per_sample_per_layer if include_per_sample else None,
         "n_samples": n_samples,
         "n_layers": n_layers,
+        "n_samples_per_edge_type": n_samples_per_edge_type,
     }

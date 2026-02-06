@@ -426,12 +426,17 @@ class Predictor:
                 all_region_attention.append(result["region_attention"])
             if "cell_barcodes" in result and result["cell_barcodes"] is not None:
                 all_cell_barcodes.extend(result["cell_barcodes"])
-            # Derive cell counts per cell type from cell_mask
-            if "cell_mask" in batch:
+            # Use pre-computed cell counts from dataset (not clipped by max_cells_per_type)
+            if "cell_counts" in batch:
+                cc = batch["cell_counts"]
+                if isinstance(cc, torch.Tensor):
+                    cc = cc.cpu().numpy()
+                all_cell_counts.append(cc)
+            elif "cell_mask" in batch:
+                # Fallback: derive from cell_mask (may undercount clipped types)
                 cm = batch["cell_mask"]
                 if isinstance(cm, torch.Tensor):
                     cm = cm.cpu()
-                # cell_mask: [B, n_cell_types, max_cells] bool → sum over cells
                 batch_cell_counts = cm.sum(dim=-1).numpy()  # [B, n_cell_types]
                 all_cell_counts.append(batch_cell_counts)
             if extract_embeddings and "embeddings" in result:

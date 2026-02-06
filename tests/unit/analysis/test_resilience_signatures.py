@@ -1179,3 +1179,89 @@ class TestFDRThreshold:
                 result.permutation_pvalues["significant_005"],
                 check_names=False,
             )
+
+
+# ============================================================================
+# Phase 6 Review Round 8 — H1 + H4: Region filter + seed determinism
+# ============================================================================
+
+
+class TestEmptyRegionFilterResilience:
+    """Tests for empty-string region label filtering in resilience analysis."""
+
+    def test_empty_region_labels_excluded(self):
+        """Subjects with empty region labels are excluded from regional analysis."""
+        np.random.seed(42)
+        n = 60
+        attention = np.random.rand(n, 4, N_CELL_TYPES).astype(np.float32)
+        pathology = np.random.rand(n).astype(np.float32)
+        cognition = np.random.rand(n).astype(np.float32)
+        # 20 per real region, 0 for empty
+        region_labels = np.array(["PFC"] * 20 + ["AG"] * 20 + [""] * 20)
+
+        analyzer = ResilienceSignatureAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+            cell_type_names=[f"ct_{i}" for i in range(N_CELL_TYPES)],
+            region_labels=region_labels,
+        )
+        result = analyzer.analyze(n_permutations=0)
+        if result.by_region is not None:
+            regions_in_result = result.by_region["region"].unique()
+            assert "" not in regions_in_result
+
+
+class TestSeedDeterminism:
+    """Tests that same seed produces identical permutation results."""
+
+    def test_same_seed_same_result(self):
+        """Permutation test with same seed must be deterministic."""
+        np.random.seed(42)
+        n = 30
+        attention = np.random.rand(n, 4, N_CELL_TYPES).astype(np.float32)
+        pathology = np.random.rand(n).astype(np.float32)
+        cognition = np.random.rand(n).astype(np.float32)
+
+        analyzer = ResilienceSignatureAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+            cell_type_names=[f"ct_{i}" for i in range(N_CELL_TYPES)],
+        )
+        r1 = analyzer.analyze(n_permutations=50, random_seed=123)
+        r2 = analyzer.analyze(n_permutations=50, random_seed=123)
+
+        if r1.permutation_pvalues is not None:
+            pd.testing.assert_frame_equal(r1.permutation_pvalues, r2.permutation_pvalues)
+
+
+class TestVectorizedCohensDSharedUtility:
+    """Tests that vectorized Cohen's d from statistics.py matches scalar version."""
+
+    def test_vectorized_matches_scalar_loop(self):
+        """cohens_d_vectorized results match per-feature cohens_d_with_ci calls."""
+        from src.utils.statistics import (
+            cohens_d_vectorized, cohens_d_ci_vectorized, cohens_d_with_ci,
+        )
+        np.random.seed(42)
+        n1, n2 = 15, 12
+        n_features = 5
+        group1 = np.random.rand(n1, n_features)
+        group2 = np.random.rand(n2, n_features)
+
+        g1_mean = group1.mean(axis=0)
+        g1_std = group1.std(axis=0, ddof=1)
+        g2_mean = group2.mean(axis=0)
+        g2_std = group2.std(axis=0, ddof=1)
+
+        d_vec, _ = cohens_d_vectorized(g1_mean, g1_std, n1, g2_mean, g2_std, n2)
+        ci_lo_vec, ci_hi_vec = cohens_d_ci_vectorized(d_vec, n1, n2)
+
+        for i in range(n_features):
+            d_scalar, ci_lo_scalar, ci_hi_scalar = cohens_d_with_ci(
+                group1[:, i], group2[:, i],
+            )
+            np.testing.assert_almost_equal(d_vec[i], d_scalar, decimal=6)
+            np.testing.assert_almost_equal(ci_lo_vec[i], ci_lo_scalar, decimal=6)
+            np.testing.assert_almost_equal(ci_hi_vec[i], ci_hi_scalar, decimal=6)

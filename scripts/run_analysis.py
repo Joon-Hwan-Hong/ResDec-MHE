@@ -25,6 +25,7 @@ import argparse
 import logging
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
@@ -168,6 +169,12 @@ def parse_args() -> argparse.Namespace:
         help="Top percentile for high-attention cells in heterogeneity analysis (default: 10.0)",
     )
     param_group.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible permutation tests (default: 42)",
+    )
+    param_group.add_argument(
         "--run-ablation",
         action="store_true",
         help="Run ablation study as part of resilience signature analysis",
@@ -264,8 +271,9 @@ def _align_predictions_to_subjects(
         )
         return predictions_df
 
-    aligned = predictions_df.set_index("subject_id").reindex(target_subject_ids).reset_index()
+    aligned = predictions_df.set_index("subject_id").reindex(target_subject_ids)
     n_missing = aligned.isna().all(axis=1).sum()
+    aligned = aligned.reset_index()
     if n_missing > 0:
         logger.warning(
             f"{n_missing}/{len(target_subject_ids)} attention subjects not found "
@@ -326,7 +334,7 @@ def run_gene_importance(
 
 
 def run_ccc_importance(
-    edge_attention_scores: np.ndarray,
+    edge_attention_scores: np.ndarray | None = None,
     edge_metadata: pd.DataFrame | None = None,
     cell_type_names: list[str] | None = None,
     edge_types: list[str] | None = None,
@@ -590,6 +598,16 @@ def main():
     if edge_metadata_path.exists():
         edge_metadata = pd.read_parquet(edge_metadata_path)
         logger.info(f"Loaded edge metadata with {len(edge_metadata)} edges")
+        # Validate against current attention data to catch stale metadata
+        if edge_attention_scores is not None:
+            n_expected = edge_attention_scores.shape[-1]
+            if len(edge_metadata) != n_expected:
+                logger.warning(
+                    f"Stale edge_metadata.parquet ({len(edge_metadata)} edges) "
+                    f"doesn't match attention scores ({n_expected} edges). "
+                    f"Discarding file-based metadata."
+                )
+                edge_metadata = None
 
     # Source region labels from metadata, aligned to subject order
     region_labels = None
@@ -602,7 +620,17 @@ def main():
                     aligned_regions.append(meta_indexed.loc[sid, "region"])
                 else:
                     aligned_regions.append(None)
-            region_labels = np.array(aligned_regions)
+            # Replace None with empty string for safe array creation
+            # (np.unique on mixed str/None raises TypeError)
+            region_labels = np.array(
+                [r if r is not None else "" for r in aligned_regions],
+                dtype=str,
+            )
+            n_missing_regions = sum(1 for r in aligned_regions if r is None)
+            if n_missing_regions > 0:
+                logger.warning(
+                    f"{n_missing_regions} subjects have no region label in metadata"
+                )
             logger.info(f"Aligned region labels to {len(subject_ids)} subjects")
         else:
             region_labels = metadata_df["region"].values
@@ -661,8 +689,8 @@ def main():
         )
         analyses_run += 1
 
-    # CCC importance
-    if not args.skip_ccc and edge_attention_scores is not None:
+    # CCC importance (analyzer handles None attention gracefully)
+    if not args.skip_ccc and (edge_attention_scores is not None or hgt_edge_metadata is not None or edge_metadata is not None):
         # Merge HGT-derived edge_metadata with any file-based edge_metadata
         effective_edge_metadata = edge_metadata if edge_metadata is not None else hgt_edge_metadata
         run_ccc_importance(
@@ -740,6 +768,7 @@ def main():
                         pathology_scores=pathology_scores,
                         cell_type_names=cell_type_names,
                         n_permutations=args.n_permutations,
+                        random_seed=args.seed,
                         apply_fdr_correction=not args.no_fdr,
                         fdr_threshold=args.fdr_threshold,
                         run_ablation=args.run_ablation,
@@ -855,6 +884,26 @@ def main():
                     save_dataframe(summary_df, het_output_dir / f"cell_attention_summary.{fmt}", fmt)
                     save_dataframe(high_attn_df, het_output_dir / f"high_attention_cells.{fmt}", fmt)
                     save_dataframe(all_scores_df, het_output_dir / f"cell_attention_scores.{fmt}", fmt)
+
+                # Save raw attention to HDF5 (design spec: cell_attention.h5)
+                h5_path = het_output_dir / "cell_attention.h5"
+                with h5py.File(h5_path, "w") as f:
+                    f.attrs["schema_version"] = "2.0"
+                    f.create_dataset(
+                        "pma_attention", data=pma_3d,
+                        compression="gzip", compression_opts=4,
+                    )
+                    if cell_type_names:
+                        f.create_dataset(
+                            "cell_type_names",
+                            data=np.array(cell_type_names, dtype="S64"),
+                        )
+                    if subject_ids:
+                        f.create_dataset(
+                            "subject_ids",
+                            data=np.array(subject_ids, dtype="S64"),
+                        )
+                logger.info(f"  Saved cell_attention.h5 to {het_output_dir}")
 
                 analyses_run += 1
                 logger.info(f"Cell heterogeneity analysis saved to {het_output_dir}")

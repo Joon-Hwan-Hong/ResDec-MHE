@@ -439,3 +439,77 @@ class TestEdgeCases:
         )
         result = analyzer.analyze()
         assert result.by_region is None or len(result.by_region) == 0
+
+
+# ============================================================================
+# Phase 6 Review Round 8 — L1: Gene gate HDF5 string decode
+# ============================================================================
+
+
+class TestGeneGateLoadStrAndBytes:
+    """Test L1: load_gene_gate_weights_hdf5 handles both bytes and str HDF5 datasets."""
+
+    def test_loads_bytes_strings(self, tmp_path):
+        """HDF5 with fixed-length byte strings (S-type) loads correctly."""
+        import h5py
+
+        path = tmp_path / "gene_gate_bytes.h5"
+        n_ct, n_genes = 3, 5
+        with h5py.File(path, "w") as f:
+            f.create_dataset("gene_gate", data=np.random.rand(n_ct, n_genes).astype(np.float32))
+            # Fixed-length byte strings (S64)
+            f.create_dataset("gene_names", data=np.array(
+                [f"GENE{i}" for i in range(n_genes)], dtype="S64"
+            ))
+            f.create_dataset("cell_type_names", data=np.array(
+                ["Ast", "Mic", "Oli"], dtype="S64"
+            ))
+
+        weights, gene_names, cell_type_names = load_gene_gate_weights_hdf5(path)
+        assert weights.shape == (n_ct, n_genes)
+        assert gene_names == [f"GENE{i}" for i in range(n_genes)]
+        assert cell_type_names == ["Ast", "Mic", "Oli"]
+
+    def test_loads_vlen_strings(self, tmp_path):
+        """HDF5 with vlen string datasets loads correctly."""
+        import h5py
+
+        path = tmp_path / "gene_gate_vlen.h5"
+        n_ct, n_genes = 3, 5
+        vlen_str = h5py.special_dtype(vlen=str)
+        with h5py.File(path, "w") as f:
+            f.create_dataset("gene_gate", data=np.random.rand(n_ct, n_genes).astype(np.float32))
+            # Vlen strings (already str, not bytes)
+            f.create_dataset("gene_names", data=np.array(
+                [f"GENE{i}" for i in range(n_genes)], dtype=object
+            ), dtype=vlen_str)
+            f.create_dataset("cell_type_names", data=np.array(
+                ["Ast", "Mic", "Oli"], dtype=object
+            ), dtype=vlen_str)
+
+        weights, gene_names, cell_type_names = load_gene_gate_weights_hdf5(path)
+        assert weights.shape == (n_ct, n_genes)
+        assert gene_names == [f"GENE{i}" for i in range(n_genes)]
+        assert cell_type_names == ["Ast", "Mic", "Oli"]
+
+    def test_mixed_bytes_and_str(self, tmp_path):
+        """HDF5 with one bytes dataset and one vlen string dataset loads correctly."""
+        import h5py
+
+        path = tmp_path / "gene_gate_mixed.h5"
+        n_ct, n_genes = 3, 5
+        vlen_str = h5py.special_dtype(vlen=str)
+        with h5py.File(path, "w") as f:
+            f.create_dataset("gene_gate", data=np.random.rand(n_ct, n_genes).astype(np.float32))
+            # gene_names as bytes
+            f.create_dataset("gene_names", data=np.array(
+                [f"GENE{i}" for i in range(n_genes)], dtype="S64"
+            ))
+            # cell_type_names as vlen str
+            f.create_dataset("cell_type_names", data=np.array(
+                ["Ast", "Mic", "Oli"], dtype=object
+            ), dtype=vlen_str)
+
+        weights, gene_names, cell_type_names = load_gene_gate_weights_hdf5(path)
+        assert gene_names == [f"GENE{i}" for i in range(n_genes)]
+        assert cell_type_names == ["Ast", "Mic", "Oli"]

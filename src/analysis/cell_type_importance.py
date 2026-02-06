@@ -215,13 +215,15 @@ class CellTypeImportanceAnalyzer:
 
         # Assign tertiles
         tertile_assignments = np.digitize(self.pathology_scores, tertile_edges[1:-1])
+        # Exclude NaN pathology subjects from analysis
+        nan_mask = np.isnan(self.pathology_scores)
 
         # Average attention across heads: [n_subjects, n_cell_types]
         attention_per_subject = self.attention.mean(axis=1)
 
         rows = []
         for tertile_idx, tertile_label in enumerate(tertile_labels):
-            mask = tertile_assignments == tertile_idx
+            mask = (tertile_assignments == tertile_idx) & ~nan_mask
             n_in_group = mask.sum()
 
             if n_in_group == 0:
@@ -260,7 +262,8 @@ class CellTypeImportanceAnalyzer:
         attention_per_subject = self.attention.mean(axis=1)
 
         # Get unique regions
-        unique_regions = np.unique(self.region_labels)
+        # Filter out empty strings (subjects with no region label)
+        unique_regions = [r for r in np.unique(self.region_labels) if r]
 
         rows = []
         for region in unique_regions:

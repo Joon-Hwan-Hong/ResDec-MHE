@@ -26,8 +26,6 @@ def analyze_cell_heterogeneity(
     cell_metadata: pd.DataFrame | None = None,
     top_percentile: float = 10.0,
     min_cells_per_type: int = 10,
-    cell_type_column: str = "cell_type",
-    subject_column: str = "subject_id",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Analyze within-cell-type heterogeneity from PMA attention.
@@ -40,8 +38,6 @@ def analyze_cell_heterogeneity(
         cell_metadata: DataFrame with cell-level metadata (index=barcodes)
         top_percentile: Percentile threshold for high-attention cells
         min_cells_per_type: Minimum cells per type to analyze
-        cell_type_column: Column name for cell type in metadata
-        subject_column: Column name for subject ID in metadata
 
     Returns:
         Tuple of (summary_df, high_attention_df, all_scores_df)

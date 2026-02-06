@@ -223,6 +223,65 @@ def cohens_d_with_ci(
     return float(d), float(ci_lower), float(ci_upper)
 
 
+def cohens_d_vectorized(
+    group1_mean: np.ndarray,
+    group1_std: np.ndarray,
+    n1: int,
+    group2_mean: np.ndarray,
+    group2_std: np.ndarray,
+    n2: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Vectorized Cohen's d across multiple features.
+
+    Same formula as cohens_d() but operates on pre-computed summary statistics
+    to avoid repeated loop overhead.
+
+    Args:
+        group1_mean: Mean of group 1 per feature [n_features]
+        group1_std: Std (ddof=1) of group 1 per feature [n_features]
+        n1: Number of samples in group 1
+        group2_mean: Mean of group 2 per feature [n_features]
+        group2_std: Std (ddof=1) of group 2 per feature [n_features]
+        n2: Number of samples in group 2
+
+    Returns:
+        Tuple of (d, pooled_std) arrays [n_features]
+    """
+    pooled_var = ((n1 - 1) * group1_std**2 + (n2 - 1) * group2_std**2) / (n1 + n2 - 2)
+    pooled_std = np.sqrt(pooled_var)
+    d = np.zeros_like(group1_mean)
+    nonzero = pooled_std > 1e-10
+    d[nonzero] = (group1_mean[nonzero] - group2_mean[nonzero]) / pooled_std[nonzero]
+    return d, pooled_std
+
+
+def cohens_d_ci_vectorized(
+    d: np.ndarray,
+    n1: int,
+    n2: int,
+    confidence: float = 0.95,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Vectorized CI for Cohen's d using Hedges & Olkin (1985) approximation.
+
+    Args:
+        d: Cohen's d values per feature [n_features]
+        n1: Number of samples in group 1
+        n2: Number of samples in group 2
+        confidence: Confidence level (default: 0.95)
+
+    Returns:
+        Tuple of (ci_lower, ci_upper) arrays [n_features]
+    """
+    from scipy import stats as sp_stats
+
+    se = np.sqrt((n1 + n2) / (n1 * n2) + d**2 / (2 * (n1 + n2)))
+    df = n1 + n2 - 2
+    t_crit = sp_stats.t.ppf(1 - (1 - confidence) / 2, df)
+    return d - t_crit * se, d + t_crit * se
+
+
 def benjamini_hochberg(
     pvalues: np.ndarray,
     alpha: float = 0.05,

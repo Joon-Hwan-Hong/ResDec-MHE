@@ -300,12 +300,12 @@ class TestEdgeCases:
         # Both edge types should be in the result
         assert len(result["edge_type_names"]) == 2
 
-        # Per-sample should have zeros where edge type was missing
+        # Per-sample should have NaN where edge type was missing (not zero-biased)
         per_sample = result["per_sample"]
-        # Odd samples should have zeros for et2
+        # Odd samples should have NaN for et2
         et2_idx = result["edge_type_names"].index("C|ECM_Receptor|D")
         for i in range(1, n_samples, 2):  # Odd samples
-            assert np.allclose(per_sample[i, et2_idx, :, :], 0.0)
+            assert np.all(np.isnan(per_sample[i, et2_idx, :, :]))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
