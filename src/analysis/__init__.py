@@ -35,6 +35,12 @@ from src.analysis.uncertainty_analysis import (
     compute_expected_calibration_error,
 )
 from src.utils.statistics import CALIBRATION_LEVELS
+from src.analysis.cell_heterogeneity import (
+    CellHeterogeneityAnalyzer,
+    CellHeterogeneityResult,
+    compute_cell_heterogeneity,
+    analyze_cell_heterogeneity,
+)
 from src.analysis.embedding_analysis import (
     EmbeddingAnalyzer,
     EmbeddingAnalysisResult,
@@ -70,6 +76,11 @@ __all__ = [
     "compute_uncertainty_analysis",
     "compute_expected_calibration_error",
     "CALIBRATION_LEVELS",
+    # Cell heterogeneity
+    "CellHeterogeneityAnalyzer",
+    "CellHeterogeneityResult",
+    "compute_cell_heterogeneity",
+    "analyze_cell_heterogeneity",
     # Embedding analysis
     "EmbeddingAnalyzer",
     "EmbeddingAnalysisResult",

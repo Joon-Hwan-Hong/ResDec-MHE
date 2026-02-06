@@ -375,6 +375,7 @@ def run_resilience_signature(
     fdr_threshold: float = 0.05,
     run_ablation: bool = False,
     ablation_method: str = "both",
+    embeddings: np.ndarray | None = None,
     region_labels: np.ndarray | None = None,
     subject_ids: list[str] | None = None,
     output_dir: Path = None,
@@ -399,6 +400,7 @@ def run_resilience_signature(
         fdr_threshold=fdr_threshold,
         run_ablation=run_ablation,
         ablation_method=ablation_method,
+        embeddings=embeddings,
     )
 
     if output_dir:
@@ -576,7 +578,16 @@ def main():
     # Convert region_pseudobulk array to dict format for analyzers
     region_pseudobulk_dict = None
     if region_pseudobulk_raw is not None:
-        region_names_list = list(REGION_ORDER)
+        # Prefer explicit region names from HDF5; fall back to REGION_ORDER
+        stored_region_names = attention_weights.get("region_names")
+        if stored_region_names is not None:
+            region_names_list = stored_region_names
+        else:
+            region_names_list = list(REGION_ORDER)
+            logger.warning(
+                "No region_names in HDF5 — assuming REGION_ORDER. "
+                "Re-run inference with latest code to store region names explicitly."
+            )
         region_pseudobulk_dict = {}
         for i, rname in enumerate(region_names_list):
             if i < region_pseudobulk_raw.shape[0]:
@@ -759,6 +770,14 @@ def main():
                     available_pathology.append(("pathology", predictions_df["pathology"].values))
 
             if available_pathology:
+                # Prepare ablation embeddings (prefer fused, fall back to attended)
+                ablation_embeddings = None
+                if embeddings is not None:
+                    if isinstance(embeddings, dict):
+                        ablation_embeddings = embeddings.get("fused", embeddings.get("attended"))
+                    elif isinstance(embeddings, np.ndarray):
+                        ablation_embeddings = embeddings
+
                 for pathology_name, pathology_scores in available_pathology:
                     logger.info(f"Running resilience signature for {pathology_name}...")
                     resilience_output_dir = output_dir / f"resilience_{pathology_name}"
@@ -773,6 +792,7 @@ def main():
                         fdr_threshold=args.fdr_threshold,
                         run_ablation=args.run_ablation,
                         ablation_method=args.ablation_method,
+                        embeddings=ablation_embeddings,
                         region_labels=region_labels,
                         subject_ids=subject_ids,
                         output_dir=resilience_output_dir,
@@ -864,46 +884,21 @@ def main():
             from src.utils.io import unpack_pma_attention
             pma_3d = unpack_pma_attention(pma_raw, cell_type_names=cell_type_names)
             if pma_3d is not None:
-                from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity
+                from src.analysis.cell_heterogeneity import CellHeterogeneityAnalyzer
 
-                # Dict mapping "subj_idx_ct_idx" -> list[str] barcode lists, or None
                 cell_barcodes = attention_weights.get("cell_barcodes")
                 het_output_dir = output_dir / "cell_heterogeneity"
-                het_output_dir.mkdir(parents=True, exist_ok=True)
 
                 logger.info("Running cell heterogeneity analysis...")
-                summary_df, high_attn_df, all_scores_df = analyze_cell_heterogeneity(
+                het_analyzer = CellHeterogeneityAnalyzer(
                     pma_attention=pma_3d,
                     cell_type_names=cell_type_names,
                     subject_ids=subject_ids,
                     cell_barcodes=cell_barcodes,
                     top_percentile=args.top_percentile,
                 )
-
-                for fmt in args.formats:
-                    save_dataframe(summary_df, het_output_dir / f"cell_attention_summary.{fmt}", fmt)
-                    save_dataframe(high_attn_df, het_output_dir / f"high_attention_cells.{fmt}", fmt)
-                    save_dataframe(all_scores_df, het_output_dir / f"cell_attention_scores.{fmt}", fmt)
-
-                # Save raw attention to HDF5 (design spec: cell_attention.h5)
-                h5_path = het_output_dir / "cell_attention.h5"
-                with h5py.File(h5_path, "w") as f:
-                    f.attrs["schema_version"] = "2.0"
-                    f.create_dataset(
-                        "pma_attention", data=pma_3d,
-                        compression="gzip", compression_opts=4,
-                    )
-                    if cell_type_names:
-                        f.create_dataset(
-                            "cell_type_names",
-                            data=np.array(cell_type_names, dtype="S64"),
-                        )
-                    if subject_ids:
-                        f.create_dataset(
-                            "subject_ids",
-                            data=np.array(subject_ids, dtype="S64"),
-                        )
-                logger.info(f"  Saved cell_attention.h5 to {het_output_dir}")
+                het_result = het_analyzer.analyze()
+                het_analyzer.save(het_result, het_output_dir, formats=args.formats)
 
                 analyses_run += 1
                 logger.info(f"Cell heterogeneity analysis saved to {het_output_dir}")

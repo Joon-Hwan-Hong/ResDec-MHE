@@ -29,7 +29,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.data.constants import CELL_TYPE_ORDER
+from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
 from src.models.full_model import CognitiveResilienceModel
 from src.training.lightning_module import CognitiveResilienceLightningModule
 from src.utils.io import save_attention_weights as _io_save_attention_weights
@@ -671,6 +671,7 @@ class Predictor:
             subject_ids=results.subject_ids,
             cell_type_names=list(CELL_TYPE_ORDER),
             gene_names=results.gene_names,
+            region_names=list(REGION_ORDER) if results.region_pseudobulk_mean is not None else None,
             embeddings=results.embeddings,
             metadata={
                 "n_subjects": results.n_subjects,

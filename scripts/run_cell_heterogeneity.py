@@ -32,7 +32,6 @@ import numpy as np
 import pandas as pd
 
 from src.data.constants import CELL_TYPE_ORDER
-from src.utils.io import save_dataframe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -216,10 +215,6 @@ def load_anndata_obs(path: Path, columns: list[str] | None = None) -> pd.DataFra
     return obs.copy()
 
 
-# Re-export from canonical location for backward compatibility
-from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity  # noqa: F401
-
-
 def main():
     """Main entry point."""
     args = parse_args()
@@ -260,9 +255,11 @@ def main():
             columns=[args.cell_type_column, args.subject_column],
         )
 
-    # Run analysis
+    # Run analysis using Analyzer class
+    from src.analysis.cell_heterogeneity import CellHeterogeneityAnalyzer
+
     logger.info("Running cell heterogeneity analysis...")
-    summary_df, high_attention_df, all_scores_df = analyze_cell_heterogeneity(
+    analyzer = CellHeterogeneityAnalyzer(
         pma_attention=attention_data["pma_attention"],
         cell_type_names=cell_type_names,
         subject_ids=subject_ids,
@@ -271,46 +268,15 @@ def main():
         top_percentile=args.top_percentile,
         min_cells_per_type=args.min_cells_per_type,
     )
-
-    # Save results
-    for fmt in args.formats:
-        save_dataframe(summary_df, output_dir / f"cell_attention_summary.{fmt}", fmt)
-        save_dataframe(high_attention_df, output_dir / f"high_attention_cells.{fmt}", fmt)
-        # All scores can be large, only save parquet by default
-        if fmt == "parquet" or len(all_scores_df) < 100000:
-            save_dataframe(all_scores_df, output_dir / f"cell_attention_scores.{fmt}", fmt)
-
-    # Save raw attention to HDF5 (spec: cell_attention.h5)
-    h5_path = output_dir / "cell_attention.h5"
-    with h5py.File(h5_path, "w") as f:
-        f.attrs["schema_version"] = "2.0"
-
-        # Save the 3D PMA attention [n_subjects, n_cell_types, max_cells]
-        f.create_dataset(
-            "pma_attention",
-            data=attention_data["pma_attention"],
-            compression="gzip",
-            compression_opts=4,
-        )
-
-        n_subjects, n_cell_types_actual, max_cells = attention_data["pma_attention"].shape
-        f.attrs["n_subjects"] = n_subjects
-        f.attrs["n_cell_types"] = n_cell_types_actual
-        f.attrs["max_cells"] = max_cells
-
-        # Save identifiers
-        dt = h5py.special_dtype(vlen=str)
-        f.create_dataset("cell_type_names", data=cell_type_names, dtype=dt)
-        if subject_ids:
-            f.create_dataset("subject_ids", data=subject_ids, dtype=dt)
-
-    logger.info(f"Saved cell attention HDF5 to {h5_path}")
+    result = analyzer.analyze()
+    analyzer.save(result, output_dir, formats=args.formats)
 
     # Log summary
+    summary_df = result.summary
     logger.info(f"\nCell Heterogeneity Summary:")
     logger.info(f"  Cell types analyzed: {len(summary_df)}")
-    logger.info(f"  High-attention cells identified: {len(high_attention_df)}")
-    logger.info(f"  Total cells with scores: {len(all_scores_df)}")
+    logger.info(f"  High-attention cells identified: {len(result.high_attention_cells)}")
+    logger.info(f"  Total cells with scores: {len(result.all_scores)}")
 
     if len(summary_df) > 0:
         logger.info(f"\nMost heterogeneous cell types (by Gini coefficient):")

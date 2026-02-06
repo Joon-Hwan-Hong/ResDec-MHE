@@ -545,25 +545,24 @@ class ResilienceSignatureAnalyzer:
 
             signature = resilient_mean - vulnerable_mean
 
-            # Cohen's d and 95% CI
+            # Cohen's d + CI using shared statistics utility
             n1, n2 = n_resilient, n_vulnerable
-            pooled_var = ((n1 - 1) * resilient_std**2 + (n2 - 1) * vulnerable_std**2) / (n1 + n2 - 2)
-            pooled_std = np.sqrt(pooled_var)
+            cohens_d, pooled_std = cohens_d_vectorized(
+                resilient_mean, resilient_std, n1,
+                vulnerable_mean, vulnerable_std, n2,
+            )
 
-            cohens_d = np.zeros(len(self.cell_type_names))
-            nonzero_mask = pooled_std > 1e-10
-            cohens_d[nonzero_mask] = signature[nonzero_mask] / pooled_std[nonzero_mask]
-
+            # 95% CI for mean difference using pooled SE
             se = pooled_std * np.sqrt(1/n1 + 1/n2)
             df = n1 + n2 - 2
             t_crit = stats.t.ppf(0.975, df)
             ci_lower = signature - t_crit * se
             ci_upper = signature + t_crit * se
 
-            # Cohen's d CI using Hedges & Olkin approximation
-            se_d = np.sqrt((n1 + n2) / (n1 * n2) + cohens_d**2 / (2 * (n1 + n2)))
-            cohens_d_ci_lower = cohens_d - t_crit * se_d
-            cohens_d_ci_upper = cohens_d + t_crit * se_d
+            # 95% CI for Cohen's d
+            cohens_d_ci_lower, cohens_d_ci_upper = cohens_d_ci_vectorized(
+                cohens_d, n1, n2,
+            )
 
             # Add rows for each cell type in this region
             for ct_idx, ct_name in enumerate(self.cell_type_names):
@@ -959,7 +958,7 @@ class ResilienceSignatureAnalyzer:
         if self.region_labels is None:
             return None
 
-        unique_regions = np.unique(self.region_labels)
+        unique_regions = [r for r in np.unique(self.region_labels) if r]
         rows = []
 
         for region in unique_regions:
@@ -1005,17 +1004,32 @@ class ResilienceSignatureAnalyzer:
                     })
 
             # Run node removal ablation for this region
+            # Uses combined metric aligned with global _ablation_node_removal:
+            # importance = attention_magnitude + 0.1 * entropy_change
             if method in ("both", "node_removal"):
                 for ct_idx, ct_name in enumerate(self.cell_type_names):
-                    # Node importance = attention magnitude on this node
                     node_attention = attention_per_subject[:, ct_idx]
+
+                    # Entropy change when removing this node
+                    remaining_mask = np.ones(n_cell_types, dtype=bool)
+                    remaining_mask[ct_idx] = False
+                    original_remaining = attention_per_subject[:, remaining_mask]
+
+                    original_entropy = attention_entropy(attention_per_subject, axis=1)
+                    remaining_sum = original_remaining.sum(axis=1, keepdims=True)
+                    remaining_sum = np.where(remaining_sum > 0, remaining_sum, 1)
+                    renorm_remaining = original_remaining / remaining_sum
+                    ablated_entropy = attention_entropy(renorm_remaining, axis=1)
+
+                    entropy_change = np.abs(original_entropy - ablated_entropy)
+                    deviation = node_attention + 0.1 * entropy_change
 
                     rows.append({
                         "region": region,
                         "cell_type": ct_name,
                         "method": "node_removal",
-                        "importance": float(node_attention.mean()),
-                        "importance_std": float(node_attention.std()),
+                        "importance": float(deviation.mean()),
+                        "importance_std": float(deviation.std()),
                         "n_subjects": n_subjects,
                     })
 

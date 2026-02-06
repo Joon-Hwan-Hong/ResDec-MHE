@@ -119,6 +119,7 @@ def save_attention_weights(
     subject_ids: list[str] | None = None,
     cell_type_names: list[str] | None = None,
     gene_names: list[str] | None = None,
+    region_names: list[str] | None = None,
     embeddings: dict[str, np.ndarray] | None = None,
     metadata: dict | None = None,
     compression: str = "gzip",
@@ -207,6 +208,11 @@ def save_attention_weights(
         if gene_names is not None:
             f.create_dataset("gene_names",
                              data=np.array(gene_names, dtype=object),
+                             dtype=vlen_str)
+
+        if region_names is not None:
+            f.create_dataset("region_names",
+                             data=np.array(region_names, dtype=object),
                              dtype=vlen_str)
 
         # --- Nested HGT attention group ---
@@ -397,7 +403,7 @@ def load_attention_weights(path: str | Path) -> dict[str, np.ndarray | dict]:
     # --- Backward compatibility bridging ---
 
     # String datasets stored as top-level datasets should also appear in metadata
-    for str_key in ("subject_ids", "cell_type_names", "gene_names"):
+    for str_key in ("subject_ids", "cell_type_names", "gene_names", "region_names"):
         if str_key in result and isinstance(result[str_key], list):
             result["metadata"][str_key] = result[str_key]
 
