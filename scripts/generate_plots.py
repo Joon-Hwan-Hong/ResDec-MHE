@@ -76,7 +76,7 @@ PLOT_TYPES = {
     ],
     "importance": [
         "top_genes_per_cell_type",
-        "gene_importance_volcano",
+        "differential_attention_volcano",
         "ccc_network_summary",
         "top_interactions_heatmap",
         "regional_gene_importance",
@@ -208,6 +208,12 @@ def load_analysis_data(analysis_dir: Path) -> dict:
         if alt_path.exists():
             data["gene_importance"] = load_dataframe(alt_path)
             logger.info(f"  Loaded gene_importance (alt): {len(data['gene_importance'])} rows")
+
+    # Differential attention analysis
+    diff_attn_path = analysis_dir / "differential_attention.parquet"
+    if diff_attn_path.exists():
+        data["differential_attention"] = pd.read_parquet(diff_attn_path)
+        logger.info(f"  Loaded differential_attention: {len(data['differential_attention'])} rows")
 
     # Cell type importance by pathology (for heatmap)
     pathology_ct_path = analysis_dir / "cell_type_importance_by_pathology.parquet"
@@ -462,20 +468,22 @@ def generate_importance_plots(
             except Exception as e:
                 logger.warning(f"  Failed top_genes_per_cell_type: {e}")
 
-    # Gene importance volcano
-    if "gene_importance_volcano" not in skip_plots:
-        if "gene_importance" in data:
-            df = data["gene_importance"]
-            # Need fold change and p-value columns
-            if "log2_fold_change" in df.columns and "pvalue" in df.columns:
-                try:
-                    fig = plot_gene_importance_volcano(df)
-                    path = output_dir / f"gene_importance_volcano.{fmt}"
-                    save_figure(fig, str(path), format=fmt, dpi=dpi)
-                    generated.append(str(path))
-                    logger.info(f"  Generated: {path.name}")
-                except Exception as e:
-                    logger.warning(f"  Failed gene_importance_volcano: {e}")
+    # Differential attention analysis (volcano-style)
+    if "differential_attention_volcano" not in skip_plots:
+        df = data.get("differential_attention")
+        if df is None:
+            gi = data.get("gene_importance")
+            if gi is not None and "log2_fold_change" in gi.columns and "pvalue" in gi.columns:
+                df = gi
+        if df is not None and "log2_fold_change" in df.columns and "pvalue" in df.columns:
+            try:
+                fig = plot_gene_importance_volcano(df)
+                path = output_dir / f"differential_attention_volcano.{fmt}"
+                save_figure(fig, str(path), format=fmt, dpi=dpi)
+                generated.append(str(path))
+                logger.info(f"  Generated: {path.name}")
+            except Exception as e:
+                logger.warning(f"  Failed differential_attention_volcano: {e}")
 
     # CCC network summary (prefer aggregated summary, fall back to raw importance)
     if "ccc_network_summary" not in skip_plots:
@@ -798,43 +806,55 @@ def main():
 
     if "attention" in plot_categories:
         logger.info("Generating attention plots...")
+        attention_dir = output_dir / "attention"
+        attention_dir.mkdir(parents=True, exist_ok=True)
         generated = generate_attention_plots(
-            data, attention, output_dir, skip_plots, fmt,
+            data, attention, attention_dir, skip_plots, fmt,
             dpi=dpi, cell_type_names=cell_type_names, gene_names=gene_names,
         )
         all_generated.extend(generated)
 
     if "resilience" in plot_categories:
         logger.info("Generating resilience plots...")
-        generated = generate_resilience_plots(data, output_dir, skip_plots, fmt, dpi=dpi)
+        resilience_dir = output_dir / "attention"
+        resilience_dir.mkdir(parents=True, exist_ok=True)
+        generated = generate_resilience_plots(data, resilience_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)
 
     if "importance" in plot_categories:
         logger.info("Generating importance plots...")
-        generated = generate_importance_plots(data, output_dir, skip_plots, fmt, dpi=dpi)
+        importance_dir = output_dir / "importance"
+        importance_dir.mkdir(parents=True, exist_ok=True)
+        generated = generate_importance_plots(data, importance_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)
 
     if "prediction" in plot_categories:
         logger.info("Generating prediction plots...")
-        generated = generate_prediction_plots(data, output_dir, skip_plots, fmt, dpi=dpi)
+        prediction_dir = output_dir / "prediction"
+        prediction_dir.mkdir(parents=True, exist_ok=True)
+        generated = generate_prediction_plots(data, prediction_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)
 
     if "embedding" in plot_categories:
         logger.info("Generating embedding plots...")
+        embedding_base_dir = output_dir / "embedding"
+        embedding_base_dir.mkdir(parents=True, exist_ok=True)
         if "embedding_dirs" in data:
             for emb_name, emb_data in data["embedding_dirs"].items():
                 logger.info(f"  Embedding type: {emb_name}")
-                emb_output = output_dir / f"embedding_{emb_name}"
+                emb_output = embedding_base_dir / emb_name
                 emb_output.mkdir(parents=True, exist_ok=True)
                 generated = generate_embedding_plots(emb_data, emb_output, skip_plots, fmt, dpi=dpi)
                 all_generated.extend(generated)
         else:
-            generated = generate_embedding_plots(data, output_dir, skip_plots, fmt, dpi=dpi)
+            generated = generate_embedding_plots(data, embedding_base_dir, skip_plots, fmt, dpi=dpi)
             all_generated.extend(generated)
 
     if "training" in plot_categories:
         logger.info("Generating training curve plots...")
-        generated = generate_training_plots(training_log_dir, output_dir, skip_plots, fmt, dpi=dpi)
+        training_dir = output_dir / "training"
+        training_dir.mkdir(parents=True, exist_ok=True)
+        generated = generate_training_plots(training_log_dir, training_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)
 
     # Summary

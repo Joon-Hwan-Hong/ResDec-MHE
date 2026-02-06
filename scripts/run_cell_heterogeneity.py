@@ -27,7 +27,6 @@ import argparse
 import logging
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pandas as pd
 
@@ -65,12 +64,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Path to anndata file with cell-level data",
     )
-    input_group.add_argument(
-        "--metadata-path",
-        type=str,
-        help="Path to subject metadata CSV/parquet",
-    )
-
     # Output
     parser.add_argument(
         "--output-dir",

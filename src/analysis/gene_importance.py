@@ -44,9 +44,27 @@ class GeneImportanceResult:
     by_celltype: pd.DataFrame
     top_genes: pd.DataFrame
     by_region: pd.DataFrame | None = None
+    differential_attention: pd.DataFrame | None = None
     gene_gate_weights: np.ndarray | None = None
     gene_names: list[str] | None = None
     metadata: dict = field(default_factory=dict)
+
+
+def compute_effective_gene_importance(
+    gene_gate_weights: np.ndarray,
+    region_expression: np.ndarray,
+) -> np.ndarray:
+    """
+    Compute effective gene importance: gate_weight x mean_expression.
+
+    Args:
+        gene_gate_weights: [n_cell_types, n_genes]
+        region_expression: [n_cell_types, n_genes] mean expression in region
+
+    Returns:
+        [n_cell_types, n_genes] effective importance scores
+    """
+    return gene_gate_weights * region_expression
 
 
 class GeneImportanceAnalyzer:
@@ -123,12 +141,25 @@ class GeneImportanceAnalyzer:
                         f"gene_gate_weights has shape {self.gene_gate_weights.shape}"
                     )
 
-    def analyze(self, top_k: int = 100) -> GeneImportanceResult:
+    def analyze(
+        self,
+        top_k: int = 100,
+        group_labels: np.ndarray | None = None,
+        subject_gene_weights: np.ndarray | None = None,
+        group_a: str = "high",
+        group_b: str = "low",
+    ) -> GeneImportanceResult:
         """
         Run all gene importance analyses.
 
         Args:
             top_k: Number of top genes per cell type to extract
+            group_labels: Optional [n_subjects] array of group labels for
+                differential attention analysis
+            subject_gene_weights: Optional [n_subjects, n_cell_types, n_genes]
+                per-subject weights for differential attention analysis
+            group_a: Label for first group (numerator in fold change)
+            group_b: Label for second group (denominator in fold change)
 
         Returns:
             GeneImportanceResult with all analyses
@@ -140,17 +171,28 @@ class GeneImportanceAnalyzer:
         if self.region_pseudobulk is not None:
             by_region = self._compute_importance_by_region(top_k=top_k)
 
+        differential = None
+        if group_labels is not None and subject_gene_weights is not None:
+            differential = self._compute_differential_attention(
+                group_labels=group_labels,
+                subject_gene_weights=subject_gene_weights,
+                group_a=group_a,
+                group_b=group_b,
+            )
+
         metadata = {
             "n_cell_types": self.n_cell_types,
             "n_genes": self.n_genes,
             "top_k": top_k,
             "has_region_analysis": by_region is not None,
+            "has_differential_analysis": differential is not None,
         }
 
         return GeneImportanceResult(
             by_celltype=by_celltype,
             top_genes=top_genes,
             by_region=by_region,
+            differential_attention=differential,
             gene_gate_weights=self.gene_gate_weights,
             gene_names=self.gene_names,
             metadata=metadata,
@@ -201,6 +243,74 @@ class GeneImportanceAnalyzer:
 
         return pd.DataFrame(rows)
 
+    def _compute_differential_attention(
+        self,
+        group_labels: np.ndarray,
+        subject_gene_weights: np.ndarray,
+        group_a: str = "high",
+        group_b: str = "low",
+    ) -> pd.DataFrame:
+        """
+        Compute differential attention between two subject groups.
+
+        For each gene x cell type, computes:
+        - log2 fold change of mean attention weight (group_a / group_b)
+        - p-value from Mann-Whitney U test
+
+        Args:
+            group_labels: [n_subjects] array of group labels
+            subject_gene_weights: [n_subjects, n_cell_types, n_genes] per-subject weights
+            group_a: Label for first group (numerator in fold change)
+            group_b: Label for second group (denominator in fold change)
+
+        Returns:
+            DataFrame with columns: cell_type, gene, log2_fold_change, pvalue,
+                mean_a, mean_b, gene_idx
+        """
+        from scipy.stats import mannwhitneyu
+
+        mask_a = group_labels == group_a
+        mask_b = group_labels == group_b
+
+        if mask_a.sum() < 2 or mask_b.sum() < 2:
+            logger.warning(
+                f"Insufficient samples for differential attention: "
+                f"{group_a}={mask_a.sum()}, {group_b}={mask_b.sum()}"
+            )
+            return pd.DataFrame()
+
+        weights_a = subject_gene_weights[mask_a]
+        weights_b = subject_gene_weights[mask_b]
+
+        rows = []
+        for ct_idx, ct_name in enumerate(self.cell_type_names):
+            for gene_idx, gene_name in enumerate(self.gene_names):
+                vals_a = weights_a[:, ct_idx, gene_idx]
+                vals_b = weights_b[:, ct_idx, gene_idx]
+
+                mean_a = float(np.mean(vals_a))
+                mean_b = float(np.mean(vals_b))
+
+                pseudo = 1e-10
+                log2fc = float(np.log2((mean_a + pseudo) / (mean_b + pseudo)))
+
+                try:
+                    _, pval = mannwhitneyu(vals_a, vals_b, alternative="two-sided")
+                except ValueError:
+                    pval = 1.0
+
+                rows.append({
+                    "cell_type": ct_name,
+                    "gene": gene_name,
+                    "gene_idx": gene_idx,
+                    "log2_fold_change": log2fc,
+                    "pvalue": float(pval),
+                    "mean_a": mean_a,
+                    "mean_b": mean_b,
+                })
+
+        return pd.DataFrame(rows)
+
     def _compute_importance_by_region(self, top_k: int = 100) -> pd.DataFrame:
         """
         Compute effective gene importance per region.
@@ -220,7 +330,7 @@ class GeneImportanceAnalyzer:
         rows = []
         for region, region_data in self.region_pseudobulk.items():
             # Effective importance = gate_weight × mean_expression
-            effective_importance = self.gene_gate_weights * region_data
+            effective_importance = compute_effective_gene_importance(self.gene_gate_weights, region_data)
 
             for ct_idx, ct_name in enumerate(self.cell_type_names):
                 eff_weights = effective_importance[ct_idx]

@@ -160,8 +160,8 @@ class CCCImportanceAnalyzer:
         # edge_attention_scores is available — use it
         if self.edge_attention_scores.ndim == 2:
             # [n_subjects, n_edges]
-            mean_attention = self.edge_attention_scores.mean(axis=0)
-            std_attention = self.edge_attention_scores.std(axis=0)
+            mean_attention = np.nanmean(self.edge_attention_scores, axis=0)
+            std_attention = np.nanstd(self.edge_attention_scores, axis=0)
         else:
             # [n_edges] - already aggregated
             mean_attention = self.edge_attention_scores
@@ -287,7 +287,7 @@ class CCCImportanceAnalyzer:
                 continue
 
             group_attention = self.edge_attention_scores[mask]
-            mean_attention = group_attention.mean(axis=0)
+            mean_attention = np.nanmean(group_attention, axis=0)
 
             # Combine with edge metadata
             if self.edge_metadata is not None:

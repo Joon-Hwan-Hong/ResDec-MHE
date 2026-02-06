@@ -481,6 +481,29 @@ class TestCCCLengthValidation:
 # ============================================================================
 
 
+def test_edge_importance_with_nan_scores():
+    """NaN edge scores (sparse edge types) must not propagate to importance output."""
+    n_subjects, n_edges = 10, 5
+    scores = np.random.rand(n_subjects, n_edges)
+    scores[:5, 2] = np.nan
+
+    edge_metadata = pd.DataFrame({
+        "source": [f"A{i}" for i in range(n_edges)],
+        "target": [f"B{i}" for i in range(n_edges)],
+        "edge_type": [f"type_{i}" for i in range(n_edges)],
+    })
+
+    analyzer = CCCImportanceAnalyzer(
+        edge_attention_scores=scores,
+        edge_metadata=edge_metadata,
+    )
+    result = analyzer.analyze()
+    assert not result.edge_importance["mean_attention"].isna().any(), \
+        "NaN leaked into edge_importance mean_attention"
+    assert not result.edge_importance["std_attention"].isna().any(), \
+        "NaN leaked into edge_importance std_attention"
+
+
 class TestEmptyRegionLabelFiltering:
     """Tests for empty-string region label filtering in CCC importance."""
 

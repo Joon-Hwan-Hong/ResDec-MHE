@@ -382,7 +382,7 @@ class Predictor:
         # PMA attention: list of lists, outer = cell types, inner = batches
         all_pma_attention: list[list[np.ndarray]] | None = None
         if extract_pma_attention:
-            all_pma_attention = [[] for _ in range(len(CELL_TYPE_ORDER))]
+            all_pma_attention = [[] for _ in range(self.model.n_cell_types)]
 
         # Region pseudobulk accumulation for regional analysis
         all_region_pseudobulk = []

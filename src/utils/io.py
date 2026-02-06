@@ -251,6 +251,14 @@ def save_attention_weights(
                     )
                     ds.attrs["shape"] = "[n_edge_types, n_heads]"
 
+                if "n_samples_per_edge_type" in hgt_attention:
+                    ds = agg_group.create_dataset(
+                        "n_samples_per_edge_type",
+                        data=hgt_attention["n_samples_per_edge_type"],
+                    )
+                    ds.attrs["shape"] = "[n_edge_types]"
+                    ds.attrs["description"] = "Number of non-NaN samples per edge type (coverage)"
+
                 # Per-sample subgroup
                 per_sample = hgt_attention.get("per_sample")
                 if per_sample is not None and per_sample.size > 0:
@@ -484,9 +492,9 @@ def unpack_hgt_for_ccc(
     if isinstance(per_sample, dict) and "attention" in per_sample:
         # [n_samples, n_edge_types, n_layers, n_heads] → mean over layers and heads
         raw_attention = per_sample["attention"]
-        edge_attention_scores = raw_attention.mean(axis=(2, 3))  # [n_samples, n_edge_types]
+        edge_attention_scores = np.nanmean(raw_attention, axis=(2, 3))  # [n_samples, n_edge_types]
     elif isinstance(per_sample, np.ndarray) and per_sample.ndim == 4:
-        edge_attention_scores = per_sample.mean(axis=(2, 3))
+        edge_attention_scores = np.nanmean(per_sample, axis=(2, 3))
 
     if edge_attention_scores is None:
         # Fall back to aggregated mean
@@ -494,7 +502,11 @@ def unpack_hgt_for_ccc(
         mean_by_edge = aggregated.get("mean_by_edge_type")
         if mean_by_edge is not None:
             # [n_edge_types, n_heads] → mean over heads
-            edge_attention_scores = mean_by_edge.mean(axis=1)  # [n_edge_types]
+            edge_attention_scores = np.nanmean(mean_by_edge, axis=1)  # [n_edge_types]
+
+    # Replace any remaining NaN (from all-NaN slices) with 0
+    if edge_attention_scores is not None:
+        edge_attention_scores = np.nan_to_num(edge_attention_scores, nan=0.0)
 
     return edge_attention_scores, edge_metadata, edge_type_names
 

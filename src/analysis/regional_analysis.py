@@ -19,6 +19,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from src.analysis.gene_importance import compute_effective_gene_importance
 from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER, N_CELL_TYPES, N_REGIONS
 from src.utils.io import save_dataframe
 
@@ -269,7 +270,7 @@ class RegionalAnalyzer:
                 continue
 
             # Effective importance = gate_weight × mean_expression
-            effective_importance = self.gene_gate_weights * region_data
+            effective_importance = compute_effective_gene_importance(self.gene_gate_weights, region_data)
 
             n_cell_types = min(effective_importance.shape[0], len(self.cell_type_names))
             for ct_idx in range(n_cell_types):

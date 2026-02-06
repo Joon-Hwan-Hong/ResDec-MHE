@@ -136,26 +136,34 @@ def plot_gene_importance_volcano(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Check for required columns
-    if "p_value" not in gene_df.columns:
+    # Check for p-value column (both naming conventions)
+    p_col = None
+    if "pvalue" in gene_df.columns:
+        p_col = "pvalue"
+    elif "p_value" in gene_df.columns:
+        p_col = "p_value"
+
+    fc_col = "log2_fold_change" if "log2_fold_change" in gene_df.columns else "weight"
+
+    if p_col is None:
         # No significance data, plot simple scatter
-        ax.scatter(gene_df["weight"], range(len(gene_df)), alpha=0.5)
-        ax.set_xlabel("Weight")
+        ax.scatter(gene_df[fc_col], range(len(gene_df)), alpha=0.5)
+        ax.set_xlabel(fc_col)
         ax.set_ylabel("Gene Index")
     else:
         # Volcano plot
         df = gene_df.copy()
-        df["-log10(p)"] = -np.log10(df["p_value"] + 1e-10)
+        df["-log10(p)"] = -np.log10(df[p_col] + 1e-10)
 
         # Color by significance
-        colors = np.where(df["p_value"] < significance_threshold, "red", "gray")
+        colors = np.where(df[p_col] < significance_threshold, "red", "gray")
 
-        ax.scatter(df["weight"], df["-log10(p)"], c=colors, alpha=0.5, s=20)
+        ax.scatter(df[fc_col], df["-log10(p)"], c=colors, alpha=0.5, s=20)
 
         # Add threshold line
         ax.axhline(-np.log10(significance_threshold), color="red", linestyle="--", alpha=0.5)
 
-        ax.set_xlabel("Importance Weight")
+        ax.set_xlabel("log2(Fold Change)" if fc_col == "log2_fold_change" else "Importance Weight")
         ax.set_ylabel("-log10(p-value)")
 
     if title is None:

@@ -25,10 +25,8 @@ import argparse
 import logging
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pandas as pd
-from omegaconf import OmegaConf
 
 from src.utils.io import load_dataframe, load_attention_weights, save_dataframe, unpack_hgt_for_ccc
 from src.analysis import (
@@ -576,18 +574,20 @@ def main():
     cell_counts = attention_weights.get("cell_counts")  # [n_subjects, n_cell_types] or None
 
     # Convert region_pseudobulk array to dict format for analyzers
-    region_pseudobulk_dict = None
-    if region_pseudobulk_raw is not None:
-        # Prefer explicit region names from HDF5; fall back to REGION_ORDER
-        stored_region_names = attention_weights.get("region_names")
-        if stored_region_names is not None:
-            region_names_list = stored_region_names
-        else:
-            region_names_list = list(REGION_ORDER)
+    # Prefer explicit region names from HDF5; fall back to REGION_ORDER
+    stored_region_names = attention_weights.get("region_names")
+    if stored_region_names is not None:
+        region_names_list = stored_region_names
+    else:
+        region_names_list = list(REGION_ORDER)
+        if attention_weights:
             logger.warning(
                 "No region_names in HDF5 — assuming REGION_ORDER. "
                 "Re-run inference with latest code to store region names explicitly."
             )
+
+    region_pseudobulk_dict = None
+    if region_pseudobulk_raw is not None:
         region_pseudobulk_dict = {}
         for i, rname in enumerate(region_names_list):
             if i < region_pseudobulk_raw.shape[0]:
@@ -603,7 +603,11 @@ def main():
 
     # PMA attention is unpacked later for cell heterogeneity analysis (if enabled).
 
-    # Load edge metadata for CCC analysis if available
+    # Load edge metadata for CCC analysis if available.
+    # NOTE: edge_metadata.parquet is NOT produced by the current pipeline.
+    # It can be generated externally from CellChatDB or LIANA+ output
+    # to provide source/target cell type labels for edge types.
+    # If absent, edge metadata is derived from HGT edge_type_names.
     edge_metadata = None
     edge_metadata_path = output_dir / "edge_metadata.parquet"
     if edge_metadata_path.exists():
@@ -774,7 +778,15 @@ def main():
                 ablation_embeddings = None
                 if embeddings is not None:
                     if isinstance(embeddings, dict):
-                        ablation_embeddings = embeddings.get("fused", embeddings.get("attended"))
+                        ablation_embeddings = embeddings.get("fused")
+                        if ablation_embeddings is None:
+                            candidate = embeddings.get("attended")
+                            if candidate is not None and candidate.ndim == 3:
+                                ablation_embeddings = candidate
+                            elif candidate is not None:
+                                logger.warning(
+                                    f"Attended embeddings are {candidate.ndim}D, need 3D for ablation. Skipping."
+                                )
                     elif isinstance(embeddings, np.ndarray):
                         ablation_embeddings = embeddings
 
@@ -814,7 +826,7 @@ def main():
             region_weights=region_weights,
             gene_gate_weights=gene_gate,
             region_pseudobulk=region_pseudobulk_dict,
-            region_names=list(REGION_ORDER),
+            region_names=region_names_list,
             cell_type_names=cell_type_names,
             gene_names=gene_names,
             subject_ids=subject_ids,

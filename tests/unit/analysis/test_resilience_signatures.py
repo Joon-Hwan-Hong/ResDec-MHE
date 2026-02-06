@@ -1265,3 +1265,29 @@ class TestVectorizedCohensDSharedUtility:
             np.testing.assert_almost_equal(d_vec[i], d_scalar, decimal=6)
             np.testing.assert_almost_equal(ci_lo_vec[i], ci_lo_scalar, decimal=6)
             np.testing.assert_almost_equal(ci_hi_vec[i], ci_hi_scalar, decimal=6)
+
+
+# ============================================================================
+# 2D Embedding Ablation Fallback Tests
+# ============================================================================
+
+
+def test_ablation_skips_2d_embeddings():
+    """2D embeddings (attended) should not crash einsum; ablation should fall back to attention-only."""
+    n_subjects, n_heads, n_cell_types = 10, 4, 5
+    attention = np.random.rand(n_subjects, n_heads, n_cell_types)
+    cognition = np.random.rand(n_subjects)
+    pathology = np.random.rand(n_subjects)
+    cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+    embeddings_2d = np.random.rand(n_subjects, 64)
+
+    analyzer = ResilienceSignatureAnalyzer(
+        attention=attention,
+        cognition_scores=cognition,
+        pathology_scores=pathology,
+        cell_type_names=cell_type_names,
+    )
+    result = analyzer._ablation_zero_embedding(embeddings=embeddings_2d)
+    assert isinstance(result, pd.DataFrame)
+    assert "importance" in result.columns
+    assert len(result) == n_cell_types

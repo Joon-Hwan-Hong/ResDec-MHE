@@ -240,7 +240,7 @@ class TestClustering:
             run_trajectory=False,
             run_batch_effect=False,
         )
-        expected_cols = {"subject_id", "kmeans_cluster", "hierarchical_cluster"}
+        expected_cols = {"subject_id", "cluster", "kmeans_cluster", "hierarchical_cluster"}
         assert set(result.cluster_assignments.columns) == expected_cols
 
     def test_clustering_with_specified_k(self, basic_analyzer):
@@ -292,7 +292,7 @@ class TestLinearProbes:
             run_trajectory=False,
             run_batch_effect=False,
         )
-        expected_cols = {"covariate", "task_type", "metric", "score_mean", "score_std", "n_samples"}
+        expected_cols = {"target", "covariate", "task_type", "metric", "r2_score", "score_mean", "score_std", "n_samples"}
         assert set(result.linear_probe_results.columns) == expected_cols
 
     def test_linear_probes_none_without_covariates(self, basic_analyzer):
@@ -618,3 +618,61 @@ class TestEdgeCases:
         )
         # Should return None for single batch
         assert result.batch_effect_metrics is None
+
+
+# ============================================================================
+# Schema Compatibility Tests
+# ============================================================================
+
+
+class TestSchemaCompat:
+    """Tests ensuring analyzer output matches plotter expectations."""
+
+    def test_cluster_output_has_cluster_column(self):
+        """Cluster assignments must include a 'cluster' column for plotters."""
+        np.random.seed(42)
+        embeddings = np.random.rand(30, 16).astype(np.float32)
+        analyzer = EmbeddingAnalyzer(embeddings=embeddings)
+        result = analyzer.analyze(
+            run_umap=False,
+            run_clustering=True,
+            run_linear_probes=False,
+            run_similarity=False,
+            run_outlier_detection=False,
+            run_trajectory=False,
+            run_batch_effect=False,
+            n_clusters=3,
+        )
+        assert result.cluster_assignments is not None
+        assert "cluster" in result.cluster_assignments.columns, (
+            "Plotters expect a 'cluster' column in cluster_assignments"
+        )
+
+    def test_linear_probe_output_has_target_and_r2_score(self):
+        """Linear probe results must include 'target' and 'r2_score' columns for plotters."""
+        np.random.seed(42)
+        embeddings = np.random.rand(50, 16).astype(np.float32)
+        covariates = pd.DataFrame({
+            "cognition": np.random.rand(50),
+            "pathology": np.random.rand(50),
+        })
+        analyzer = EmbeddingAnalyzer(
+            embeddings=embeddings,
+            covariates=covariates,
+        )
+        result = analyzer.analyze(
+            run_umap=False,
+            run_clustering=False,
+            run_linear_probes=True,
+            run_similarity=False,
+            run_outlier_detection=False,
+            run_trajectory=False,
+            run_batch_effect=False,
+        )
+        assert result.linear_probe_results is not None
+        assert "target" in result.linear_probe_results.columns, (
+            "Plotters expect a 'target' column in linear_probe_results"
+        )
+        assert "r2_score" in result.linear_probe_results.columns, (
+            "Plotters expect an 'r2_score' column in linear_probe_results"
+        )

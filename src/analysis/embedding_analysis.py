@@ -290,6 +290,7 @@ class EmbeddingAnalyzer:
         # Cluster assignments DataFrame
         assignments_df = pd.DataFrame({
             "subject_id": self.subject_ids,
+            "cluster": kmeans_labels,  # Default cluster (used by plots)
             "kmeans_cluster": kmeans_labels,
             "hierarchical_cluster": hier_labels,
         })
@@ -392,9 +393,11 @@ class EmbeddingAnalyzer:
                 scores = cross_val_score(model, X, y_valid, cv=cv, scoring="r2")
 
                 rows.append({
+                    "target": col,
                     "covariate": col,
                     "task_type": task_type,
                     "metric": "r2",
+                    "r2_score": float(scores.mean()),
                     "score_mean": float(scores.mean()),
                     "score_std": float(scores.std()),
                     "n_samples": int(valid_mask.sum()),
@@ -413,9 +416,11 @@ class EmbeddingAnalyzer:
                 try:
                     scores = cross_val_score(model, X, y_valid, cv=cv, scoring="accuracy")
                     rows.append({
+                        "target": col,
                         "covariate": col,
                         "task_type": task_type,
                         "metric": "accuracy",
+                        "r2_score": float(scores.mean()),
                         "score_mean": float(scores.mean()),
                         "score_std": float(scores.std()),
                         "n_samples": int(valid_mask.sum()),

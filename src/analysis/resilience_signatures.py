@@ -694,6 +694,16 @@ class ResilienceSignatureAnalyzer:
         attention = self.attention.mean(axis=1)
         n_subjects, n_cell_types = attention.shape
 
+        # Validate embedding shape: must be 3D [n_subjects, n_cell_types, embed_dim]
+        if embeddings is not None:
+            if embeddings.ndim != 3:
+                logger.warning(
+                    f"Embeddings have {embeddings.ndim}D shape {embeddings.shape}, "
+                    f"expected 3D [n_subjects, n_cell_types, embed_dim]. "
+                    f"Falling back to attention-only ablation."
+                )
+                embeddings = None
+
         # Compute importance for each cell type
         importances = []
 

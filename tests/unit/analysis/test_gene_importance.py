@@ -513,3 +513,148 @@ class TestGeneGateLoadStrAndBytes:
         weights, gene_names, cell_type_names = load_gene_gate_weights_hdf5(path)
         assert gene_names == [f"GENE{i}" for i in range(n_genes)]
         assert cell_type_names == ["Ast", "Mic", "Oli"]
+
+
+# ============================================================================
+# Differential Attention Analysis Tests
+# ============================================================================
+
+
+class TestDifferentialAttention:
+    """Tests for differential attention analysis."""
+
+    def test_differential_attention_analysis(self):
+        """Differential attention analysis should compute fold change and p-values between groups."""
+        n_cell_types, n_genes, n_subjects = 3, 50, 20
+        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["high"] * 10 + ["low"] * 10)
+        subject_weights = np.random.rand(n_subjects, n_cell_types, n_genes) * 0.1
+        subject_weights[:10] += 0.05
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_attention(
+            group_labels=group_labels,
+            subject_gene_weights=subject_weights,
+            group_a="high",
+            group_b="low",
+        )
+        assert isinstance(result, pd.DataFrame)
+        assert "log2_fold_change" in result.columns
+        assert "pvalue" in result.columns
+        assert "cell_type" in result.columns
+        assert "gene" in result.columns
+        assert len(result) > 0
+        assert (result["pvalue"] >= 0).all()
+        assert (result["pvalue"] <= 1).all()
+
+    def test_differential_attention_has_all_combinations(self):
+        """Result should have n_cell_types * n_genes rows."""
+        n_cell_types, n_genes, n_subjects = 2, 10, 8
+        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["high"] * 4 + ["low"] * 4)
+        subject_weights = np.random.rand(n_subjects, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_attention(
+            group_labels=group_labels,
+            subject_gene_weights=subject_weights,
+        )
+        assert len(result) == n_cell_types * n_genes
+
+    def test_differential_attention_insufficient_samples(self):
+        """Should return empty DataFrame when either group has < 2 samples."""
+        n_cell_types, n_genes = 2, 10
+        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["high"] + ["low"] * 5)
+        subject_weights = np.random.rand(6, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_attention(
+            group_labels=group_labels,
+            subject_gene_weights=subject_weights,
+        )
+        assert len(result) == 0
+
+    def test_differential_attention_via_analyze(self):
+        """analyze() should include differential_attention when group data provided."""
+        n_cell_types, n_genes, n_subjects = 2, 10, 8
+        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["high"] * 4 + ["low"] * 4)
+        subject_weights = np.random.rand(n_subjects, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer.analyze(
+            group_labels=group_labels,
+            subject_gene_weights=subject_weights,
+        )
+        assert result.differential_attention is not None
+        assert isinstance(result.differential_attention, pd.DataFrame)
+        assert result.metadata["has_differential_analysis"] is True
+
+    def test_differential_attention_absent_without_group_data(self):
+        """analyze() should have differential_attention=None without group data."""
+        n_cell_types, n_genes = 2, 10
+        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer.analyze()
+        assert result.differential_attention is None
+        assert result.metadata["has_differential_analysis"] is False
+
+    def test_differential_attention_fold_change_direction(self):
+        """Higher weights in group_a should yield positive log2 fold change."""
+        n_cell_types, n_genes, n_subjects = 1, 5, 20
+        gene_gate_weights = np.ones((n_cell_types, n_genes))
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = ["CT0"]
+
+        group_labels = np.array(["high"] * 10 + ["low"] * 10)
+        # group_a (high) gets higher values
+        subject_weights = np.ones((n_subjects, n_cell_types, n_genes)) * 0.1
+        subject_weights[:10] = 0.5  # high group much higher
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_attention(
+            group_labels=group_labels,
+            subject_gene_weights=subject_weights,
+        )
+        # All genes should have positive fold change since high > low
+        assert (result["log2_fold_change"] > 0).all()
