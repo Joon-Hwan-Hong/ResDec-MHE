@@ -46,3 +46,21 @@ def test_hgt_coverage_roundtrip(tmp_path):
     coverage = agg.get("n_samples_per_edge_type")
     assert coverage is not None, "coverage not persisted"
     np.testing.assert_array_equal(coverage, np.array([10, 8, 10, 3]))
+
+
+def test_per_subject_pseudobulk_hdf5_roundtrip(tmp_path):
+    """Per-subject pseudobulk should survive HDF5 save/load."""
+    path = tmp_path / "test.h5"
+    n_subjects, n_cell_types, n_genes = 10, 3, 50
+    per_subject_pb = np.random.rand(n_subjects, n_cell_types, n_genes).astype(np.float32)
+
+    save_attention_weights(
+        path=path,
+        gene_gate=np.random.rand(n_cell_types, n_genes),
+        per_subject_pseudobulk=per_subject_pb,
+    )
+
+    loaded = load_attention_weights(path)
+    assert "per_subject_pseudobulk" in loaded
+    np.testing.assert_array_almost_equal(loaded["per_subject_pseudobulk"], per_subject_pb)
+    assert loaded["per_subject_pseudobulk"].shape == (n_subjects, n_cell_types, n_genes)

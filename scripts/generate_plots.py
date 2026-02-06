@@ -76,7 +76,7 @@ PLOT_TYPES = {
     ],
     "importance": [
         "top_genes_per_cell_type",
-        "differential_attention_volcano",
+        "differential_expression_volcano",
         "ccc_network_summary",
         "top_interactions_heatmap",
         "regional_gene_importance",
@@ -209,11 +209,11 @@ def load_analysis_data(analysis_dir: Path) -> dict:
             data["gene_importance"] = load_dataframe(alt_path)
             logger.info(f"  Loaded gene_importance (alt): {len(data['gene_importance'])} rows")
 
-    # Differential attention analysis
-    diff_attn_path = analysis_dir / "differential_attention.parquet"
-    if diff_attn_path.exists():
-        data["differential_attention"] = pd.read_parquet(diff_attn_path)
-        logger.info(f"  Loaded differential_attention: {len(data['differential_attention'])} rows")
+    # Differential expression analysis
+    diff_expr_path = analysis_dir / "differential_expression.parquet"
+    if diff_expr_path.exists():
+        data["differential_expression"] = pd.read_parquet(diff_expr_path)
+        logger.info(f"  Loaded differential_expression: {len(data['differential_expression'])} rows")
 
     # Cell type importance by pathology (for heatmap)
     pathology_ct_path = analysis_dir / "cell_type_importance_by_pathology.parquet"
@@ -468,9 +468,9 @@ def generate_importance_plots(
             except Exception as e:
                 logger.warning(f"  Failed top_genes_per_cell_type: {e}")
 
-    # Differential attention analysis (volcano-style)
-    if "differential_attention_volcano" not in skip_plots:
-        df = data.get("differential_attention")
+    # Differential expression analysis (volcano-style)
+    if "differential_expression_volcano" not in skip_plots:
+        df = data.get("differential_expression")
         if df is None:
             gi = data.get("gene_importance")
             if gi is not None and "log2_fold_change" in gi.columns and "pvalue" in gi.columns:
@@ -478,12 +478,12 @@ def generate_importance_plots(
         if df is not None and "log2_fold_change" in df.columns and "pvalue" in df.columns:
             try:
                 fig = plot_gene_importance_volcano(df)
-                path = output_dir / f"differential_attention_volcano.{fmt}"
+                path = output_dir / f"differential_expression_volcano.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
-                logger.warning(f"  Failed differential_attention_volcano: {e}")
+                logger.warning(f"  Failed differential_expression_volcano: {e}")
 
     # CCC network summary (prefer aggregated summary, fall back to raw importance)
     if "ccc_network_summary" not in skip_plots:

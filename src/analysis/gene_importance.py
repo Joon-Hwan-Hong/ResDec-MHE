@@ -36,6 +36,8 @@ class GeneImportanceResult:
         by_celltype: DataFrame with columns [cell_type, gene, gene_idx, weight]
         top_genes: DataFrame with columns [cell_type, rank, gene, gene_idx, weight]
         by_region: DataFrame with columns [region, cell_type, gene, gene_idx, effective_weight] or None
+        differential_expression: DataFrame with DE results [cell_type, gene, gene_idx, gate_weight,
+            log2_fold_change, pvalue, padj, mean_resilient, mean_vulnerable] or None
         gene_gate_weights: Raw gene gate weights [n_cell_types, n_genes]
         gene_names: List of gene names
         metadata: Additional analysis metadata
@@ -44,7 +46,7 @@ class GeneImportanceResult:
     by_celltype: pd.DataFrame
     top_genes: pd.DataFrame
     by_region: pd.DataFrame | None = None
-    differential_attention: pd.DataFrame | None = None
+    differential_expression: pd.DataFrame | None = None
     gene_gate_weights: np.ndarray | None = None
     gene_names: list[str] | None = None
     metadata: dict = field(default_factory=dict)
@@ -145,9 +147,11 @@ class GeneImportanceAnalyzer:
         self,
         top_k: int = 100,
         group_labels: np.ndarray | None = None,
-        subject_gene_weights: np.ndarray | None = None,
-        group_a: str = "high",
-        group_b: str = "low",
+        subject_expression: np.ndarray | None = None,
+        group_a: str = "resilient",
+        group_b: str = "vulnerable",
+        gate_threshold: float = 0.01,
+        apply_fdr: bool = True,
     ) -> GeneImportanceResult:
         """
         Run all gene importance analyses.
@@ -155,11 +159,13 @@ class GeneImportanceAnalyzer:
         Args:
             top_k: Number of top genes per cell type to extract
             group_labels: Optional [n_subjects] array of group labels for
-                differential attention analysis
-            subject_gene_weights: Optional [n_subjects, n_cell_types, n_genes]
-                per-subject weights for differential attention analysis
+                differential expression analysis
+            subject_expression: Optional [n_subjects, n_cell_types, n_genes]
+                per-subject pseudobulk for differential expression analysis
             group_a: Label for first group (numerator in fold change)
             group_b: Label for second group (denominator in fold change)
+            gate_threshold: Minimum gate weight to include gene (default: 0.01)
+            apply_fdr: Whether to apply Benjamini-Hochberg FDR correction (default: True)
 
         Returns:
             GeneImportanceResult with all analyses
@@ -172,12 +178,14 @@ class GeneImportanceAnalyzer:
             by_region = self._compute_importance_by_region(top_k=top_k)
 
         differential = None
-        if group_labels is not None and subject_gene_weights is not None:
-            differential = self._compute_differential_attention(
+        if group_labels is not None and subject_expression is not None:
+            differential = self._compute_differential_expression(
                 group_labels=group_labels,
-                subject_gene_weights=subject_gene_weights,
+                subject_expression=subject_expression,
                 group_a=group_a,
                 group_b=group_b,
+                gate_threshold=gate_threshold,
+                apply_fdr=apply_fdr,
             )
 
         metadata = {
@@ -192,7 +200,7 @@ class GeneImportanceAnalyzer:
             by_celltype=by_celltype,
             top_genes=top_genes,
             by_region=by_region,
-            differential_attention=differential,
+            differential_expression=differential,
             gene_gate_weights=self.gene_gate_weights,
             gene_names=self.gene_names,
             metadata=metadata,
@@ -243,50 +251,70 @@ class GeneImportanceAnalyzer:
 
         return pd.DataFrame(rows)
 
-    def _compute_differential_attention(
+    def _compute_differential_expression(
         self,
         group_labels: np.ndarray,
-        subject_gene_weights: np.ndarray,
-        group_a: str = "high",
-        group_b: str = "low",
+        subject_expression: np.ndarray,
+        group_a: str = "resilient",
+        group_b: str = "vulnerable",
+        gate_threshold: float = 0.01,
+        apply_fdr: bool = True,
     ) -> pd.DataFrame:
         """
-        Compute differential attention between two subject groups.
+        Compute differential expression between two subject groups for gate-selected genes.
 
-        For each gene x cell type, computes:
-        - log2 fold change of mean attention weight (group_a / group_b)
-        - p-value from Mann-Whitney U test
+        The gene gate weight acts as a feature selector: only genes with gate weight
+        above threshold are tested. This reduces the multiple testing burden and focuses
+        on model-relevant genes. The statistical test is Mann-Whitney U on raw expression.
 
         Args:
             group_labels: [n_subjects] array of group labels
-            subject_gene_weights: [n_subjects, n_cell_types, n_genes] per-subject weights
+            subject_expression: [n_subjects, n_cell_types, n_genes] per-subject pseudobulk
             group_a: Label for first group (numerator in fold change)
             group_b: Label for second group (denominator in fold change)
+            gate_threshold: Minimum gate weight to include gene (default: 0.01)
+            apply_fdr: Whether to apply Benjamini-Hochberg FDR correction (default: True)
 
         Returns:
-            DataFrame with columns: cell_type, gene, log2_fold_change, pvalue,
-                mean_a, mean_b, gene_idx
+            DataFrame with columns: cell_type, gene, gene_idx, gate_weight,
+                log2_fold_change, pvalue, padj, mean_resilient, mean_vulnerable
         """
         from scipy.stats import mannwhitneyu
 
         mask_a = group_labels == group_a
         mask_b = group_labels == group_b
 
-        if mask_a.sum() < 2 or mask_b.sum() < 2:
+        if mask_a.sum() < 5 or mask_b.sum() < 5:
             logger.warning(
-                f"Insufficient samples for differential attention: "
-                f"{group_a}={mask_a.sum()}, {group_b}={mask_b.sum()}"
+                f"Insufficient samples for differential expression: "
+                f"{group_a}={mask_a.sum()}, {group_b}={mask_b.sum()} (minimum: 5)"
             )
             return pd.DataFrame()
 
-        weights_a = subject_gene_weights[mask_a]
-        weights_b = subject_gene_weights[mask_b]
+        expr_a = subject_expression[mask_a]
+        expr_b = subject_expression[mask_b]
+
+        # Gate-based feature selection
+        gene_mask = self.gene_gate_weights >= gate_threshold
+        n_tested = gene_mask.sum()
+        n_total = gene_mask.size
+        logger.info(
+            f"Gate-filtered DE: testing {n_tested}/{n_total} (cell_type, gene) pairs "
+            f"(gate_threshold={gate_threshold})"
+        )
+
+        if n_tested == 0:
+            logger.warning("No genes pass gate threshold — returning empty DataFrame")
+            return pd.DataFrame()
 
         rows = []
         for ct_idx, ct_name in enumerate(self.cell_type_names):
             for gene_idx, gene_name in enumerate(self.gene_names):
-                vals_a = weights_a[:, ct_idx, gene_idx]
-                vals_b = weights_b[:, ct_idx, gene_idx]
+                if not gene_mask[ct_idx, gene_idx]:
+                    continue
+
+                vals_a = expr_a[:, ct_idx, gene_idx]
+                vals_b = expr_b[:, ct_idx, gene_idx]
 
                 mean_a = float(np.mean(vals_a))
                 mean_b = float(np.mean(vals_b))
@@ -303,13 +331,23 @@ class GeneImportanceAnalyzer:
                     "cell_type": ct_name,
                     "gene": gene_name,
                     "gene_idx": gene_idx,
+                    "gate_weight": float(self.gene_gate_weights[ct_idx, gene_idx]),
                     "log2_fold_change": log2fc,
                     "pvalue": float(pval),
-                    "mean_a": mean_a,
-                    "mean_b": mean_b,
+                    "mean_resilient": mean_a,
+                    "mean_vulnerable": mean_b,
                 })
 
-        return pd.DataFrame(rows)
+        result_df = pd.DataFrame(rows)
+
+        if len(result_df) > 0 and apply_fdr:
+            from src.utils.statistics import benjamini_hochberg
+            padj, _ = benjamini_hochberg(result_df["pvalue"].values)
+            result_df["padj"] = padj
+        elif len(result_df) > 0:
+            result_df["padj"] = result_df["pvalue"]
+
+        return result_df
 
     def _compute_importance_by_region(self, top_k: int = 100) -> pd.DataFrame:
         """
@@ -393,6 +431,13 @@ class GeneImportanceAnalyzer:
                 path = output_dir / f"gene_importance_by_region.{fmt}"
                 save_dataframe(result.by_region, path, fmt)
                 saved_files[f"by_region_{fmt}"] = path
+
+        # Save differential expression (if available)
+        if result.differential_expression is not None and len(result.differential_expression) > 0:
+            for fmt in formats:
+                path = output_dir / f"differential_expression.{fmt}"
+                save_dataframe(result.differential_expression, path, fmt)
+                saved_files[f"differential_expression_{fmt}"] = path
 
         # Save raw weights as HDF5
         if result.gene_gate_weights is not None:

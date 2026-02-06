@@ -52,6 +52,7 @@ class PredictionResult:
         gene_gate_weights: Static gene gate weights [n_cell_types, n_genes] (shared)
         hgt_attention: List of per-sample HGT attention dicts, None if not extracted
         pma_attention: List of per-cell-type PMA attention [n_cell_types][n_subjects, n_heads, n_seeds, max_cells]
+        per_subject_pseudobulk: Per-subject pseudobulk averaged across regions [n_subjects, n_cell_types, n_genes]
         metadata: Dict of additional metadata (config, checkpoint path, etc.)
     """
     subject_ids: list[str]
@@ -66,6 +67,7 @@ class PredictionResult:
     region_weights: np.ndarray | None = None
     region_attention: np.ndarray | None = None  # [n_subjects, n_regions]
     region_pseudobulk_mean: np.ndarray | None = None  # [n_regions, n_cell_types, n_genes]
+    per_subject_pseudobulk: np.ndarray | None = None  # [n_subjects, n_cell_types, n_genes]
     cell_barcodes: list[list[list[str]]] | None = None  # [n_subjects][n_cell_types][barcodes]
     cell_counts: np.ndarray | None = None  # [n_subjects, n_cell_types] cell counts per type
     gene_names: list[str] | None = None
@@ -522,6 +524,19 @@ class Predictor:
                 # Fallback if no mask available (shouldn't happen with proper collate)
                 region_pseudobulk_mean = stacked.mean(axis=0)
 
+        # Compute per-subject pseudobulk averaged across valid regions
+        # Shape: [n_subjects, n_cell_types, n_genes] — for differential expression analysis
+        per_subject_pseudobulk = None
+        if all_region_pseudobulk:
+            if all_region_mask:
+                # Average across region axis (axis=1) per subject, respecting mask
+                mask_expanded = stacked_mask[:, :, np.newaxis, np.newaxis]
+                masked_for_subjects = np.where(mask_expanded, stacked, np.nan)
+                per_subject_pseudobulk = np.nanmean(masked_for_subjects, axis=1)  # [N, n_cell_types, n_genes]
+                per_subject_pseudobulk = np.nan_to_num(per_subject_pseudobulk, nan=0.0)
+            else:
+                per_subject_pseudobulk = stacked.mean(axis=1)  # [N, n_cell_types, n_genes]
+
         # Concatenate embeddings
         embeddings_dict = None
         if extract_embeddings and all_embeddings:
@@ -559,6 +574,7 @@ class Predictor:
             region_weights=region_weights,
             region_attention=region_attention,
             region_pseudobulk_mean=region_pseudobulk_mean,
+            per_subject_pseudobulk=per_subject_pseudobulk,
             cell_barcodes=all_cell_barcodes if all_cell_barcodes else None,
             cell_counts=cell_counts,
             gene_names=gene_names,
@@ -664,6 +680,7 @@ class Predictor:
             region_weights=results.region_weights,
             region_attention=results.region_attention,
             region_pseudobulk=results.region_pseudobulk_mean,
+            per_subject_pseudobulk=results.per_subject_pseudobulk,
             hgt_attention=hgt_agg,
             pma_attention=results.pma_attention,
             cell_barcodes=results.cell_barcodes,

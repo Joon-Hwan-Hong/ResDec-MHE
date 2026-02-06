@@ -112,6 +112,7 @@ def save_attention_weights(
     region_weights: np.ndarray | None = None,
     region_attention: np.ndarray | None = None,
     region_pseudobulk: np.ndarray | None = None,
+    per_subject_pseudobulk: np.ndarray | None = None,
     hgt_attention: dict | None = None,
     pma_attention: list[np.ndarray] | None = None,
     cell_barcodes: list[list[list[str]]] | None = None,
@@ -138,6 +139,7 @@ def save_attention_weights(
         region_weights: Region importance weights [n_regions]
         region_attention: Per-subject normalized region weights [n_subjects, n_regions]
         region_pseudobulk: Mean region pseudobulk [n_regions, n_cell_types, n_genes]
+        per_subject_pseudobulk: Per-subject pseudobulk [n_subjects, n_cell_types, n_genes]
         hgt_attention: HGT attention dict from aggregate_hgt_attention()
         pma_attention: PMA attention as list of per-cell-type arrays
                        [n_cell_types][n_subjects, n_heads, n_seeds, max_cells]
@@ -186,6 +188,12 @@ def save_attention_weights(
             ds = f.create_dataset("region_pseudobulk", data=region_pseudobulk,
                                   compression=compression, compression_opts=compression_opts)
             ds.attrs["shape"] = "[n_regions, n_cell_types, n_genes]"
+
+        if per_subject_pseudobulk is not None:
+            ds = f.create_dataset("per_subject_pseudobulk", data=per_subject_pseudobulk,
+                                  compression=compression, compression_opts=compression_opts)
+            ds.attrs["shape"] = "[n_subjects, n_cell_types, n_genes]"
+            ds.attrs["description"] = "Per-subject pseudobulk expression averaged across regions"
 
         if cell_counts is not None:
             ds = f.create_dataset("cell_counts", data=cell_counts,

@@ -119,10 +119,13 @@ def plot_gene_importance_volcano(
     save_path: str | Path | None = None,
 ) -> plt.Figure:
     """
-    Plot gene importance as volcano plot (if statistical data available).
+    Plot gene differential expression as volcano plot.
+
+    Points are colored by significance (padj if available, else pvalue)
+    and sized by gate_weight if available.
 
     Args:
-        gene_df: DataFrame with columns [gene, weight, p_value] or similar
+        gene_df: DataFrame with columns [gene, log2_fold_change, pvalue/padj]
         cell_type: Cell type for title
         significance_threshold: P-value threshold for significance
         figsize: Figure size
@@ -136,9 +139,11 @@ def plot_gene_importance_volcano(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Check for p-value column (both naming conventions)
+    # Determine p-value column (prefer FDR-corrected)
     p_col = None
-    if "pvalue" in gene_df.columns:
+    if "padj" in gene_df.columns:
+        p_col = "padj"
+    elif "pvalue" in gene_df.columns:
         p_col = "pvalue"
     elif "p_value" in gene_df.columns:
         p_col = "p_value"
@@ -158,16 +163,30 @@ def plot_gene_importance_volcano(
         # Color by significance
         colors = np.where(df[p_col] < significance_threshold, "red", "gray")
 
-        ax.scatter(df[fc_col], df["-log10(p)"], c=colors, alpha=0.5, s=20)
+        # Size by gate_weight if available
+        if "gate_weight" in df.columns:
+            gw = df["gate_weight"].values
+            gw_min, gw_max = gw.min(), gw.max()
+            if gw_max > gw_min:
+                sizes = 10 + 90 * (gw - gw_min) / (gw_max - gw_min)
+            else:
+                sizes = 30
+        else:
+            sizes = 20
+
+        ax.scatter(df[fc_col], df["-log10(p)"], c=colors, alpha=0.5, s=sizes)
 
         # Add threshold line
         ax.axhline(-np.log10(significance_threshold), color="red", linestyle="--", alpha=0.5)
+        # Add vertical reference line at fold change = 0
+        ax.axvline(0, color="gray", linestyle=":", alpha=0.3)
 
+        p_label = "FDR-adjusted p-value" if p_col == "padj" else "p-value"
         ax.set_xlabel("log2(Fold Change)" if fc_col == "log2_fold_change" else "Importance Weight")
-        ax.set_ylabel("-log10(p-value)")
+        ax.set_ylabel(f"-log10({p_label})")
 
     if title is None:
-        title = f"Gene Importance{f' ({cell_type})' if cell_type else ''}"
+        title = f"Differential Expression{f' ({cell_type})' if cell_type else ''}"
     ax.set_title(title)
 
     plt.tight_layout()

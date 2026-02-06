@@ -520,30 +520,30 @@ class TestGeneGateLoadStrAndBytes:
 # ============================================================================
 
 
-class TestDifferentialAttention:
-    """Tests for differential attention analysis."""
+class TestDifferentialExpression:
+    """Tests for differential expression analysis."""
 
-    def test_differential_attention_analysis(self):
-        """Differential attention analysis should compute fold change and p-values between groups."""
+    def test_differential_expression_analysis(self):
+        """Differential expression analysis should compute fold change and p-values between groups."""
         n_cell_types, n_genes, n_subjects = 3, 50, 20
         gene_gate_weights = np.random.rand(n_cell_types, n_genes)
         gene_names = [f"GENE{i}" for i in range(n_genes)]
         cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
 
-        group_labels = np.array(["high"] * 10 + ["low"] * 10)
-        subject_weights = np.random.rand(n_subjects, n_cell_types, n_genes) * 0.1
-        subject_weights[:10] += 0.05
+        group_labels = np.array(["resilient"] * 10 + ["vulnerable"] * 10)
+        subject_expr = np.random.rand(n_subjects, n_cell_types, n_genes) * 0.1
+        subject_expr[:10] += 0.05
 
         analyzer = GeneImportanceAnalyzer(
             gene_gate_weights=gene_gate_weights,
             gene_names=gene_names,
             cell_type_names=cell_type_names,
         )
-        result = analyzer._compute_differential_attention(
+        result = analyzer._compute_differential_expression(
             group_labels=group_labels,
-            subject_gene_weights=subject_weights,
-            group_a="high",
-            group_b="low",
+            subject_expression=subject_expr,
+            group_a="resilient",
+            group_b="vulnerable",
         )
         assert isinstance(result, pd.DataFrame)
         assert "log2_fold_change" in result.columns
@@ -554,57 +554,57 @@ class TestDifferentialAttention:
         assert (result["pvalue"] >= 0).all()
         assert (result["pvalue"] <= 1).all()
 
-    def test_differential_attention_has_all_combinations(self):
-        """Result should have n_cell_types * n_genes rows."""
-        n_cell_types, n_genes, n_subjects = 2, 10, 8
-        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+    def test_differential_expression_has_all_combinations(self):
+        """Result should have n_cell_types * n_genes rows when all genes pass gate."""
+        n_cell_types, n_genes, n_subjects = 2, 10, 16
+        gene_gate_weights = np.ones((n_cell_types, n_genes))
         gene_names = [f"GENE{i}" for i in range(n_genes)]
         cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
 
-        group_labels = np.array(["high"] * 4 + ["low"] * 4)
-        subject_weights = np.random.rand(n_subjects, n_cell_types, n_genes)
+        group_labels = np.array(["resilient"] * 8 + ["vulnerable"] * 8)
+        subject_expr = np.random.rand(n_subjects, n_cell_types, n_genes)
 
         analyzer = GeneImportanceAnalyzer(
             gene_gate_weights=gene_gate_weights,
             gene_names=gene_names,
             cell_type_names=cell_type_names,
         )
-        result = analyzer._compute_differential_attention(
+        result = analyzer._compute_differential_expression(
             group_labels=group_labels,
-            subject_gene_weights=subject_weights,
+            subject_expression=subject_expr,
         )
         assert len(result) == n_cell_types * n_genes
 
-    def test_differential_attention_insufficient_samples(self):
-        """Should return empty DataFrame when either group has < 2 samples."""
+    def test_differential_expression_insufficient_samples(self):
+        """Should return empty DataFrame when either group has < 5 samples."""
         n_cell_types, n_genes = 2, 10
         gene_gate_weights = np.random.rand(n_cell_types, n_genes)
         gene_names = [f"GENE{i}" for i in range(n_genes)]
         cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
 
-        group_labels = np.array(["high"] + ["low"] * 5)
-        subject_weights = np.random.rand(6, n_cell_types, n_genes)
+        group_labels = np.array(["resilient"] * 3 + ["vulnerable"] * 5)
+        subject_expr = np.random.rand(8, n_cell_types, n_genes)
 
         analyzer = GeneImportanceAnalyzer(
             gene_gate_weights=gene_gate_weights,
             gene_names=gene_names,
             cell_type_names=cell_type_names,
         )
-        result = analyzer._compute_differential_attention(
+        result = analyzer._compute_differential_expression(
             group_labels=group_labels,
-            subject_gene_weights=subject_weights,
+            subject_expression=subject_expr,
         )
         assert len(result) == 0
 
-    def test_differential_attention_via_analyze(self):
-        """analyze() should include differential_attention when group data provided."""
-        n_cell_types, n_genes, n_subjects = 2, 10, 8
-        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+    def test_differential_expression_via_analyze(self):
+        """analyze() should include differential_expression when group data provided."""
+        n_cell_types, n_genes, n_subjects = 2, 10, 16
+        gene_gate_weights = np.ones((n_cell_types, n_genes))
         gene_names = [f"GENE{i}" for i in range(n_genes)]
         cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
 
-        group_labels = np.array(["high"] * 4 + ["low"] * 4)
-        subject_weights = np.random.rand(n_subjects, n_cell_types, n_genes)
+        group_labels = np.array(["resilient"] * 8 + ["vulnerable"] * 8)
+        subject_expr = np.random.rand(n_subjects, n_cell_types, n_genes)
 
         analyzer = GeneImportanceAnalyzer(
             gene_gate_weights=gene_gate_weights,
@@ -613,14 +613,14 @@ class TestDifferentialAttention:
         )
         result = analyzer.analyze(
             group_labels=group_labels,
-            subject_gene_weights=subject_weights,
+            subject_expression=subject_expr,
         )
-        assert result.differential_attention is not None
-        assert isinstance(result.differential_attention, pd.DataFrame)
+        assert result.differential_expression is not None
+        assert isinstance(result.differential_expression, pd.DataFrame)
         assert result.metadata["has_differential_analysis"] is True
 
-    def test_differential_attention_absent_without_group_data(self):
-        """analyze() should have differential_attention=None without group data."""
+    def test_differential_expression_absent_without_group_data(self):
+        """analyze() should have differential_expression=None without group data."""
         n_cell_types, n_genes = 2, 10
         gene_gate_weights = np.random.rand(n_cell_types, n_genes)
         gene_names = [f"GENE{i}" for i in range(n_genes)]
@@ -632,29 +632,168 @@ class TestDifferentialAttention:
             cell_type_names=cell_type_names,
         )
         result = analyzer.analyze()
-        assert result.differential_attention is None
+        assert result.differential_expression is None
         assert result.metadata["has_differential_analysis"] is False
 
-    def test_differential_attention_fold_change_direction(self):
-        """Higher weights in group_a should yield positive log2 fold change."""
+    def test_differential_expression_fold_change_direction(self):
+        """Higher expression in group_a should yield positive log2 fold change."""
         n_cell_types, n_genes, n_subjects = 1, 5, 20
         gene_gate_weights = np.ones((n_cell_types, n_genes))
         gene_names = [f"GENE{i}" for i in range(n_genes)]
         cell_type_names = ["CT0"]
 
-        group_labels = np.array(["high"] * 10 + ["low"] * 10)
-        # group_a (high) gets higher values
-        subject_weights = np.ones((n_subjects, n_cell_types, n_genes)) * 0.1
-        subject_weights[:10] = 0.5  # high group much higher
+        group_labels = np.array(["resilient"] * 10 + ["vulnerable"] * 10)
+        # group_a (resilient) gets higher values
+        subject_expr = np.ones((n_subjects, n_cell_types, n_genes)) * 0.1
+        subject_expr[:10] = 0.5  # resilient group much higher
 
         analyzer = GeneImportanceAnalyzer(
             gene_gate_weights=gene_gate_weights,
             gene_names=gene_names,
             cell_type_names=cell_type_names,
         )
-        result = analyzer._compute_differential_attention(
+        result = analyzer._compute_differential_expression(
             group_labels=group_labels,
-            subject_gene_weights=subject_weights,
+            subject_expression=subject_expr,
         )
-        # All genes should have positive fold change since high > low
+        # All genes should have positive fold change since resilient > vulnerable
         assert (result["log2_fold_change"] > 0).all()
+
+    def test_gate_filtering_reduces_rows(self):
+        """Only genes above gate_threshold should be tested."""
+        n_cell_types, n_genes, n_subjects = 2, 20, 16
+        gene_gate_weights = np.zeros((n_cell_types, n_genes))
+        gene_gate_weights[:, :5] = 0.5
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["resilient"] * 8 + ["vulnerable"] * 8)
+        subject_expr = np.random.rand(n_subjects, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_expression(
+            group_labels=group_labels,
+            subject_expression=subject_expr,
+            gate_threshold=0.01,
+        )
+        assert len(result) == n_cell_types * 5
+
+    def test_padj_column_present_with_fdr(self):
+        """padj column should be present when apply_fdr=True."""
+        n_cell_types, n_genes, n_subjects = 2, 10, 16
+        gene_gate_weights = np.ones((n_cell_types, n_genes))
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["resilient"] * 8 + ["vulnerable"] * 8)
+        subject_expr = np.random.rand(n_subjects, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_expression(
+            group_labels=group_labels,
+            subject_expression=subject_expr,
+            apply_fdr=True,
+        )
+        assert "padj" in result.columns
+        assert (result["padj"] >= result["pvalue"]).all()
+
+    def test_fdr_disabled(self):
+        """When apply_fdr=False, padj should equal pvalue."""
+        n_cell_types, n_genes, n_subjects = 2, 10, 16
+        gene_gate_weights = np.ones((n_cell_types, n_genes))
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["resilient"] * 8 + ["vulnerable"] * 8)
+        subject_expr = np.random.rand(n_subjects, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_expression(
+            group_labels=group_labels,
+            subject_expression=subject_expr,
+            apply_fdr=False,
+        )
+        assert "padj" in result.columns
+        np.testing.assert_array_almost_equal(result["padj"].values, result["pvalue"].values)
+
+    def test_gate_weight_column_present(self):
+        """Output should include gate_weight column for visualization context."""
+        n_cell_types, n_genes, n_subjects = 2, 10, 16
+        gene_gate_weights = np.random.rand(n_cell_types, n_genes)
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["resilient"] * 8 + ["vulnerable"] * 8)
+        subject_expr = np.random.rand(n_subjects, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_expression(
+            group_labels=group_labels,
+            subject_expression=subject_expr,
+        )
+        assert "gate_weight" in result.columns
+        assert (result["gate_weight"] > 0).all()
+
+    def test_save_persists_differential_expression(self, tmp_path):
+        """save() should write differential_expression.parquet when result is present."""
+        n_cell_types, n_genes, n_subjects = 2, 10, 16
+        gene_gate_weights = np.ones((n_cell_types, n_genes))
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["resilient"] * 8 + ["vulnerable"] * 8)
+        subject_expr = np.random.rand(n_subjects, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer.analyze(
+            group_labels=group_labels,
+            subject_expression=subject_expr,
+        )
+        saved = analyzer.save(result, tmp_path)
+
+        assert (tmp_path / "differential_expression.parquet").exists()
+        loaded = pd.read_parquet(tmp_path / "differential_expression.parquet")
+        assert "log2_fold_change" in loaded.columns
+        assert "padj" in loaded.columns
+        assert "gate_weight" in loaded.columns
+
+    def test_minimum_group_size_is_five(self):
+        """Should return empty DataFrame when either group has < 5 samples."""
+        n_cell_types, n_genes = 2, 10
+        gene_gate_weights = np.ones((n_cell_types, n_genes))
+        gene_names = [f"GENE{i}" for i in range(n_genes)]
+        cell_type_names = [f"CT{i}" for i in range(n_cell_types)]
+
+        group_labels = np.array(["resilient"] * 3 + ["vulnerable"] * 10)
+        subject_expr = np.random.rand(13, n_cell_types, n_genes)
+
+        analyzer = GeneImportanceAnalyzer(
+            gene_gate_weights=gene_gate_weights,
+            gene_names=gene_names,
+            cell_type_names=cell_type_names,
+        )
+        result = analyzer._compute_differential_expression(
+            group_labels=group_labels,
+            subject_expression=subject_expr,
+        )
+        assert len(result) == 0

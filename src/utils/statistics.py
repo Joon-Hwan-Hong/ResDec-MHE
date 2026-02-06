@@ -326,6 +326,65 @@ def benjamini_hochberg(
     return adjusted, significant
 
 
+def derive_resilience_groups(
+    cognition_scores: np.ndarray,
+    pathology_scores: np.ndarray,
+    pathology_percentile: float = 66.7,
+    cognition_low_percentile: float = 33.3,
+    cognition_high_percentile: float = 66.7,
+) -> np.ndarray:
+    """
+    Derive resilient/vulnerable group labels from cognition and pathology scores.
+
+    Two-stage stratification:
+    1. Select high-pathology subjects (>= pathology_percentile)
+    2. Within those, label top cognition tertile as "resilient",
+       bottom tertile as "vulnerable", rest excluded ("")
+
+    Mirrors the logic in ResilienceSignatureAnalyzer._identify_groups()
+    but as a stateless utility for reuse across pipelines.
+
+    Args:
+        cognition_scores: [n_subjects] cognitive performance scores
+        pathology_scores: [n_subjects] pathology burden scores
+        pathology_percentile: Percentile threshold for "high pathology" (default: 66.7)
+        cognition_low_percentile: Below this = "vulnerable" within high-path (default: 33.3)
+        cognition_high_percentile: Above this = "resilient" within high-path (default: 66.7)
+
+    Returns:
+        [n_subjects] string array with values "resilient", "vulnerable", or ""
+    """
+    n = len(cognition_scores)
+    labels = np.full(n, "", dtype=object)
+
+    # Handle NaN in either score — exclude from grouping
+    valid = ~(np.isnan(cognition_scores) | np.isnan(pathology_scores))
+    if valid.sum() < 6:
+        return labels.astype(str)
+
+    # Stage 1: high pathology threshold
+    path_threshold = np.nanpercentile(pathology_scores[valid], pathology_percentile)
+    high_path_mask = valid & (pathology_scores >= path_threshold)
+
+    if high_path_mask.sum() < 4:
+        return labels.astype(str)
+
+    # Stage 2: cognition split within high-pathology subjects
+    high_path_cognition = cognition_scores[high_path_mask]
+    cog_low = np.nanpercentile(high_path_cognition, cognition_low_percentile)
+    cog_high = np.nanpercentile(high_path_cognition, cognition_high_percentile)
+
+    high_path_indices = np.where(high_path_mask)[0]
+    for idx in high_path_indices:
+        cog = cognition_scores[idx]
+        if cog >= cog_high:
+            labels[idx] = "resilient"
+        elif cog <= cog_low:
+            labels[idx] = "vulnerable"
+
+    return labels.astype(str)
+
+
 def attention_entropy(
     attention: np.ndarray,
     axis: int | None = None,

@@ -162,7 +162,8 @@ class TestPredictionResultDataclass:
             "subject_ids", "mean", "std", "actual", "pathology",
             "attention_weights", "gene_gate_weights", "cell_type_selection",
             "hgt_attention", "pma_attention", "region_weights",
-            "region_pseudobulk_mean", "region_attention", "cell_barcodes",
+            "region_pseudobulk_mean", "per_subject_pseudobulk",
+            "region_attention", "cell_barcodes",
             "cell_counts", "gene_names", "embeddings", "metadata"
         }
         actual_fields = {f.name for f in fields(sample_prediction_result)}
@@ -841,3 +842,40 @@ class TestCellCountsFromBatch:
         result = predictor.predict([batch], show_progress=False)
         assert result.cell_counts is not None
         assert result.cell_counts[0, 0] == 10
+
+
+# ============================================================================
+# Per-Subject Pseudobulk Tests
+# ============================================================================
+
+
+class TestPerSubjectPseudobulk:
+    """Tests for per_subject_pseudobulk field in PredictionResult."""
+
+    def test_per_subject_pseudobulk_field(self):
+        """PredictionResult should have per_subject_pseudobulk field."""
+        n_subjects, n_cell_types, n_genes = 5, 3, 10
+        result = PredictionResult(
+            subject_ids=[f"S{i}" for i in range(n_subjects)],
+            mean=np.zeros((n_subjects, 1)),
+            std=None,
+            actual=None,
+            pathology=np.zeros((n_subjects, 3)),
+            attention_weights=np.zeros((n_subjects, 1, n_cell_types)),
+            gene_gate_weights=np.zeros((n_cell_types, n_genes)),
+            per_subject_pseudobulk=np.random.rand(n_subjects, n_cell_types, n_genes),
+        )
+        assert result.per_subject_pseudobulk.shape == (n_subjects, n_cell_types, n_genes)
+
+    def test_per_subject_pseudobulk_default_none(self):
+        """per_subject_pseudobulk should default to None."""
+        result = PredictionResult(
+            subject_ids=["S0"],
+            mean=np.zeros((1, 1)),
+            std=None,
+            actual=None,
+            pathology=np.zeros((1, 3)),
+            attention_weights=np.zeros((1, 1, 3)),
+            gene_gate_weights=np.zeros((3, 10)),
+        )
+        assert result.per_subject_pseudobulk is None

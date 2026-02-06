@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from src.utils.io import load_dataframe, load_attention_weights, save_dataframe, unpack_hgt_for_ccc
+from src.utils.statistics import derive_resilience_groups
 from src.analysis import (
     CellTypeImportanceAnalyzer,
     GeneImportanceAnalyzer,
@@ -173,6 +174,14 @@ def parse_args() -> argparse.Namespace:
         help="Random seed for reproducible permutation tests (default: 42)",
     )
     param_group.add_argument(
+        "--gate-threshold", type=float, default=0.01,
+        help="Minimum gene gate weight to include in differential expression (default: 0.01)",
+    )
+    param_group.add_argument(
+        "--no-fdr-correction", action="store_true", default=False,
+        help="Disable Benjamini-Hochberg FDR correction for differential expression",
+    )
+    param_group.add_argument(
         "--run-ablation",
         action="store_true",
         help="Run ablation study as part of resilience signature analysis",
@@ -313,6 +322,10 @@ def run_gene_importance(
     top_k: int = 100,
     output_dir: Path = None,
     formats: list[str] = None,
+    group_labels: np.ndarray | None = None,
+    subject_expression: np.ndarray | None = None,
+    gate_threshold: float = 0.01,
+    apply_fdr: bool = True,
 ) -> None:
     """Run gene importance analysis."""
     logger.info("Running gene importance analysis...")
@@ -324,7 +337,13 @@ def run_gene_importance(
         region_pseudobulk=region_pseudobulk,
     )
 
-    result = analyzer.analyze(top_k=top_k)
+    result = analyzer.analyze(
+        top_k=top_k,
+        group_labels=group_labels,
+        subject_expression=subject_expression,
+        gate_threshold=gate_threshold,
+        apply_fdr=apply_fdr,
+    )
 
     if output_dir:
         analyzer.save(result, output_dir, formats=formats)
@@ -691,8 +710,58 @@ def main():
         )
         analyses_run += 1
 
+    # Acquire cognition scores early (needed for both gene DE and resilience analysis)
+    cognition_scores = None
+    cognition_source = None
+
+    if predictions_df is not None and "actual" in predictions_df.columns:
+        cognition_scores = predictions_df["actual"].values
+        cognition_source = "predictions_df['actual']"
+
+    if cognition_scores is None and metadata_df is not None and subject_ids is not None:
+        for cog_col in ["cogn_global", "cognition", "cognitive_score"]:
+            aligned = _align_array_by_subject_id(metadata_df, subject_ids, cog_col)
+            if aligned is not None:
+                cognition_scores = aligned
+                cognition_source = f"metadata_df['{cog_col}']"
+                break
+
+    if cognition_scores is not None:
+        logger.info(f"  Using cognition from {cognition_source}")
+
     # Gene importance
     if not args.skip_gene and gene_gate is not None:
+        # Extract per-subject pseudobulk from attention weights (if available)
+        per_subject_pb = attention_weights.get("per_subject_pseudobulk")
+
+        # Derive resilient/vulnerable group labels (if cognition + pathology available)
+        gene_group_labels = None
+        if cognition_scores is not None and per_subject_pb is not None:
+            # Use the first available pathology measure for group derivation
+            gene_pathology = None
+            for col in ["gpath", "amylsqrt", "tangsqrt", "pathology"]:
+                if predictions_df is not None and col in predictions_df.columns:
+                    gene_pathology = predictions_df[col].values
+                    break
+                elif metadata_df is not None and col in metadata_df.columns:
+                    if subject_ids is not None:
+                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col)
+                        if aligned is not None:
+                            gene_pathology = aligned
+                            break
+
+            if gene_pathology is not None:
+                gene_group_labels = derive_resilience_groups(
+                    cognition_scores=cognition_scores,
+                    pathology_scores=gene_pathology,
+                )
+                n_resilient = (gene_group_labels == "resilient").sum()
+                n_vulnerable = (gene_group_labels == "vulnerable").sum()
+                logger.info(
+                    f"  Derived resilience groups for DE: "
+                    f"{n_resilient} resilient, {n_vulnerable} vulnerable"
+                )
+
         run_gene_importance(
             gene_gate_weights=gene_gate,
             cell_type_names=cell_type_names,
@@ -701,6 +770,10 @@ def main():
             top_k=args.top_k_genes,
             output_dir=output_dir,
             formats=args.formats,
+            group_labels=gene_group_labels,
+            subject_expression=per_subject_pb,
+            gate_threshold=args.gate_threshold,
+            apply_fdr=not args.no_fdr_correction,
         )
         analyses_run += 1
 
@@ -723,29 +796,11 @@ def main():
 
     # Resilience signatures (requires pathology and cognition data)
     # Runs separately for each available pathology measure (gpath, amylsqrt, tangsqrt)
+    # cognition_scores already derived above (shared with gene DE)
     if not args.skip_resilience and pathology_attention is not None:
-        # Step 1: Acquire cognition scores (try multiple sources)
-        cognition_scores = None
-        cognition_source = None
-
-        # Source A: predictions_df "actual" column
-        if predictions_df is not None and "actual" in predictions_df.columns:
-            cognition_scores = predictions_df["actual"].values
-            cognition_source = "predictions_df['actual']"
-
-        # Source B: metadata_df cognition columns (aligned by subject_id)
-        if cognition_scores is None and metadata_df is not None and subject_ids is not None:
-            for cog_col in ["cogn_global", "cognition", "cognitive_score"]:
-                aligned = _align_array_by_subject_id(metadata_df, subject_ids, cog_col)
-                if aligned is not None:
-                    cognition_scores = aligned
-                    cognition_source = f"metadata_df['{cog_col}']"
-                    break
-
         if cognition_scores is not None:
-            logger.info(f"  Using cognition from {cognition_source}")
 
-            # Step 2: Acquire pathology scores
+            # Acquire pathology scores
             pathology_columns = ["gpath", "amylsqrt", "tangsqrt"]
             available_pathology = []
 
