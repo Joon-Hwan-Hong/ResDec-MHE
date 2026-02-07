@@ -39,40 +39,11 @@ from src.training.callbacks import (
     TemperatureAnnealing,
 )
 from src.training.lightning_module import CognitiveResilienceLightningModule
+from src.utils.config import load_config
 from src.utils.experiment import ExperimentManager
 from src.utils.reproducibility import set_seed
 
 logger = logging.getLogger(__name__)
-
-
-def load_config(
-    config_path: str,
-    overrides: list[str] | None = None,
-) -> DictConfig:
-    """
-    Load configuration from YAML file with optional CLI overrides.
-
-    Args:
-        config_path: Path to YAML configuration file
-        overrides: List of dotlist overrides (e.g., ["training.max_epochs=50"])
-
-    Returns:
-        Merged OmegaConf DictConfig
-
-    Raises:
-        FileNotFoundError: If config_path does not exist
-    """
-    path = Path(config_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    config = OmegaConf.load(str(path))
-
-    if overrides:
-        override_conf = OmegaConf.from_dotlist(overrides)
-        config = OmegaConf.merge(config, override_conf)
-
-    return config
 
 
 def setup_callbacks(config: DictConfig) -> list[pl.Callback]:

@@ -13,6 +13,7 @@ import torch
 from scipy.special import erf as scipy_erf
 from scipy.stats import pearsonr, spearmanr
 
+from src.data.constants import EPSILON_DIVISION, EPSILON_SOFTMAX
 from src.utils.statistics import calibration_error as _shared_calibration_error
 
 
@@ -49,12 +50,12 @@ class ResilienceMetrics:
         ss_res = np.sum(residuals ** 2)
         ss_tot = np.sum((target_np - target_np.mean()) ** 2)
 
-        r2 = 1.0 - ss_res / (ss_tot + 1e-10) if ss_tot > 1e-10 else 0.0
+        r2 = 1.0 - ss_res / (ss_tot + EPSILON_DIVISION) if ss_tot > EPSILON_DIVISION else 0.0
         rmse = float(np.sqrt(np.mean(residuals ** 2)))
         mae = float(np.mean(np.abs(residuals)))
 
         # Correlation
-        if len(mean_np) >= 3 and np.std(mean_np) > 1e-8 and np.std(target_np) > 1e-8:
+        if len(mean_np) >= 3 and np.std(mean_np) > EPSILON_SOFTMAX and np.std(target_np) > EPSILON_SOFTMAX:
             pearson_r_val = float(pearsonr(mean_np, target_np)[0])
             spearman_rho_val = float(spearmanr(mean_np, target_np)[0])
         else:
@@ -104,7 +105,7 @@ class ResilienceMetrics:
         Returns:
             Mean CRPS across all samples
         """
-        z = (target - mean) / (std + 1e-10)
+        z = (target - mean) / (std + EPSILON_DIVISION)
         cdf_z = 0.5 * (1.0 + scipy_erf(z / np.sqrt(2.0)))
         pdf_z = np.exp(-0.5 * z ** 2) / np.sqrt(2.0 * np.pi)
         crps = std * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z - 1.0 / np.sqrt(np.pi))

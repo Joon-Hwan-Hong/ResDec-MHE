@@ -32,6 +32,7 @@ from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
 
+from src.data.constants import EPSILON_DIVISION
 from src.utils.io import save_dataframe
 
 logger = logging.getLogger(__name__)
@@ -525,7 +526,7 @@ class EmbeddingAnalyzer:
 
         # Use PC1 as pseudotime (normalized to [0, 1])
         pc1 = pca_coords[:, 0]
-        pseudotime = (pc1 - pc1.min()) / (pc1.max() - pc1.min() + 1e-10)
+        pseudotime = (pc1 - pc1.min()) / (pc1.max() - pc1.min() + EPSILON_DIVISION)
 
         df = pd.DataFrame({
             "subject_id": self.subject_ids,
@@ -608,8 +609,8 @@ class EmbeddingAnalyzer:
                         "value": float(baseline),
                         "interpretation": "reference",
                     })
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    logger.debug("Batch prediction accuracy skipped: %s", e)
 
         # 3. Local mixing score (inspired by kBET)
         # Measures if local neighborhoods have batch proportions similar to global
@@ -657,7 +658,7 @@ class EmbeddingAnalyzer:
 
             # Chi-squared statistic comparing local to global
             chi_sq = sum(
-                (local_props.get(b, 0) - global_props[b])**2 / (global_props[b] + 1e-10)
+                (local_props.get(b, 0) - global_props[b])**2 / (global_props[b] + EPSILON_DIVISION)
                 for b in unique_batches
             )
             chi_sq_values.append(chi_sq)

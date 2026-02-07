@@ -9,18 +9,21 @@ import yaml
 from omegaconf import OmegaConf, DictConfig
 
 
-def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> DictConfig:
+def load_config(
+    path: str | Path,
+    overrides: dict[str, Any] | list[str] | None = None,
+) -> DictConfig:
     """
     Load configuration from YAML file.
 
     Supports:
     - YAML with OmegaConf interpolation
-    - Optional runtime overrides
-    - Configuration validation
+    - Optional runtime overrides (dict or dotlist format)
 
     Args:
         path: Path to YAML configuration file
-        overrides: Optional dictionary of overrides to apply
+        overrides: Optional overrides — either a dict of values or a list
+            of dotlist strings (e.g., ["training.max_epochs=50"])
 
     Returns:
         OmegaConf DictConfig object
@@ -33,13 +36,14 @@ def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> Di
     if not path.exists():
         raise FileNotFoundError(f"Configuration file not found: {path}")
 
-    # Load base config
     with open(path) as f:
         config = OmegaConf.create(yaml.safe_load(f))
 
-    # Apply overrides if provided
     if overrides:
-        override_config = OmegaConf.create(overrides)
+        if isinstance(overrides, list):
+            override_config = OmegaConf.from_dotlist(overrides)
+        else:
+            override_config = OmegaConf.create(overrides)
         config = OmegaConf.merge(config, override_config)
 
     return config

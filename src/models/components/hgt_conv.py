@@ -13,7 +13,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from src.data.constants import sanitize_key
+from src.data.constants import sanitize_key, EPSILON_SOFTMAX
 
 # Verify PyTorch version for scatter_reduce_ support
 _torch_version = tuple(int(x) for x in torch.__version__.split('.')[:2])
@@ -435,7 +435,7 @@ class HGTConvWithEdgeAttr(nn.Module):
         )
 
         # Normalize (add small epsilon to avoid division by zero)
-        return exp_scores / (sum_exp[target_idx] + 1e-8)
+        return exp_scores / (sum_exp[target_idx] + EPSILON_SOFTMAX)
 
     def extra_repr(self) -> str:
         return (

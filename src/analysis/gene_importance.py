@@ -21,7 +21,7 @@ import h5py
 import numpy as np
 import pandas as pd
 
-from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER, N_CELL_TYPES
+from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER, N_CELL_TYPES, EPSILON_DIVISION
 from src.utils.io import save_dataframe
 
 logger = logging.getLogger(__name__)
@@ -319,7 +319,7 @@ class GeneImportanceAnalyzer:
                 mean_a = float(np.mean(vals_a))
                 mean_b = float(np.mean(vals_b))
 
-                pseudo = 1e-10
+                pseudo = EPSILON_DIVISION
                 log2fc = float(np.log2((mean_a + pseudo) / (mean_b + pseudo)))
 
                 try:

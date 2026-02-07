@@ -10,6 +10,8 @@ from typing import Literal
 import numpy as np
 from anndata import AnnData
 
+from src.data.constants import EPSILON_POSITIVE_FLOOR
+
 
 class CellSampler:
     """
@@ -196,7 +198,7 @@ class CellSampler:
             return self._random_sample(indices)
 
         # Convert to probabilities (higher score = higher probability)
-        scores = scores - scores.min() + 1e-6  # Ensure positive
+        scores = scores - scores.min() + EPSILON_POSITIVE_FLOOR  # Ensure positive
         probs = scores / scores.sum()
 
         # Sample without replacement using probabilities

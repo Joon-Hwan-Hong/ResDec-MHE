@@ -1234,7 +1234,7 @@ class TestWorkerInitFn:
         mock_sampler.rng = None
 
         mock_dataset = MagicMock()
-        mock_dataset.cell_sampler = mock_sampler
+        mock_dataset.sampler = mock_sampler
 
         mock_info = MagicMock()
         mock_info.seed = 12345
@@ -1243,7 +1243,7 @@ class TestWorkerInitFn:
         with patch("torch.utils.data.get_worker_info", return_value=mock_info):
             _worker_init_fn(0)
             # RNG should have been replaced
-            assert mock_dataset.cell_sampler.rng is not None
+            assert mock_dataset.sampler.rng is not None
 
 
 class TestCreateDataloaderPrefetch:

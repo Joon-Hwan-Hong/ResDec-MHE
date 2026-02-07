@@ -489,7 +489,7 @@ def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     n_regions = N_REGIONS
 
     # Check if multi-region data is present
-    has_regions = "region_pseudobulk" in batch[0]
+    has_regions = "region_pseudobulk" in batch[0] or bool(_derive_available_regions_from_keys(batch[0]))
 
     if not has_regions:
         # Fall back to standard collate
@@ -503,7 +503,7 @@ def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
 
     region_pseudobulk, region_mask = _assemble_region_tensors(
         batch, batch_size, n_cell_types, n_genes,
-        n_regions=n_regions, auto_derive_regions=False,
+        n_regions=n_regions, auto_derive_regions=True,
     )
 
     # Standard collate for non-region data
@@ -593,8 +593,8 @@ def _worker_init_fn(worker_id: int) -> None:
     # Re-seed CellSampler's RNG if the dataset has one
     worker_info = torch.utils.data.get_worker_info()
     dataset = worker_info.dataset
-    if hasattr(dataset, "cell_sampler") and hasattr(dataset.cell_sampler, "rng"):
-        dataset.cell_sampler.rng = np.random.default_rng(worker_seed)
+    if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
+        dataset.sampler.rng = np.random.default_rng(worker_seed)
 
 
 def create_dataloader(

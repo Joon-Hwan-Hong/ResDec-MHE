@@ -442,33 +442,16 @@ class CognitiveResilienceModel(nn.Module):
             pseudobulk_emb, self._sanitized_node_types
         )
 
-        # Handle edge dicts - prefer new format, fall back to empty if not provided.
-        # Build new lists to avoid mutating the caller's data.
-        dummy_src = sanitize_key(self.node_types[0])
-        dummy_rel = sanitize_key(self.edge_categories[0])
-        dummy_dst = sanitize_key(self.node_types[0])
-        dummy_key = (dummy_src, dummy_rel, dummy_dst)
-        dummy_edge_index = lambda: torch.tensor([[0], [0]], device=device, dtype=torch.long)
-        dummy_edge_attr = lambda: torch.ones(1, 1, device=device)
-
+        # Handle edge dicts — pass through as-is; HGTConv handles empty dicts
+        # correctly (isolated nodes get zero communication via received_messages mask).
+        # Do NOT inject synthetic edges — that would encode phantom communication.
         if edge_index_dict_list is not None and edge_attr_dict_list is not None:
-            # Replace empty dicts with dummy edges (new lists, no mutation)
-            edge_index_dict_list = [
-                d if d else {dummy_key: dummy_edge_index()}
-                for d in edge_index_dict_list
-            ]
-            edge_attr_dict_list = [
-                d if d else {dummy_key: dummy_edge_attr()}
-                for d in edge_attr_dict_list
-            ]
+            # Use provided edge dicts (may contain empty dicts for edgeless samples)
+            pass
         else:
-            # No edges provided - create dummy edges for all samples
-            edge_index_dict_list = [
-                {dummy_key: dummy_edge_index()} for _ in range(B)
-            ]
-            edge_attr_dict_list = [
-                {dummy_key: dummy_edge_attr()} for _ in range(B)
-            ]
+            # No edges provided at all — create empty dicts for each sample
+            edge_index_dict_list = [{} for _ in range(B)]
+            edge_attr_dict_list = [{} for _ in range(B)]
 
         # Run HGTEncoderBatched - processes each sample's graph separately
         hgt_out_dict, hgt_attention = self.hgt_encoder(
@@ -613,3 +596,44 @@ class CognitiveResilienceModel(nn.Module):
             f"d_embed={self.d_embed}, d_fused={self.d_fused}, d_cond={self.d_cond}, "
             f"n_regions={self.n_regions}, use_bayesian_head={self.use_bayesian_head}"
         )
+
+
+def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
+    """Build a CognitiveResilienceModel from a config dict/DictConfig.
+
+    Single source of truth for model construction. Used by both the
+    Lightning training module and inference Predictor to ensure identical
+    model architecture.
+
+    Args:
+        model_cfg: Model config section (config.model) with nested keys
+            for hgt, set_transformer, pathology_attention, gene_gate,
+            cell_type_selector, head, and pseudobulk sub-configs.
+
+    Returns:
+        Configured CognitiveResilienceModel instance.
+    """
+    use_bayesian = model_cfg.head.type == "bayesian"
+    return CognitiveResilienceModel(
+        n_genes=model_cfg.n_genes,
+        n_cell_types=model_cfg.n_cell_types,
+        d_embed=model_cfg.d_embed,
+        d_fused=model_cfg.d_fused,
+        d_cond=model_cfg.pathology_attention.d_cond,
+        n_regions=model_cfg.get("n_regions", 6),
+        n_hgt_layers=model_cfg.hgt.n_layers,
+        n_hgt_heads=model_cfg.hgt.n_heads,
+        n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
+        n_isab_layers=model_cfg.set_transformer.n_isab_layers,
+        n_inducing_points=model_cfg.set_transformer.n_inducing_points,
+        n_attention_heads=model_cfg.pathology_attention.n_heads,
+        gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
+        selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
+        use_bayesian_head=use_bayesian,
+        d_head_hidden=model_cfg.head.d_hidden,
+        dropout=model_cfg.get("dropout", 0.1),
+        n_pathology_features=model_cfg.pathology_attention.get("n_pathology_features", 3),
+        n_pma_seeds=model_cfg.set_transformer.get("n_pma_seeds", 1),
+        mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") else None,
+        use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
+    )

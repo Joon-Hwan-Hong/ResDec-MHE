@@ -14,6 +14,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from src.data.constants import EPSILON_DIVISION
+
 
 # Standard Gaussian calibration levels (expected coverage at 1σ, 2σ, 3σ)
 CALIBRATION_LEVELS: dict[str, float] = {
@@ -43,7 +45,7 @@ def compute_calibration_metrics(
     predicted_mean: np.ndarray,
     predicted_std: np.ndarray,
     actual: np.ndarray,
-    epsilon: float = 1e-10,
+    epsilon: float = EPSILON_DIVISION,
 ) -> CalibrationResult:
     """
     Compute calibration error at different sigma levels.
@@ -109,7 +111,7 @@ def calibration_error(
     predicted_mean: np.ndarray,
     predicted_std: np.ndarray,
     actual: np.ndarray,
-    epsilon: float = 1e-10,
+    epsilon: float = EPSILON_DIVISION,
 ) -> float:
     """
     Compute mean calibration error (convenience wrapper).
@@ -159,7 +161,7 @@ def gini_coefficient(values: np.ndarray) -> float:
         return 0.0
 
     index = np.arange(1, n + 1)
-    return float(((2 * index - n - 1) * values).sum() / (n * total + 1e-10))
+    return float(((2 * index - n - 1) * values).sum() / (n * total + EPSILON_DIVISION))
 
 
 def cohens_d(
@@ -183,7 +185,7 @@ def cohens_d(
     # Pooled standard deviation
     pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
 
-    return float((mean1 - mean2) / (pooled_std + 1e-10))
+    return float((mean1 - mean2) / (pooled_std + EPSILON_DIVISION))
 
 
 def cohens_d_with_ci(
@@ -251,7 +253,7 @@ def cohens_d_vectorized(
     pooled_var = ((n1 - 1) * group1_std**2 + (n2 - 1) * group2_std**2) / (n1 + n2 - 2)
     pooled_std = np.sqrt(pooled_var)
     d = np.zeros_like(group1_mean)
-    nonzero = pooled_std > 1e-10
+    nonzero = pooled_std > EPSILON_DIVISION
     d[nonzero] = (group1_mean[nonzero] - group2_mean[nonzero]) / pooled_std[nonzero]
     return d, pooled_std
 
@@ -388,7 +390,7 @@ def derive_resilience_groups(
 def attention_entropy(
     attention: np.ndarray,
     axis: int | None = None,
-    epsilon: float = 1e-10,
+    epsilon: float = EPSILON_DIVISION,
 ) -> float | np.ndarray:
     """
     Compute Shannon entropy of attention distribution.

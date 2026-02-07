@@ -106,6 +106,12 @@ GROUP_SEPARATOR: str = "||"
 PFC_REGION_IDX: int = REGION_ORDER.index("PFC")  # 0
 
 
+# Numerical stability constants (three tiers by magnitude and intent)
+EPSILON_DIVISION: float = 1e-10     # Division-by-zero guard for float64 computations
+EPSILON_SOFTMAX: float = 1e-8       # Softmax/normalization denominator guard
+EPSILON_POSITIVE_FLOOR: float = 1e-6  # Minimum positive value floor (e.g., std, scores)
+
+
 def sanitize_key(name: str) -> str:
     """
     Sanitize a name for use as a PyTorch ModuleDict/ParameterDict key.

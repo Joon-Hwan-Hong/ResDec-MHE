@@ -288,11 +288,10 @@ def objective(
 
         # Data loading for this fold
         if splits is None or adata is None or metadata is None:
-            logger.warning(
-                "Data not provided to objective() — returning inf. "
-                "Pass --splits-path to enable real training."
+            raise RuntimeError(
+                "Data not provided to objective(). This should not happen — "
+                "main() should validate --splits-path before calling optimize()."
             )
-            return float("inf")
 
         from src.data.loaders import create_fold_dataloaders
         train_loader, val_loader = create_fold_dataloaders(
@@ -351,6 +350,13 @@ def main() -> None:
         help="GPU device index for training (e.g., 0, 1)",
     )
     parser.add_argument(
+        "--n-gpus",
+        type=int,
+        default=1,
+        help="Number of GPUs for parallel trial execution. Each GPU runs trials independently. "
+             "Requires --storage for multi-process coordination (default: 1).",
+    )
+    parser.add_argument(
         "--splits-path",
         type=str,
         default=None,
@@ -365,7 +371,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Load config
-    from scripts.train import load_config
+    from src.utils.config import load_config
 
     config = load_config(args.config, overrides=args.overrides)
 
@@ -390,6 +396,14 @@ def main() -> None:
         metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
         logger.info("Loaded adata (%d cells) and metadata", adata.n_obs)
 
+    # Fail fast if data not provided
+    if args.splits_path is None:
+        raise ValueError(
+            "Optuna optimization requires pre-computed data splits. "
+            "Provide --splits-path /path/to/splits.json. "
+            "Use scripts/train.py for single-fold training without splits."
+        )
+
     # Create study (always use create_study to respect config pruner type)
     study = create_study(config, storage=args.storage)
 
@@ -399,15 +413,73 @@ def main() -> None:
         timeout,
     )
 
+    n_gpus = args.n_gpus
     gpu_id = args.gpu
-    study.optimize(
-        lambda trial: objective(
-            trial, config, gpu_id=gpu_id,
-            adata=adata, metadata=metadata, splits=splits,
-        ),
-        n_trials=n_trials,
-        timeout=timeout,
-    )
+
+    if n_gpus > 1:
+        # Multi-GPU: spawn N worker processes, each pinned to a different GPU
+        if args.storage is None:
+            raise ValueError(
+                "Multi-GPU optimization requires persistent storage for coordination. "
+                "Provide --storage sqlite:///outputs/optuna.db"
+            )
+
+        import subprocess
+        import sys
+
+        # Distribute trials across GPUs
+        trials_per_gpu = (n_trials + n_gpus - 1) // n_gpus
+
+        workers = []
+        for i in range(n_gpus):
+            gpu_trials = min(trials_per_gpu, n_trials - i * trials_per_gpu)
+            if gpu_trials <= 0:
+                continue
+
+            cmd = [
+                sys.executable, str(Path(__file__)),
+                "--config", args.config,
+                "--n-trials", str(gpu_trials),
+                "--gpu", str(i),
+                "--storage", args.storage,
+                "--splits-path", args.splits_path,
+            ]
+            if timeout:
+                cmd.extend(["--timeout", str(timeout)])
+            if args.overrides:
+                cmd.extend(args.overrides)
+
+            logger.info(f"Spawning worker on GPU {i}: {gpu_trials} trials")
+            proc = subprocess.Popen(cmd)
+            workers.append((i, proc))
+
+        # Wait for all workers
+        failed = []
+        for gpu_idx, proc in workers:
+            returncode = proc.wait()
+            if returncode != 0:
+                failed.append(gpu_idx)
+                logger.error(f"Worker on GPU {gpu_idx} failed with code {returncode}")
+
+        if failed:
+            logger.error(f"Workers failed on GPUs: {failed}")
+            sys.exit(1)
+
+        # Reload study to report results (all workers wrote to same storage)
+        study = optuna.load_study(
+            study_name=config.experiment.get("name", "cognitive_resilience"),
+            storage=args.storage,
+        )
+    else:
+        # Single-GPU mode (original behavior)
+        study.optimize(
+            lambda trial: objective(
+                trial, config, gpu_id=gpu_id,
+                adata=adata, metadata=metadata, splits=splits,
+            ),
+            n_trials=n_trials,
+            timeout=timeout,
+        )
 
     # Report results
     logger.info("Best trial: %s", study.best_trial.params)

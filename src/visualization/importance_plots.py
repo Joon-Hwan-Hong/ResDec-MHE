@@ -24,7 +24,7 @@ from src.visualization.config import (
     setup_seaborn_style,
     save_figure,
 )
-from src.data.constants import CELL_TYPE_ORDER
+from src.data.constants import CELL_TYPE_ORDER, EPSILON_DIVISION
 
 
 def plot_top_genes_per_cell_type(
@@ -158,7 +158,7 @@ def plot_gene_importance_volcano(
     else:
         # Volcano plot
         df = gene_df.copy()
-        df["-log10(p)"] = -np.log10(df[p_col] + 1e-10)
+        df["-log10(p)"] = -np.log10(df[p_col] + EPSILON_DIVISION)
 
         # Color by significance
         colors = np.where(df[p_col] < significance_threshold, "red", "gray")

@@ -24,6 +24,7 @@ from omegaconf import OmegaConf
 
 from lightning.pytorch.callbacks import EarlyStopping
 
+from src.data.constants import EPSILON_SOFTMAX
 from src.utils.hashing import hash_config
 
 logger = logging.getLogger(__name__)
@@ -240,7 +241,7 @@ class GradientNormLogger(pl.Callback):
         values = list(norms.values())
         if not values:
             return 0.0
-        return max(values) / (min(values) + 1e-8)
+        return max(values) / (min(values) + EPSILON_SOFTMAX)
 
     def get_severity(self, ratio: float) -> str:
         """

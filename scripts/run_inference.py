@@ -260,6 +260,13 @@ def main():
             "or use a checkpoint that contains model_config."
         )
 
+    # Validate config has required sections for data loading
+    if not hasattr(config, "data") or config.data is None:
+        raise ValueError(
+            "Config recovered from checkpoint is missing 'data' section. "
+            "Provide --config with a full configuration YAML that includes data paths."
+        )
+
     data_path = args.data_path
     logger.info("Building inference DataLoader...")
     dataloader = build_dataloader(config, data_path, args.batch_size)
@@ -271,6 +278,13 @@ def main():
     extract_pma = args.extract_pma_attention or extract_all
     extract_region = args.extract_region_attention or extract_all
     extract_emb = args.extract_embeddings or extract_all
+
+    if not any([extract_hgt, extract_pma, extract_region, extract_emb]):
+        logger.warning(
+            "No extraction flags set — only predictions will be saved. "
+            "Use --extract-all to extract all attention weights and embeddings, "
+            "or use individual flags (--extract-hgt-attention, --extract-pma-attention, etc.)."
+        )
 
     # Run inference
     logger.info("Running inference...")

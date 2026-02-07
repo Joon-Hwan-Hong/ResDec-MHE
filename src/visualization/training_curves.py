@@ -82,7 +82,7 @@ def load_tensorboard_scalars(
     event_files = list(log_dir.glob("events.out.tfevents.*"))
     if not event_files:
         # Check subdirectories
-        event_files = list(log_dir.glob("*/events.out.tfevents.*"))
+        event_files = list(log_dir.glob("**/events.out.tfevents.*"))
 
     if not event_files:
         logger.warning(f"No TensorBoard event files found in {log_dir}")

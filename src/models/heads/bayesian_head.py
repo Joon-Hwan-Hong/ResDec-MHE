@@ -13,6 +13,8 @@ Design Decision (2026-01-27):
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from src.data.constants import EPSILON_POSITIVE_FLOOR
 import pyro
 import pyro.distributions as dist
 from pyro.nn import PyroModule, PyroSample
@@ -133,7 +135,7 @@ class BayesianPredictionHead(PyroModule):
 
         mean = self.fc_mean(h)
         log_std = self.fc_log_std(h)
-        std = F.softplus(log_std) + 1e-6  # Ensure positive with minimum
+        std = F.softplus(log_std) + EPSILON_POSITIVE_FLOOR  # Ensure positive with minimum
 
         with pyro.plate("data", x.size(0)):
             pyro.sample("obs", dist.Normal(mean, std).to_event(1), obs=y)

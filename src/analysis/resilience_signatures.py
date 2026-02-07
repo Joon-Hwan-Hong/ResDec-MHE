@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from src.data.constants import CELL_TYPE_ORDER, N_CELL_TYPES
+from src.data.constants import CELL_TYPE_ORDER, N_CELL_TYPES, EPSILON_DIVISION
 from src.utils.io import save_dataframe
 from src.utils.statistics import (
     benjamini_hochberg,
@@ -895,7 +895,7 @@ class ResilienceSignatureAnalyzer:
         merged["rank_diff"] = merged["rank_node"] - merged["rank_zero"]
 
         # Compute importance ratio
-        merged["importance_ratio"] = merged["importance_zero"] / (merged["importance_node"] + 1e-10)
+        merged["importance_ratio"] = merged["importance_zero"] / (merged["importance_node"] + EPSILON_DIVISION)
 
         # Agreement score: 1 if ranks are within 3 of each other
         merged["rank_agreement"] = np.abs(merged["rank_diff"]) <= 3

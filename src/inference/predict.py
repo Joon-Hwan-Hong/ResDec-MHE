@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
-from src.models.full_model import CognitiveResilienceModel
+from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 from src.training.lightning_module import CognitiveResilienceLightningModule
 from src.utils.io import save_attention_weights as _io_save_attention_weights
 
@@ -59,7 +59,7 @@ class PredictionResult:
     mean: np.ndarray
     std: np.ndarray | None
     actual: np.ndarray | None
-    pathology: np.ndarray
+    pathology: np.ndarray | None
     attention_weights: np.ndarray
     gene_gate_weights: np.ndarray
     hgt_attention: list[dict] | None = None
@@ -172,34 +172,11 @@ class Predictor:
                     "No config found in checkpoint. Provide config explicitly."
                 )
 
-        # Build model from checkpoint config
+        # Build model from checkpoint config (shared factory ensures training/inference parity)
         model_cfg = config.model
         try:
+            model = build_model_from_config(model_cfg)
             use_bayesian = model_cfg.head.type == "bayesian"
-
-            model = CognitiveResilienceModel(
-                n_genes=model_cfg.n_genes,
-                n_cell_types=model_cfg.n_cell_types,
-                d_embed=model_cfg.d_embed,
-                d_fused=model_cfg.d_fused,
-                d_cond=model_cfg.pathology_attention.d_cond,
-                n_regions=model_cfg.get("n_regions", 6),
-                n_hgt_layers=model_cfg.hgt.n_layers,
-                n_hgt_heads=model_cfg.hgt.n_heads,
-                n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
-                n_isab_layers=model_cfg.set_transformer.n_isab_layers,
-                n_inducing_points=model_cfg.set_transformer.n_inducing_points,
-                n_attention_heads=model_cfg.pathology_attention.n_heads,
-                gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
-                selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
-                use_bayesian_head=use_bayesian,
-                d_head_hidden=model_cfg.head.d_hidden,
-                dropout=model_cfg.get("dropout", 0.1),
-                n_pathology_features=model_cfg.pathology_attention.get("n_pathology_features", 3),
-                n_pma_seeds=model_cfg.set_transformer.get("n_pma_seeds", 1),
-                mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") else None,
-                use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
-            )
         except (AttributeError, KeyError) as e:
             raise ValueError(
                 f"Checkpoint config missing required model parameter: {e}. "
@@ -577,6 +554,9 @@ class Predictor:
             # Store pathology columns if available in data config
             if hasattr(self.config, "data") and hasattr(self.config.data, "pathology_columns"):
                 metadata["pathology_columns"] = list(self.config.data.pathology_columns)
+            # Pass region names through metadata for save_predictions
+            if hasattr(self.config, "data") and hasattr(self.config.data, "region_names"):
+                metadata["region_names"] = list(self.config.data.region_names)
         if subject_metadata:
             metadata["subject_metadata"] = subject_metadata
 
@@ -714,7 +694,11 @@ class Predictor:
             subject_ids=results.subject_ids,
             cell_type_names=list(CELL_TYPE_ORDER),
             gene_names=results.gene_names,
-            region_names=list(REGION_ORDER) if results.region_pseudobulk_mean is not None else None,
+            region_names=(
+                results.metadata.get("region_names", list(REGION_ORDER))
+                if results.region_pseudobulk_mean is not None
+                else None
+            ),
             embeddings=results.embeddings,
             metadata={
                 "n_subjects": results.n_subjects,

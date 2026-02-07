@@ -46,6 +46,35 @@ from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
 from src.data.cell_sampling import CellSampler
 
 
+def _validate_no_nan_columns(
+    metadata: pd.DataFrame,
+    subject_ids: list,
+    columns: list[str],
+    column_type: str,
+) -> None:
+    """Validate that specified columns have no NaN for included subjects.
+
+    Args:
+        metadata: Metadata DataFrame indexed by subject ID.
+        subject_ids: List of subject IDs to check.
+        columns: Column names to validate.
+        column_type: Label for error messages (e.g., "target", "pathology").
+    """
+    for col in columns:
+        if col not in metadata.columns:
+            continue
+        values = metadata.loc[metadata.index.isin(subject_ids), col]
+        nan_values = values[values.isna()]
+        if len(nan_values) > 0:
+            nan_ids = list(nan_values.index[:10])
+            suffix = f" (and {len(nan_values) - 10} more)" if len(nan_values) > 10 else ""
+            raise ValueError(
+                f"{len(nan_values)} subject(s) have NaN in {column_type} column "
+                f"'{col}': {nan_ids}{suffix}. "
+                f"Filter these subjects before constructing the dataset."
+            )
+
+
 class CognitiveResilienceDataset(Dataset):
     """
     Dataset for cognitive resilience prediction from snRNA-seq data.
@@ -159,36 +188,14 @@ class CognitiveResilienceDataset(Dataset):
 
         self.subject_ids = valid_subjects
 
-        # Validate no NaN in target column for included subjects
-        if self.target_column in self.metadata.columns:
-            target_values = self.metadata.loc[
-                self.metadata.index.isin(self.subject_ids), self.target_column
-            ]
-            nan_targets = target_values[target_values.isna()]
-            if len(nan_targets) > 0:
-                nan_ids = list(nan_targets.index[:10])  # Show first 10
-                suffix = f" (and {len(nan_targets) - 10} more)" if len(nan_targets) > 10 else ""
-                raise ValueError(
-                    f"{len(nan_targets)} subject(s) have NaN in target column "
-                    f"'{self.target_column}': {nan_ids}{suffix}. "
-                    f"Filter these subjects before constructing the dataset."
-                )
-
-        # Validate no NaN in pathology columns for included subjects
-        for col in self.pathology_columns:
-            if col in self.metadata.columns:
-                path_values = self.metadata.loc[
-                    self.metadata.index.isin(self.subject_ids), col
-                ]
-                nan_path = path_values[path_values.isna()]
-                if len(nan_path) > 0:
-                    nan_ids = list(nan_path.index[:10])
-                    suffix = f" (and {len(nan_path) - 10} more)" if len(nan_path) > 10 else ""
-                    raise ValueError(
-                        f"{len(nan_path)} subject(s) have NaN in pathology column "
-                        f"'{col}': {nan_ids}{suffix}. "
-                        f"Filter these subjects before constructing the dataset."
-                    )
+        _validate_no_nan_columns(
+            self.metadata, self.subject_ids,
+            [self.target_column], "target",
+        )
+        _validate_no_nan_columns(
+            self.metadata, self.subject_ids,
+            self.pathology_columns, "pathology",
+        )
 
     def __len__(self) -> int:
         return len(self.subject_ids)
@@ -555,36 +562,14 @@ class PrecomputedDataset(Dataset):
 
     def _validate_metadata(self):
         """Validate that target and pathology columns have no NaN for included subjects."""
-        # Validate no NaN in target column for included subjects
-        if self.target_column in self.metadata.columns:
-            target_values = self.metadata.loc[
-                self.metadata.index.isin(self.subject_ids), self.target_column
-            ]
-            nan_targets = target_values[target_values.isna()]
-            if len(nan_targets) > 0:
-                nan_ids = list(nan_targets.index[:10])  # Show first 10
-                suffix = f" (and {len(nan_targets) - 10} more)" if len(nan_targets) > 10 else ""
-                raise ValueError(
-                    f"{len(nan_targets)} subject(s) have NaN in target column "
-                    f"'{self.target_column}': {nan_ids}{suffix}. "
-                    f"Filter these subjects before constructing the dataset."
-                )
-
-        # Validate no NaN in pathology columns for included subjects
-        for col in self.pathology_columns:
-            if col in self.metadata.columns:
-                path_values = self.metadata.loc[
-                    self.metadata.index.isin(self.subject_ids), col
-                ]
-                nan_path = path_values[path_values.isna()]
-                if len(nan_path) > 0:
-                    nan_ids = list(nan_path.index[:10])
-                    suffix = f" (and {len(nan_path) - 10} more)" if len(nan_path) > 10 else ""
-                    raise ValueError(
-                        f"{len(nan_path)} subject(s) have NaN in pathology column "
-                        f"'{col}': {nan_ids}{suffix}. "
-                        f"Filter these subjects before constructing the dataset."
-                    )
+        _validate_no_nan_columns(
+            self.metadata, self.subject_ids,
+            [self.target_column], "target",
+        )
+        _validate_no_nan_columns(
+            self.metadata, self.subject_ids,
+            self.pathology_columns, "pathology",
+        )
 
     def get_gene_names(self) -> list[str] | None:
         """Get gene names from sidecar file if available.

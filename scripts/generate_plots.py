@@ -820,7 +820,7 @@ def main():
 
     if "resilience" in plot_categories:
         logger.info("Generating resilience plots...")
-        resilience_dir = output_dir / "attention"
+        resilience_dir = output_dir / "resilience"
         resilience_dir.mkdir(parents=True, exist_ok=True)
         generated = generate_resilience_plots(data, resilience_dir, skip_plots, fmt, dpi=dpi)
         all_generated.extend(generated)

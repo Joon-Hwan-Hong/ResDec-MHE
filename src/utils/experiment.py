@@ -115,7 +115,7 @@ class ExperimentManager:
 
         # Create plots directory (outside experiments/)
         plots_base = self.base_dir.parent / "data" / "plots" / exp_hash
-        for subdir in ["training", "attention", "importance", "predictions", "embeddings"]:
+        for subdir in ["training", "attention", "importance", "prediction", "embedding", "resilience"]:
             (plots_base / subdir).mkdir(parents=True, exist_ok=True)
 
         return Experiment(
