@@ -289,6 +289,97 @@ class TestPredictor:
         assert predictor.model is not None
 
 
+class TestFromCheckpointConfigRecovery:
+    """Test config recovery from checkpoint (full_config vs model_config)."""
+
+    def test_full_config_recovery(self, tmp_path, mock_config):
+        """from_checkpoint recovers full_config when present in checkpoint."""
+        from omegaconf import OmegaConf
+        from src.models.full_model import CognitiveResilienceModel
+
+        model_cfg = mock_config.model
+        model = CognitiveResilienceModel(
+            n_genes=model_cfg.n_genes,
+            n_cell_types=model_cfg.n_cell_types,
+            d_embed=model_cfg.d_embed,
+            d_fused=model_cfg.d_fused,
+            d_cond=model_cfg.pathology_attention.d_cond,
+            n_hgt_layers=model_cfg.hgt.n_layers,
+            n_hgt_heads=model_cfg.hgt.n_heads,
+            n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
+            n_isab_layers=model_cfg.set_transformer.n_isab_layers,
+            n_inducing_points=model_cfg.set_transformer.n_inducing_points,
+            n_attention_heads=model_cfg.pathology_attention.n_heads,
+            gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
+            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
+            use_bayesian_head=(model_cfg.head.type == "bayesian"),
+            d_head_hidden=model_cfg.head.d_hidden,
+            dropout=model_cfg.get("dropout", 0.1),
+        )
+
+        # Save checkpoint with full_config (new v1.1+ format)
+        full_config_dict = OmegaConf.to_container(mock_config, resolve=True)
+        full_config_dict["data"] = {"adata_path": "/fake/path.h5ad"}
+        full_config_dict["training"] = {"loss": {"type": "beta_nll", "beta": 0.5}}
+
+        checkpoint = {
+            "state_dict": {"model." + k: v for k, v in model.state_dict().items()},
+            "full_config": full_config_dict,
+            "model_config": full_config_dict["model"],
+        }
+        ckpt_path = tmp_path / "full_config_ckpt.pt"
+        torch.save(checkpoint, ckpt_path)
+
+        # Load WITHOUT providing config — should recover from full_config
+        predictor = Predictor.from_checkpoint(ckpt_path, device="cpu")
+        assert predictor is not None
+        assert predictor.model is not None
+        # full_config should include data section
+        assert hasattr(predictor.config, "data")
+        assert predictor.config.data.adata_path == "/fake/path.h5ad"
+
+    def test_legacy_model_config_fallback(self, tmp_path, mock_config):
+        """from_checkpoint falls back to model_config when full_config absent."""
+        from omegaconf import OmegaConf
+        from src.models.full_model import CognitiveResilienceModel
+
+        model_cfg = mock_config.model
+        model = CognitiveResilienceModel(
+            n_genes=model_cfg.n_genes,
+            n_cell_types=model_cfg.n_cell_types,
+            d_embed=model_cfg.d_embed,
+            d_fused=model_cfg.d_fused,
+            d_cond=model_cfg.pathology_attention.d_cond,
+            n_hgt_layers=model_cfg.hgt.n_layers,
+            n_hgt_heads=model_cfg.hgt.n_heads,
+            n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
+            n_isab_layers=model_cfg.set_transformer.n_isab_layers,
+            n_inducing_points=model_cfg.set_transformer.n_inducing_points,
+            n_attention_heads=model_cfg.pathology_attention.n_heads,
+            gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
+            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
+            use_bayesian_head=(model_cfg.head.type == "bayesian"),
+            d_head_hidden=model_cfg.head.d_hidden,
+            dropout=model_cfg.get("dropout", 0.1),
+        )
+
+        # Save checkpoint with ONLY model_config (legacy format, no full_config)
+        model_config_dict = OmegaConf.to_container(model_cfg, resolve=True)
+        checkpoint = {
+            "state_dict": {"model." + k: v for k, v in model.state_dict().items()},
+            "model_config": model_config_dict,
+        }
+        ckpt_path = tmp_path / "legacy_ckpt.pt"
+        torch.save(checkpoint, ckpt_path)
+
+        # Load WITHOUT providing config — should fall back to model_config
+        predictor = Predictor.from_checkpoint(ckpt_path, device="cpu")
+        assert predictor is not None
+        assert predictor.model is not None
+        # Legacy path wraps under {"model": ...}, should NOT have data section
+        assert not hasattr(predictor.config, "data") or predictor.config.get("data") is None
+
+
 # ============================================================================
 # Serialization Tests
 # ============================================================================

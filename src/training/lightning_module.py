@@ -193,18 +193,37 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         train_cfg = self.config.training
         opt_cfg = train_cfg.optimizer
 
+        # Linear LR scaling for multi-GPU (Goyal et al. 2017)
+        # effective_lr = base_lr * n_gpus when using DDP
+        base_lr = opt_cfg.lr
+        lr_scaling_enabled = train_cfg.get("lr_scaling", True)
+
+        if lr_scaling_enabled:
+            try:
+                world_size = self.trainer.world_size
+            except RuntimeError:
+                world_size = 1
+            if world_size > 1:
+                scaled_lr = base_lr * world_size
+                logger.info(
+                    f"LR scaling: {base_lr} × {world_size} GPUs = {scaled_lr}"
+                )
+                base_lr = scaled_lr
+
+        effective_lr = base_lr
+
         # Optimizer
         if opt_cfg.type == "adamw":
             optimizer = torch.optim.AdamW(
                 self.parameters(),
-                lr=opt_cfg.lr,
+                lr=effective_lr,
                 weight_decay=opt_cfg.weight_decay,
                 betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
             )
         elif opt_cfg.type == "adam":
             optimizer = torch.optim.Adam(
                 self.parameters(),
-                lr=opt_cfg.lr,
+                lr=effective_lr,
                 weight_decay=opt_cfg.get("weight_decay", 0),
             )
         else:

@@ -157,8 +157,11 @@ class Predictor:
 
         # Extract config from checkpoint or use provided
         if config is None:
-            if "model_config" in checkpoint:
-                # From ResilienceModelCheckpoint
+            if "full_config" in checkpoint:
+                # Full config from ResilienceModelCheckpoint (v1.1+)
+                config = OmegaConf.create(checkpoint["full_config"])
+            elif "model_config" in checkpoint:
+                # Legacy: model-only config from older checkpoints
                 config = OmegaConf.create({"model": checkpoint["model_config"]})
                 # Add training section with defaults for head type
                 if "training" not in config:

@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader
 from src.data.collate import create_dataloader
 from src.data.datasets import CognitiveResilienceDataset, PrecomputedDataset
 from src.inference.predict import Predictor
+from src.utils.config import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -219,13 +220,7 @@ def main():
     # Load config if provided
     config = None
     if args.config:
-        config_path = Path(args.config)
-        if not config_path.exists():
-            raise FileNotFoundError(f"Config not found: {config_path}")
-        config = OmegaConf.load(str(config_path))
-        if args.overrides:
-            override_conf = OmegaConf.from_dotlist(args.overrides)
-            config = OmegaConf.merge(config, override_conf)
+        config = load_config(args.config, overrides=args.overrides if args.overrides else None)
 
     # Resolve checkpoint and output paths
     checkpoint_path = Path(args.checkpoint)
@@ -267,13 +262,32 @@ def main():
             "Provide --config with a full configuration YAML that includes data paths."
         )
 
+    from src.utils.config import validate_config
+    validate_config(config, required_keys=["model"])
+
     data_path = args.data_path
     logger.info("Building inference DataLoader...")
     dataloader = build_dataloader(config, data_path, args.batch_size)
     logger.info(f"DataLoader ready: {len(dataloader.dataset)} subjects, batch_size={args.batch_size}")
 
     # Determine extraction flags
+    # If no CLI flags explicitly set, check config for defaults
     extract_all = args.extract_all
+    cli_flags_set = any([
+        args.extract_hgt_attention,
+        args.extract_pma_attention,
+        args.extract_region_attention,
+        args.extract_embeddings,
+        extract_all,
+    ])
+
+    if not cli_flags_set and config is not None:
+        # Use config inference defaults when no CLI flags provided
+        config_extract = config.get("inference", {}).get("extract_attention", False)
+        if config_extract:
+            logger.info("Using config inference.extract_attention=true as default")
+            extract_all = True
+
     extract_hgt = args.extract_hgt_attention or extract_all
     extract_pma = args.extract_pma_attention or extract_all
     extract_region = args.extract_region_attention or extract_all

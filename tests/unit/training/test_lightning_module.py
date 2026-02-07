@@ -401,6 +401,67 @@ class TestOptimizerConfiguration:
         lr_after_decay = optimizer.param_groups[0]["lr"]
         assert lr_after_decay < lr_after_warmup
 
+    def test_lr_scaling_with_multi_gpu(self, base_config):
+        """LR scales linearly with world_size when lr_scaling=true."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        base_config.training.lr_scaling = True
+        base_lr = base_config.training.optimizer.lr  # 1e-3
+
+        module = CognitiveResilienceLightningModule(base_config)
+
+        # Mock trainer with world_size=2
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 2
+        module._trainer = mock_trainer
+
+        result = module.configure_optimizers()
+        # Check initial_lr (before scheduler warmup modifies the current lr)
+        actual_lr = result["optimizer"].param_groups[0]["initial_lr"]
+        expected_lr = base_lr * 2
+        assert abs(actual_lr - expected_lr) < 1e-10, (
+            f"Expected LR {expected_lr}, got {actual_lr}"
+        )
+
+    def test_lr_no_scaling_when_disabled(self, base_config):
+        """LR is NOT scaled when lr_scaling=false."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        base_config.training.lr_scaling = False
+        base_lr = base_config.training.optimizer.lr  # 1e-3
+
+        module = CognitiveResilienceLightningModule(base_config)
+
+        # Mock trainer with world_size=4
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 4
+        module._trainer = mock_trainer
+
+        result = module.configure_optimizers()
+        # Check initial_lr (before scheduler warmup modifies the current lr)
+        actual_lr = result["optimizer"].param_groups[0]["initial_lr"]
+        assert abs(actual_lr - base_lr) < 1e-10, (
+            f"Expected base LR {base_lr}, got {actual_lr}"
+        )
+
+    def test_lr_no_scaling_single_gpu(self, base_config):
+        """LR is NOT scaled when world_size=1 even if lr_scaling=true."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        base_config.training.lr_scaling = True
+        base_lr = base_config.training.optimizer.lr
+
+        module = CognitiveResilienceLightningModule(base_config)
+
+        # Mock trainer with world_size=1
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        module._trainer = mock_trainer
+
+        result = module.configure_optimizers()
+        # Check initial_lr (before scheduler warmup modifies the current lr)
+        actual_lr = result["optimizer"].param_groups[0]["initial_lr"]
+        assert abs(actual_lr - base_lr) < 1e-10, (
+            f"Expected base LR {base_lr}, got {actual_lr}"
+        )
+
 
 class TestGeneGateL1Regularization:
     """Tests for optional gene gate L1 regularization."""

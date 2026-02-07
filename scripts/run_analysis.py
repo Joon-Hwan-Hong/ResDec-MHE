@@ -80,6 +80,19 @@ def parse_args() -> argparse.Namespace:
         help="Path to subject metadata CSV/parquet with pathology info",
     )
     input_group.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to config YAML (used to resolve subject_column and other settings)",
+    )
+    input_group.add_argument(
+        "--subject-column",
+        type=str,
+        default=None,
+        help="Column name for subject IDs in metadata CSV "
+             "(overrides config.data.subject_column; default: ROSMAP_IndividualID)",
+    )
+    input_group.add_argument(
         "--liana-dir",
         type=str,
         default=None,
@@ -521,6 +534,23 @@ def main():
     """Main entry point."""
     args = parse_args()
 
+    # Load config if provided (for subject_column and other settings)
+    analysis_config = None
+    if args.config:
+        from src.utils.config import load_config
+        analysis_config = load_config(args.config)
+
+    # Resolve subject column name for metadata alignment
+    # Priority: CLI --subject-column > config.data.subject_column > default
+    if args.subject_column:
+        metadata_subject_column = args.subject_column
+    elif analysis_config is not None and hasattr(analysis_config, "data"):
+        metadata_subject_column = analysis_config.data.get("subject_column", "ROSMAP_IndividualID")
+    else:
+        metadata_subject_column = "ROSMAP_IndividualID"
+
+    logger.info(f"Metadata subject column: {metadata_subject_column}")
+
     # Resolve input paths
     if args.experiment_dir:
         exp_dir = Path(args.experiment_dir)
@@ -646,8 +676,8 @@ def main():
     # Source region labels from metadata, aligned to subject order
     region_labels = None
     if metadata_df is not None and "region" in metadata_df.columns:
-        if subject_ids is not None and "subject_id" in metadata_df.columns:
-            meta_indexed = metadata_df.set_index("subject_id")
+        if subject_ids is not None and metadata_subject_column in metadata_df.columns:
+            meta_indexed = metadata_df.set_index(metadata_subject_column)
             aligned_regions = []
             for sid in subject_ids:
                 if sid in meta_indexed.index:
@@ -720,7 +750,7 @@ def main():
 
     if cognition_scores is None and metadata_df is not None and subject_ids is not None:
         for cog_col in ["cogn_global", "cognition", "cognitive_score"]:
-            aligned = _align_array_by_subject_id(metadata_df, subject_ids, cog_col)
+            aligned = _align_array_by_subject_id(metadata_df, subject_ids, cog_col, source_id_column=metadata_subject_column)
             if aligned is not None:
                 cognition_scores = aligned
                 cognition_source = f"metadata_df['{cog_col}']"
@@ -745,7 +775,7 @@ def main():
                     break
                 elif metadata_df is not None and col in metadata_df.columns:
                     if subject_ids is not None:
-                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col)
+                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
                         if aligned is not None:
                             gene_pathology = aligned
                             break
@@ -809,7 +839,7 @@ def main():
                     available_pathology.append((col, predictions_df[col].values))
                 elif metadata_df is not None and col in metadata_df.columns:
                     if subject_ids is not None:
-                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col)
+                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
                         if aligned is not None:
                             available_pathology.append((col, aligned))
                     else:
@@ -820,7 +850,7 @@ def main():
             if not available_pathology:
                 if metadata_df is not None and "pathology" in metadata_df.columns:
                     if subject_ids is not None:
-                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, "pathology")
+                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, "pathology", source_id_column=metadata_subject_column)
                         if aligned is not None:
                             available_pathology.append(("pathology", aligned))
                     else:
@@ -908,7 +938,7 @@ def main():
 
             # Merge metadata numeric columns (aligned by subject_id) for richer correlates
             if metadata_df is not None and subject_ids is not None:
-                exclude_cols = {"subject_id", "region"}
+                exclude_cols = {metadata_subject_column, "region"}
                 if covariates is not None:
                     exclude_cols.update(covariates.columns)
 
@@ -917,7 +947,7 @@ def main():
 
                 if meta_cov_cols:
                     for col in meta_cov_cols:
-                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col)
+                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
                         if aligned is not None:
                             if covariates is None:
                                 covariates = pd.DataFrame(index=range(len(subject_ids)))

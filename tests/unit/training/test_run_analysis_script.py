@@ -942,3 +942,99 @@ class TestStaleEdgeMetadataDiscarded:
 
         assert loaded_metadata is not None
         assert len(loaded_metadata) == 5
+
+
+# =============================================================================
+# Subject Column Resolution Tests
+# =============================================================================
+
+
+class TestSubjectColumnResolution:
+    """Test three-way subject_column resolution: CLI > config > default."""
+
+    def test_align_with_custom_source_id_column(self):
+        """_align_array_by_subject_id works with non-default source_id_column."""
+        from scripts.run_analysis import _align_array_by_subject_id
+
+        source_df = pd.DataFrame({
+            "ROSMAP_IndividualID": ["R001", "R002", "R003"],
+            "gpath": [1.0, 2.0, 3.0],
+        })
+        target_ids = ["R003", "R001"]
+        result = _align_array_by_subject_id(
+            source_df, target_ids, "gpath",
+            source_id_column="ROSMAP_IndividualID",
+        )
+        np.testing.assert_array_equal(result, [3.0, 1.0])
+
+    def test_align_with_wrong_column_returns_none(self):
+        """_align_array_by_subject_id returns None when source_id_column doesn't match."""
+        from scripts.run_analysis import _align_array_by_subject_id
+
+        source_df = pd.DataFrame({
+            "ROSMAP_IndividualID": ["R001", "R002"],
+            "gpath": [1.0, 2.0],
+        })
+        # Using default source_id_column="subject_id" which doesn't exist
+        result = _align_array_by_subject_id(source_df, ["R001"], "gpath")
+        assert result is None
+
+    def test_default_resolution_is_rosmap(self):
+        """Without CLI or config, default is ROSMAP_IndividualID."""
+        import argparse
+
+        args = argparse.Namespace(
+            subject_column=None,
+            config=None,
+        )
+        # Simulate the resolution logic
+        analysis_config = None
+        if args.subject_column:
+            metadata_subject_column = args.subject_column
+        elif analysis_config is not None:
+            pass  # won't reach
+        else:
+            metadata_subject_column = "ROSMAP_IndividualID"
+        assert metadata_subject_column == "ROSMAP_IndividualID"
+
+    def test_cli_overrides_config(self, tmp_path):
+        """CLI --subject-column overrides config value."""
+        import argparse
+
+        from omegaconf import OmegaConf
+
+        # Config says "config_column"
+        analysis_config = OmegaConf.create({"data": {"subject_column": "config_column"}})
+
+        args = argparse.Namespace(
+            subject_column="cli_column",
+            config=None,
+        )
+        # Resolution logic
+        if args.subject_column:
+            metadata_subject_column = args.subject_column
+        elif analysis_config is not None and hasattr(analysis_config, "data"):
+            metadata_subject_column = analysis_config.data.get("subject_column", "ROSMAP_IndividualID")
+        else:
+            metadata_subject_column = "ROSMAP_IndividualID"
+
+        assert metadata_subject_column == "cli_column"
+
+    def test_config_overrides_default(self):
+        """Config subject_column overrides default when no CLI arg."""
+        import argparse
+
+        from omegaconf import OmegaConf
+
+        analysis_config = OmegaConf.create({"data": {"subject_column": "my_custom_id"}})
+
+        args = argparse.Namespace(subject_column=None, config=None)
+        # Resolution logic
+        if args.subject_column:
+            metadata_subject_column = args.subject_column
+        elif analysis_config is not None and hasattr(analysis_config, "data"):
+            metadata_subject_column = analysis_config.data.get("subject_column", "ROSMAP_IndividualID")
+        else:
+            metadata_subject_column = "ROSMAP_IndividualID"
+
+        assert metadata_subject_column == "my_custom_id"

@@ -304,7 +304,8 @@ def objective(
             fold_val_losses.append(val_loss.item())
 
         # Report intermediate value for pruning
-        trial.report(fold_val_losses[-1] if fold_val_losses else float("inf"), fold_idx)
+        running_mean = sum(fold_val_losses) / len(fold_val_losses) if fold_val_losses else float("inf")
+        trial.report(running_mean, fold_idx)
         if trial.should_prune():
             raise optuna.TrialPruned()
 
@@ -374,6 +375,9 @@ def main() -> None:
     from src.utils.config import load_config
 
     config = load_config(args.config, overrides=args.overrides)
+
+    from src.utils.config import validate_config
+    validate_config(config, required_keys=["experiment", "data", "model", "training"])
 
     optuna_cfg = config.optuna
     n_trials = args.n_trials or optuna_cfg.get("n_trials", 100)

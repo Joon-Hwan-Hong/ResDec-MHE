@@ -159,10 +159,16 @@ def setup_trainer(
     # Read reproducibility settings from config
     repro_cfg = config.get("reproducibility", {})
 
+    # Distributed training settings
+    devices = train_cfg.get("devices", "auto")
+    strategy = train_cfg.get("strategy", "auto")
+
     trainer = pl.Trainer(
         max_epochs=train_cfg.max_epochs,
         min_epochs=train_cfg.early_stopping.get("min_epochs", 1),
         accelerator=accelerator,
+        devices=devices,
+        strategy=strategy,
         precision=train_cfg.get("precision", "32"),
         gradient_clip_val=train_cfg.get("gradient_clip_val", None),
         callbacks=callbacks,
@@ -216,6 +222,9 @@ def main() -> None:
     config = load_config(args.config, overrides=args.overrides)
     logger.info("Config loaded from %s", args.config)
 
+    from src.utils.config import validate_config
+    validate_config(config, required_keys=["experiment", "data", "model", "training", "paths"])
+
     # Set seed
     seed = config.experiment.get("seed", 42)
     set_seed(seed)
@@ -248,6 +257,13 @@ def main() -> None:
     data_cfg = config.data
     adata = None
     metadata = None
+
+    if args.precomputed_dir and not args.splits_path:
+        raise ValueError(
+            "When using --precomputed-dir, you must also provide --splits-path. "
+            "Pre-compute splits first with a separate run, then pass both. "
+            "This avoids loading the full AnnData file unnecessarily."
+        )
 
     if args.splits_path:
         splits = load_splits(args.splits_path)

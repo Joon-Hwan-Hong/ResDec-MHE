@@ -32,7 +32,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch_geometric.data import Batch, Data, HeteroData
 
 from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX, sanitize_key
 

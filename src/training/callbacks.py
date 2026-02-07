@@ -354,6 +354,7 @@ class ResilienceModelCheckpoint(pl.Callback):
         checkpoint["timestamp"] = datetime.now(timezone.utc).isoformat()
         checkpoint["rng_states"] = rng_states
         checkpoint["model_config"] = model_config
+        checkpoint["full_config"] = config_dict
 
     def on_load_checkpoint(
         self,
