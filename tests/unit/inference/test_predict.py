@@ -248,6 +248,46 @@ class TestPredictor:
         result = predictor.predict(dataloader, show_progress=False)
         assert result.subject_ids == ["z", "a", "m"]
 
+    def test_from_checkpoint_handles_model_state_dict_key(self, tmp_path, mock_config):
+        """from_checkpoint() should handle checkpoints saved with model_state_dict key."""
+        from src.models.full_model import CognitiveResilienceModel
+
+        # Build a real model from mock_config so we can get its state_dict
+        model_cfg = mock_config.model
+        model = CognitiveResilienceModel(
+            n_genes=model_cfg.n_genes,
+            n_cell_types=model_cfg.n_cell_types,
+            d_embed=model_cfg.d_embed,
+            d_fused=model_cfg.d_fused,
+            d_cond=model_cfg.pathology_attention.d_cond,
+            n_hgt_layers=model_cfg.hgt.n_layers,
+            n_hgt_heads=model_cfg.hgt.n_heads,
+            n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
+            n_isab_layers=model_cfg.set_transformer.n_isab_layers,
+            n_inducing_points=model_cfg.set_transformer.n_inducing_points,
+            n_attention_heads=model_cfg.pathology_attention.n_heads,
+            gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
+            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
+            use_bayesian_head=(model_cfg.head.type == "bayesian"),
+            d_head_hidden=model_cfg.head.d_hidden,
+            dropout=model_cfg.get("dropout", 0.1),
+        )
+
+        # Save checkpoint using model_state_dict key (matching io.save_checkpoint format)
+        checkpoint = {
+            "model_state_dict": model.state_dict(),
+            "model_config": dict(model_cfg),
+            "epoch": 0,
+            "optimizer_state_dict": {},
+        }
+        ckpt_path = tmp_path / "test_ckpt.pt"
+        torch.save(checkpoint, ckpt_path)
+
+        # Load via from_checkpoint — should not fail
+        predictor = Predictor.from_checkpoint(ckpt_path, device="cpu", config=mock_config)
+        assert predictor is not None
+        assert predictor.model is not None
+
 
 # ============================================================================
 # Serialization Tests
@@ -879,3 +919,45 @@ class TestPerSubjectPseudobulk:
             gene_gate_weights=np.zeros((3, 10)),
         )
         assert result.per_subject_pseudobulk is None
+
+
+# ============================================================================
+# Save Predictions Metadata Tests (Phase 6 Review Round 12 — M1)
+# ============================================================================
+
+
+class TestSavePredictionsMetadata:
+    """Test that save_predictions includes metadata columns."""
+
+    def test_save_predictions_includes_metadata_columns(self, tmp_path):
+        """Predictions DataFrame should include region/split if available in metadata."""
+        result = PredictionResult(
+            subject_ids=["S1", "S2"],
+            mean=np.array([[0.5], [0.6]]),
+            std=None,
+            actual=None,
+            pathology=np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
+            attention_weights=np.zeros((2, 2, 31)),
+            gene_gate_weights=np.zeros((31, 100)),
+            metadata={
+                "subject_metadata": {
+                    "region": ["PFC", "EC"],
+                    "split": ["train", "val"],
+                },
+            },
+        )
+
+        # Use Predictor.save_predictions via a mock Predictor instance
+        predictor = MagicMock(spec=Predictor)
+        predictor.save_predictions = Predictor.save_predictions.__get__(predictor)
+        predictor._save_attention_hdf5 = MagicMock()  # skip HDF5 save
+        predictor.checkpoint_path = None
+        predictor.config = None
+
+        saved = predictor.save_predictions(result, tmp_path, save_hdf5=False)
+
+        df = pd.read_parquet(tmp_path / "predictions.parquet")
+        assert "region" in df.columns, "region column missing from predictions"
+        assert "split" in df.columns, "split column missing from predictions"
+        assert list(df["region"]) == ["PFC", "EC"]
+        assert list(df["split"]) == ["train", "val"]

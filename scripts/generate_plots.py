@@ -179,12 +179,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_analysis_data(analysis_dir: Path) -> dict:
+def load_analysis_data(analysis_dir: Path, predictions_path: Path | None = None) -> dict:
     """
     Load analysis results from directory.
 
     Args:
         analysis_dir: Path to analysis results directory
+        predictions_path: Explicit path to predictions parquet file (overrides default)
 
     Returns:
         Dictionary of loaded DataFrames and arrays
@@ -266,10 +267,10 @@ def load_analysis_data(analysis_dir: Path) -> dict:
         data["regional_gene_importance"] = load_dataframe(regional_path)
         logger.info(f"  Loaded regional_gene_importance: {len(data['regional_gene_importance'])} rows")
 
-    # Predictions
-    predictions_path = analysis_dir / "predictions.parquet"
-    if predictions_path.exists():
-        data["predictions"] = load_dataframe(predictions_path)
+    # Predictions — use explicit path if provided, otherwise default location
+    effective_predictions_path = predictions_path or (analysis_dir / "predictions.parquet")
+    if effective_predictions_path.exists():
+        data["predictions"] = load_dataframe(effective_predictions_path)
         logger.info(f"  Loaded predictions: {len(data['predictions'])} rows")
 
     # Uncertainty analysis
@@ -768,7 +769,10 @@ def main():
 
     # Load data
     logger.info(f"Loading analysis results from {analysis_dir}...")
-    data = load_analysis_data(analysis_dir)
+    data = load_analysis_data(
+        analysis_dir,
+        predictions_path=Path(args.predictions_path) if args.predictions_path else None,
+    )
 
     attention = {}
     if attention_path.exists():

@@ -217,8 +217,11 @@ class Predictor:
                 else:
                     state_dict[k] = v
             model.load_state_dict(state_dict, strict=True)
+        elif "model_state_dict" in checkpoint:
+            # io.save_checkpoint format
+            model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         else:
-            # Raw PyTorch checkpoint
+            # Raw PyTorch checkpoint (just tensors)
             model.load_state_dict(checkpoint, strict=True)
 
         logger.info("Model weights loaded successfully")
@@ -492,6 +495,21 @@ class Predictor:
         if dataset is not None and hasattr(dataset, "get_gene_names"):
             gene_names = dataset.get_gene_names()
 
+        # Extract per-subject metadata (region, split) from dataset if available
+        subject_metadata = {}
+        if dataset is not None and hasattr(dataset, "metadata"):
+            meta_df = dataset.metadata  # Already indexed by subject_id
+            for col in ["region", "split"]:
+                if col in meta_df.columns:
+                    aligned = []
+                    for sid in all_subject_ids:
+                        if sid in meta_df.index:
+                            val = meta_df.loc[sid, col]
+                            aligned.append(val if pd.notna(val) else None)
+                        else:
+                            aligned.append(None)
+                    subject_metadata[col] = aligned
+
         # Concatenate cell counts
         cell_counts = np.concatenate(all_cell_counts, axis=0) if all_cell_counts else None
 
@@ -559,6 +577,8 @@ class Predictor:
             # Store pathology columns if available in data config
             if hasattr(self.config, "data") and hasattr(self.config.data, "pathology_columns"):
                 metadata["pathology_columns"] = list(self.config.data.pathology_columns)
+        if subject_metadata:
+            metadata["subject_metadata"] = subject_metadata
 
         return PredictionResult(
             subject_ids=all_subject_ids,
@@ -634,6 +654,12 @@ class Predictor:
                     df_data[col_name] = results.pathology[:, i]
                 else:
                     df_data[col_name] = results.pathology
+
+        # Add per-subject metadata columns (region, split) if available
+        subject_meta = results.metadata.get("subject_metadata", {})
+        for col in ["region", "split"]:
+            if col in subject_meta and len(subject_meta[col]) == len(results.subject_ids):
+                df_data[col] = subject_meta[col]
 
         df = pd.DataFrame(df_data)
 

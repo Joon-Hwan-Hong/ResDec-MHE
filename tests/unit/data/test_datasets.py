@@ -1462,3 +1462,61 @@ class TestRuntimeErrorPaths:
         idx = len(ds) - 1
         with pytest.raises(RuntimeError, match="Subject 'phantom_subj' not found in metadata"):
             ds[idx]
+
+
+class TestPrecomputedGetGeneNames:
+    """Tests for PrecomputedDataset.get_gene_names() and get_cell_type_names()."""
+
+    def test_get_gene_names_from_sidecar(self, mock_dataset, tmp_path):
+        """get_gene_names() should return names from gene_names.npy sidecar file."""
+        from src.data.datasets import PrecomputedDataset, save_precomputed_features
+
+        # Save features to create valid precomputed dir
+        save_precomputed_features(mock_dataset, tmp_path, verbose=False)
+
+        # Create sidecar gene_names.npy
+        gene_names = np.array(["APOE", "TREM2", "BIN1", "CLU", "PICALM"])
+        np.save(tmp_path / "gene_names.npy", gene_names)
+
+        precomputed = PrecomputedDataset(
+            feature_dir=tmp_path,
+            metadata=mock_dataset.metadata,
+            subject_ids=mock_dataset.subject_ids,
+        )
+
+        result = precomputed.get_gene_names()
+        assert result is not None
+        assert result == ["APOE", "TREM2", "BIN1", "CLU", "PICALM"]
+        assert all(isinstance(n, str) for n in result)
+
+    def test_get_gene_names_missing_sidecar(self, mock_dataset, tmp_path):
+        """get_gene_names() should return None when no sidecar file exists."""
+        from src.data.datasets import PrecomputedDataset, save_precomputed_features
+
+        # Save features but do NOT create gene_names.npy
+        save_precomputed_features(mock_dataset, tmp_path, verbose=False)
+
+        precomputed = PrecomputedDataset(
+            feature_dir=tmp_path,
+            metadata=mock_dataset.metadata,
+            subject_ids=mock_dataset.subject_ids,
+        )
+
+        result = precomputed.get_gene_names()
+        assert result is None
+
+    def test_get_cell_type_names(self, mock_dataset, tmp_path):
+        """get_cell_type_names() should return cell_type_order."""
+        from src.data.datasets import PrecomputedDataset, save_precomputed_features
+        from src.data.constants import CELL_TYPE_ORDER
+
+        save_precomputed_features(mock_dataset, tmp_path, verbose=False)
+
+        precomputed = PrecomputedDataset(
+            feature_dir=tmp_path,
+            metadata=mock_dataset.metadata,
+            subject_ids=mock_dataset.subject_ids,
+        )
+
+        result = precomputed.get_cell_type_names()
+        assert result == CELL_TYPE_ORDER

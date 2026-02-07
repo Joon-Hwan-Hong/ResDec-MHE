@@ -192,9 +192,10 @@ class CCCImportanceAnalyzer:
     def _generate_placeholder_edge_importance(self) -> pd.DataFrame:
         """Generate placeholder edge importance for all cell type pairs.
 
-        Intentional graceful degradation: returns zero-filled DataFrame when
-        no edge attention data is available (e.g., inference ran without HGT
-        attention extraction). Keeps downstream code functional.
+        Internal safety mechanism for direct analyzer usage (notebooks, tests).
+        The orchestrator (run_analysis.py) gates CCC execution on data
+        availability, so this path is not reached from the standard pipeline.
+        Returns zero-filled DataFrame when no edge attention data is available.
         """
         rows = []
         for edge_type in self.edge_types:

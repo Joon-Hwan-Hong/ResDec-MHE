@@ -2,9 +2,9 @@
 Inference script for cognitive resilience model.
 
 Usage:
-    uv run python scripts/predict.py --checkpoint path/to/best.ckpt --config configs/default.yaml
-    uv run python scripts/predict.py --checkpoint path/to/best.ckpt --config configs/default.yaml --output-dir outputs/analysis/
-    uv run python scripts/predict.py --checkpoint path/to/best.ckpt --config configs/default.yaml --extract-hgt-attention --extract-embeddings
+    uv run python scripts/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml
+    uv run python scripts/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml --output-dir outputs/analysis/
+    uv run python scripts/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml --extract-hgt-attention --extract-embeddings
 
 Workflow:
 1. Load config from YAML with optional CLI overrides
@@ -19,7 +19,6 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-import scanpy as sc
 import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
@@ -180,6 +179,7 @@ def build_dataloader(
                 "or set data.precomputed_dir or data.adata_path in config."
             )
         logger.info("Loading AnnData from %s (on-the-fly mode)", adata_path)
+        import scanpy as sc  # Lazy import: only needed for AnnData mode
         adata = sc.read_h5ad(adata_path)
         # Use all subjects present in metadata
         subject_ids = metadata[subject_column].unique().tolist()
@@ -249,9 +249,15 @@ def main():
     )
 
     # Build DataLoader
+    # If no config provided via CLI, use config recovered from checkpoint
+    if config is None:
+        config = predictor.config
+        logger.info("Using config recovered from checkpoint")
+
     if config is None:
         raise ValueError(
-            "Config is required for data loading. Provide --config path/to/config.yaml"
+            "No config available. Provide --config path/to/config.yaml "
+            "or use a checkpoint that contains model_config."
         )
 
     data_path = args.data_path

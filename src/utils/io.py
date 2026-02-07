@@ -400,10 +400,16 @@ def load_attention_weights(path: str | Path) -> dict[str, np.ndarray | dict]:
                         # Nested subgroup (e.g., aggregated, per_cell_type)
                         subgroup_data = {}
                         for subsubkey in f[key][subkey].keys():
-                            subgroup_data[subsubkey] = f[key][subkey][subsubkey][:]
+                            raw = f[key][subkey][subsubkey][:]
+                            if raw.dtype.kind in ("O", "S", "U"):
+                                raw = _decode_string_array(raw)
+                            subgroup_data[subsubkey] = raw
                         group_data[subkey] = subgroup_data
                     else:
-                        group_data[subkey] = f[key][subkey][:]
+                        raw = f[key][subkey][:]
+                        if raw.dtype.kind in ("O", "S", "U"):
+                            raw = _decode_string_array(raw)
+                        group_data[subkey] = raw
                 result[key] = group_data
             else:
                 raw = f[key][:]

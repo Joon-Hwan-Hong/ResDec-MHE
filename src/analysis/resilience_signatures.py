@@ -33,6 +33,7 @@ from src.utils.statistics import (
     cohens_d_vectorized,
     cohens_d_ci_vectorized,
     attention_entropy,
+    derive_resilience_groups,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,43 +165,41 @@ class ResilienceSignatureAnalyzer:
             )
 
     def _identify_groups(self) -> None:
-        """Identify resilient and vulnerable subject groups."""
+        """Identify resilient and vulnerable subject groups.
+
+        Delegates resilient/vulnerable assignment to derive_resilience_groups()
+        for consistency with gene differential expression analysis.
+        """
         n_subjects = len(self.pathology_scores)
 
-        # High pathology threshold (top tertile)
-        pathology_threshold = np.nanpercentile(
-            self.pathology_scores, self.pathology_threshold_percentile
+        # Delegate resilient/vulnerable labeling to shared utility
+        labels = derive_resilience_groups(
+            cognition_scores=self.cognition_scores,
+            pathology_scores=self.pathology_scores,
+            pathology_percentile=self.pathology_threshold_percentile,
+            cognition_low_percentile=33.3,
+            cognition_high_percentile=66.7,
         )
-        self.high_pathology_mask = self.pathology_scores >= pathology_threshold
+        self.resilient_mask = labels == "resilient"
+        self.vulnerable_mask = labels == "vulnerable"
+        self.n_resilient = int(self.resilient_mask.sum())
+        self.n_vulnerable = int(self.vulnerable_mask.sum())
 
-        # Pathology tertile masks (low/medium/high)
-        path_33 = np.nanpercentile(self.pathology_scores, 33.3)
-        path_67 = np.nanpercentile(self.pathology_scores, 66.7)
-        self.pathology_low_mask = self.pathology_scores < path_33
-        self.pathology_med_mask = (self.pathology_scores >= path_33) & (self.pathology_scores < path_67)
-        self.pathology_high_mask = self.pathology_scores >= path_67
+        # Pathology tertile masks for stratified analysis (local to this analyzer)
+        # Use same NaN-safe base population as derive_resilience_groups
+        valid = ~(np.isnan(self.cognition_scores) | np.isnan(self.pathology_scores))
+        valid_pathology = self.pathology_scores[valid]
 
-        # Within high pathology subjects, split by cognition
-        high_path_indices = np.where(self.high_pathology_mask)[0]
-        high_path_cognition = self.cognition_scores[high_path_indices]
+        if len(valid_pathology) >= 6:
+            path_33 = np.nanpercentile(valid_pathology, 33.3)
+            path_67 = np.nanpercentile(valid_pathology, 66.7)
+        else:
+            path_33 = path_67 = 0.0
 
-        # Resilient = top tertile cognition among high pathology
-        # Vulnerable = bottom tertile cognition among high pathology
-        cog_33 = np.nanpercentile(high_path_cognition, 33.3)
-        cog_67 = np.nanpercentile(high_path_cognition, 66.7)
-
-        self.resilient_mask = np.zeros(n_subjects, dtype=bool)
-        self.vulnerable_mask = np.zeros(n_subjects, dtype=bool)
-
-        for idx in high_path_indices:
-            cog = self.cognition_scores[idx]
-            if cog >= cog_67:
-                self.resilient_mask[idx] = True
-            elif cog <= cog_33:
-                self.vulnerable_mask[idx] = True
-
-        self.n_resilient = self.resilient_mask.sum()
-        self.n_vulnerable = self.vulnerable_mask.sum()
+        self.high_pathology_mask = valid & (self.pathology_scores >= path_67)
+        self.pathology_low_mask = valid & (self.pathology_scores < path_33)
+        self.pathology_med_mask = valid & (self.pathology_scores >= path_33) & (self.pathology_scores < path_67)
+        self.pathology_high_mask = self.high_pathology_mask
 
         logger.info(
             f"Identified {self.n_resilient} resilient and {self.n_vulnerable} vulnerable "
@@ -1188,6 +1187,14 @@ def compute_resilience_signature(
     cell_type_names: list[str] | None = None,
     n_permutations: int = 1000,
     output_dir: str | Path | None = None,
+    # Additional analyzer parameters
+    random_seed: int = 42,
+    run_ablation: bool = False,
+    ablation_method: str = "both",
+    embeddings: np.ndarray | None = None,
+    apply_fdr_correction: bool = True,
+    fdr_threshold: float = 0.05,
+    region_labels: np.ndarray | None = None,
 ) -> ResilienceSignatureResult:
     """
     Convenience function to compute and optionally save resilience signature.
@@ -1200,6 +1207,13 @@ def compute_resilience_signature(
         cell_type_names: Cell type names
         n_permutations: Number of permutations for significance testing
         output_dir: If provided, save results to this directory
+        random_seed: Random seed for permutation test
+        run_ablation: Whether to run ablation study
+        ablation_method: Which ablation method(s) to run
+        embeddings: Optional embeddings for ablation [n_subjects, n_cell_types, embed_dim]
+        apply_fdr_correction: Whether to apply Benjamini-Hochberg FDR correction (default: True)
+        fdr_threshold: Significance threshold for FDR correction (default: 0.05)
+        region_labels: Brain region labels for regional analysis [n_subjects]
 
     Returns:
         ResilienceSignatureResult with analysis results
@@ -1210,9 +1224,18 @@ def compute_resilience_signature(
         cognition_scores=cognition_scores,
         subject_ids=subject_ids,
         cell_type_names=cell_type_names,
+        region_labels=region_labels,
     )
 
-    result = analyzer.analyze(n_permutations=n_permutations)
+    result = analyzer.analyze(
+        n_permutations=n_permutations,
+        random_seed=random_seed,
+        run_ablation=run_ablation,
+        ablation_method=ablation_method,
+        embeddings=embeddings,
+        apply_fdr_correction=apply_fdr_correction,
+        fdr_threshold=fdr_threshold,
+    )
 
     if output_dir is not None:
         analyzer.save(result, output_dir)

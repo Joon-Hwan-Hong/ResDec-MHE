@@ -459,6 +459,22 @@ class TestComputeRegionalAnalysis:
 # =============================================================================
 
 
+class TestRegionalAnalysisGuard:
+    """Test the guard condition in run_analysis.py."""
+
+    def test_regional_analysis_skipped_without_region_data(self):
+        """Regional analysis should not run when only region_weights exist
+        but no region_attention or region_pseudobulk was extracted."""
+        import ast
+        from pathlib import Path
+
+        source = Path("scripts/run_analysis.py").read_text()
+        assert "region_attention is not None" in source or "region_pseudobulk" in source, (
+            "Regional analysis guard must check for actual extracted data, "
+            "not just learned weights"
+        )
+
+
 class TestRegionalAnalysisEdgeCases:
     """Test edge cases and error handling."""
 

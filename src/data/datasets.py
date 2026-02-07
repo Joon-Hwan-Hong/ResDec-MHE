@@ -586,6 +586,22 @@ class PrecomputedDataset(Dataset):
                         f"Filter these subjects before constructing the dataset."
                     )
 
+    def get_gene_names(self) -> list[str] | None:
+        """Get gene names from sidecar file if available.
+
+        Looks for gene_names.npy in feature_dir. Returns None if not found,
+        which causes downstream analysis to use synthetic gene_i labels.
+        """
+        gene_names_path = self.feature_dir / "gene_names.npy"
+        if gene_names_path.exists():
+            names = np.load(gene_names_path, allow_pickle=True)
+            return [str(n) for n in names]
+        return None
+
+    def get_cell_type_names(self) -> list[str]:
+        """Get cell type names in order."""
+        return self.cell_type_order
+
     def __len__(self) -> int:
         return len(self.subject_ids)
 

@@ -875,7 +875,9 @@ def main():
             )
 
     # Regional analysis
-    if not args.skip_regional and region_weights is not None:
+    if not args.skip_regional and region_weights is not None and (
+        region_attention is not None or region_pseudobulk_dict
+    ):
         run_regional_analysis(
             region_attention=region_attention,
             region_weights=region_weights,

@@ -481,6 +481,13 @@ def compute_gene_importance(
     region_pseudobulk: dict[str, np.ndarray] | None = None,
     top_k: int = 100,
     output_dir: str | Path | None = None,
+    # Differential expression parameters
+    group_labels: np.ndarray | None = None,
+    subject_expression: np.ndarray | None = None,
+    group_a: str = "resilient",
+    group_b: str = "vulnerable",
+    gate_threshold: float = 0.01,
+    apply_fdr: bool = True,
 ) -> GeneImportanceResult:
     """
     Convenience function to compute and optionally save gene importance.
@@ -493,6 +500,14 @@ def compute_gene_importance(
                           effective importance computation
         top_k: Number of top genes per cell type
         output_dir: If provided, save results to this directory
+        group_labels: Optional [n_subjects] array of group labels for
+            differential expression analysis
+        subject_expression: Optional [n_subjects, n_cell_types, n_genes]
+            per-subject pseudobulk for differential expression analysis
+        group_a: Label for first group (numerator in fold change)
+        group_b: Label for second group (denominator in fold change)
+        gate_threshold: Minimum gate weight to include gene (default: 0.01)
+        apply_fdr: Whether to apply Benjamini-Hochberg FDR correction (default: True)
 
     Returns:
         GeneImportanceResult with analysis results
@@ -504,7 +519,15 @@ def compute_gene_importance(
         region_pseudobulk=region_pseudobulk,
     )
 
-    result = analyzer.analyze(top_k=top_k)
+    result = analyzer.analyze(
+        top_k=top_k,
+        group_labels=group_labels,
+        subject_expression=subject_expression,
+        group_a=group_a,
+        group_b=group_b,
+        gate_threshold=gate_threshold,
+        apply_fdr=apply_fdr,
+    )
 
     if output_dir is not None:
         analyzer.save(result, output_dir)

@@ -1291,3 +1291,73 @@ def test_ablation_skips_2d_embeddings():
     assert isinstance(result, pd.DataFrame)
     assert "importance" in result.columns
     assert len(result) == n_cell_types
+
+
+# ============================================================================
+# Resilience Grouping Consistency Tests (Phase 6 Review Round 12 — M2)
+# ============================================================================
+
+
+class TestIdentifyGroupsMatchesDeriveResilienceGroups:
+    """_identify_groups() must produce same resilient/vulnerable masks
+    as the shared derive_resilience_groups() utility."""
+
+    def test_identify_groups_matches_derive_resilience_groups(self):
+        """_identify_groups() should produce same resilient/vulnerable groups
+        as derive_resilience_groups() for identical inputs."""
+        from src.utils.statistics import derive_resilience_groups
+
+        np.random.seed(42)
+        n = 50
+        pathology = np.random.rand(n)
+        cognition = np.random.rand(n)
+        # Introduce NaN in cognition but not pathology for some subjects
+        cognition[0:3] = np.nan
+        attention = np.random.rand(n, 4, 31)
+
+        labels = derive_resilience_groups(cognition, pathology)
+
+        analyzer = ResilienceSignatureAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+        )
+
+        # Masks should match labels
+        expected_resilient = labels == "resilient"
+        expected_vulnerable = labels == "vulnerable"
+
+        np.testing.assert_array_equal(analyzer.resilient_mask, expected_resilient)
+        np.testing.assert_array_equal(analyzer.vulnerable_mask, expected_vulnerable)
+
+    def test_nan_cognition_shifts_pathology_threshold(self):
+        """When NaN-cognition subjects have extreme pathology, pathology
+        threshold must be computed only on valid subjects (both cog & path
+        non-NaN), matching derive_resilience_groups exactly."""
+        from src.utils.statistics import derive_resilience_groups
+
+        # Construct data where NaN-cognition subjects have very high pathology,
+        # so including them shifts the 66.7th percentile upward.
+        n = 30
+        pathology = np.linspace(0.0, 0.6, n)
+        cognition = np.linspace(0.0, 1.0, n)
+        # Give the NaN-cognition subjects very high pathology
+        cognition[0:5] = np.nan
+        pathology[0:5] = 0.99  # extreme high pathology
+
+        attention = np.random.rand(n, 4, 5)
+
+        labels = derive_resilience_groups(cognition, pathology)
+
+        analyzer = ResilienceSignatureAnalyzer(
+            attention=attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+            cell_type_names=[f"type_{i}" for i in range(5)],
+        )
+
+        expected_resilient = labels == "resilient"
+        expected_vulnerable = labels == "vulnerable"
+
+        np.testing.assert_array_equal(analyzer.resilient_mask, expected_resilient)
+        np.testing.assert_array_equal(analyzer.vulnerable_mask, expected_vulnerable)
