@@ -905,23 +905,27 @@ def main():
             )
 
     # Regional analysis
-    if not args.skip_regional and region_weights is not None and (
-        region_attention is not None or region_pseudobulk_dict
-    ):
-        run_regional_analysis(
-            region_attention=region_attention,
-            region_weights=region_weights,
-            gene_gate_weights=gene_gate,
-            region_pseudobulk=region_pseudobulk_dict,
-            region_names=region_names_list,
-            cell_type_names=cell_type_names,
-            gene_names=gene_names,
-            subject_ids=subject_ids,
-            top_k_genes=args.top_k_genes,
-            output_dir=output_dir,
-            formats=args.formats,
-        )
-        analyses_run += 1
+    if not args.skip_regional and region_weights is not None:
+        if region_attention is None and not region_pseudobulk_dict:
+            logger.warning(
+                "Skipping regional analysis: neither region_attention nor region_pseudobulk "
+                "data found. Ensure inference was run with --extract-region-attention."
+            )
+        else:
+            run_regional_analysis(
+                region_attention=region_attention,
+                region_weights=region_weights,
+                gene_gate_weights=gene_gate,
+                region_pseudobulk=region_pseudobulk_dict,
+                region_names=region_names_list,
+                cell_type_names=cell_type_names,
+                gene_names=gene_names,
+                subject_ids=subject_ids,
+                top_k_genes=args.top_k_genes,
+                output_dir=output_dir,
+                formats=args.formats,
+            )
+            analyses_run += 1
 
     # Uncertainty analysis
     if not args.skip_uncertainty and predictions_df is not None:

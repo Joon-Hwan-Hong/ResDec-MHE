@@ -30,14 +30,13 @@ def optuna_config():
             "d_fused": 128,
             "n_regions": N_REGIONS,
             "dropout": 0.1,
-            "pseudobulk": {"dropout": 0.1},
+            "pseudobulk": {},
             "gene_gate": {"initial_temperature": 2.0},
-            "hgt": {"n_layers": 3, "n_heads": 4, "dropout": 0.1},
+            "hgt": {"n_layers": 3, "n_heads": 4},
             "set_transformer": {
                 "n_isab_layers": 2,
                 "n_inducing_points": 32,
                 "n_heads": 4,
-                "dropout": 0.1,
             },
             "cell_type_selector": {"selection_temperature": 1.0},
             "pathology_attention": {"d_cond": 64, "n_heads": 4},
@@ -323,16 +322,13 @@ class TestBuildTrialConfig:
         assert trial_config.model.pathology_attention.n_heads == 8
         assert trial_config.model.set_transformer.n_heads == 8
 
-    def test_build_trial_config_dropout_updates_four(self, optuna_config):
-        """dropout compound mapping updates all 4 dropout locations."""
+    def test_build_trial_config_dropout_updates_global_only(self, optuna_config):
+        """dropout mapping updates only model.dropout (per-branch dropout removed)."""
         from scripts.optuna_optimize import build_trial_config
 
         params = {"dropout": 0.25}
         trial_config = build_trial_config(optuna_config, params)
         assert trial_config.model.dropout == 0.25
-        assert trial_config.model.pseudobulk.dropout == 0.25
-        assert trial_config.model.hgt.dropout == 0.25
-        assert trial_config.model.set_transformer.dropout == 0.25
 
 
 class TestCreateStudyPrunerTypes:

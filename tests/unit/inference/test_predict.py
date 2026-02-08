@@ -164,7 +164,8 @@ class TestPredictionResultDataclass:
             "hgt_attention", "pma_attention", "region_weights",
             "region_pseudobulk_mean", "per_subject_pseudobulk",
             "region_attention", "cell_barcodes",
-            "cell_counts", "gene_names", "embeddings", "metadata"
+            "cell_counts", "gene_names", "epistemic_std", "aleatoric_std",
+            "embeddings", "metadata"
         }
         actual_fields = {f.name for f in fields(sample_prediction_result)}
         assert expected_fields == actual_fields

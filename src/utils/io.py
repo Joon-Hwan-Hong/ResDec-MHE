@@ -4,104 +4,10 @@ Input/output utilities for saving and loading various data formats.
 
 import json
 from pathlib import Path
-from typing import Any
 
 import h5py
 import numpy as np
 import pandas as pd
-import torch
-
-
-def save_checkpoint(
-    path: str | Path,
-    model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer | None = None,
-    scheduler: Any | None = None,
-    epoch: int = 0,
-    global_step: int = 0,
-    best_val_loss: float | None = None,
-    config: dict | None = None,
-    rng_states: dict | None = None,
-    metrics_history: dict | None = None,
-    experiment_hash: str | None = None,
-) -> None:
-    """
-    Save a full training checkpoint.
-
-    Args:
-        path: Output path for checkpoint
-        model: PyTorch model
-        optimizer: Optimizer (optional)
-        scheduler: LR scheduler (optional)
-        epoch: Current epoch
-        global_step: Global training step
-        best_val_loss: Best validation loss achieved
-        config: Model/training configuration
-        rng_states: Random number generator states
-        metrics_history: Training metrics history
-        experiment_hash: Experiment identifier
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    checkpoint = {
-        "checkpoint_version": "1.0",
-        "experiment_hash": experiment_hash,
-        "timestamp": pd.Timestamp.now().isoformat(),
-        "model_state_dict": model.state_dict(),
-        "model_config": config,
-        "epoch": epoch,
-        "global_step": global_step,
-        "best_val_loss": best_val_loss,
-    }
-
-    if optimizer is not None:
-        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
-
-    if scheduler is not None:
-        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
-
-    if rng_states is not None:
-        checkpoint["rng_states"] = rng_states
-
-    if metrics_history is not None:
-        checkpoint["metrics_history"] = metrics_history
-
-    torch.save(checkpoint, path)
-
-
-def load_checkpoint(
-    path: str | Path,
-    model: torch.nn.Module | None = None,
-    optimizer: torch.optim.Optimizer | None = None,
-    scheduler: Any | None = None,
-    device: torch.device | str = "cpu",
-) -> dict:
-    """
-    Load a training checkpoint.
-
-    Args:
-        path: Path to checkpoint file
-        model: Model to load weights into (optional)
-        optimizer: Optimizer to load state into (optional)
-        scheduler: Scheduler to load state into (optional)
-        device: Device to load tensors to
-
-    Returns:
-        Checkpoint dictionary with metadata
-    """
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
-
-    if model is not None:
-        model.load_state_dict(checkpoint["model_state_dict"])
-
-    if optimizer is not None and "optimizer_state_dict" in checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-    if scheduler is not None and "scheduler_state_dict" in checkpoint:
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-
-    return checkpoint
 
 
 def save_attention_weights(

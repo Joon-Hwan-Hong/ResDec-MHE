@@ -190,10 +190,12 @@ class TestTrainingStep:
         assert has_grad
 
     def test_bayesian_training_step(self, bayesian_config):
-        """Bayesian head training_step returns finite loss using beta-NLL."""
+        """Bayesian head training_step returns finite loss via SVI."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(bayesian_config)
         module.log = lambda *args, **kwargs: None
+        # SVI requires configure_optimizers to initialize self.svi
+        module.configure_optimizers()
         batch = _make_batch(n_genes=50)
         loss = module.training_step(batch, batch_idx=0)
         assert isinstance(loss, torch.Tensor)

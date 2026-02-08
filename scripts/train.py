@@ -199,6 +199,13 @@ def main() -> None:
         help="Cross-validation fold index (0-indexed)",
     )
     parser.add_argument(
+        "--final",
+        action="store_true",
+        default=False,
+        help="Final training mode: train on full train_val_pool, evaluate on holdout_test. "
+             "Requires --splits-path. Ignores --fold.",
+    )
+    parser.add_argument(
         "--splits-path",
         type=str,
         default=None,
@@ -303,11 +310,43 @@ def main() -> None:
     if adata is None and not args.precomputed_dir:
         adata = sc.read_h5ad(data_cfg.adata_path)
 
-    train_loader, val_loader = create_fold_dataloaders(
-        config, adata, metadata, splits, args.fold,
-        precomputed_dir=args.precomputed_dir,
-    )
-    logger.info("Fold %d dataloaders created", args.fold)
+    if args.final:
+        if splits is None:
+            raise ValueError(
+                "Final training mode requires pre-computed splits. "
+                "Provide --splits-path /path/to/splits.json."
+            )
+
+        from src.data.splits import get_final_train_subjects
+
+        train_subjects = get_final_train_subjects(splits)
+        test_subjects = splits["holdout_test"]
+
+        logger.info(
+            f"Final training mode: {len(train_subjects)} train subjects, "
+            f"{len(test_subjects)} holdout test subjects"
+        )
+
+        # Create a synthetic "final" fold so we can reuse create_fold_dataloaders
+        final_fold = {"train": train_subjects, "val": test_subjects}
+        splits_for_final = dict(splits)
+        splits_for_final["folds"] = [final_fold]
+
+        train_loader, val_loader = create_fold_dataloaders(
+            config, adata, metadata, splits_for_final, fold_idx=0,
+            precomputed_dir=args.precomputed_dir,
+        )
+        logger.info(
+            "Final-mode dataloaders created: %d train, %d test subjects",
+            len(train_subjects), len(test_subjects),
+        )
+    else:
+        # Standard fold-based training
+        train_loader, val_loader = create_fold_dataloaders(
+            config, adata, metadata, splits, args.fold,
+            precomputed_dir=args.precomputed_dir,
+        )
+        logger.info("Fold %d dataloaders created", args.fold)
 
     # Train
     trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)

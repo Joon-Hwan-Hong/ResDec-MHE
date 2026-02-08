@@ -33,6 +33,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from pyro.nn import PyroModule
 
 from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX, sanitize_key
 from src.data.collate import build_x_dict_list_from_embeddings
@@ -43,7 +44,7 @@ from src.models.fusion import FusionLayer, PathologyEncoder, PathologyStratified
 from src.models.heads import BayesianPredictionHead, DeterministicPredictionHead
 
 
-class CognitiveResilienceModel(nn.Module):
+class CognitiveResilienceModel(PyroModule):
     """
     Full end-to-end model for cognitive resilience prediction.
 
@@ -123,7 +124,7 @@ class CognitiveResilienceModel(nn.Module):
         node_types: Optional[list[str]] = None,
         edge_categories: Optional[list[str]] = None,
     ):
-        super().__init__()
+        super().__init__("cognitive_resilience_model")
 
         # Validate inputs
         if n_genes <= 0:
@@ -238,6 +239,7 @@ class CognitiveResilienceModel(nn.Module):
             self.prediction_head = DeterministicPredictionHead(
                 d_input=d_fused,
                 d_hidden=d_head_hidden,
+                dropout=dropout,
             )
 
     def _encode_pseudobulk_per_region(

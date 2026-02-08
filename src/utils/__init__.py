@@ -22,8 +22,6 @@ from src.utils.experiment import (
     ExperimentManager,
 )
 from src.utils.io import (
-    save_checkpoint,
-    load_checkpoint,
     save_attention_weights,
     load_attention_weights,
     save_json,
@@ -34,12 +32,9 @@ from src.utils.io import (
     save_dataframes_multi_format,
 )
 from src.utils.gpu import (
-    get_available_gpus,
     get_gpu_memory_info,
     clear_gpu_memory,
-    select_device,
     set_visible_gpus,
-    estimate_batch_size,
 )
 from src.utils.device import (
     move_batch_to_device,
@@ -74,8 +69,6 @@ __all__ = [
     "Experiment",
     "ExperimentManager",
     # IO
-    "save_checkpoint",
-    "load_checkpoint",
     "save_attention_weights",
     "load_attention_weights",
     "save_json",
@@ -85,12 +78,9 @@ __all__ = [
     "load_dataframe",
     "save_dataframes_multi_format",
     # GPU
-    "get_available_gpus",
     "get_gpu_memory_info",
     "clear_gpu_memory",
-    "select_device",
     "set_visible_gpus",
-    "estimate_batch_size",
     # Device
     "move_batch_to_device",
     # Statistics

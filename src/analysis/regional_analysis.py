@@ -147,7 +147,12 @@ class RegionalAnalyzer:
             DataFrame with columns: region, mean_attention, std_attention, n_subjects
         """
         if self.region_attention is None:
-            # Return placeholder with region names only
+            logger.warning(
+                "Region attention data is None — no attention weights were extracted. "
+                "Regional attention summary will contain NaN placeholders. "
+                "To extract region attention, use --extract-all or --extract-region-attention "
+                "during inference."
+            )
             return pd.DataFrame({
                 "region": self.region_names,
                 "mean_attention": [np.nan] * len(self.region_names),

@@ -7,6 +7,7 @@ from typing import Any
 
 import yaml
 from omegaconf import OmegaConf, DictConfig
+from omegaconf.errors import ConfigKeyError, ConfigAttributeError
 
 
 def load_config(
@@ -90,18 +91,73 @@ def merge_configs(*configs: DictConfig | dict) -> DictConfig:
 
 def validate_config(config: DictConfig, required_keys: list[str]) -> None:
     """
-    Validate that configuration contains required keys.
+    Validate configuration structure, types, ranges, and enumerations.
+
+    Level 3 validation:
+    - Required key presence
+    - Type checks for critical fields
+    - Range checks for numeric parameters
+    - Enum checks for categorical parameters
 
     Args:
         config: Configuration to validate
         required_keys: List of required top-level keys
 
     Raises:
-        ValueError: If any required key is missing
+        ValueError: If validation fails
     """
+    errors = []
+
+    # Level 1: Required keys
     missing = [key for key in required_keys if key not in config]
     if missing:
-        raise ValueError(f"Missing required configuration keys: {missing}")
+        errors.append(f"Missing required keys: {missing}")
+
+    # Level 2+3: Type, range, enum checks for known fields
+    _FIELD_RULES = {
+        "training.max_epochs": (int, lambda v: v > 0),
+        "training.optimizer.lr": ((int, float), lambda v: v > 0),
+        "training.optimizer.weight_decay": ((int, float), lambda v: v >= 0),
+        "training.gradient_clip_val": ((int, float), lambda v: v > 0),
+        "training.loss.type": (str, lambda v: v in ("beta_nll", "mse", "huber")),
+        "training.loss.beta": ((int, float), lambda v: 0 <= v <= 1),
+        "training.precision": (str, lambda v: v in ("32-true", "16-mixed", "bf16-mixed")),
+        "model.dropout": ((int, float), lambda v: 0 <= v < 1),
+        "model.d_embed": (int, lambda v: v > 0),
+        "model.d_fused": (int, lambda v: v > 0),
+        "model.n_genes": (int, lambda v: v > 0),
+        "model.n_cell_types": (int, lambda v: v > 0),
+        "model.head.type": (str, lambda v: v in ("bayesian", "deterministic")),
+        "model.head.d_hidden": (int, lambda v: v > 0),
+        "model.hgt.n_layers": (int, lambda v: v > 0),
+        "model.hgt.n_heads": (int, lambda v: v > 0),
+        "data.dataloader.batch_size": (int, lambda v: v > 0),
+        "data.dataloader.num_workers": (int, lambda v: v >= 0),
+    }
+
+    for dotpath, (expected_type, validator) in _FIELD_RULES.items():
+        keys = dotpath.split(".")
+        value = config
+        try:
+            for k in keys:
+                value = value[k]
+        except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+            continue  # Field not present — only required_keys are mandatory
+
+        # OmegaConf returns int for YAML integers, but check robustly
+        if not isinstance(value, expected_type):
+            type_name = expected_type.__name__ if isinstance(expected_type, type) else str(expected_type)
+            errors.append(
+                f"{dotpath}: expected {type_name}, got {type(value).__name__} ({value!r})"
+            )
+        elif not validator(value):
+            errors.append(f"{dotpath}: invalid value {value!r}")
+
+    if errors:
+        raise ValueError(
+            "Configuration validation failed:\n" +
+            "\n".join(f"  - {e}" for e in errors)
+        )
 
 
 def flatten_config(config: DictConfig | dict, parent_key: str = "", sep: str = ".") -> dict:

@@ -15,6 +15,12 @@ import torch
 import lightning.pytorch as pl
 from omegaconf import DictConfig
 
+import pyro
+import pyro.poutine
+from pyro.infer import SVI, Trace_ELBO
+from pyro.infer.autoguide import AutoDiagonalNormal
+from pyro.optim import ClippedAdam as PyroClippedAdam
+
 from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 from src.training.losses import BetaNLLLoss, mse_loss
 from src.training.metrics import ResilienceMetrics
@@ -58,6 +64,17 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         model_cfg = config.model
         use_bayesian = model_cfg.head.type == "bayesian"
         self.model = build_model_from_config(model_cfg)
+
+        # SVI setup for Bayesian head
+        self._use_bayesian_svi = use_bayesian
+        self.guide = None
+        self.svi = None
+
+        if self._use_bayesian_svi:
+            pyro.clear_param_store()
+            self.guide = AutoDiagonalNormal(self.model)
+            # Disable automatic optimization — SVI manages its own backward + step
+            self.automatic_optimization = False
 
         # Loss function setup with branching
         train_cfg = config.training
@@ -114,6 +131,56 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             cognition=batch.get("cognition"),
         )
 
+    def _svi_forward(self, batch: dict[str, Any]) -> torch.Tensor:
+        """
+        Run SVI step for Bayesian training.
+
+        SVI.step() internally runs model forward, guide forward, computes ELBO,
+        computes gradients, and steps the Pyro optimizer. Returns scalar loss.
+        """
+        loss = self.svi.step(
+            region_pseudobulk=batch.get("region_pseudobulk"),
+            region_mask=batch.get("region_mask"),
+            pseudobulk=batch.get("pseudobulk"),
+            edge_index_dict_list=batch.get("edge_index_dict_list"),
+            edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+            cells=batch.get("cells"),
+            cell_mask=batch.get("cell_mask"),
+            cell_type_mask=batch.get("cell_type_mask"),
+            pathology=batch.get("pathology"),
+            cognition=batch.get("cognition"),
+        )
+        return torch.tensor(loss, device=self.device)
+
+    def _forward_batch_posterior(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """
+        Forward pass using posterior median (MAP estimate) from guide.
+
+        Used for validation/test to get deterministic predictions from the
+        learned posterior, avoiding sampling noise.
+
+        Falls back to standard forward if guide hasn't been initialized yet
+        (e.g., validation before first training step).
+        """
+        if self.guide.prototype_trace is None:
+            # Guide hasn't been prototyped yet (no SVI step has run).
+            # Fall back to standard forward pass with prior samples.
+            return self._forward_batch(batch)
+        median = self.guide.median()
+        conditioned = pyro.poutine.condition(self.model, data=median)
+        return conditioned(
+            region_pseudobulk=batch.get("region_pseudobulk"),
+            region_mask=batch.get("region_mask"),
+            pseudobulk=batch.get("pseudobulk"),
+            edge_index_dict_list=batch.get("edge_index_dict_list"),
+            edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+            cells=batch.get("cells"),
+            cell_mask=batch.get("cell_mask"),
+            cell_type_mask=batch.get("cell_type_mask"),
+            pathology=batch.get("pathology"),
+            cognition=batch.get("cognition"),
+        )
+
     def _check_batch_nan(self, batch: dict) -> bool:
         """Check if batch contains NaN values. Returns True if NaN detected."""
         for key, value in batch.items():
@@ -121,15 +188,18 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 return True
         return False
 
-    def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
-        """Training step: forward pass + loss computation with NaN handling."""
-        # Check for NaN in batch inputs
+    def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor | None:
+        """Training step with SVI branching for Bayesian head."""
         if self._nan_batch_policy == "skip" and self._check_batch_nan(batch):
             logger.warning("NaN detected in batch %d — skipping", batch_idx)
             return None
 
-        output = self._forward_batch(batch)
-        loss = self._compute_loss(output, batch["cognition"])
+        if self._use_bayesian_svi:
+            # SVI handles forward, loss, backward, and optimizer step internally
+            loss = self._svi_forward(batch)
+        else:
+            output = self._forward_batch(batch)
+            loss = self._compute_loss(output, batch["cognition"])
 
         # Check for NaN loss
         if torch.isnan(loss):
@@ -144,35 +214,39 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
-        """Validation step: forward pass + loss + metrics."""
-        output = self._forward_batch(batch)
+        """Validation step using posterior median for Bayesian head."""
+        if self._use_bayesian_svi:
+            output = self._forward_batch_posterior(batch)
+        else:
+            output = self._forward_batch(batch)
         loss = self._compute_loss(output, batch["cognition"])
         bs = batch["cognition"].shape[0]
         self.log("val_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        # Compute and log metrics
         std = output.get("std")
         metrics = self.metrics.compute(output["mean"], std, batch["cognition"])
         for name, value in metrics.items():
-            if not (isinstance(value, float) and value != value):  # skip NaN
+            if not (isinstance(value, float) and value != value):
                 self.log(f"val_{name}", value, sync_dist=True, batch_size=bs)
 
     def test_step(self, batch: dict, batch_idx: int) -> None:
-        """Test step: forward pass + loss + metrics (same as validation, test_ prefix)."""
-        output = self._forward_batch(batch)
+        """Test step using posterior median for Bayesian head."""
+        if self._use_bayesian_svi:
+            output = self._forward_batch_posterior(batch)
+        else:
+            output = self._forward_batch(batch)
         loss = self._compute_loss(output, batch["cognition"])
         bs = batch["cognition"].shape[0]
         self.log("test_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        # Compute and log metrics
         std = output.get("std")
         metrics = self.metrics.compute(output["mean"], std, batch["cognition"])
         for name, value in metrics.items():
-            if not (isinstance(value, float) and value != value):  # skip NaN
+            if not (isinstance(value, float) and value != value):
                 self.log(f"test_{name}", value, sync_dist=True, batch_size=bs)
 
     def predict_step(self, batch: dict, batch_idx: int) -> dict[str, Any]:
-        """Predict step: forward pass returning predictions dict.
+        """Predict step using posterior median for Bayesian head.
 
         Returns:
             Dict with keys:
@@ -180,7 +254,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             - std: [B, 1] predicted uncertainty (if Bayesian head)
             - attention_weights: [B, n_heads, n_cell_types] pathology attention (if present)
         """
-        output = self._forward_batch(batch)
+        if self._use_bayesian_svi:
+            output = self._forward_batch_posterior(batch)
+        else:
+            output = self._forward_batch(batch)
         result = {"mean": output["mean"]}
         if "std" in output and output["std"] is not None:
             result["std"] = output["std"]
@@ -212,7 +289,29 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         effective_lr = base_lr
 
-        # Optimizer
+        if self._use_bayesian_svi:
+            # Pyro optimizer handles BOTH model and guide parameters
+            pyro_optim = PyroClippedAdam({
+                "lr": effective_lr,
+                "weight_decay": opt_cfg.weight_decay,
+                "betas": tuple(opt_cfg.get("betas", [0.9, 0.999])),
+                "clip_norm": train_cfg.get("gradient_clip_val", 1.0),
+            })
+            self.svi = SVI(
+                model=self.model,
+                guide=self.guide,
+                optim=pyro_optim,
+                loss=Trace_ELBO(),
+            )
+            # SVI manages optimization internally.
+            # Lightning requires a return value from configure_optimizers
+            # when automatic_optimization=False, but won't step it.
+            # NOTE: No LR scheduler for SVI mode — Pyro optimizer uses fixed LR.
+            # Future: add pyro.optim.ExponentialLR for LR scheduling.
+            dummy_opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=0)
+            return dummy_opt
+
+        # Standard optimizer for deterministic head
         if opt_cfg.type == "adamw":
             optimizer = torch.optim.AdamW(
                 self.parameters(),

@@ -138,7 +138,7 @@ def build_trial_config(
     - lr -> training.optimizer.lr
     - weight_decay -> training.optimizer.weight_decay
     - d_embed -> model.d_embed + model.d_fused
-    - dropout -> model.dropout + model.pseudobulk.dropout + model.hgt.dropout + model.set_transformer.dropout
+    - dropout -> model.dropout
     - n_hgt_layers -> model.hgt.n_layers
     - beta -> training.loss.beta
     - batch_size -> data.dataloader.batch_size
@@ -179,11 +179,7 @@ def build_trial_config(
             OmegaConf.update(config, "model.pathology_attention.n_heads", value)
             OmegaConf.update(config, "model.set_transformer.n_heads", value)
         elif name == "dropout":
-            # Dropout is shared across all branches
             OmegaConf.update(config, "model.dropout", value)
-            OmegaConf.update(config, "model.pseudobulk.dropout", value)
-            OmegaConf.update(config, "model.hgt.dropout", value)
-            OmegaConf.update(config, "model.set_transformer.dropout", value)
         else:
             logger.warning("Unknown parameter '%s' — skipping", name)
 

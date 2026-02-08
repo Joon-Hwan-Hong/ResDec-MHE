@@ -356,6 +356,16 @@ class ResilienceModelCheckpoint(pl.Callback):
         checkpoint["model_config"] = model_config
         checkpoint["full_config"] = config_dict
 
+        # Save guide state for Bayesian SVI
+        if hasattr(pl_module, 'guide') and pl_module.guide is not None:
+            checkpoint["guide_state_dict"] = pl_module.guide.state_dict()
+            # Also save Pyro param store (contains variational parameters)
+            import pyro
+            checkpoint["pyro_param_store"] = {
+                k: v.detach().cpu()
+                for k, v in pyro.get_param_store().items()
+            }
+
     def on_load_checkpoint(
         self,
         trainer: pl.Trainer,
@@ -380,3 +390,10 @@ class ResilienceModelCheckpoint(pl.Callback):
 
         if "cuda" in rng_states and torch.cuda.is_available():
             torch.cuda.set_rng_state_all(rng_states["cuda"])
+
+        # Restore Pyro param store for Bayesian SVI
+        if "pyro_param_store" in checkpoint:
+            import pyro
+            pyro.clear_param_store()
+            for k, v in checkpoint["pyro_param_store"].items():
+                pyro.get_param_store().setdefault(k, v)

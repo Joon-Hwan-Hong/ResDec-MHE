@@ -72,6 +72,8 @@ class PredictionResult:
     cell_counts: np.ndarray | None = None  # [n_subjects, n_cell_types] cell counts per type
     gene_names: list[str] | None = None
     cell_type_selection: np.ndarray | None = None  # [n_cell_types] selection weights
+    epistemic_std: np.ndarray | None = None  # [N, 1] epistemic uncertainty
+    aleatoric_std: np.ndarray | None = None  # [N, 1] aleatoric uncertainty
     embeddings: dict[str, np.ndarray] | None = None  # {name: array} branch/fused/attended
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -106,6 +108,7 @@ class Predictor:
         config: DictConfig,
         device: torch.device | str = "auto",
         checkpoint_path: str | None = None,
+        guide=None,
     ):
         """
         Initialize predictor with model and config.
@@ -115,9 +118,11 @@ class Predictor:
             config: Model configuration
             device: Device for inference ("auto", "cuda", "cpu")
             checkpoint_path: Optional path to checkpoint (for metadata)
+            guide: Optional Pyro guide for Bayesian posterior sampling
         """
         self.config = config
         self.checkpoint_path = checkpoint_path
+        self.guide = guide
 
         # Resolve device
         if device == "auto":
@@ -189,13 +194,16 @@ class Predictor:
 
         # Load weights
         if "state_dict" in checkpoint:
-            # Lightning checkpoint - strip 'model.' prefix
+            # Lightning checkpoint - strip 'model.' prefix.
+            # For Bayesian models, the state_dict may also contain guide
+            # parameters (e.g., 'guide.loc', 'guide.scale_unconstrained')
+            # which are NOT part of the model — skip them here; they are
+            # loaded separately below via guide_state_dict / param store.
             state_dict = {}
             for k, v in checkpoint["state_dict"].items():
                 if k.startswith("model."):
                     state_dict[k[6:]] = v  # Remove 'model.' prefix
-                else:
-                    state_dict[k] = v
+                # Skip non-model keys (guide params, etc.)
             model.load_state_dict(state_dict, strict=True)
         elif "model_state_dict" in checkpoint:
             # io.save_checkpoint format
@@ -206,11 +214,53 @@ class Predictor:
 
         logger.info("Model weights loaded successfully")
 
+        # Load guide for Bayesian posterior sampling
+        guide = None
+        if use_bayesian and "guide_state_dict" in checkpoint:
+            from pyro.infer.autoguide import AutoDiagonalNormal
+            import pyro
+
+            guide = AutoDiagonalNormal(model)
+
+            # Prototype the guide so it creates loc/scale parameters.
+            # AutoDiagonalNormal needs a forward pass through the model to
+            # discover all sample sites before it can initialize parameters.
+            # We run a dummy forward to trigger this initialization.
+            try:
+                n_ct = model_cfg.n_cell_types
+                n_genes = model_cfg.n_genes
+                n_regions = model_cfg.get("n_regions", 6)
+                dummy_kwargs = {
+                    "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
+                    "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
+                    "cells": torch.zeros(1, n_ct, 1, n_genes),
+                    "cell_mask": torch.ones(1, n_ct, 1, dtype=torch.bool),
+                    "pathology": torch.zeros(1, 3),
+                    "cognition": torch.zeros(1, 1),
+                }
+                guide(**dummy_kwargs)
+            except Exception:
+                logger.debug("Guide prototype forward failed; will try state_dict load anyway")
+
+            # Restore Pyro param store (primary mechanism — guide params live here)
+            if "pyro_param_store" in checkpoint:
+                pyro.clear_param_store()
+                for k, v in checkpoint["pyro_param_store"].items():
+                    pyro.get_param_store().setdefault(k, v)
+
+            # Also load guide state dict (secondary — for internal guide state)
+            try:
+                guide.load_state_dict(checkpoint["guide_state_dict"])
+            except Exception:
+                # Guide may not be prototyped yet; param store is sufficient
+                logger.debug("Could not load guide state_dict; using param store only")
+
         return cls(
             model=model,
             config=config,
             device=device,
             checkpoint_path=str(checkpoint_path),
+            guide=guide,
         )
 
     @classmethod
@@ -237,23 +287,122 @@ class Predictor:
 
     def _move_batch_to_device(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Move batch tensors to device."""
-        moved = {}
-        for k, v in batch.items():
-            if isinstance(v, torch.Tensor):
-                moved[k] = v.to(self.device)
-            elif isinstance(v, list) and len(v) > 0:
-                # Handle list of dicts (edge_index_dict_list, edge_attr_dict_list)
-                if isinstance(v[0], dict):
-                    moved[k] = [
-                        {kk: vv.to(self.device) if isinstance(vv, torch.Tensor) else vv
-                         for kk, vv in d.items()}
-                        for d in v
-                    ]
-                else:
-                    moved[k] = v
-            else:
-                moved[k] = v
-        return moved
+        from src.utils.device import move_batch_to_device
+        return move_batch_to_device(batch, self.device)
+
+    def _predict_batch_bayesian(
+        self,
+        batch: dict[str, Any],
+        num_samples: int = 100,
+        return_hgt_attention: bool = False,
+        return_pma_attention: bool = False,
+        return_region_attention: bool = False,
+        return_embeddings: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Bayesian prediction with posterior sampling.
+
+        Uses guide.median() for point estimate + aleatoric std,
+        then posterior sampling loop for epistemic std.
+
+        Args:
+            batch: Batch dict from DataLoader
+            num_samples: Number of posterior samples for epistemic uncertainty
+            return_hgt_attention: Whether to extract HGT attention weights
+            return_pma_attention: Whether to extract PMA cell-level attention weights
+            return_region_attention: Whether to extract per-subject region attention
+            return_embeddings: Whether to extract branch/fused/attended embeddings
+
+        Returns:
+            Dict with predictions, attention weights, and uncertainty estimates
+        """
+        import pyro
+        import pyro.poutine
+
+        batch = self._move_batch_to_device(batch)
+
+        model_kwargs = dict(
+            region_pseudobulk=batch.get("region_pseudobulk"),
+            region_mask=batch.get("region_mask"),
+            pseudobulk=batch.get("pseudobulk"),
+            edge_index_dict_list=batch.get("edge_index_dict_list"),
+            edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+            cells=batch.get("cells"),
+            cell_mask=batch.get("cell_mask"),
+            cell_type_mask=batch.get("cell_type_mask"),
+            pathology=batch.get("pathology"),
+            return_hgt_attention=return_hgt_attention,
+            return_pma_attention=return_pma_attention,
+            return_region_attention=return_region_attention,
+            return_embeddings=return_embeddings,
+        )
+
+        # Point estimate from posterior median
+        median = self.guide.median()
+        conditioned = pyro.poutine.condition(self.model, data=median)
+        with torch.no_grad():
+            output_median = conditioned(**model_kwargs)
+
+        # Collect posterior samples for epistemic uncertainty
+        means = []
+        for _ in range(num_samples):
+            guide_trace = pyro.poutine.trace(self.guide).get_trace(**model_kwargs)
+            conditioned_sample = pyro.poutine.replay(self.model, trace=guide_trace)
+            with torch.no_grad():
+                out = conditioned_sample(**model_kwargs)
+            means.append(out["mean"])
+
+        means_stacked = torch.stack(means, dim=0)  # [num_samples, B, 1]
+        epistemic_std = means_stacked.std(dim=0)    # [B, 1]
+
+        result = {
+            "mean": output_median["mean"].cpu().numpy(),
+            "attention_weights": output_median["attention_weights"].cpu().numpy(),
+        }
+
+        # Aleatoric std from Bayesian head
+        if "std" in output_median:
+            result["aleatoric_std"] = output_median["std"].cpu().numpy()
+
+        result["epistemic_std"] = epistemic_std.cpu().numpy()
+
+        # Total uncertainty = sqrt(epistemic^2 + aleatoric^2)
+        if "aleatoric_std" in result:
+            result["std"] = np.sqrt(
+                result["aleatoric_std"] ** 2 + result["epistemic_std"] ** 2
+            )
+        else:
+            result["std"] = result["epistemic_std"]
+
+        # Extract optional outputs from median prediction (same logic as predict_batch)
+        if return_hgt_attention and "hgt_attention" in output_median:
+            result["hgt_attention"] = output_median["hgt_attention"]
+
+        if return_pma_attention and "pma_attention" in output_median:
+            result["pma_attention"] = [
+                attn.cpu().numpy() for attn in output_median["pma_attention"]
+            ]
+
+        if return_region_attention and "region_attention" in output_median:
+            result["region_attention"] = output_median["region_attention"].cpu().numpy()
+
+        if return_embeddings and "embeddings" in output_median:
+            result["embeddings"] = {
+                name: emb.cpu().numpy()
+                for name, emb in output_median["embeddings"].items()
+            }
+
+        # Batch metadata
+        if "subject_ids" in batch:
+            result["subject_ids"] = batch["subject_ids"]
+        if "cognition" in batch:
+            result["actual"] = batch["cognition"].cpu().numpy()
+        if "pathology" in batch:
+            result["pathology"] = batch["pathology"].cpu().numpy()
+        if "cell_barcodes" in batch:
+            result["cell_barcodes"] = batch["cell_barcodes"]
+
+        return result
 
     @torch.no_grad()
     def predict_batch(
@@ -277,6 +426,18 @@ class Predictor:
         Returns:
             Dict with predictions and attention weights
         """
+        if self.guide is not None:
+            num_samples = 100
+            if hasattr(self.config, "inference"):
+                num_samples = self.config.inference.get("num_posterior_samples", 100)
+            return self._predict_batch_bayesian(
+                batch, num_samples=num_samples,
+                return_hgt_attention=extract_hgt_attention,
+                return_pma_attention=extract_pma_attention,
+                return_region_attention=extract_region_attention,
+                return_embeddings=extract_embeddings,
+            )
+
         batch = self._move_batch_to_device(batch)
 
         output = self.model(
@@ -360,6 +521,8 @@ class Predictor:
         all_subject_ids = []
         all_mean = []
         all_std = []
+        all_epistemic_std = []
+        all_aleatoric_std = []
         all_actual = []
         all_pathology = []
         all_attention = []
@@ -395,6 +558,10 @@ class Predictor:
 
             if "std" in result:
                 all_std.append(result["std"])
+            if "epistemic_std" in result:
+                all_epistemic_std.append(result["epistemic_std"])
+            if "aleatoric_std" in result:
+                all_aleatoric_std.append(result["aleatoric_std"])
             if "actual" in result:
                 all_actual.append(result["actual"])
             if "pathology" in result:
@@ -454,6 +621,8 @@ class Predictor:
         mean = np.concatenate(all_mean, axis=0)
         attention_weights = np.concatenate(all_attention, axis=0)
         std = np.concatenate(all_std, axis=0) if all_std else None
+        epistemic_std = np.concatenate(all_epistemic_std, axis=0) if all_epistemic_std else None
+        aleatoric_std = np.concatenate(all_aleatoric_std, axis=0) if all_aleatoric_std else None
         actual = np.concatenate(all_actual, axis=0) if all_actual else None
         pathology = np.concatenate(all_pathology, axis=0) if all_pathology else None
 
@@ -581,6 +750,8 @@ class Predictor:
             cell_barcodes=all_cell_barcodes if all_cell_barcodes else None,
             cell_counts=cell_counts,
             gene_names=gene_names,
+            epistemic_std=epistemic_std,
+            aleatoric_std=aleatoric_std,
             embeddings=embeddings_dict,
             metadata=metadata,
         )
