@@ -230,30 +230,36 @@ class Predictor:
                 n_ct = model_cfg.n_cell_types
                 n_genes = model_cfg.n_genes
                 n_regions = model_cfg.get("n_regions", 6)
+                n_pathology = model_cfg.pathology_attention.get("n_pathology_features", 3)
                 dummy_kwargs = {
                     "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
                     "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
                     "cells": torch.zeros(1, n_ct, 1, n_genes),
                     "cell_mask": torch.ones(1, n_ct, 1, dtype=torch.bool),
-                    "pathology": torch.zeros(1, 3),
+                    "pathology": torch.zeros(1, n_pathology),
                     "cognition": torch.zeros(1, 1),
                 }
                 guide(**dummy_kwargs)
-            except Exception:
-                logger.debug("Guide prototype forward failed; will try state_dict load anyway")
+            except Exception as e:
+                logger.warning("Guide prototype forward failed: %s. Param store load may fail if guide params are uninitialized.", e)
 
             # Restore Pyro param store (primary mechanism — guide params live here)
             if "pyro_param_store" in checkpoint:
+                # Resolve target device before restoring params
+                if device == "auto":
+                    target_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                else:
+                    target_device = torch.device(device)
                 pyro.clear_param_store()
                 for k, v in checkpoint["pyro_param_store"].items():
-                    pyro.get_param_store().setdefault(k, v)
+                    pyro.get_param_store().setdefault(k, v.to(target_device))
 
             # Also load guide state dict (secondary — for internal guide state)
             try:
                 guide.load_state_dict(checkpoint["guide_state_dict"])
-            except Exception:
+            except Exception as e:
                 # Guide may not be prototyped yet; param store is sufficient
-                logger.debug("Could not load guide state_dict; using param store only")
+                logger.warning("Could not load guide state_dict; using param store only: %s", e)
 
         return cls(
             model=model,
@@ -283,6 +289,7 @@ class Predictor:
             model=module.model,
             config=module.config,
             device=device,
+            guide=getattr(module, "guide", None),
         )
 
     def _move_batch_to_device(self, batch: dict[str, Any]) -> dict[str, Any]:

@@ -206,10 +206,30 @@ class TestSetupCallbacks:
         assert len(ckpts) == 1
 
     def test_setup_callbacks_includes_lr_monitor(self, train_config):
-        """Callbacks include LearningRateMonitor."""
+        """Callbacks include LearningRateMonitor for deterministic head."""
         from scripts.train import setup_callbacks
         import lightning.pytorch as pl
 
+        callbacks = setup_callbacks(train_config)
+        monitors = [c for c in callbacks if isinstance(c, pl.callbacks.LearningRateMonitor)]
+        assert len(monitors) == 1
+
+    def test_lr_monitor_skipped_for_bayesian_head(self, train_config):
+        """LearningRateMonitor is NOT in callbacks when head.type is bayesian."""
+        from scripts.train import setup_callbacks
+        import lightning.pytorch as pl
+
+        train_config.model.head.type = "bayesian"
+        callbacks = setup_callbacks(train_config)
+        monitors = [c for c in callbacks if isinstance(c, pl.callbacks.LearningRateMonitor)]
+        assert len(monitors) == 0
+
+    def test_lr_monitor_present_for_deterministic_head(self, train_config):
+        """LearningRateMonitor IS in callbacks when head.type is deterministic."""
+        from scripts.train import setup_callbacks
+        import lightning.pytorch as pl
+
+        train_config.model.head.type = "deterministic"
         callbacks = setup_callbacks(train_config)
         monitors = [c for c in callbacks if isinstance(c, pl.callbacks.LearningRateMonitor)]
         assert len(monitors) == 1

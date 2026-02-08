@@ -119,7 +119,7 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         "training.optimizer.lr": ((int, float), lambda v: v > 0),
         "training.optimizer.weight_decay": ((int, float), lambda v: v >= 0),
         "training.gradient_clip_val": ((int, float), lambda v: v > 0),
-        "training.loss.type": (str, lambda v: v in ("beta_nll", "mse", "huber")),
+        "training.loss.type": (str, lambda v: v in ("beta_nll", "mse")),
         "training.loss.beta": ((int, float), lambda v: 0 <= v <= 1),
         "training.precision": (str, lambda v: v in ("32-true", "16-mixed", "bf16-mixed")),
         "model.dropout": ((int, float), lambda v: 0 <= v < 1),

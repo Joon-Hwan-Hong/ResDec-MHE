@@ -234,6 +234,10 @@ class TestResilienceModelCheckpoint:
             },
             "training": {"max_epochs": 10},
         })
+        # Default: no Pyro guide/optimizer (basic RNG tests don't need SVI).
+        # Pyro-specific tests set these explicitly.
+        pl_module.guide = None
+        pl_module.pyro_optim = None
         checkpoint = {}
         return callback, trainer, pl_module, checkpoint
 
@@ -474,6 +478,141 @@ class TestMinEpochEarlyStopping:
         es = es_callbacks[0]
         assert es.min_epochs == cfg.training.early_stopping.min_epochs
         assert es.patience == cfg.training.early_stopping.patience
+
+
+class TestPyroCheckpointRestore:
+    """Tests for Pyro param store and optimizer state checkpoint restore."""
+
+    def _make_checkpoint_context(self):
+        """Create mock trainer, module, and checkpoint dict."""
+        from src.training.callbacks import ResilienceModelCheckpoint
+        from omegaconf import OmegaConf
+
+        callback = ResilienceModelCheckpoint()
+        trainer = MagicMock()
+        pl_module = MagicMock()
+        pl_module.config = OmegaConf.create({
+            "model": {
+                "n_genes": 50,
+                "d_embed": 32,
+                "head": {"type": "bayesian"},
+            },
+            "training": {"max_epochs": 10},
+        })
+        checkpoint = {}
+        return callback, trainer, pl_module, checkpoint
+
+    def test_pyro_param_store_restored_with_device_migration(self):
+        """Pyro param store tensors are migrated to pl_module.device on restore."""
+        import pyro
+
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+
+        # pl_module.device reports cpu
+        pl_module.device = torch.device("cpu")
+
+        # Build a checkpoint with CPU tensors in pyro_param_store
+        checkpoint = {
+            "pyro_param_store": {
+                "auto_loc": torch.tensor([1.0, 2.0, 3.0], device="cpu"),
+                "auto_scale": torch.tensor([0.1, 0.2, 0.3], device="cpu"),
+            }
+        }
+
+        # Restore
+        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+
+        # Verify tensors are on the expected device
+        store = pyro.get_param_store()
+        for k in ["auto_loc", "auto_scale"]:
+            param = store[k]
+            assert param.device == torch.device("cpu"), (
+                f"Param {k} should be on cpu, got {param.device}"
+            )
+
+        # Verify values are correct
+        assert torch.allclose(store["auto_loc"], torch.tensor([1.0, 2.0, 3.0]))
+        assert torch.allclose(store["auto_scale"], torch.tensor([0.1, 0.2, 0.3]))
+
+    def test_pyro_optim_state_roundtrip(self):
+        """Pyro optimizer state is saved and restored through checkpoint."""
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+
+        # Create a mock pyro_optim with get_state/set_state
+        mock_optim = MagicMock()
+        fake_state = {"step_count": 100, "param_groups": [{"lr": 0.001}]}
+        mock_optim.get_state.return_value = fake_state
+
+        pl_module.guide = MagicMock()
+        pl_module.guide.state_dict.return_value = {}
+        pl_module.pyro_optim = mock_optim
+
+        # Save checkpoint
+        checkpoint = {}
+        callback.on_save_checkpoint(trainer, pl_module, checkpoint)
+
+        # Verify pyro_optim_state was saved
+        assert "pyro_optim_state" in checkpoint
+        assert checkpoint["pyro_optim_state"] == fake_state
+
+        # Now restore — create a fresh mock for the load side
+        load_mock_optim = MagicMock()
+        pl_module.pyro_optim = load_mock_optim
+        pl_module.device = torch.device("cpu")
+
+        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+
+        # Verify set_state was called with the saved state
+        load_mock_optim.set_state.assert_called_once_with(fake_state)
+
+    def test_legacy_checkpoint_without_rng_states_still_restores_pyro(self):
+        """Legacy checkpoint without rng_states still restores Pyro param store."""
+        import pyro
+
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+        pl_module.device = torch.device("cpu")
+
+        # Legacy checkpoint: has pyro_param_store but NO rng_states
+        checkpoint = {
+            "pyro_param_store": {
+                "auto_loc": torch.tensor([1.0, 2.0]),
+                "auto_scale": torch.tensor([0.5, 0.5]),
+            }
+        }
+
+        # Should not raise, and should restore Pyro params
+        with patch("src.training.callbacks.logger") as mock_logger:
+            callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+            # Warning about missing rng_states should be logged
+            mock_logger.warning.assert_called_once()
+            assert "rng_states" in mock_logger.warning.call_args[0][0]
+
+        # Pyro param store should be populated despite missing rng_states
+        store = pyro.get_param_store()
+        assert "auto_loc" in store
+        assert "auto_scale" in store
+        assert torch.allclose(store["auto_loc"], torch.tensor([1.0, 2.0]))
+
+    def test_pyro_optim_state_warns_when_no_optim(self):
+        """Warns when checkpoint has pyro_optim_state but module has no pyro_optim."""
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+        pl_module.device = torch.device("cpu")
+
+        # Module has no pyro_optim attribute
+        del pl_module.pyro_optim
+
+        checkpoint = {
+            "pyro_optim_state": {"step_count": 100},
+        }
+
+        with patch("src.training.callbacks.logger") as mock_logger:
+            callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+            # Should warn about missing pyro_optim
+            warning_calls = [
+                call for call in mock_logger.warning.call_args_list
+                if "pyro_optim_state" in call[0][0]
+            ]
+            assert len(warning_calls) == 1
 
 
 class TestModelCheckpoint:

@@ -69,6 +69,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self._use_bayesian_svi = use_bayesian
         self.guide = None
         self.svi = None
+        self.pyro_optim = None
 
         if self._use_bayesian_svi:
             pyro.clear_param_store()
@@ -290,24 +291,36 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         effective_lr = base_lr
 
         if self._use_bayesian_svi:
-            # Pyro optimizer handles BOTH model and guide parameters
-            pyro_optim = PyroClippedAdam({
+            # Pyro optimizer handles BOTH model and guide parameters.
+            #
+            # LR decay strategy: ClippedAdam's built-in `lrd` (per-step multiplicative
+            # decay). With lrd=0.9999 and ~25k steps, final LR ≈ 8% of initial — smooth
+            # exponential decay comparable to cosine annealing.
+            #
+            # Why not fixed LR (Option 1): Risks ELBO oscillation late in training,
+            # prevents tight posterior convergence, produces noisier epistemic uncertainty.
+            #
+            # Why not PyroLRScheduler + cosine (Option 3): Three layers of wrapping
+            # (PyTorch optimizer → scheduler → Pyro wrapper), requires manual
+            # scheduler.step() with automatic_optimization=False, and is over-engineered
+            # for AutoDiagonalNormal mean-field VI. The lrd parameter is the idiomatic
+            # Pyro approach — built into ClippedAdam specifically for SVI decay.
+            self.pyro_optim = PyroClippedAdam({
                 "lr": effective_lr,
                 "weight_decay": opt_cfg.weight_decay,
                 "betas": tuple(opt_cfg.get("betas", [0.9, 0.999])),
                 "clip_norm": train_cfg.get("gradient_clip_val", 1.0),
+                "lrd": opt_cfg.get("lrd", 1.0),  # 1.0 = no decay (backward compat)
             })
             self.svi = SVI(
                 model=self.model,
                 guide=self.guide,
-                optim=pyro_optim,
+                optim=self.pyro_optim,
                 loss=Trace_ELBO(),
             )
-            # SVI manages optimization internally.
+            # SVI manages optimization internally; LR decay handled by lrd above.
             # Lightning requires a return value from configure_optimizers
             # when automatic_optimization=False, but won't step it.
-            # NOTE: No LR scheduler for SVI mode — Pyro optimizer uses fixed LR.
-            # Future: add pyro.optim.ExponentialLR for LR scheduling.
             dummy_opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=0)
             return dummy_opt
 

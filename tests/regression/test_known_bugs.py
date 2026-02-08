@@ -13,6 +13,7 @@ Bugs covered:
     6. Predictor.from_checkpoint ignored full_config key (Round 14, Task 4)
     7. Resilience plots went to attention/ directory (Round 13, H3)
     8. LR not scaled by world_size for multi-GPU (Round 14, Task 3)
+    9. --final mode used holdout test as val_dataloaders (Round 16, Task 1)
 """
 
 import tempfile
@@ -591,3 +592,200 @@ class TestLRScalingWithWorldSize:
             f"LR was {actual_lr} but expected {base_lr} "
             f"(lr_scaling=False should not scale LR)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: --final mode does not use holdout test set for model selection
+# Bug: Round 16, Task 1
+# Fix: scripts/train.py --final block now:
+#      1. Passes train_dataloaders only to trainer.fit() (no val_dataloaders)
+#      2. Removes MinEpochEarlyStopping from callbacks
+#      3. Uses ModelCheckpoint with save_top_k=0 (no metric-based selection)
+#      4. Calls trainer.test() after fit for single unbiased evaluation
+# ---------------------------------------------------------------------------
+class TestFinalModeDoesNotUseHoldoutForSelection:
+    """Verify --final mode does not leak holdout data into training decisions."""
+
+    def test_final_mode_does_not_use_holdout_for_selection(self):
+        """
+        Round 16, Task 1: In --final mode, the holdout test set must NOT be
+        used as val_dataloaders during trainer.fit(). This would cause early
+        stopping and model checkpoint selection to evaluate on the holdout
+        set repeatedly, biasing final performance estimates (data leakage).
+
+        The fix ensures:
+        - trainer.fit() receives NO val_dataloaders
+        - MinEpochEarlyStopping is removed from callbacks
+        - ModelCheckpoint uses save_top_k=0 (last epoch only, no metric)
+        - trainer.test() is called after fit for single unbiased evaluation
+        """
+        import sys
+        from lightning.pytorch.callbacks import ModelCheckpoint
+
+        from src.training.callbacks import (
+            MinEpochEarlyStopping,
+            ResilienceModelCheckpoint,
+        )
+
+        # We need to test the --final code path in scripts/train.py
+        # without actually loading data. Use mocks throughout.
+
+        # Mock all heavyweight dependencies
+        with (
+            patch("scripts.train.load_config") as mock_load_config,
+            patch("scripts.train.set_seed"),
+            patch("scripts.train.ExperimentManager") as mock_exp_mgr,
+            patch("scripts.train.CognitiveResilienceLightningModule") as mock_module_cls,
+            patch("scripts.train.OmegaConf") as mock_omegaconf,
+            patch("src.utils.config.validate_config"),
+            patch("scripts.train.setup_callbacks") as mock_setup_callbacks,
+            patch("scripts.train.setup_trainer") as mock_setup_trainer,
+            patch("src.data.splits.load_splits") as mock_load_splits,
+            patch("src.data.splits.get_final_train_subjects") as mock_get_final,
+            patch("src.data.loaders.create_fold_dataloaders") as mock_create_loaders,
+            patch("scripts.train.torch") as mock_torch,
+        ):
+            # Configure mock config
+            mock_config = MagicMock()
+            mock_config.experiment.get.return_value = 42
+            mock_config.paths.get.side_effect = lambda key, default: default
+            mock_config.data.metadata_path = "/fake/metadata"
+            mock_load_config.return_value = mock_config
+
+            # OmegaConf mocks
+            mock_omegaconf.to_container.return_value = {}
+            mock_omegaconf.update = MagicMock()
+
+            # Experiment manager mock
+            mock_experiment = MagicMock()
+            mock_experiment.exp_hash = "abc123"
+            mock_experiment.exp_dir = "/tmp/exp"
+            mock_experiment.checkpoints_dir = "/tmp/ckpt"
+            mock_experiment.tensorboard_dir = "/tmp/tb"
+            mock_experiment.model_dir = Path("/tmp/test_model")
+            mock_exp_mgr.return_value.create_experiment.return_value = mock_experiment
+
+            # Module mock
+            mock_module = MagicMock()
+            mock_module_cls.return_value = mock_module
+
+            # Splits mock -- has holdout_test and folds
+            mock_splits = {
+                "holdout_test": ["subj_A", "subj_B"],
+                "folds": [
+                    {"train": ["subj_C", "subj_D"], "val": ["subj_E"]},
+                ],
+            }
+            mock_load_splits.return_value = mock_splits
+            mock_get_final.return_value = ["subj_C", "subj_D", "subj_E"]
+
+            # create_fold_dataloaders returns mock loaders
+            mock_train_loader = MagicMock(name="train_loader")
+            mock_test_loader = MagicMock(name="test_loader")
+            mock_create_loaders.side_effect = [
+                (mock_train_loader, MagicMock()),  # train call (discard val)
+                (MagicMock(), mock_test_loader),    # test call (discard train)
+            ]
+
+            # setup_callbacks returns realistic callbacks to be filtered
+            mock_setup_callbacks.return_value = [
+                ModelCheckpoint(
+                    dirpath="/tmp", monitor="val_loss", mode="min",
+                    save_top_k=1, save_last=True,
+                ),
+                MinEpochEarlyStopping(
+                    min_epochs=20, monitor="val_loss", patience=10,
+                    min_delta=0.001, mode="min",
+                ),
+                MagicMock(name="LearningRateMonitor"),
+                MagicMock(name="TemperatureAnnealing"),
+                MagicMock(name="GradientNormLogger"),
+                ResilienceModelCheckpoint(),
+            ]
+
+            # Trainer mock
+            mock_trainer = MagicMock()
+            mock_trainer.max_epochs = 100
+            mock_setup_trainer.return_value = mock_trainer
+
+            # Metadata + adata mock -- patch Path, pd.read_csv, sc.read_h5ad
+            with (
+                patch("scripts.train.Path") as mock_path_cls,
+                patch("scripts.train.pd") as mock_pd,
+                patch("scripts.train.sc") as mock_sc,
+            ):
+                mock_path_instance = MagicMock()
+                mock_path_cls.return_value = mock_path_instance
+                mock_csv_path = MagicMock()
+                mock_csv_path.exists.return_value = True
+                mock_path_instance.__truediv__ = MagicMock(return_value=mock_csv_path)
+                mock_pd.read_csv.return_value = MagicMock(name="metadata_df")
+                mock_sc.read_h5ad.return_value = MagicMock(name="adata")
+
+                # Simulate CLI args: --final --splits-path /fake/splits.json
+                test_args = [
+                    "train.py",
+                    "--config", "configs/default.yaml",
+                    "--final",
+                    "--splits-path", "/fake/splits.json",
+                ]
+                with patch.object(sys, "argv", test_args):
+                    from scripts.train import main
+                    main()
+
+            # --- Assertions ---
+
+            # 1. trainer.fit() must NOT receive val_dataloaders
+            mock_trainer.fit.assert_called_once()
+            fit_call_kwargs = mock_trainer.fit.call_args
+            assert "val_dataloaders" not in fit_call_kwargs.kwargs, (
+                "trainer.fit() received val_dataloaders in --final mode -- "
+                "holdout test data is leaking into training (data leakage bug)"
+            )
+
+            # 2. trainer.test() must be called after fit
+            mock_trainer.test.assert_called_once()
+
+            # 3. setup_trainer was called with filtered callbacks
+            mock_setup_trainer.assert_called()
+            trainer_call_kwargs = mock_setup_trainer.call_args
+            final_callbacks = trainer_call_kwargs.kwargs.get(
+                "callbacks",
+                trainer_call_kwargs.args[1] if len(trainer_call_kwargs.args) > 1 else None,
+            )
+            assert final_callbacks is not None, (
+                "setup_trainer was not called with explicit callbacks"
+            )
+
+            # 4. No MinEpochEarlyStopping in final callbacks
+            early_stop_cbs = [
+                cb for cb in final_callbacks
+                if isinstance(cb, MinEpochEarlyStopping)
+            ]
+            assert len(early_stop_cbs) == 0, (
+                "MinEpochEarlyStopping found in --final mode callbacks -- "
+                "early stopping must be disabled for final training"
+            )
+
+            # 5. ModelCheckpoint should have save_top_k=0 (no metric selection)
+            ckpt_cbs = [
+                cb for cb in final_callbacks
+                if isinstance(cb, ModelCheckpoint)
+            ]
+            assert len(ckpt_cbs) >= 1, (
+                "No ModelCheckpoint found in --final mode callbacks"
+            )
+            for cb in ckpt_cbs:
+                assert cb.save_top_k == 0, (
+                    f"ModelCheckpoint has save_top_k={cb.save_top_k} "
+                    "but expected 0 (no metric-based selection in final mode)"
+                )
+
+            # 6. ResilienceModelCheckpoint is still present
+            resilience_cbs = [
+                cb for cb in final_callbacks
+                if isinstance(cb, ResilienceModelCheckpoint)
+            ]
+            assert len(resilience_cbs) >= 1, (
+                "ResilienceModelCheckpoint missing from --final mode callbacks"
+            )

@@ -704,3 +704,26 @@ class TestCheckpointRoundTrip:
             )
 
         assert torch.allclose(original_output["mean"], loaded_output["mean"], atol=1e-6)
+
+
+class TestBayesianSVILrd:
+    """Tests for Bayesian SVI learning rate decay (lrd) configuration."""
+
+    def test_bayesian_svi_uses_lrd_from_config(self, bayesian_config):
+        """ClippedAdam receives lrd value from config when specified."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        bayesian_config.training.optimizer.lrd = 0.9999
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        module.configure_optimizers()
+        # PyroClippedAdam stores optimizer args in pt_optim_args
+        assert module.pyro_optim.pt_optim_args["lrd"] == 0.9999
+
+    def test_bayesian_svi_lrd_defaults_to_one(self, bayesian_config):
+        """ClippedAdam defaults to lrd=1.0 (no decay) when config omits lrd."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        # Ensure no lrd key in optimizer config
+        if "lrd" in bayesian_config.training.optimizer:
+            del bayesian_config.training.optimizer.lrd
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        module.configure_optimizers()
+        assert module.pyro_optim.pt_optim_args["lrd"] == 1.0

@@ -62,8 +62,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=32,
-        help="Batch size for inference (default: 32)",
+        default=None,
+        help="Batch size for inference (default: from config, or 32)",
     )
     parser.add_argument(
         "--device",
@@ -113,6 +113,15 @@ def build_dataloader(
     config, data_path: str | None, batch_size: int
 ) -> DataLoader:
     """Build inference DataLoader from config and data path.
+
+    This function intentionally does NOT reuse create_fold_dataloaders() from
+    src.data.loaders. The training and inference loaders have different concerns:
+    - Subject selection: training uses splits/folds; inference discovers subjects
+      from disk (precomputed .npz files) or uses all metadata subjects.
+    - DataLoader params: inference uses num_workers=0 (safe for variable-length
+      HGT attention extraction) vs training's multi-worker setup.
+    - Both share the underlying create_dataloader() factory for the actual
+      DataLoader construction -- the duplication is only in dataset assembly.
 
     Supports two modes:
     - Precomputed: load from .npz feature directory (fast, recommended)
@@ -194,6 +203,7 @@ def build_dataloader(
             pathology_columns=pathology_columns,
             max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
             min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
+            sampling_strategy=data_cfg.cell_sampling.get("sampling_strategy", "random"),
         )
 
     dataloader = create_dataloader(
@@ -266,9 +276,12 @@ def main():
     validate_config(config, required_keys=["model"])
 
     data_path = args.data_path
+    batch_size = args.batch_size
+    if batch_size is None:
+        batch_size = config.inference.get("batch_size", 32) if hasattr(config, "inference") else 32
     logger.info("Building inference DataLoader...")
-    dataloader = build_dataloader(config, data_path, args.batch_size)
-    logger.info(f"DataLoader ready: {len(dataloader.dataset)} subjects, batch_size={args.batch_size}")
+    dataloader = build_dataloader(config, data_path, batch_size)
+    logger.info(f"DataLoader ready: {len(dataloader.dataset)} subjects, batch_size={batch_size}")
 
     # Determine extraction flags
     # If no CLI flags explicitly set, check config for defaults

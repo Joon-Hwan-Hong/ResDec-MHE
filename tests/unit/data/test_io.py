@@ -10,6 +10,7 @@ import pytest
 from src.utils.io import unpack_hgt_for_ccc, save_attention_weights, load_attention_weights
 
 
+@pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
 def test_unpack_hgt_for_ccc_nan_handling():
     """NaN entries (absent edge types) must not poison aggregated scores."""
     n_samples, n_edges, n_layers, n_heads = 5, 3, 2, 4

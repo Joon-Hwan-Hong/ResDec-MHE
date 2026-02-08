@@ -1,5 +1,14 @@
 """
 GPU utilities for memory management.
+
+Retained as standalone utilities (not wrapped by Lightning) because:
+- get_gpu_memory_info(): Used by scripts and analysis code for runtime
+  diagnostics and memory-aware batch size selection — not available through
+  Lightning's Trainer API.
+- clear_gpu_memory(): Called between Optuna trials and inference batches to
+  prevent OOM from cached allocations — Lightning doesn't expose this.
+- set_visible_gpus(): Called before any CUDA context exists (e.g., multi-GPU
+  Optuna workers pinning to specific GPUs) — must run before Trainer init.
 """
 
 import os

@@ -93,8 +93,11 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
         )
     )
 
-    # LearningRateMonitor
-    callbacks.append(LearningRateMonitor(logging_interval="step"))
+    # LearningRateMonitor — skip in Bayesian mode (SVI uses Pyro's internal
+    # optimizer with lrd decay; Lightning's LR monitor can't see Pyro's LR)
+    head_type = config.model.head.get("type", "deterministic")
+    if head_type != "bayesian":
+        callbacks.append(LearningRateMonitor(logging_interval="step"))
 
     # TemperatureAnnealing
     ta_cfg = train_cfg.temperature_annealing
@@ -327,19 +330,76 @@ def main() -> None:
             f"{len(test_subjects)} holdout test subjects"
         )
 
-        # Create a synthetic "final" fold so we can reuse create_fold_dataloaders
-        final_fold = {"train": train_subjects, "val": test_subjects}
-        splits_for_final = dict(splits)
-        splits_for_final["folds"] = [final_fold]
+        # Create train-only loader: synthetic fold with all train_val_pool as train,
+        # and train subjects also as "val" (required by create_fold_dataloaders
+        # return signature) -- but we will NOT pass it to trainer.fit.
+        train_fold = {"train": train_subjects, "val": train_subjects}
+        splits_for_train = dict(splits)
+        splits_for_train["folds"] = [train_fold]
 
-        train_loader, val_loader = create_fold_dataloaders(
-            config, adata, metadata, splits_for_final, fold_idx=0,
+        train_loader, _ = create_fold_dataloaders(
+            config, adata, metadata, splits_for_train, fold_idx=0,
             precomputed_dir=args.precomputed_dir,
         )
+
+        # Create test-only loader for post-training evaluation
+        test_fold = {"train": test_subjects, "val": test_subjects}
+        splits_for_test = dict(splits)
+        splits_for_test["folds"] = [test_fold]
+
+        _, test_loader = create_fold_dataloaders(
+            config, adata, metadata, splits_for_test, fold_idx=0,
+            precomputed_dir=args.precomputed_dir,
+        )
+
         logger.info(
             "Final-mode dataloaders created: %d train, %d test subjects",
             len(train_subjects), len(test_subjects),
         )
+
+        # Override callbacks: remove early stopping and val_loss-based checkpointing
+        # to prevent any holdout data from influencing training decisions.
+        default_callbacks = setup_callbacks(config)
+        final_callbacks = [
+            cb for cb in default_callbacks
+            if not isinstance(cb, (MinEpochEarlyStopping, ModelCheckpoint,
+                                   ResilienceModelCheckpoint))
+        ]
+
+        # Add last-epoch-only checkpoint (no metric selection)
+        final_callbacks.append(
+            ModelCheckpoint(
+                dirpath=config.paths.get("checkpoint_dir", "outputs/checkpoints/"),
+                save_last=True,
+                save_top_k=0,
+                filename="final-epoch={epoch}",
+                auto_insert_metric_name=False,
+            )
+        )
+
+        # Re-add ResilienceModelCheckpoint for custom metadata
+        final_callbacks.append(ResilienceModelCheckpoint())
+
+        # Override trainer with final-mode callbacks
+        trainer = setup_trainer(config, callbacks=final_callbacks)
+
+        logger.info(
+            "Final mode: using fixed max_epochs=%d with no early stopping",
+            trainer.max_epochs,
+        )
+
+        # Train without val_dataloaders -- holdout is never seen during training
+        trainer.fit(module, train_dataloaders=train_loader)
+        logger.info("Final training complete.")
+
+        # Export weights-only artifact for inference (lighter than full Lightning checkpoint)
+        weights_path = experiment.model_dir / "weights.pt"
+        torch.save(module.model.state_dict(), weights_path)
+        logger.info("Saved weights-only artifact to %s", weights_path)
+
+        # Single unbiased evaluation on holdout test set
+        trainer.test(module, dataloaders=test_loader)
+        logger.info("Holdout test evaluation complete.")
     else:
         # Standard fold-based training
         train_loader, val_loader = create_fold_dataloaders(
@@ -348,9 +408,14 @@ def main() -> None:
         )
         logger.info("Fold %d dataloaders created", args.fold)
 
-    # Train
-    trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
-    logger.info("Training complete.")
+        # Train
+        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        logger.info("Training complete.")
+
+        # Export weights-only artifact for inference (lighter than full Lightning checkpoint)
+        weights_path = experiment.model_dir / "weights.pt"
+        torch.save(module.model.state_dict(), weights_path)
+        logger.info("Saved weights-only artifact to %s", weights_path)
 
 
 if __name__ == "__main__":

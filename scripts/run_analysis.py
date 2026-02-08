@@ -551,6 +551,27 @@ def main():
 
     logger.info(f"Metadata subject column: {metadata_subject_column}")
 
+    # Resolve parameters: CLI arg > config > hardcoded default
+    if analysis_config is not None and hasattr(analysis_config, "analysis"):
+        acfg = analysis_config.analysis
+        res_cfg = acfg.get("resilience", {})
+        out_cfg = acfg.get("output", {})
+    else:
+        res_cfg = {}
+        out_cfg = {}
+
+    # Apply config fallbacks for unset CLI args (detect by checking against argparse defaults)
+    if args.n_permutations == 1000:  # argparse default
+        args.n_permutations = res_cfg.get("n_permutations", 1000)
+    if args.fdr_threshold == 0.05:  # argparse default
+        args.fdr_threshold = res_cfg.get("alpha", 0.05)
+    if args.top_k_genes == 100:  # argparse default
+        args.top_k_genes = out_cfg.get("top_n_genes", 100)
+    if not args.run_ablation:  # argparse default False
+        args.run_ablation = res_cfg.get("run_ablation_study", False)
+    if not args.no_fdr:  # argparse default False
+        args.no_fdr = not res_cfg.get("apply_fdr_correction", True)
+
     # Resolve input paths
     if args.experiment_dir:
         exp_dir = Path(args.experiment_dir)

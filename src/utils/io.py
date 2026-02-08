@@ -9,6 +9,8 @@ import h5py
 import numpy as np
 import pandas as pd
 
+from src.data.constants import sanitize_key
+
 
 def save_attention_weights(
     path: str | Path,
@@ -206,7 +208,7 @@ def save_attention_weights(
             per_ct_group = pma_group.create_group("per_cell_type")
             for ct_idx, ct_name in enumerate(ct_order):
                 if ct_idx < len(pma_attention):
-                    safe_name = ct_name.replace("/", "_").replace(" ", "_")
+                    safe_name = sanitize_key(ct_name)
                     per_ct_group.create_dataset(
                         safe_name,
                         data=pma_attention[ct_idx],
@@ -463,7 +465,7 @@ def unpack_pma_attention(
     # Collect arrays in cell type order
     arrays = []
     for ct_name in ct_order:
-        safe_name = ct_name.replace("/", "_").replace(" ", "_")
+        safe_name = sanitize_key(ct_name)
         if safe_name in sanitized_to_array:
             arr = sanitized_to_array[safe_name]
             # arr shape: [n_subjects, n_heads, n_seeds, max_cells]

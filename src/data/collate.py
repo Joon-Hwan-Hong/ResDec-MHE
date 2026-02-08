@@ -467,16 +467,14 @@ def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     Handles subjects with variable numbers of brain regions.
 
     Note:
-        This function has LIMITED multi-region support:
-        - Requires "region_pseudobulk" sentinel key for activation
-        - Does not auto-derive available_regions from region keys
-        - Does not warn about missing available_regions
+        Multi-region support: detects region data via "region_pseudobulk"
+        sentinel key OR by auto-deriving from region_{idx}_pseudobulk keys
+        (via _derive_available_regions_from_keys). When region data is
+        detected, assembles region tensors with auto_derive_regions=True.
 
         For full multi-region support with HGT graph format, use
-        collate_for_hgt_multiregion() instead, which:
-        - Auto-detects multi-region from region_{idx}_pseudobulk keys
-        - Derives available_regions when not provided
-        - Warns about missing metadata
+        collate_for_hgt_multiregion() instead, which additionally handles
+        per-region edge_index/edge_attr dicts for graph construction.
 
     Args:
         batch: List of sample dictionaries with per-region data

@@ -595,10 +595,57 @@ class PrecomputedDataset(Dataset):
         subject_id = self.subject_ids[idx]
         feature_file = self.feature_dir / f"{subject_id}.npz"
 
-        # Load features
-        data = np.load(feature_file, allow_pickle=True)
+        # Load features (context manager ensures file handle is closed)
+        with np.load(feature_file, allow_pickle=True) as npz_data:
+            # Validate cell_type_order matches (if stored in file)
+            if "cell_type_order" in npz_data:
+                saved_order = list(npz_data["cell_type_order"])
+                if saved_order != self.cell_type_order:
+                    raise ValueError(
+                        f"Precomputed file {feature_file} was saved with different "
+                        f"cell_type_order than expected. Edge indices may be incorrectly "
+                        f"mapped. Saved: {saved_order[:3]}... Expected: {self.cell_type_order[:3]}..."
+                    )
 
-        # Get phenotypes from metadata
+            # Load cell_counts and region_mask (with backward compatibility for older files)
+            if "cell_counts" in npz_data:
+                cell_counts = torch.from_numpy(npz_data["cell_counts"]).long()
+            else:
+                # Derive cell_counts from cell_mask: sum valid cells per cell type
+                # cell_mask shape: [n_cell_types, max_cells] -> sum along dim=1
+                cell_mask_np = npz_data["cell_mask"]  # [n_cell_types, max_cells] bool
+                cell_counts = torch.from_numpy(cell_mask_np.sum(axis=1).astype(np.int64))
+
+            if "region_mask" in npz_data:
+                region_mask = torch.from_numpy(npz_data["region_mask"]).bool()
+            else:
+                # Default to first region only (PFC) for backward compatibility
+                from src.data.constants import REGION_ORDER
+                region_mask = torch.zeros(len(REGION_ORDER), dtype=torch.bool)
+                region_mask[0] = True
+
+            # Extract all arrays into tensors while file is open
+            pseudobulk = torch.from_numpy(npz_data["pseudobulk"]).float()
+            cell_type_mask = torch.from_numpy(npz_data["cell_type_mask"]).bool()
+            cells = torch.from_numpy(npz_data["cells"]).float()
+            cell_mask = torch.from_numpy(npz_data["cell_mask"]).bool()
+            ccc_edge_index = torch.from_numpy(npz_data["edge_index"]).long()
+            ccc_edge_type = torch.from_numpy(npz_data["edge_type"]).long()
+            ccc_edge_attr = torch.from_numpy(npz_data["edge_attr"]).float()
+
+            # Load multi-region pseudobulk data (if present in file)
+            region_pseudobulks = {}
+            for key in npz_data.files:
+                if key.startswith("region_") and key.endswith("_pseudobulk"):
+                    region_pseudobulks[key] = torch.from_numpy(npz_data[key]).float()
+
+            available_regions = (
+                list(npz_data["available_regions"])
+                if "available_regions" in npz_data
+                else None
+            )
+
+        # Get phenotypes from metadata (no npz access needed)
         pathology = np.zeros(len(self.pathology_columns), dtype=np.float32)
         for i, col in enumerate(self.pathology_columns):
             if col in self.metadata.columns:
@@ -618,59 +665,28 @@ class PrecomputedDataset(Dataset):
             )
         target = float(target)
 
-        # Validate cell_type_order matches (if stored in file)
-        if "cell_type_order" in data:
-            saved_order = list(data["cell_type_order"])
-            if saved_order != self.cell_type_order:
-                raise ValueError(
-                    f"Precomputed file {feature_file} was saved with different "
-                    f"cell_type_order than expected. Edge indices may be incorrectly "
-                    f"mapped. Saved: {saved_order[:3]}... Expected: {self.cell_type_order[:3]}..."
-                )
-
-        # Load cell_counts and region_mask (with backward compatibility for older files)
-        if "cell_counts" in data:
-            cell_counts = torch.from_numpy(data["cell_counts"]).long()
-        else:
-            # Derive cell_counts from cell_mask: sum valid cells per cell type
-            # cell_mask shape: [n_cell_types, max_cells] -> sum along dim=1
-            cell_mask = data["cell_mask"]  # [n_cell_types, max_cells] bool
-            cell_counts = torch.from_numpy(cell_mask.sum(axis=1).astype(np.int64))
-
-        if "region_mask" in data:
-            region_mask = torch.from_numpy(data["region_mask"]).bool()
-        else:
-            # Default to first region only (PFC) for backward compatibility
-            from src.data.constants import REGION_ORDER
-            region_mask = torch.zeros(len(REGION_ORDER), dtype=torch.bool)
-            region_mask[0] = True
-
         sample = {
             "subject_id": subject_id,
-            "pseudobulk": torch.from_numpy(data["pseudobulk"]).float(),
-            "cell_type_mask": torch.from_numpy(data["cell_type_mask"]).bool(),
+            "pseudobulk": pseudobulk,
+            "cell_type_mask": cell_type_mask,
             "cell_counts": cell_counts,
             "region_mask": region_mask,
-            "cells": torch.from_numpy(data["cells"]).float(),
-            "cell_mask": torch.from_numpy(data["cell_mask"]).bool(),
+            "cells": cells,
+            "cell_mask": cell_mask,
             # Graph features (CCC = cell-cell communication)
-            "ccc_edge_index": torch.from_numpy(data["edge_index"]).long(),
-            "ccc_edge_type": torch.from_numpy(data["edge_type"]).long(),
-            "ccc_edge_attr": torch.from_numpy(data["edge_attr"]).float(),
+            "ccc_edge_index": ccc_edge_index,
+            "ccc_edge_type": ccc_edge_type,
+            "ccc_edge_attr": ccc_edge_attr,
             # Phenotypes
             "pathology": torch.from_numpy(pathology).float(),
             "cognition": torch.tensor([target], dtype=torch.float32),
             # Metadata for collate - cell type ordering for edge index mapping
             "cell_type_order": self.cell_type_order,
+            **region_pseudobulks,
         }
 
-        # Load multi-region pseudobulk data (if present in file)
-        for key in data.files:
-            if key.startswith("region_") and key.endswith("_pseudobulk"):
-                sample[key] = torch.from_numpy(data[key]).float()
-
-        if "available_regions" in data:
-            sample["available_regions"] = list(data["available_regions"])
+        if available_regions is not None:
+            sample["available_regions"] = available_regions
 
         return sample
 

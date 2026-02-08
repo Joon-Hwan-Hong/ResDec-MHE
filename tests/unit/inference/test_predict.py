@@ -28,6 +28,7 @@ from src.inference.predict import (
     Predictor,
     predict_from_checkpoint,
 )
+from src.training.lightning_module import CognitiveResilienceLightningModule
 
 
 # ============================================================================
@@ -379,6 +380,183 @@ class TestFromCheckpointConfigRecovery:
         assert predictor.model is not None
         # Legacy path wraps under {"model": ...}, should NOT have data section
         assert not hasattr(predictor.config, "data") or predictor.config.get("data") is None
+
+
+# ============================================================================
+# Bayesian Device Migration Tests
+# ============================================================================
+
+
+class TestFromCheckpointBayesianDeviceMigration:
+    """Tests for Pyro param store device migration in from_checkpoint."""
+
+    def test_from_checkpoint_bayesian_device_migration(self, tmp_path, mock_config):
+        """Pyro param store tensors are migrated to target device in from_checkpoint."""
+        import pyro
+        from omegaconf import OmegaConf
+        from src.models.full_model import CognitiveResilienceModel
+
+        model_cfg = mock_config.model
+        model = CognitiveResilienceModel(
+            n_genes=model_cfg.n_genes,
+            n_cell_types=model_cfg.n_cell_types,
+            d_embed=model_cfg.d_embed,
+            d_fused=model_cfg.d_fused,
+            d_cond=model_cfg.pathology_attention.d_cond,
+            n_hgt_layers=model_cfg.hgt.n_layers,
+            n_hgt_heads=model_cfg.hgt.n_heads,
+            n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
+            n_isab_layers=model_cfg.set_transformer.n_isab_layers,
+            n_inducing_points=model_cfg.set_transformer.n_inducing_points,
+            n_attention_heads=model_cfg.pathology_attention.n_heads,
+            gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
+            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
+            use_bayesian_head=(model_cfg.head.type == "bayesian"),
+            d_head_hidden=model_cfg.head.d_hidden,
+            dropout=model_cfg.get("dropout", 0.1),
+        )
+
+        # Create a guide and prototype it to populate param store
+        from pyro.infer.autoguide import AutoDiagonalNormal
+        pyro.clear_param_store()
+        guide = AutoDiagonalNormal(model)
+
+        # Prototype the guide
+        n_ct = model_cfg.n_cell_types
+        n_genes = model_cfg.n_genes
+        n_regions = model_cfg.get("n_regions", 6)
+        dummy_kwargs = {
+            "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
+            "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
+            "cells": torch.zeros(1, n_ct, 1, n_genes),
+            "cell_mask": torch.ones(1, n_ct, 1, dtype=torch.bool),
+            "pathology": torch.zeros(1, 3),
+            "cognition": torch.zeros(1, 1),
+        }
+        try:
+            guide(**dummy_kwargs)
+        except Exception:
+            pass
+
+        # Save param store values as CPU tensors
+        param_store_cpu = {
+            k: v.detach().cpu()
+            for k, v in pyro.get_param_store().items()
+        }
+
+        # Save checkpoint with pyro_param_store and guide_state_dict
+        checkpoint = {
+            "state_dict": {"model." + k: v for k, v in model.state_dict().items()},
+            "model_config": OmegaConf.to_container(model_cfg, resolve=True),
+            "full_config": OmegaConf.to_container(mock_config, resolve=True),
+            "guide_state_dict": guide.state_dict(),
+            "pyro_param_store": param_store_cpu,
+        }
+        ckpt_path = tmp_path / "bayesian_ckpt.pt"
+        torch.save(checkpoint, ckpt_path)
+
+        # Clear param store before loading
+        pyro.clear_param_store()
+
+        # Load from checkpoint with device="cpu"
+        predictor = Predictor.from_checkpoint(ckpt_path, device="cpu", config=mock_config)
+        assert predictor is not None
+
+        # Verify param store tensors are on CPU
+        store = pyro.get_param_store()
+        for k in param_store_cpu:
+            assert store[k].device == torch.device("cpu"), (
+                f"Param {k} should be on cpu after from_checkpoint, got {store[k].device}"
+            )
+
+    def test_guide_prototype_uses_config_pathology_dim(self, tmp_path):
+        """Guide prototype reads n_pathology_features from config (not hardcoded 3)."""
+        import pyro
+        from omegaconf import OmegaConf
+        from src.models.full_model import CognitiveResilienceModel
+
+        # Config with n_pathology_features=5 (non-default)
+        config = OmegaConf.create({
+            "model": {
+                "n_genes": 100,
+                "n_cell_types": N_CELL_TYPES,
+                "d_embed": 128,
+                "d_fused": 128,
+                "dropout": 0.1,
+                "head": {"type": "bayesian", "d_hidden": 64},
+                "hgt": {"n_layers": 2, "n_heads": 4},
+                "set_transformer": {"n_heads": 4, "n_isab_layers": 2, "n_inducing_points": 32},
+                "pathology_attention": {"d_cond": 64, "n_heads": 4, "n_pathology_features": 5},
+                "gene_gate": {"initial_temperature": 2.0},
+                "cell_type_selector": {"selection_temperature": 1.0},
+            }
+        })
+        model_cfg = config.model
+
+        model = CognitiveResilienceModel(
+            n_genes=model_cfg.n_genes,
+            n_cell_types=model_cfg.n_cell_types,
+            d_embed=model_cfg.d_embed,
+            d_fused=model_cfg.d_fused,
+            d_cond=model_cfg.pathology_attention.d_cond,
+            n_hgt_layers=model_cfg.hgt.n_layers,
+            n_hgt_heads=model_cfg.hgt.n_heads,
+            n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
+            n_isab_layers=model_cfg.set_transformer.n_isab_layers,
+            n_inducing_points=model_cfg.set_transformer.n_inducing_points,
+            n_attention_heads=model_cfg.pathology_attention.n_heads,
+            n_pathology_features=model_cfg.pathology_attention.n_pathology_features,
+            gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
+            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
+            use_bayesian_head=True,
+            d_head_hidden=model_cfg.head.d_hidden,
+            dropout=model_cfg.get("dropout", 0.1),
+        )
+
+        # Create guide, prototype, and save checkpoint
+        from pyro.infer.autoguide import AutoDiagonalNormal
+        pyro.clear_param_store()
+        guide = AutoDiagonalNormal(model)
+
+        n_ct = model_cfg.n_cell_types
+        n_genes = model_cfg.n_genes
+        n_regions = model_cfg.get("n_regions", 6)
+        dummy_kwargs = {
+            "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
+            "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
+            "cells": torch.zeros(1, n_ct, 1, n_genes),
+            "cell_mask": torch.ones(1, n_ct, 1, dtype=torch.bool),
+            "pathology": torch.zeros(1, 5),  # 5 pathology features
+            "cognition": torch.zeros(1, 1),
+        }
+        try:
+            guide(**dummy_kwargs)
+        except Exception:
+            pass
+
+        param_store_cpu = {
+            k: v.detach().cpu()
+            for k, v in pyro.get_param_store().items()
+        }
+
+        checkpoint = {
+            "state_dict": {"model." + k: v for k, v in model.state_dict().items()},
+            "model_config": OmegaConf.to_container(model_cfg, resolve=True),
+            "full_config": OmegaConf.to_container(config, resolve=True),
+            "guide_state_dict": guide.state_dict(),
+            "pyro_param_store": param_store_cpu,
+        }
+        ckpt_path = tmp_path / "pathology5_ckpt.pt"
+        torch.save(checkpoint, ckpt_path)
+
+        pyro.clear_param_store()
+
+        # Load from checkpoint — should NOT crash despite n_pathology_features=5
+        predictor = Predictor.from_checkpoint(ckpt_path, device="cpu", config=config)
+        assert predictor is not None
+        assert predictor.model is not None
+        # Model's pathology encoder should have 5 features
+        assert predictor.model.pathology_encoder.n_pathology_features == 5
 
 
 # ============================================================================
@@ -1053,3 +1231,49 @@ class TestSavePredictionsMetadata:
         assert "split" in df.columns, "split column missing from predictions"
         assert list(df["region"]) == ["PFC", "EC"]
         assert list(df["split"]) == ["train", "val"]
+
+
+# ============================================================================
+# from_lightning_module Guide Propagation Tests
+# ============================================================================
+
+
+class TestFromLightningModuleGuide:
+    """Tests that from_lightning_module passes the guide to Predictor."""
+
+    def test_from_lightning_module_passes_guide(self, mock_config):
+        """Bayesian module's guide is propagated to Predictor."""
+        module = MagicMock(spec=CognitiveResilienceLightningModule)
+        module.model = MagicMock()
+        module.model.eval.return_value = module.model
+        module.model.to.return_value = module.model
+        module.config = mock_config
+        module.guide = MagicMock(name="mock_guide")
+
+        predictor = Predictor.from_lightning_module(module, device="cpu")
+        assert predictor.guide is module.guide
+
+    def test_from_lightning_module_guide_none_deterministic(self, mock_config):
+        """Deterministic module (guide=None) results in predictor.guide=None."""
+        module = MagicMock(spec=CognitiveResilienceLightningModule)
+        module.model = MagicMock()
+        module.model.eval.return_value = module.model
+        module.model.to.return_value = module.model
+        module.config = mock_config
+        module.guide = None
+
+        predictor = Predictor.from_lightning_module(module, device="cpu")
+        assert predictor.guide is None
+
+    def test_from_lightning_module_missing_guide_attr(self, mock_config):
+        """Module without guide attribute results in predictor.guide=None."""
+        module = MagicMock(spec=CognitiveResilienceLightningModule)
+        module.model = MagicMock()
+        module.model.eval.return_value = module.model
+        module.model.to.return_value = module.model
+        module.config = mock_config
+        # Delete guide attr so getattr fallback triggers
+        del module.guide
+
+        predictor = Predictor.from_lightning_module(module, device="cpu")
+        assert predictor.guide is None

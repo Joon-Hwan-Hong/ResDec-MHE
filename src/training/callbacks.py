@@ -365,6 +365,9 @@ class ResilienceModelCheckpoint(pl.Callback):
                 k: v.detach().cpu()
                 for k, v in pyro.get_param_store().items()
             }
+            # Save Pyro optimizer state for exact resume
+            if hasattr(pl_module, 'pyro_optim') and pl_module.pyro_optim is not None:
+                checkpoint["pyro_optim_state"] = pl_module.pyro_optim.get_state()
 
     def on_load_checkpoint(
         self,
@@ -372,28 +375,38 @@ class ResilienceModelCheckpoint(pl.Callback):
         pl_module: pl.LightningModule,
         checkpoint: dict,
     ) -> None:
-        """Restore RNG states from checkpoint for exact reproducibility on resume."""
+        """Restore RNG states and Pyro state from checkpoint."""
         import random
         import numpy as np
 
+        # Restore RNG states (optional — legacy checkpoints may not have them)
         rng_states = checkpoint.get("rng_states")
         if rng_states is None:
             logger.warning(
                 "Checkpoint has no rng_states — RNG state not restored. "
                 "Training will not be exactly reproducible from this checkpoint."
             )
-            return
+        else:
+            random.setstate(rng_states["python"])
+            np.random.set_state(rng_states["numpy"])
+            torch.set_rng_state(rng_states["torch"])
+            if "cuda" in rng_states and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all(rng_states["cuda"])
 
-        random.setstate(rng_states["python"])
-        np.random.set_state(rng_states["numpy"])
-        torch.set_rng_state(rng_states["torch"])
-
-        if "cuda" in rng_states and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(rng_states["cuda"])
-
-        # Restore Pyro param store for Bayesian SVI
+        # Restore Pyro param store for Bayesian SVI (independent of RNG restore)
         if "pyro_param_store" in checkpoint:
             import pyro
+            device = pl_module.device
             pyro.clear_param_store()
             for k, v in checkpoint["pyro_param_store"].items():
-                pyro.get_param_store().setdefault(k, v)
+                pyro.get_param_store().setdefault(k, v.to(device))
+
+        # Restore Pyro optimizer state for exact resume
+        if "pyro_optim_state" in checkpoint:
+            if hasattr(pl_module, 'pyro_optim') and pl_module.pyro_optim is not None:
+                pl_module.pyro_optim.set_state(checkpoint["pyro_optim_state"])
+            else:
+                logger.warning(
+                    "Checkpoint contains pyro_optim_state but module has no pyro_optim. "
+                    "SVI optimizer state not restored."
+                )

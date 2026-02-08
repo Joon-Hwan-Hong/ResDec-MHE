@@ -70,6 +70,7 @@ def create_fold_dataloaders(
             pathology_columns=list(data_cfg.get("pathology_columns", [])),
             max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
             min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
+            sampling_strategy=data_cfg.cell_sampling.get("sampling_strategy", "random"),
         )
         val_ds = CognitiveResilienceDataset(
             adata, metadata, val_subjects,
@@ -79,6 +80,7 @@ def create_fold_dataloaders(
             pathology_columns=list(data_cfg.get("pathology_columns", [])),
             max_cells_per_type=data_cfg.cell_sampling.get("max_cells_per_type", 1000),
             min_cells_threshold=data_cfg.cell_sampling.get("min_cells_threshold", 50),
+            sampling_strategy=data_cfg.cell_sampling.get("sampling_strategy", "random"),
         )
 
     train_loader = create_dataloader(
