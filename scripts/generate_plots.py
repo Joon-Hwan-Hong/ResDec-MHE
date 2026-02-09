@@ -308,23 +308,6 @@ def load_analysis_data(analysis_dir: Path, predictions_path: Path | None = None)
             if emb_data:
                 data["embedding_dirs"][emb_name] = emb_data
                 logger.info(f"  Loaded embedding '{emb_name}': {list(emb_data.keys())}")
-    else:
-        # Legacy: top-level embedding files
-        umap_path = analysis_dir / "umap_projection.parquet"
-        if umap_path.exists():
-            data["umap_projection"] = load_dataframe(umap_path)
-            logger.info(f"  Loaded umap_projection: {len(data['umap_projection'])} rows")
-
-        cluster_path = analysis_dir / "cluster_assignments.parquet"
-        if cluster_path.exists():
-            data["cluster_assignments"] = load_dataframe(cluster_path)
-            logger.info(f"  Loaded cluster_assignments: {len(data['cluster_assignments'])} rows")
-
-        probe_path = analysis_dir / "linear_probe_results.parquet"
-        if probe_path.exists():
-            data["linear_probe_results"] = load_dataframe(probe_path)
-            logger.info(f"  Loaded linear_probe_results: {len(data['linear_probe_results'])} rows")
-
     return data
 
 

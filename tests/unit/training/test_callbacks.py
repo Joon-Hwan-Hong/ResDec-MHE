@@ -234,10 +234,9 @@ class TestResilienceModelCheckpoint:
             },
             "training": {"max_epochs": 10},
         })
-        # Default: no Pyro guide/optimizer (basic RNG tests don't need SVI).
+        # Default: no Pyro guide (basic RNG tests don't need SVI).
         # Pyro-specific tests set these explicitly.
         pl_module.guide = None
-        pl_module.pyro_optim = None
         checkpoint = {}
         return callback, trainer, pl_module, checkpoint
 
@@ -547,7 +546,6 @@ class TestPyroCheckpointRestore:
 
         # Step 2: on_train_start migrates to training device
         pl_module.guide = MagicMock()
-        pl_module.pyro_optim = None
         pl_module.device = torch.device("cpu")
         callback.on_train_start(trainer, pl_module)
 
@@ -557,46 +555,6 @@ class TestPyroCheckpointRestore:
             assert param.device == torch.device("cpu"), (
                 f"Param {k} should be on cpu after on_train_start, got {param.device}"
             )
-
-    def test_pyro_optim_state_deferred_restore(self):
-        """Pyro optimizer state is stashed during on_load_checkpoint, restored in on_train_start.
-
-        See test_pyro_param_store_restored_with_device_migration docstring for
-        rationale on why this is a callback-direct mock test rather than a real
-        Trainer lifecycle test.
-        """
-        callback, trainer, pl_module, _ = self._make_checkpoint_context()
-
-        mock_optim = MagicMock()
-        fake_state = {"step_count": 100, "param_groups": [{"lr": 0.001}]}
-        mock_optim.get_state.return_value = fake_state
-
-        pl_module.guide = MagicMock()
-        pl_module.guide.state_dict.return_value = {}
-        pl_module.pyro_optim = mock_optim
-
-        # Save checkpoint
-        checkpoint = {}
-        callback.on_save_checkpoint(trainer, pl_module, checkpoint)
-        assert "pyro_optim_state" in checkpoint
-
-        # Load checkpoint — pyro_optim should NOT be restored yet
-        pl_module.pyro_optim = None  # Not created yet during on_load_checkpoint
-        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
-
-        # State should be stashed, not applied
-        assert hasattr(callback, '_deferred_pyro_optim_state')
-        assert callback._deferred_pyro_optim_state == fake_state
-
-        # Now simulate configure_optimizers + on_train_start
-        load_mock_optim = MagicMock()
-        pl_module.pyro_optim = load_mock_optim
-        pl_module.device = torch.device("cpu")
-        callback.on_train_start(trainer, pl_module)
-
-        # NOW set_state should be called
-        load_mock_optim.set_state.assert_called_once_with(fake_state)
-        assert callback._deferred_pyro_optim_state is None  # Cleared
 
     def test_legacy_checkpoint_without_rng_states_still_restores_pyro(self):
         """Legacy checkpoint without rng_states still restores Pyro param store."""
@@ -626,40 +584,12 @@ class TestPyroCheckpointRestore:
         assert "auto_scale" in store
         assert torch.allclose(store["auto_loc"], torch.tensor([1.0, 2.0]))
 
-    def test_pyro_optim_state_warns_when_no_optim(self):
-        """Warns when checkpoint has pyro_optim_state but module has no pyro_optim."""
-        callback, trainer, pl_module, _ = self._make_checkpoint_context()
-        pl_module.device = torch.device("cpu")
-
-        # Module has no pyro_optim attribute
-        del pl_module.pyro_optim
-
-        checkpoint = {
-            "pyro_optim_state": {"step_count": 100},
-        }
-
-        # on_load_checkpoint stashes the state
-        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
-        assert hasattr(callback, '_deferred_pyro_optim_state')
-
-        # on_train_start emits the warning since pyro_optim is missing
-        pl_module.guide = None  # No guide either
-        with patch("src.training.callbacks.logger") as mock_logger:
-            callback.on_train_start(trainer, pl_module)
-            # Should warn about missing pyro_optim
-            warning_calls = [
-                call for call in mock_logger.warning.call_args_list
-                if "pyro_optim_state" in call[0][0]
-            ]
-            assert len(warning_calls) == 1
-
     def test_on_train_start_migrates_pyro_params_to_device(self):
         """on_train_start migrates Pyro param store to training device."""
         import pyro
 
         callback, trainer, pl_module, _ = self._make_checkpoint_context()
         pl_module.guide = MagicMock()
-        pl_module.pyro_optim = None
         pl_module.device = torch.device("cpu")
 
         pyro.clear_param_store()

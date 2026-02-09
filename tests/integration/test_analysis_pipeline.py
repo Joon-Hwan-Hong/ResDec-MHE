@@ -386,18 +386,22 @@ class TestCellHeterogeneityPipeline:
         n_subjects,
         n_cell_types,
     ):
-        """Test cell heterogeneity analysis function."""
-        from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity
+        """Test cell heterogeneity analysis via CellHeterogeneityAnalyzer."""
+        from src.analysis.cell_heterogeneity import CellHeterogeneityAnalyzer
 
         subject_ids = [f"subj_{i}" for i in range(n_subjects)]
 
-        summary_df, high_attention_df, all_scores_df = analyze_cell_heterogeneity(
+        analyzer = CellHeterogeneityAnalyzer(
             pma_attention=synthetic_pma_attention,
             cell_type_names=list(CELL_TYPE_ORDER),
             subject_ids=subject_ids,
             top_percentile=10.0,
             min_cells_per_type=10,
         )
+        result = analyzer.analyze()
+        summary_df = result.summary
+        high_attention_df = result.high_attention_cells
+        all_scores_df = result.all_scores
 
         # Verify summary statistics
         assert len(summary_df) == n_cell_types
@@ -418,7 +422,7 @@ class TestCellHeterogeneityPipeline:
         n_subjects,
     ):
         """cell_metadata columns are merged into high_attention_df and all_scores_df."""
-        from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity
+        from src.analysis.cell_heterogeneity import CellHeterogeneityAnalyzer
 
         n_cell_types_actual = synthetic_pma_attention.shape[1]
         max_cells = synthetic_pma_attention.shape[2]
@@ -439,7 +443,7 @@ class TestCellHeterogeneityPipeline:
             index=all_barcodes,
         )
 
-        summary_df, high_attention_df, all_scores_df = analyze_cell_heterogeneity(
+        analyzer = CellHeterogeneityAnalyzer(
             pma_attention=synthetic_pma_attention,
             cell_type_names=list(CELL_TYPE_ORDER),
             subject_ids=subject_ids,
@@ -448,6 +452,9 @@ class TestCellHeterogeneityPipeline:
             top_percentile=10.0,
             min_cells_per_type=5,
         )
+        result = analyzer.analyze()
+        high_attention_df = result.high_attention_cells
+        all_scores_df = result.all_scores
 
         # "donor_age" should appear in both output DataFrames
         assert "donor_age" in high_attention_df.columns, (

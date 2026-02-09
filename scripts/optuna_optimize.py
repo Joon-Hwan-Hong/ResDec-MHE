@@ -294,11 +294,12 @@ def objective(
                 "main() should validate --splits-path before calling optimize()."
             )
 
-        from src.data.loaders import create_fold_dataloaders
-        train_loader, val_loader = create_fold_dataloaders(
-            config, adata, metadata, splits, fold_idx,
+        from src.data.datamodule import CognitiveResilienceDataModule
+        dm = CognitiveResilienceDataModule(
+            config=config, metadata=metadata, splits=splits,
+            fold_idx=fold_idx, adata=adata,
         )
-        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        trainer.fit(module, datamodule=dm)
 
         val_loss = trainer.callback_metrics.get("val_loss")
         if val_loss is not None:

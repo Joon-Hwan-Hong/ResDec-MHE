@@ -6,6 +6,7 @@ Workflow: Raw counts → HVG (on raw) + L-R forcing → Normalize + log1p → Fi
 Note: seurat_v3 HVG selection requires RAW COUNTS, not log-normalized data.
 """
 
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +14,8 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
+
+logger = logging.getLogger(__name__)
 
 from src.data.constants import CELLCHATDB_PATH, GROUP_SEPARATOR
 
@@ -80,21 +83,21 @@ def preprocess_adata(
     Returns:
         Preprocessed AnnData with HVG + L-R genes, normalized and log-transformed
     """
-    print(f"Loading data from {adata_path}...")
+    logger.info(f"Loading data from {adata_path}...")
     adata = sc.read_h5ad(adata_path)
 
     if copy:
         adata = adata.copy()
 
-    print(f"Initial shape: {adata.shape[0]:,} cells × {adata.shape[1]:,} genes")
+    logger.info(f"Initial shape: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 1: Basic QC - Filter genes by minimum cells
     # ─────────────────────────────────────────────────────────────────────────
     n_genes_before = adata.n_vars
     sc.pp.filter_genes(adata, min_cells=min_cells_per_gene)
-    print(f"After gene filter (min_cells={min_cells_per_gene}): {adata.n_vars:,} genes "
-          f"(removed {n_genes_before - adata.n_vars:,})")
+    logger.info(f"After gene filter (min_cells={min_cells_per_gene}): {adata.n_vars:,} genes "
+                f"(removed {n_genes_before - adata.n_vars:,})")
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 1b: Round counts for CellBender-corrected subjects
@@ -110,7 +113,7 @@ def preprocess_adata(
         np.round(adata.X.data, out=adata.X.data)
     else:
         np.round(adata.X, out=adata.X)
-    print("Rounded counts to integers (handles CellBender-corrected subjects)")
+    logger.info("Rounded counts to integers (handles CellBender-corrected subjects)")
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 2: HVG selection on RAW COUNTS
@@ -124,7 +127,7 @@ def preprocess_adata(
             n_top_genes=n_hvg,
             flavor=hvg_flavor,
         )
-        print(f"HVG selection ({hvg_flavor}) on raw counts: {adata.var['highly_variable'].sum():,} genes")
+        logger.info(f"HVG selection ({hvg_flavor}) on raw counts: {adata.var['highly_variable'].sum():,} genes")
     # For other flavors, we'll run HVG after normalization (handled below)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -133,12 +136,12 @@ def preprocess_adata(
     cellchatdb_path = Path(cellchatdb_path)
     if cellchatdb_path.exists():
         lr_genes = get_lr_genes_from_cellchatdb(cellchatdb_path)
-        print(f"Loaded {len(lr_genes):,} L-R genes from CellChatDB")
+        logger.info(f"Loaded {len(lr_genes):,} L-R genes from CellChatDB")
 
         # Find L-R genes present in our data
         lr_in_data = adata.var_names.isin(lr_genes)
         n_lr_in_data = lr_in_data.sum()
-        print(f"L-R genes present in data: {n_lr_in_data:,}")
+        logger.info(f"L-R genes present in data: {n_lr_in_data:,}")
 
         # Mark L-R genes
         adata.var["lr_gene"] = lr_in_data
@@ -148,23 +151,23 @@ def preprocess_adata(
             n_hvg_only = adata.var["highly_variable"].sum()
             adata.var["highly_variable"] = adata.var["highly_variable"] | lr_in_data
             n_lr_added = adata.var["highly_variable"].sum() - n_hvg_only
-            print(f"L-R genes added (not in HVG): {n_lr_added:,}")
+            logger.info(f"L-R genes added (not in HVG): {n_lr_added:,}")
     else:
-        print(f"Warning: CellChatDB not found at {cellchatdb_path}, skipping L-R forcing")
+        logger.warning(f"CellChatDB not found at {cellchatdb_path}, skipping L-R forcing")
         adata.var["lr_gene"] = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 4: Store raw counts BEFORE normalization
     # ─────────────────────────────────────────────────────────────────────────
     adata.raw = adata.copy()
-    print("Stored raw counts in adata.raw")
+    logger.info("Stored raw counts in adata.raw")
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 5: Normalize + Log transform
     # ─────────────────────────────────────────────────────────────────────────
     sc.pp.normalize_total(adata, target_sum=target_sum)
     sc.pp.log1p(adata)
-    print(f"Normalized (target_sum={target_sum:.0e}) and log1p transformed")
+    logger.info(f"Normalized (target_sum={target_sum:.0e}) and log1p transformed")
 
     # For non-seurat_v3 flavors, run HVG on normalized data
     if hvg_flavor != "seurat_v3":
@@ -173,14 +176,14 @@ def preprocess_adata(
             n_top_genes=n_hvg,
             flavor=hvg_flavor,
         )
-        print(f"HVG selection ({hvg_flavor}) on normalized data: {adata.var['highly_variable'].sum():,} genes")
+        logger.info(f"HVG selection ({hvg_flavor}) on normalized data: {adata.var['highly_variable'].sum():,} genes")
 
         # Add L-R genes if CellChatDB was loaded
         if "lr_gene" in adata.var.columns and adata.var["lr_gene"].any():
             n_hvg_only = adata.var["highly_variable"].sum()
             adata.var["highly_variable"] = adata.var["highly_variable"] | adata.var["lr_gene"]
             n_lr_added = adata.var["highly_variable"].sum() - n_hvg_only
-            print(f"L-R genes added (not in HVG): {n_lr_added:,}")
+            logger.info(f"L-R genes added (not in HVG): {n_lr_added:,}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 6: Filter to final gene set
@@ -188,8 +191,8 @@ def preprocess_adata(
     n_final = adata.var["highly_variable"].sum()
     adata = adata[:, adata.var["highly_variable"]].copy()
 
-    print(f"Final gene set: {n_final:,} genes")
-    print(f"Final shape: {adata.shape[0]:,} cells × {adata.shape[1]:,} genes")
+    logger.info(f"Final gene set: {n_final:,} genes")
+    logger.info(f"Final shape: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
 
     return adata
 

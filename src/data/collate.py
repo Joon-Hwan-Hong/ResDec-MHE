@@ -604,15 +604,16 @@ def create_dataloader(
     multiregion: bool = False,
     use_hgt_format: bool = True,  # Default True - dict format for HGTEncoderBatched
     prefetch_factor: int | None = 2,
+    worker_init_fn=None,
 ) -> torch.utils.data.DataLoader:
     """
     Create DataLoader with appropriate collate function.
 
     Note on Multi-GPU:
-        When using PyTorch Lightning with multiple GPUs, do NOT use this
-        function directly. Instead, let Lightning's Trainer handle DataLoader
-        creation via LightningDataModule, which properly sets up
-        DistributedSampler for DDP training.
+        For DDP training, use CognitiveResilienceDataModule instead of calling
+        this function directly. The DataModule handles DistributedSampler setup
+        and rank-aware worker seeding. This function is used internally by the
+        DataModule and is safe for single-GPU usage.
 
     Worker Reproducibility:
         Uses _worker_init_fn to re-seed each worker's CellSampler RNG
@@ -631,6 +632,9 @@ def create_dataloader(
         use_hgt_format: Use collate_for_hgt which returns dict lists compatible
                         with HGTEncoderBatched (default: True, recommended)
         prefetch_factor: Number of batches to prefetch per worker (None when num_workers=0)
+        worker_init_fn: Optional custom worker init function. When provided,
+            overrides the default _worker_init_fn. Used by CognitiveResilienceDataModule
+            to inject rank-aware seeding for DDP.
 
     Returns:
         Configured DataLoader
@@ -657,7 +661,7 @@ def create_dataloader(
         drop_last=drop_last,
         collate_fn=collate,
         persistent_workers=num_workers > 0,
-        worker_init_fn=_worker_init_fn if num_workers > 0 else None,
+        worker_init_fn=(worker_init_fn or _worker_init_fn) if num_workers > 0 else None,
         prefetch_factor=effective_prefetch,
     )
 

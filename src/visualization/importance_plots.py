@@ -217,6 +217,27 @@ def plot_ccc_network_summary(
     """
     setup_seaborn_style()
 
+    # NaN/zero guard: if all attention values are NaN or zero, return placeholder figure
+    if (
+        len(network_df) == 0
+        or "mean_attention" not in network_df.columns
+        or network_df["mean_attention"].isna().all()
+        or (network_df["mean_attention"].fillna(0) == 0).all()
+    ):
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(
+            0.5, 0.5,
+            "No CCC attention data available",
+            ha="center", va="center", fontsize=12, color="gray",
+            transform=ax.transAxes,
+        )
+        ax.set_title(title)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if save_path:
+            save_figure(fig, str(save_path))
+        return fig
+
     fig, ax = plt.subplots(figsize=figsize)
 
     # Sort by mean attention
@@ -272,6 +293,27 @@ def plot_top_interactions_heatmap(
         Matplotlib Figure
     """
     setup_seaborn_style()
+
+    # NaN/zero guard: if all attention values are NaN or zero, return placeholder figure
+    if (
+        len(interactions_df) == 0
+        or "mean_attention" not in interactions_df.columns
+        or interactions_df["mean_attention"].isna().all()
+        or (interactions_df["mean_attention"].fillna(0) == 0).all()
+    ):
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(
+            0.5, 0.5,
+            "No CCC interaction data available",
+            ha="center", va="center", fontsize=12, color="gray",
+            transform=ax.transAxes,
+        )
+        ax.set_title(title)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if save_path:
+            save_figure(fig, str(save_path))
+        return fig
 
     # Get top interactions
     df = interactions_df.head(top_k)

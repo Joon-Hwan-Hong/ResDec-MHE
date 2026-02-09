@@ -135,6 +135,7 @@ class CCCImportanceAnalyzer:
             "top_k": top_k,
             "has_region_analysis": by_region is not None,
             "n_edge_types": len(self.edge_types),
+            "attention_data_source": getattr(self, '_attention_data_source', 'real'),
         }
 
         return CCCImportanceResult(
@@ -158,6 +159,7 @@ class CCCImportanceAnalyzer:
             return self._generate_placeholder_edge_importance()
 
         # edge_attention_scores is available — use it
+        self._attention_data_source = "real"
         if self.edge_attention_scores.ndim == 2:
             # [n_subjects, n_edges]
             mean_attention = np.nanmean(self.edge_attention_scores, axis=0)
@@ -181,6 +183,10 @@ class CCCImportanceAnalyzer:
             result["std_attention"] = std_attention
         else:
             # No metadata but have scores — create numbered edge DataFrame
+            logger.warning(
+                "Edge attention scores available but no edge metadata — "
+                "output will lack source/target cell type labels."
+            )
             result = pd.DataFrame({
                 "edge_idx": range(len(mean_attention)),
                 "mean_attention": mean_attention,
@@ -197,6 +203,7 @@ class CCCImportanceAnalyzer:
         availability, so this path is not reached from the standard pipeline.
         Returns zero-filled DataFrame when no edge attention data is available.
         """
+        self._attention_data_source = "placeholder"
         rows = []
         for edge_type in self.edge_types:
             for src_idx, src_name in enumerate(self.cell_type_names):

@@ -5,12 +5,15 @@ Provides edge type assignment based on CellChatDB categories and
 utilities for building heterogeneous graphs from LIANA+ results.
 """
 
+import logging
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 import pandas as pd
 from anndata import AnnData
+
+logger = logging.getLogger(__name__)
 
 from src.data.constants import CELLCHATDB_EDGE_TYPES, CELLCHATDB_PATH, EDGE_TYPE_NOVEL, ALL_EDGE_TYPES, sanitize_key
 
@@ -118,7 +121,7 @@ def assign_edge_types(
     if cellchatdb_path.exists():
         lr_to_category = load_cellchatdb_categories(cellchatdb_path)
     else:
-        print(f"Warning: CellChatDB not found at {cellchatdb_path}")
+        logger.warning(f"CellChatDB not found at {cellchatdb_path}")
         lr_to_category = {}
 
     # Get unique categories for encoding
@@ -205,9 +208,9 @@ def run_liana_analysis(
         )
 
     if verbose:
-        print(f"Running LIANA+ with {resource_name} resource...")
-        print(f"Cell type column: {cell_type_column}")
-        print(f"Number of cell types: {adata.obs[cell_type_column].nunique()}")
+        logger.info(f"Running LIANA+ with {resource_name} resource...")
+        logger.info(f"Cell type column: {cell_type_column}")
+        logger.info(f"Number of cell types: {adata.obs[cell_type_column].nunique()}")
 
     # Run LIANA
     li.mt.rank_aggregate(
@@ -226,7 +229,7 @@ def run_liana_analysis(
     liana_results = adata.uns["liana_res"].copy()
 
     if verbose:
-        print(f"LIANA+ found {len(liana_results):,} interactions")
+        logger.info(f"LIANA+ found {len(liana_results):,} interactions")
 
     return liana_results
 
@@ -391,7 +394,7 @@ def run_liana_per_subject(
 
     for i, subject_id in enumerate(subjects):
         if verbose:
-            print(f"Processing subject {i+1}/{len(subjects)}: {subject_id}")
+            logger.info(f"Processing subject {i+1}/{len(subjects)}: {subject_id}")
 
         # Check cache
         if cache_dir:
@@ -399,7 +402,7 @@ def run_liana_per_subject(
             if cache_file.exists():
                 results[subject_id] = pd.read_parquet(cache_file)
                 if verbose:
-                    print(f"  Loaded from cache")
+                    logger.info(f"  Loaded from cache")
                 continue
 
         # Subset to subject
@@ -412,7 +415,7 @@ def run_liana_per_subject(
 
         if len(valid_cts) < 2:
             if verbose:
-                print(f"  Skipping: only {len(valid_cts)} cell types with >= {min_cells_per_type} cells")
+                logger.info(f"  Skipping: only {len(valid_cts)} cell types with >= {min_cells_per_type} cells")
             results[subject_id] = pd.DataFrame()
             continue
 
@@ -436,7 +439,7 @@ def run_liana_per_subject(
 
         except Exception as e:
             if verbose:
-                print(f"  Error: {e}")
+                logger.warning(f"  Error processing subject {subject_id}: {e}")
             results[subject_id] = pd.DataFrame()
 
     return results

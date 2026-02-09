@@ -607,7 +607,9 @@ class PrecomputedDataset(Dataset):
                         f"mapped. Saved: {saved_order[:3]}... Expected: {self.cell_type_order[:3]}..."
                     )
 
-            # Load cell_counts and region_mask (with backward compatibility for older files)
+            # BACKWARD COMPAT: Pre-multi-region .npz files may lack cell_counts and
+            # region_mask. Safe to remove after re-running precompute_features on all
+            # subjects with multi-region support enabled.
             if "cell_counts" in npz_data:
                 cell_counts = torch.from_numpy(npz_data["cell_counts"]).long()
             else:

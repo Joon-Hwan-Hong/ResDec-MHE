@@ -17,9 +17,8 @@ from omegaconf import DictConfig
 
 import pyro
 import pyro.poutine
-from pyro.infer import SVI, Trace_ELBO
+from pyro.infer import Trace_ELBO
 from pyro.infer.autoguide import AutoDiagonalNormal
-from pyro.optim import ClippedAdam as PyroClippedAdam
 
 from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 from src.training.losses import BetaNLLLoss, mse_loss
@@ -65,17 +64,17 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         use_bayesian = model_cfg.head.type == "bayesian"
         self.model = build_model_from_config(model_cfg)
 
-        # SVI setup for Bayesian head
+        # Bayesian head setup
         self._use_bayesian_svi = use_bayesian
         self.guide = None
-        self.svi = None
-        self.pyro_optim = None
 
         if self._use_bayesian_svi:
             pyro.clear_param_store()
             self.guide = AutoDiagonalNormal(self.model)
-            # Disable automatic optimization — SVI manages its own backward + step
-            self.automatic_optimization = False
+            self.elbo = Trace_ELBO()
+            # automatic_optimization stays True (default) —
+            # differentiable_loss returns a loss tensor that flows through
+            # Lightning's standard backward + optimizer step + DDP gradient sync.
 
         # Loss function setup with branching
         train_cfg = config.training
@@ -98,10 +97,6 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         error_cfg = config.get("error_handling", {}).get("training", {})
         self._nan_loss_policy = error_cfg.get("nan_loss", "fail")
         self._nan_batch_policy = error_cfg.get("nan_batch", "skip")
-
-        # Gradient logging interval (SVI path uses this directly since
-        # on_after_backward never fires; deterministic path uses GradientNormLogger callback)
-        self._log_every_n_steps = train_cfg.get("logging", {}).get("log_every_n_steps", 10)
 
         # Metrics
         self.metrics = ResilienceMetrics()
@@ -137,13 +132,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         )
 
     def _svi_forward(self, batch: dict[str, Any]) -> torch.Tensor:
-        """
-        Run SVI step for Bayesian training.
+        """Compute differentiable ELBO loss for Bayesian training.
 
-        SVI.step() internally runs model forward, guide forward, computes ELBO,
-        computes gradients, and steps the Pyro optimizer. Returns scalar loss.
+        Returns a differentiable loss tensor that flows through Lightning's
+        standard backward pass, enabling DDP gradient synchronization.
         """
-        loss = self.svi.step(
+        loss = self.elbo.differentiable_loss(
+            self.model,
+            self.guide,
             region_pseudobulk=batch.get("region_pseudobulk"),
             region_mask=batch.get("region_mask"),
             pseudobulk=batch.get("pseudobulk"),
@@ -155,7 +151,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             pathology=batch.get("pathology"),
             cognition=batch.get("cognition"),
         )
-        return torch.tensor(loss, device=self.device)
+        return loss
 
     def _forward_batch_posterior(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
@@ -186,37 +182,6 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             cognition=batch.get("cognition"),
         )
 
-    def _log_svi_gradient_norms(self) -> None:
-        """Log branch gradient norms after SVI step (manual substitute for on_after_backward)."""
-        branch_names = ["pseudobulk_encoder", "hgt_encoder", "cell_transformer"]
-        norms = {}
-        for branch_name in branch_names:
-            branch_params = [
-                p for n, p in self.model.named_parameters()
-                if branch_name in n and p.grad is not None
-            ]
-            if branch_params:
-                total_norm = torch.sqrt(
-                    sum(p.grad.data.norm(2) ** 2 for p in branch_params)
-                )
-                norms[branch_name] = total_norm.item()
-            else:
-                norms[branch_name] = 0.0
-
-        for branch_name, norm in norms.items():
-            self.log(
-                f"gradients/branch_norm/{branch_name}",
-                norm,
-                on_step=True,
-                on_epoch=False,
-            )
-
-        # Log ratio
-        values = list(norms.values())
-        if values and min(values) > 0:
-            ratio = max(values) / min(values)
-            self.log("gradients/branch_norm_ratio", ratio, on_step=True, on_epoch=False)
-
     def _check_batch_nan(self, batch: dict) -> bool:
         """Check if batch contains NaN values. Returns True if NaN detected."""
         for key, value in batch.items():
@@ -225,22 +190,13 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         return False
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor | None:
-        """Training step with SVI branching for Bayesian head."""
+        """Training step with ELBO loss for Bayesian head."""
         if self._nan_batch_policy == "skip" and self._check_batch_nan(batch):
             logger.warning("NaN detected in batch %d — skipping", batch_idx)
             return None
 
         if self._use_bayesian_svi:
-            # SVI handles forward, loss, backward, and optimizer step internally
             loss = self._svi_forward(batch)
-            # Log gradient norms manually — SVI bypasses Lightning's backward,
-            # so on_after_backward callbacks never fire.
-            try:
-                should_log = self.trainer.global_step % self._log_every_n_steps == 0
-            except RuntimeError:
-                should_log = False
-            if should_log:
-                self._log_svi_gradient_norms()
         else:
             output = self._forward_batch(batch)
             loss = self._compute_loss(output, batch["cognition"])
@@ -314,58 +270,47 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         train_cfg = self.config.training
         opt_cfg = train_cfg.optimizer
 
+        # Query world_size once (used for LR scaling and ELBO scaling)
+        try:
+            world_size = self.trainer.world_size
+        except RuntimeError:
+            world_size = 1
+
         # Linear LR scaling for multi-GPU (Goyal et al. 2017)
         # effective_lr = base_lr * n_gpus when using DDP
         base_lr = opt_cfg.lr
         lr_scaling_enabled = train_cfg.get("lr_scaling", True)
 
-        if lr_scaling_enabled:
-            try:
-                world_size = self.trainer.world_size
-            except RuntimeError:
-                world_size = 1
-            if world_size > 1:
-                scaled_lr = base_lr * world_size
-                logger.info(
-                    f"LR scaling: {base_lr} × {world_size} GPUs = {scaled_lr}"
-                )
-                base_lr = scaled_lr
+        if lr_scaling_enabled and world_size > 1:
+            scaled_lr = base_lr * world_size
+            logger.info(
+                f"LR scaling: {base_lr} × {world_size} GPUs = {scaled_lr}"
+            )
+            base_lr = scaled_lr
 
         effective_lr = base_lr
 
         if self._use_bayesian_svi:
-            # Pyro optimizer handles BOTH model and guide parameters.
-            #
-            # LR decay strategy: ClippedAdam's built-in `lrd` (per-step multiplicative
-            # decay). With lrd=0.9999 and ~25k steps, final LR ≈ 8% of initial — smooth
-            # exponential decay comparable to cosine annealing.
-            #
-            # Why not fixed LR (Option 1): Risks ELBO oscillation late in training,
-            # prevents tight posterior convergence, produces noisier epistemic uncertainty.
-            #
-            # Why not PyroLRScheduler + cosine (Option 3): Three layers of wrapping
-            # (PyTorch optimizer → scheduler → Pyro wrapper), requires manual
-            # scheduler.step() with automatic_optimization=False, and is over-engineered
-            # for AutoDiagonalNormal mean-field VI. The lrd parameter is the idiomatic
-            # Pyro approach — built into ClippedAdam specifically for SVI decay.
-            self.pyro_optim = PyroClippedAdam({
-                "lr": effective_lr,
-                "weight_decay": opt_cfg.weight_decay,
-                "betas": tuple(opt_cfg.get("betas", [0.9, 0.999])),
-                "clip_norm": train_cfg.get("gradient_clip_val", 1.0),
-                "lrd": opt_cfg.get("lrd", 1.0),  # 1.0 = no decay (backward compat)
-            })
-            self.svi = SVI(
-                model=self.model,
-                guide=self.guide,
-                optim=self.pyro_optim,
-                loss=Trace_ELBO(),
+            # Set ELBO likelihood scaling for DDP (world_size > 1)
+            if world_size > 1:
+                self.model.prediction_head.set_data_scale(float(world_size))
+                logger.info(f"Bayesian ELBO scaling: data_scale={world_size} for DDP")
+
+            # Collect model + guide parameters
+            all_params = list(self.model.parameters()) + list(self.guide.parameters())
+            optimizer = torch.optim.Adam(
+                all_params,
+                lr=effective_lr,
+                weight_decay=opt_cfg.get("weight_decay", 0),
+                betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
             )
-            # SVI manages optimization internally; LR decay handled by lrd above.
-            # Lightning requires a return value from configure_optimizers
-            # when automatic_optimization=False, but won't step it.
-            dummy_opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=0)
-            return dummy_opt
+            # ExponentialLR replicates ClippedAdam's lrd parameter
+            lrd = opt_cfg.get("lrd", 1.0)
+            scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lrd)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+            }
 
         # Standard optimizer for deterministic head
         if opt_cfg.type == "adamw":

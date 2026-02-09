@@ -672,8 +672,8 @@ class TestEdgeCases:
         assert result.by_pathology is not None
 
     def test_load_unsupported_format_raises(self):
-        """load_cell_type_importance raises for unsupported format."""
-        with pytest.raises(ValueError, match="Unsupported"):
+        """load_cell_type_importance raises for non-existent file."""
+        with pytest.raises(FileNotFoundError, match="Analysis file not found"):
             load_cell_type_importance(Path("/fake/path.xyz"))
 
     def test_pathology_stratification_with_nans(self):

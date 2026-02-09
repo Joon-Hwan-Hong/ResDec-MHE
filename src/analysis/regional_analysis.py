@@ -129,6 +129,7 @@ class RegionalAnalyzer:
             "has_region_weights": self.region_weights is not None,
             "has_gene_importance": gene_importance is not None,
             "top_k_genes": top_k_genes,
+            "attention_data_source": getattr(self, '_attention_data_source', 'real'),
         }
 
         return RegionalAnalysisResult(
@@ -153,6 +154,7 @@ class RegionalAnalyzer:
                 "To extract region attention, use --extract-all or --extract-region-attention "
                 "during inference."
             )
+            self._attention_data_source = "placeholder"
             return pd.DataFrame({
                 "region": self.region_names,
                 "mean_attention": [np.nan] * len(self.region_names),
@@ -170,6 +172,7 @@ class RegionalAnalyzer:
         else:
             raise ValueError(f"Unexpected attention shape: {self.region_attention.shape}")
 
+        self._attention_data_source = "real"
         n_subjects = attention_per_region.shape[0]
         n_regions = min(attention_per_region.shape[1], len(self.region_names))
 

@@ -245,6 +245,8 @@ def _align_array_by_subject_id(
     target_subject_ids: list[str],
     column: str,
     source_id_column: str = "subject_id",
+    dtype=float,
+    fill_value=np.nan,
 ) -> np.ndarray | None:
     """Align a column from source_df to match target_subject_ids order.
 
@@ -253,6 +255,8 @@ def _align_array_by_subject_id(
         target_subject_ids: Subject IDs in the desired order (from attention weights).
         column: Data column to extract and align.
         source_id_column: Column name for subject ID in source_df.
+        dtype: Data type for the returned array (default: float).
+        fill_value: Value to use for missing subjects (default: np.nan).
 
     Returns:
         np.ndarray aligned to target_subject_ids order, or None if column/ID not found.
@@ -269,7 +273,7 @@ def _align_array_by_subject_id(
         if sid in meta_indexed.index:
             aligned.append(meta_indexed.loc[sid, column])
         else:
-            aligned.append(np.nan)
+            aligned.append(fill_value)
             n_missing += 1
 
     if n_missing > 0:
@@ -278,7 +282,7 @@ def _align_array_by_subject_id(
             f"metadata for column '{column}'"
         )
 
-    return np.array(aligned, dtype=float)
+    return np.array(aligned, dtype=dtype)
 
 
 def _align_predictions_to_subjects(
@@ -693,11 +697,11 @@ def main():
 
     # PMA attention is unpacked later for cell heterogeneity analysis (if enabled).
 
-    # Load edge metadata for CCC analysis if available.
+    # Edge metadata source hierarchy (for CCC analysis):
+    # 1. edge_metadata.parquet (external, optional — from CellChatDB/LIANA+)
+    # 2. HGT-derived edge_type_names (from model attention extraction)
+    # 3. Numbered edge indices (fallback if neither available)
     # NOTE: edge_metadata.parquet is NOT produced by the current pipeline.
-    # It can be generated externally from CellChatDB or LIANA+ output
-    # to provide source/target cell type labels for edge types.
-    # If absent, edge metadata is derived from HGT edge_type_names.
     edge_metadata = None
     edge_metadata_path = output_dir / "edge_metadata.parquet"
     if edge_metadata_path.exists():
@@ -718,25 +722,17 @@ def main():
     region_labels = None
     if metadata_df is not None and "region" in metadata_df.columns:
         if subject_ids is not None and metadata_subject_column in metadata_df.columns:
-            meta_indexed = metadata_df.set_index(metadata_subject_column)
-            aligned_regions = []
-            for sid in subject_ids:
-                if sid in meta_indexed.index:
-                    aligned_regions.append(meta_indexed.loc[sid, "region"])
-                else:
-                    aligned_regions.append(None)
-            # Replace None with empty string for safe array creation
-            # (np.unique on mixed str/None raises TypeError)
-            region_labels = np.array(
-                [r if r is not None else "" for r in aligned_regions],
-                dtype=str,
+            region_labels_raw = _align_array_by_subject_id(
+                metadata_df, subject_ids, "region",
+                source_id_column=metadata_subject_column,
+                dtype=str, fill_value="",
             )
-            n_missing_regions = sum(1 for r in aligned_regions if r is None)
-            if n_missing_regions > 0:
-                logger.warning(
-                    f"{n_missing_regions} subjects have no region label in metadata"
-                )
-            logger.info(f"Aligned region labels to {len(subject_ids)} subjects")
+            if region_labels_raw is not None:
+                region_labels = region_labels_raw
+                n_missing_regions = (region_labels == "").sum()
+                if n_missing_regions > 0:
+                    logger.warning(f"{n_missing_regions} subjects have no region label in metadata")
+                logger.info(f"Aligned region labels to {len(subject_ids)} subjects")
         else:
             region_labels = metadata_df["region"].values
             logger.warning("Region labels taken without alignment — metadata may not match subject order")
@@ -905,18 +901,6 @@ def main():
                         else:
                             available_pathology.append((col, metadata_df[col].values))
                             logger.warning(f"Pathology '{col}' taken without alignment — no subject_ids")
-
-                # Also check for legacy "pathology" column
-                if not available_pathology:
-                    if metadata_df is not None and "pathology" in metadata_df.columns:
-                        if subject_ids is not None:
-                            aligned = _align_array_by_subject_id(metadata_df, subject_ids, "pathology", source_id_column=metadata_subject_column)
-                            if aligned is not None:
-                                available_pathology.append(("pathology", aligned))
-                        else:
-                            available_pathology.append(("pathology", metadata_df["pathology"].values))
-                    elif predictions_df is not None and "pathology" in predictions_df.columns:
-                        available_pathology.append(("pathology", predictions_df["pathology"].values))
 
                 if available_pathology:
                     # Prepare ablation embeddings (prefer fused, fall back to attended)

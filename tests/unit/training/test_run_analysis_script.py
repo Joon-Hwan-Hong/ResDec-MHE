@@ -803,7 +803,7 @@ class TestHeterogeneitySavesH5:
 
     def test_heterogeneity_saves_h5(self, tmp_path):
         """run_analysis heterogeneity block creates cell_attention.h5 with expected datasets."""
-        from src.analysis.cell_heterogeneity import analyze_cell_heterogeneity
+        from src.analysis.cell_heterogeneity import CellHeterogeneityAnalyzer
         from src.utils.io import save_dataframe
 
         n_subjects, n_cell_types, max_cells = 5, 3, 20
@@ -814,13 +814,15 @@ class TestHeterogeneitySavesH5:
         het_output_dir = tmp_path / "cell_heterogeneity"
         het_output_dir.mkdir(parents=True)
 
-        # Run analyze_cell_heterogeneity (same as orchestrator does)
-        summary_df, high_attn_df, all_scores_df = analyze_cell_heterogeneity(
+        # Run CellHeterogeneityAnalyzer (same as orchestrator does)
+        analyzer = CellHeterogeneityAnalyzer(
             pma_attention=pma_3d,
             cell_type_names=cell_type_names,
             subject_ids=subject_ids,
             top_percentile=10.0,
         )
+        result = analyzer.analyze()
+        summary_df = result.summary
 
         # Save parquet (orchestrator does this)
         save_dataframe(summary_df, het_output_dir / "cell_attention_summary.parquet", "parquet")

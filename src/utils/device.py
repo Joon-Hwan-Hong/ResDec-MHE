@@ -4,7 +4,7 @@ Device movement utilities for moving batch data between devices.
 This module is the canonical home for device-transfer logic, keeping the
 dependency graph clean:  utils.device has NO imports from the data layer.
 
-Both ``src.data.collate`` and ``src.utils.gpu`` import from here.
+``src.data.collate`` imports from here.
 """
 
 from typing import Any

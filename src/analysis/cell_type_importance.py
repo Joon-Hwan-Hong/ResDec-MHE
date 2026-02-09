@@ -384,25 +384,25 @@ def compute_cell_type_importance(
     return result
 
 
-def load_cell_type_importance(
-    path: str | Path,
-) -> pd.DataFrame:
-    """
-    Load cell type importance results from file.
+def load_cell_type_importance(path: str | Path) -> pd.DataFrame:
+    """Load cell type importance results from file.
 
     Supports both Parquet and CSV formats (auto-detected from extension).
+    Delegates to shared load_dataframe utility.
 
     Args:
         path: Path to saved analysis file
 
     Returns:
         DataFrame with loaded results
-    """
-    path = Path(path)
 
-    if path.suffix == ".parquet":
-        return pd.read_parquet(path)
-    elif path.suffix == ".csv":
-        return pd.read_csv(path)
-    else:
-        raise ValueError(f"Unsupported file format: {path.suffix}")
+    Raises:
+        FileNotFoundError: If file does not exist
+        ValueError: If format is not supported
+    """
+    from src.utils.io import load_dataframe
+
+    result = load_dataframe(path)
+    if result is None:
+        raise FileNotFoundError(f"Analysis file not found: {path}")
+    return result

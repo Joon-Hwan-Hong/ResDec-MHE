@@ -282,46 +282,6 @@ class CellHeterogeneityAnalyzer:
         return saved_files
 
 
-def analyze_cell_heterogeneity(
-    pma_attention: np.ndarray,
-    cell_type_names: list[str],
-    subject_ids: list[str] | None = None,
-    cell_barcodes: dict | None = None,
-    cell_metadata: pd.DataFrame | None = None,
-    top_percentile: float = 10.0,
-    min_cells_per_type: int = 10,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Analyze within-cell-type heterogeneity from PMA attention.
-
-    Backward-compatible function API. Prefer CellHeterogeneityAnalyzer for
-    new code.
-
-    Args:
-        pma_attention: PMA attention weights [n_subjects, n_cell_types, n_cells]
-        cell_type_names: Names of cell types
-        subject_ids: Subject identifiers
-        cell_barcodes: Dict mapping "subject_idx_celltype_idx" to cell barcodes
-        cell_metadata: DataFrame with cell-level metadata (index=barcodes)
-        top_percentile: Percentile threshold for high-attention cells
-        min_cells_per_type: Minimum cells per type to analyze
-
-    Returns:
-        Tuple of (summary_df, high_attention_df, all_scores_df)
-    """
-    analyzer = CellHeterogeneityAnalyzer(
-        pma_attention=pma_attention,
-        cell_type_names=cell_type_names,
-        subject_ids=subject_ids,
-        cell_barcodes=cell_barcodes,
-        cell_metadata=cell_metadata,
-        top_percentile=top_percentile,
-        min_cells_per_type=min_cells_per_type,
-    )
-    result = analyzer.analyze()
-    return result.summary, result.high_attention_cells, result.all_scores
-
-
 def compute_cell_heterogeneity(
     pma_attention: np.ndarray,
     cell_type_names: list[str],

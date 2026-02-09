@@ -288,7 +288,7 @@ def main() -> None:
 
     # Data loading
     from src.data.splits import create_stratified_splits, load_splits
-    from src.data.loaders import create_fold_dataloaders
+    from src.data.datamodule import CognitiveResilienceDataModule
 
     data_cfg = config.data
     adata = None
@@ -346,42 +346,12 @@ def main() -> None:
                 "Provide --splits-path /path/to/splits.json."
             )
 
-        from src.data.splits import get_final_train_subjects
-
-        train_subjects = get_final_train_subjects(splits)
-        test_subjects = splits["holdout_test"]
-
-        logger.info(
-            f"Final training mode: {len(train_subjects)} train subjects, "
-            f"{len(test_subjects)} holdout test subjects"
+        dm = CognitiveResilienceDataModule(
+            config=config, metadata=metadata, splits=splits,
+            fold_idx=0, precomputed_dir=args.precomputed_dir,
+            adata=adata, final_mode=True,
         )
-
-        # Create train-only loader: synthetic fold with all train_val_pool as train,
-        # and train subjects also as "val" (required by create_fold_dataloaders
-        # return signature) -- but we will NOT pass it to trainer.fit.
-        train_fold = {"train": train_subjects, "val": train_subjects}
-        splits_for_train = dict(splits)
-        splits_for_train["folds"] = [train_fold]
-
-        train_loader, _ = create_fold_dataloaders(
-            config, adata, metadata, splits_for_train, fold_idx=0,
-            precomputed_dir=args.precomputed_dir,
-        )
-
-        # Create test-only loader for post-training evaluation
-        test_fold = {"train": test_subjects, "val": test_subjects}
-        splits_for_test = dict(splits)
-        splits_for_test["folds"] = [test_fold]
-
-        _, test_loader = create_fold_dataloaders(
-            config, adata, metadata, splits_for_test, fold_idx=0,
-            precomputed_dir=args.precomputed_dir,
-        )
-
-        logger.info(
-            "Final-mode dataloaders created: %d train, %d test subjects",
-            len(train_subjects), len(test_subjects),
-        )
+        logger.info("Final mode DataModule created")
 
         # Override callbacks: remove early stopping and val_loss-based checkpointing
         # to prevent any holdout data from influencing training decisions.
@@ -415,25 +385,26 @@ def main() -> None:
         )
 
         # Train without val_dataloaders -- holdout is never seen during training
-        trainer.fit(module, train_dataloaders=train_loader)
+        trainer.fit(module, datamodule=dm)
         logger.info("Final training complete.")
 
         # Export weights-only artifact for inference (lighter than full Lightning checkpoint)
         _export_weights(module, experiment.model_dir, is_bayesian=config.model.head.type == "bayesian")
 
         # Single unbiased evaluation on holdout test set
-        trainer.test(module, dataloaders=test_loader)
+        trainer.test(module, datamodule=dm)
         logger.info("Holdout test evaluation complete.")
     else:
         # Standard fold-based training
-        train_loader, val_loader = create_fold_dataloaders(
-            config, adata, metadata, splits, args.fold,
-            precomputed_dir=args.precomputed_dir,
+        dm = CognitiveResilienceDataModule(
+            config=config, metadata=metadata, splits=splits,
+            fold_idx=args.fold, precomputed_dir=args.precomputed_dir,
+            adata=adata,
         )
-        logger.info("Fold %d dataloaders created", args.fold)
+        logger.info("Fold %d DataModule created", args.fold)
 
         # Train
-        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        trainer.fit(module, datamodule=dm)
         logger.info("Training complete.")
 
         # Export weights-only artifact for inference (lighter than full Lightning checkpoint)

@@ -485,6 +485,50 @@ class TestEdgeCases:
         assert 'attention_weights' in output
         assert output['attention_weights'].shape == (B, 4, n_cell_types)
 
+    def test_single_region_fallback_matches_explicit_multi_region(self, small_model, make_edge_dicts):
+        """forward(pseudobulk=X) produces same output as forward(region_pseudobulk=X_expanded)."""
+        from src.data.constants import PFC_REGION_IDX
+
+        B = 2
+        n_cell_types = N_CELL_TYPES
+        n_genes = 50
+        max_cells = 10
+
+        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
+
+        # Build a multi-region input with only PFC filled
+        region_pb = torch.randn(B, N_REGIONS, n_cell_types, n_genes)
+        # Zero out all regions except PFC
+        region_pb[:, :PFC_REGION_IDX, :, :] = 0.0
+        if PFC_REGION_IDX + 1 < N_REGIONS:
+            region_pb[:, PFC_REGION_IDX + 1:, :, :] = 0.0
+
+        # Single-region: extract PFC
+        pseudobulk = region_pb[:, PFC_REGION_IDX, :, :].clone()  # [B, C, G]
+
+        # Build explicit multi-region with only PFC active
+        region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
+        region_mask[:, PFC_REGION_IDX] = True
+
+        common_kwargs = {
+            "edge_index_dict_list": edge_index_dict_list,
+            "edge_attr_dict_list": edge_attr_dict_list,
+            "cells": torch.randn(B, n_cell_types, max_cells, n_genes),
+            "cell_mask": torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            "pathology": torch.randn(B, 3),
+        }
+
+        small_model.eval()
+        with torch.no_grad():
+            out_fallback = small_model(pseudobulk=pseudobulk, **common_kwargs)
+            out_explicit = small_model(
+                region_pseudobulk=region_pb, region_mask=region_mask, **common_kwargs
+            )
+
+        torch.testing.assert_close(
+            out_fallback["mean"], out_explicit["mean"], atol=1e-5, rtol=1e-5
+        )
+
     def test_batch_size_one(self, small_model, make_edge_dicts):
         """Test forward pass with batch size of 1."""
         B = 1

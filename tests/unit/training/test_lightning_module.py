@@ -190,23 +190,22 @@ class TestTrainingStep:
         assert has_grad
 
     def test_bayesian_training_step(self, bayesian_config):
-        """Bayesian head training_step returns finite loss via SVI."""
+        """Bayesian head training_step returns finite differentiable ELBO loss."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(bayesian_config)
         module.log = lambda *args, **kwargs: None
-        # SVI requires configure_optimizers to initialize self.svi
-        module.configure_optimizers()
         batch = _make_batch(n_genes=50)
         loss = module.training_step(batch, batch_idx=0)
         assert isinstance(loss, torch.Tensor)
         assert loss.dim() == 0
         assert torch.isfinite(loss)
+        assert loss.requires_grad  # Differentiable loss for DDP
 
-    def test_bayesian_svi_logs_gradient_norms(self, bayesian_config):
-        """Bayesian SVI training step should log gradient norms manually."""
+    def test_bayesian_uses_automatic_optimization(self, bayesian_config):
+        """Bayesian path uses automatic_optimization=True for DDP gradient sync."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(bayesian_config)
-        assert hasattr(module, '_log_svi_gradient_norms')
+        assert module.automatic_optimization is True
 
 
 class TestValidationStep:
@@ -716,48 +715,24 @@ class TestBayesianSVILrd:
     """Tests for Bayesian SVI learning rate decay (lrd) configuration."""
 
     def test_bayesian_svi_uses_lrd_from_config(self, bayesian_config):
-        """ClippedAdam receives lrd value from config when specified."""
+        """ExponentialLR uses gamma=lrd from config."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         bayesian_config.training.optimizer.lrd = 0.9999
         module = CognitiveResilienceLightningModule(bayesian_config)
-        module.configure_optimizers()
-        # PyroClippedAdam stores optimizer args in pt_optim_args
-        assert module.pyro_optim.pt_optim_args["lrd"] == 0.9999
+        result = module.configure_optimizers()
+        scheduler = result["lr_scheduler"]["scheduler"]
+        assert isinstance(scheduler, torch.optim.lr_scheduler.ExponentialLR)
+        # ExponentialLR stores gamma
+        assert scheduler.gamma == 0.9999
 
     def test_bayesian_svi_lrd_defaults_to_one(self, bayesian_config):
-        """ClippedAdam defaults to lrd=1.0 (no decay) when config omits lrd."""
+        """ExponentialLR defaults to gamma=1.0 (no decay) when config omits lrd."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
-        # Ensure no lrd key in optimizer config
         if "lrd" in bayesian_config.training.optimizer:
             del bayesian_config.training.optimizer.lrd
         module = CognitiveResilienceLightningModule(bayesian_config)
-        module.configure_optimizers()
-        assert module.pyro_optim.pt_optim_args["lrd"] == 1.0
+        result = module.configure_optimizers()
+        scheduler = result["lr_scheduler"]["scheduler"]
+        assert scheduler.gamma == 1.0
 
 
-def test_bayesian_svi_gradient_logging_uses_config_interval():
-    """SVI gradient logging cadence should read from config, not hardcoded 10."""
-    from src.training.lightning_module import CognitiveResilienceLightningModule
-    from omegaconf import OmegaConf
-
-    config = OmegaConf.create({
-        "model": {
-            "n_genes": 50, "n_cell_types": 31, "d_embed": 32, "d_fused": 32,
-            "dropout": 0.1,
-            "head": {"type": "bayesian", "d_hidden": 16},
-            "hgt": {"n_layers": 1, "n_heads": 2},
-            "set_transformer": {"n_isab_layers": 1, "n_inducing_points": 4, "n_heads": 2},
-            "pathology_attention": {"d_cond": 16, "n_heads": 2, "n_pathology_features": 3},
-            "gene_gate": {"initial_temperature": 2.0},
-            "cell_type_selector": {"selection_temperature": 1.0},
-        },
-        "training": {
-            "optimizer": {"lr": 1e-3, "weight_decay": 0, "lrd": 0.999},
-            "loss": {"type": "beta_nll", "beta": 0.5},
-            "regularization": {"gene_gate_l1": 0.0},
-            "logging": {"log_every_n_steps": 25},
-        },
-    })
-
-    module = CognitiveResilienceLightningModule(config)
-    assert module._log_every_n_steps == 25

@@ -9,6 +9,7 @@ Tests cover:
 - Adjacency matrix conversion
 """
 
+import logging
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -229,23 +230,23 @@ class TestAssignEdgeTypes:
             expected_idx = category_to_idx[row["edge_type_name"]]
             assert row["edge_type"] == expected_idx
 
-    def test_handles_missing_db_file(self, mock_liana_results, tmp_path, capsys):
+    def test_handles_missing_db_file(self, mock_liana_results, tmp_path, caplog):
         """Should handle missing CellChatDB file gracefully."""
         from src.data.liana_processing import assign_edge_types
         from src.data.constants import EDGE_TYPE_NOVEL
 
         # Use non-existent path
-        result = assign_edge_types(
-            mock_liana_results,
-            cellchatdb_path=tmp_path / "nonexistent.csv"
-        )
+        with caplog.at_level(logging.WARNING, logger="src.data.liana_processing"):
+            result = assign_edge_types(
+                mock_liana_results,
+                cellchatdb_path=tmp_path / "nonexistent.csv"
+            )
 
         # All interactions should get novel category
         assert (result["edge_type_name"] == EDGE_TYPE_NOVEL).all()
 
-        # Should print warning
-        captured = capsys.readouterr()
-        assert "Warning" in captured.out
+        # Should log warning about missing DB file
+        assert any("CellChatDB not found" in msg for msg in caplog.messages)
 
     def test_empty_dataframe(self, mock_cellchatdb_csv):
         """Should handle empty DataFrame input."""

@@ -357,9 +357,6 @@ class ResilienceModelCheckpoint(pl.Callback):
                 k: v.detach().cpu()
                 for k, v in pyro.get_param_store().items()
             }
-            # Save Pyro optimizer state for exact resume
-            if hasattr(pl_module, 'pyro_optim') and pl_module.pyro_optim is not None:
-                checkpoint["pyro_optim_state"] = pl_module.pyro_optim.get_state()
 
     def on_load_checkpoint(
         self,
@@ -388,25 +385,8 @@ class ResilienceModelCheckpoint(pl.Callback):
             for k, v in checkpoint["pyro_param_store"].items():
                 pyro.get_param_store().setdefault(k, v.to(device))
 
-        # Stash Pyro optimizer state for deferred restore in on_train_start
-        # (pyro_optim doesn't exist yet — it's created in configure_optimizers)
-        if "pyro_optim_state" in checkpoint:
-            self._deferred_pyro_optim_state = checkpoint["pyro_optim_state"]
-
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        """Restore deferred Pyro optimizer state after configure_optimizers."""
-        if hasattr(self, '_deferred_pyro_optim_state') and self._deferred_pyro_optim_state is not None:
-            if hasattr(pl_module, 'pyro_optim') and pl_module.pyro_optim is not None:
-                pl_module.pyro_optim.set_state(self._deferred_pyro_optim_state)
-                logger.info("Restored Pyro optimizer state (deferred from checkpoint)")
-            else:
-                logger.warning(
-                    "Checkpoint contains pyro_optim_state but module has no pyro_optim. "
-                    "SVI optimizer state not restored."
-                )
-            self._deferred_pyro_optim_state = None  # Clear to avoid re-apply
-
-        # Migrate Pyro param store to training device if needed
+        """Migrate Pyro param store to training device if needed."""
         if hasattr(pl_module, 'guide') and pl_module.guide is not None:
             import pyro
             target_device = pl_module.device

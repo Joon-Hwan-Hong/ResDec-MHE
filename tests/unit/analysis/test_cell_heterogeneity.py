@@ -9,7 +9,6 @@ from src.analysis.cell_heterogeneity import (
     CellHeterogeneityAnalyzer,
     CellHeterogeneityResult,
     compute_cell_heterogeneity,
-    analyze_cell_heterogeneity,  # backward compat
 )
 
 
@@ -132,30 +131,33 @@ class TestCellHeterogeneityAnalyzer:
         assert "full_type" in result.summary["cell_type"].values
 
 
-class TestBackwardCompat:
-    """Test backward compatibility with function API."""
+class TestAnalyzerDirectUsage:
+    """Test using CellHeterogeneityAnalyzer directly (replaces legacy wrapper)."""
 
-    def test_analyze_cell_heterogeneity_returns_tuple(self, sample_data):
-        summary, high, scores = analyze_cell_heterogeneity(
+    def test_analyzer_returns_dataframes(self, sample_data):
+        analyzer = CellHeterogeneityAnalyzer(
             pma_attention=sample_data["pma_attention"],
             cell_type_names=sample_data["cell_type_names"],
         )
+        result = analyzer.analyze()
+        summary, high, scores = result.summary, result.high_attention_cells, result.all_scores
         assert isinstance(summary, pd.DataFrame)
         assert isinstance(high, pd.DataFrame)
         assert isinstance(scores, pd.DataFrame)
 
-    def test_backward_compat_with_cell_metadata(self, sample_data):
-        """Function API should still accept cell_metadata."""
+    def test_analyzer_with_cell_metadata(self, sample_data):
+        """Analyzer should accept cell_metadata."""
         metadata = pd.DataFrame(
             {"some_col": [1]},
             index=["barcode_0"],
         )
-        summary, high, scores = analyze_cell_heterogeneity(
+        analyzer = CellHeterogeneityAnalyzer(
             pma_attention=sample_data["pma_attention"],
             cell_type_names=sample_data["cell_type_names"],
             cell_metadata=metadata,
         )
-        assert isinstance(summary, pd.DataFrame)
+        result = analyzer.analyze()
+        assert isinstance(result.summary, pd.DataFrame)
 
 
 class TestComputeConvenience:

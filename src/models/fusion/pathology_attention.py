@@ -152,6 +152,10 @@ class PathologyStratifiedAttention(nn.Module):
 
         scores = scores + bias  # additive bias: directly shifts attention per cell type
 
+        # Initialize all_masked before conditional to prevent UnboundLocalError
+        # if masking logic is ever refactored. Default: no samples are fully masked.
+        all_masked = torch.zeros(B, dtype=torch.bool, device=cell_type_embeddings.device)
+
         # Apply cell type mask if provided (mask out missing cell types)
         if cell_type_mask is not None:
             # cell_type_mask: [B, n_cell_types] -> [B, 1, 1, n_cell_types]

@@ -6,6 +6,7 @@ Stratification by joint pathology × cognition tertiles ensures balanced represe
 """
 
 import json
+import logging
 import warnings
 from pathlib import Path
 from typing import Literal
@@ -13,6 +14,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, StratifiedKFold, StratifiedShuffleSplit, train_test_split
+
+logger = logging.getLogger(__name__)
 
 
 def create_stratification_variable(
@@ -150,7 +153,7 @@ def create_stratified_splits(
     subjects = np.array(subjects)
     n_subjects = len(subjects)
 
-    print(f"Creating splits for {n_subjects} subjects")
+    logger.info(f"Creating splits for {n_subjects} subjects")
 
     # Create stratification variable
     strata = create_stratification_variable(
@@ -196,7 +199,7 @@ def create_stratified_splits(
         random_state=random_state,
     )
 
-    print(f"Holdout test set: {len(test_subjects)} subjects ({test_frac*100:.0f}%)")
+    logger.info(f"Holdout test set: {len(test_subjects)} subjects ({test_frac*100:.0f}%)")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 2: Create K-fold CV with disjoint validation sets
@@ -244,7 +247,7 @@ def create_stratified_splits(
             "val": train_val_subjects[val_idx].tolist(),
         }
         folds.append(fold)
-        print(f"Fold {fold_idx + 1}: {len(fold['train'])} train, {len(fold['val'])} val")
+        logger.info(f"Fold {fold_idx + 1}: {len(fold['train'])} train, {len(fold['val'])} val")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Compile results
@@ -290,7 +293,7 @@ def save_splits(splits: dict, path: str | Path) -> None:
     with open(path, "w") as f:
         json.dump(splits, f, indent=2)
 
-    print(f"Saved splits to {path}")
+    logger.info(f"Saved splits to {path}")
 
 
 def load_splits(path: str | Path) -> dict:
@@ -368,7 +371,7 @@ def validate_no_leakage(splits: dict) -> bool:
 
     # Check test doesn't overlap with train_val
     if test_set & train_val_set:
-        print("ERROR: Test subjects appear in train_val_pool")
+        logger.warning("Test subjects appear in train_val_pool")
         return False
 
     # Check each fold
@@ -378,20 +381,20 @@ def validate_no_leakage(splits: dict) -> bool:
 
         # Train and val shouldn't overlap
         if train_set & val_set:
-            print(f"ERROR: Fold {fold_idx} has train/val overlap")
+            logger.warning(f"Fold {fold_idx} has train/val overlap")
             return False
 
         # Train and val should be subsets of train_val_pool
         if not (train_set | val_set).issubset(train_val_set):
-            print(f"ERROR: Fold {fold_idx} subjects not in train_val_pool")
+            logger.warning(f"Fold {fold_idx} subjects not in train_val_pool")
             return False
 
         # Test shouldn't appear in train or val
         if test_set & train_set or test_set & val_set:
-            print(f"ERROR: Fold {fold_idx} has test subjects")
+            logger.warning(f"Fold {fold_idx} has test subjects")
             return False
 
-    print("No data leakage detected")
+    logger.info("No data leakage detected")
     return True
 
 
@@ -399,19 +402,19 @@ def print_split_summary(splits: dict) -> None:
     """Print summary of splits."""
     meta = splits["metadata"]
 
-    print("\n" + "=" * 60)
-    print("SPLIT SUMMARY")
-    print("=" * 60)
-    print(f"Total subjects: {meta['n_subjects']}")
-    print(f"Holdout test: {meta['n_test']} ({meta['test_frac']*100:.0f}%)")
-    print(f"Train+Val pool: {meta['n_train_val']} ({(1-meta['test_frac'])*100:.0f}%)")
-    print(f"Number of CV folds: {meta['n_folds']}")
-    print(f"Random state: {meta['random_state']}")
-    print()
+    logger.info("\n" + "=" * 60)
+    logger.info("SPLIT SUMMARY")
+    logger.info("=" * 60)
+    logger.info(f"Total subjects: {meta['n_subjects']}")
+    logger.info(f"Holdout test: {meta['n_test']} ({meta['test_frac']*100:.0f}%)")
+    logger.info(f"Train+Val pool: {meta['n_train_val']} ({(1-meta['test_frac'])*100:.0f}%)")
+    logger.info(f"Number of CV folds: {meta['n_folds']}")
+    logger.info(f"Random state: {meta['random_state']}")
+    logger.info("")
 
     for i, fold in enumerate(splits["folds"]):
         n_train = len(fold["train"])
         n_val = len(fold["val"])
-        print(f"  Fold {i+1}: {n_train} train, {n_val} val")
+        logger.info(f"  Fold {i+1}: {n_train} train, {n_val} val")
 
-    print("=" * 60 + "\n")
+    logger.info("=" * 60 + "\n")

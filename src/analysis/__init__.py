@@ -39,7 +39,6 @@ from src.analysis.cell_heterogeneity import (
     CellHeterogeneityAnalyzer,
     CellHeterogeneityResult,
     compute_cell_heterogeneity,
-    analyze_cell_heterogeneity,
 )
 from src.analysis.embedding_analysis import (
     EmbeddingAnalyzer,
@@ -80,7 +79,6 @@ __all__ = [
     "CellHeterogeneityAnalyzer",
     "CellHeterogeneityResult",
     "compute_cell_heterogeneity",
-    "analyze_cell_heterogeneity",
     # Embedding analysis
     "EmbeddingAnalyzer",
     "EmbeddingAnalysisResult",

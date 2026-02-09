@@ -115,7 +115,7 @@ def load_pma_attention(path: Path) -> dict:
     Load PMA attention weights from HDF5 file.
 
     Uses io.load_attention_weights() for consistent schema handling, then
-    unpacks PMA attention into the 3D format expected by analyze_cell_heterogeneity().
+    unpacks PMA attention into the 3D format expected by CellHeterogeneityAnalyzer.
 
     Returns:
         Dict with 'pma_attention' [n_subjects, n_cell_types, n_cells] and metadata

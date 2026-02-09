@@ -85,6 +85,11 @@ class ResilienceMetrics:
 
         return result
 
+    # NOTE: This is an evaluation metric (numpy, non-differentiable), NOT a
+    # training loss. The differentiable CRPSLoss class was intentionally removed
+    # (designed but deferred; see design doc changelog Round 14). This metric is
+    # retained because CRPS is a standard proper scoring rule for evaluating
+    # probabilistic predictions alongside calibration error.
     @staticmethod
     def _crps(
         mean: np.ndarray,

@@ -65,6 +65,9 @@ class BayesianPredictionHead(PyroModule):
         # fc_log_std is deterministic (aleatoric uncertainty only)
         self.fc_log_std = nn.Linear(d_hidden, 1)
 
+        # ELBO likelihood scaling factor (set to world_size for DDP)
+        self._data_scale = 1.0
+
         # Priors on fc1 weights
         self.fc1.weight = PyroSample(
             dist.Normal(0., 1.).expand([d_hidden, d_input]).to_event(2)
@@ -88,6 +91,10 @@ class BayesianPredictionHead(PyroModule):
         self.fc_mean.bias = PyroSample(
             dist.Normal(0., 1.).expand([1]).to_event(1)
         )
+
+    def set_data_scale(self, scale: float) -> None:
+        """Set ELBO likelihood scaling factor (world_size for DDP)."""
+        self._data_scale = scale
 
     def forward(self, x: torch.Tensor, y: torch.Tensor = None):
         """
@@ -138,7 +145,8 @@ class BayesianPredictionHead(PyroModule):
         std = F.softplus(log_std) + EPSILON_POSITIVE_FLOOR  # Ensure positive with minimum
 
         with pyro.plate("data", x.size(0)):
-            pyro.sample("obs", dist.Normal(mean, std).to_event(1), obs=y)
+            with pyro.poutine.scale(scale=self._data_scale):
+                pyro.sample("obs", dist.Normal(mean, std).to_event(1), obs=y)
 
         return mean, std
 
