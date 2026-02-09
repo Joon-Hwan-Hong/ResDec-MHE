@@ -114,11 +114,9 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
         )
     )
 
-    # LearningRateMonitor — skip in Bayesian mode (SVI uses Pyro's internal
-    # optimizer with lrd decay; Lightning's LR monitor can't see Pyro's LR)
-    head_type = config.model.head.get("type", "deterministic")
-    if head_type != "bayesian":
-        callbacks.append(LearningRateMonitor(logging_interval="step"))
+    # LearningRateMonitor — works for both deterministic (CosineAnnealingLR)
+    # and Bayesian (ExponentialLR) paths since both use standard torch optimizers.
+    callbacks.append(LearningRateMonitor(logging_interval="step"))
 
     # TemperatureAnnealing
     ta_cfg = train_cfg.temperature_annealing

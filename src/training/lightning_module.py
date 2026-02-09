@@ -20,6 +20,7 @@ import pyro.poutine
 from pyro.infer import Trace_ELBO
 from pyro.infer.autoguide import AutoDiagonalNormal
 
+from src.data.constants import N_REGIONS
 from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 from src.training.losses import BetaNLLLoss, mse_loss
 from src.training.metrics import ResilienceMetrics
@@ -160,8 +161,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         Used for validation/test to get deterministic predictions from the
         learned posterior, avoiding sampling noise.
 
-        Falls back to standard forward if guide hasn't been initialized yet
-        (e.g., validation before first training step).
+        Falls back to standard forward if guide hasn't been prototyped yet
+        (safety net only — guide is prototyped in configure_optimizers).
         """
         if self.guide.prototype_trace is None:
             # Guide hasn't been prototyped yet (no SVI step has run).
@@ -217,6 +218,12 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         """Validation step using posterior median for Bayesian head."""
         if self._use_bayesian_svi:
             output = self._forward_batch_posterior(batch)
+            # Log ELBO for monitoring posterior convergence (F2).
+            # val_loss (beta-NLL) remains primary metric for model selection.
+            with torch.no_grad():
+                val_elbo = self._svi_forward(batch)
+            bs = batch["cognition"].shape[0]
+            self.log("val_elbo", val_elbo, prog_bar=False, sync_dist=True, batch_size=bs)
         else:
             output = self._forward_batch(batch)
         loss = self._compute_loss(output, batch["cognition"])
@@ -295,6 +302,38 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             if world_size > 1:
                 self.model.prediction_head.set_data_scale(float(world_size))
                 logger.info(f"Bayesian ELBO scaling: data_scale={world_size} for DDP")
+
+            # Prototype the guide so AutoDiagonalNormal creates its variational
+            # parameters (loc, scale). Without this, guide.parameters() returns []
+            # and the optimizer never updates the posterior (F1 fix).
+            model_cfg = self.config.model
+            dummy_batch = {
+                "region_pseudobulk": torch.zeros(
+                    1, N_REGIONS, model_cfg.n_cell_types, model_cfg.n_genes,
+                    device=self.device,
+                ),
+                "region_mask": torch.ones(1, N_REGIONS, device=self.device),
+                "cells": torch.zeros(
+                    1, model_cfg.n_cell_types, 1, model_cfg.n_genes,
+                    device=self.device,
+                ),
+                "cell_mask": torch.ones(
+                    1, model_cfg.n_cell_types, 1, dtype=torch.bool,
+                    device=self.device,
+                ),
+                "pathology": torch.zeros(
+                    1,
+                    model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
+                    device=self.device,
+                ),
+                "cognition": torch.zeros(1, 1, device=self.device),
+            }
+            with torch.no_grad():
+                self._svi_forward(dummy_batch)
+            n_guide_params = sum(1 for _ in self.guide.parameters())
+            logger.info(
+                f"Guide prototyped in configure_optimizers: {n_guide_params} parameter tensors"
+            )
 
             # Collect model + guide parameters
             all_params = list(self.model.parameters()) + list(self.guide.parameters())

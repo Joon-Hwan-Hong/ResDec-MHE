@@ -38,7 +38,7 @@ from src.analysis import (
     ResilienceSignatureAnalyzer,
     RegionalAnalyzer,
     UncertaintyAnalyzer,
-    compute_expected_calibration_error,
+    compute_ece_regression,
     EmbeddingAnalyzer,
 )
 from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
@@ -512,7 +512,7 @@ def run_uncertainty_analysis(
 
     # Log ECE if actual values available
     if actual is not None:
-        ece = compute_expected_calibration_error(predicted_mean, predicted_std, actual)
+        ece = compute_ece_regression(predicted_mean, predicted_std, actual)
         logger.info(f"  Expected Calibration Error (ECE): {ece:.4f}")
 
 
@@ -1027,7 +1027,11 @@ def main():
                     predicted_mean=predictions_df["predicted_mean"].values,
                     predicted_std=predictions_df["predicted_std"].values,
                     actual=actual,
-                    subject_ids=predictions_df.get("subject_id", pd.Series(subject_ids)).tolist() if subject_ids else None,
+                    subject_ids=(
+                        predictions_df["subject_id"].tolist()
+                        if "subject_id" in predictions_df.columns
+                        else (subject_ids if subject_ids else None)
+                    ),
                     covariates=covariates,
                     output_dir=output_dir,
                     formats=args.formats,

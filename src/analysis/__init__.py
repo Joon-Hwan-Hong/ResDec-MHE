@@ -32,7 +32,7 @@ from src.analysis.uncertainty_analysis import (
     UncertaintyAnalyzer,
     UncertaintyAnalysisResult,
     compute_uncertainty_analysis,
-    compute_expected_calibration_error,
+    compute_ece_regression,
 )
 from src.utils.statistics import CALIBRATION_LEVELS
 from src.analysis.cell_heterogeneity import (
@@ -73,7 +73,7 @@ __all__ = [
     "UncertaintyAnalyzer",
     "UncertaintyAnalysisResult",
     "compute_uncertainty_analysis",
-    "compute_expected_calibration_error",
+    "compute_ece_regression",
     "CALIBRATION_LEVELS",
     # Cell heterogeneity
     "CellHeterogeneityAnalyzer",

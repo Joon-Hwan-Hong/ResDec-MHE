@@ -273,7 +273,7 @@ def main():
         )
 
     from src.utils.config import validate_config
-    validate_config(config, required_keys=["model"])
+    validate_config(config, required_keys=["model", "data"])
 
     data_path = args.data_path
     batch_size = args.batch_size

@@ -127,6 +127,8 @@ def calibration_error(
 
     Returns:
         Mean calibration error (0 = perfect, negative = overconfident)
+
+    For binned ECE, see src.analysis.uncertainty_analysis.compute_ece_regression.
     """
     return compute_calibration_metrics(
         predicted_mean, predicted_std, actual, epsilon

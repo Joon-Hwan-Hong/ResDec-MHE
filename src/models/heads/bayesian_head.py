@@ -20,6 +20,21 @@ import pyro.distributions as dist
 from pyro.nn import PyroModule, PyroSample
 
 
+def _make_normal_prior(shape: list[int], head_module: "BayesianPredictionHead"):
+    """Create a device-aware Normal prior that follows the module's device.
+
+    Uses a sentinel buffer registered on head_module that moves with .to().
+    The prior samples on whatever device the sentinel is currently on.
+    """
+    def prior_fn(module):
+        device = head_module._device_sentinel.device
+        return dist.Normal(
+            torch.zeros(shape, device=device),
+            torch.ones(shape, device=device),
+        ).to_event(len(shape))
+    return prior_fn
+
+
 class BayesianPredictionHead(PyroModule):
     """
     Bayesian regression head for cognition prediction.
@@ -33,6 +48,13 @@ class BayesianPredictionHead(PyroModule):
     Prior placement (2026-01-27 design):
     - fc1, fc2, fc_mean: Have priors for epistemic uncertainty
     - fc_log_std: Deterministic, learns aleatoric uncertainty from data
+
+    GPU support:
+        Priors are device-aware and follow ``.to(device)`` calls. A sentinel
+        buffer (``_device_sentinel``) is registered so that ``.to(cuda)`` moves
+        it alongside other parameters; prior factory functions read the
+        sentinel's device at sample time to create distribution tensors on the
+        correct device.
 
     Args:
         d_input: Input feature dimension (from attended features)
@@ -68,29 +90,18 @@ class BayesianPredictionHead(PyroModule):
         # ELBO likelihood scaling factor (set to world_size for DDP)
         self._data_scale = 1.0
 
-        # Priors on fc1 weights
-        self.fc1.weight = PyroSample(
-            dist.Normal(0., 1.).expand([d_hidden, d_input]).to_event(2)
-        )
-        self.fc1.bias = PyroSample(
-            dist.Normal(0., 1.).expand([d_hidden]).to_event(1)
-        )
+        # Device sentinel — moves with .to(device), priors read its device at sample time
+        self.register_buffer("_device_sentinel", torch.empty(0))
 
-        # Priors on fc2 weights
-        self.fc2.weight = PyroSample(
-            dist.Normal(0., 1.).expand([d_hidden, d_hidden]).to_event(2)
-        )
-        self.fc2.bias = PyroSample(
-            dist.Normal(0., 1.).expand([d_hidden]).to_event(1)
-        )
+        # Device-aware priors: sample on current device at call time
+        self.fc1.weight = PyroSample(_make_normal_prior([d_hidden, d_input], self))
+        self.fc1.bias = PyroSample(_make_normal_prior([d_hidden], self))
 
-        # Priors on fc_mean weights
-        self.fc_mean.weight = PyroSample(
-            dist.Normal(0., 1.).expand([1, d_hidden]).to_event(2)
-        )
-        self.fc_mean.bias = PyroSample(
-            dist.Normal(0., 1.).expand([1]).to_event(1)
-        )
+        self.fc2.weight = PyroSample(_make_normal_prior([d_hidden, d_hidden], self))
+        self.fc2.bias = PyroSample(_make_normal_prior([d_hidden], self))
+
+        self.fc_mean.weight = PyroSample(_make_normal_prior([1, d_hidden], self))
+        self.fc_mean.bias = PyroSample(_make_normal_prior([1], self))
 
     def set_data_scale(self, scale: float) -> None:
         """Set ELBO likelihood scaling factor (world_size for DDP)."""

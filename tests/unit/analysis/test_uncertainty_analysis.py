@@ -11,7 +11,7 @@ from src.analysis.uncertainty_analysis import (
     UncertaintyAnalyzer,
     UncertaintyAnalysisResult,
     compute_uncertainty_analysis,
-    compute_expected_calibration_error,
+    compute_ece_regression,
     CALIBRATION_LEVELS,
 )
 
@@ -465,7 +465,7 @@ class TestComputeUncertaintyAnalysis:
         assert (tmp_path / "calibration_summary.csv").exists()
 
 
-class TestComputeExpectedCalibrationError:
+class TestComputeEceRegression:
     """Test ECE computation."""
 
     def test_ece_well_calibrated(self):
@@ -475,7 +475,7 @@ class TestComputeExpectedCalibrationError:
         predicted_mean = actual + np.random.randn(1000) * 0.5
         predicted_std = np.ones(1000) * 0.5
 
-        ece = compute_expected_calibration_error(
+        ece = compute_ece_regression(
             predicted_mean=predicted_mean,
             predicted_std=predicted_std,
             actual=actual,
@@ -492,7 +492,7 @@ class TestComputeExpectedCalibrationError:
         predicted_mean = actual + np.random.randn(1000) * 2.0  # Large errors
         predicted_std = np.ones(1000) * 0.1  # Overconfident
 
-        ece = compute_expected_calibration_error(
+        ece = compute_ece_regression(
             predicted_mean=predicted_mean,
             predicted_std=predicted_std,
             actual=actual,
@@ -509,14 +509,14 @@ class TestComputeExpectedCalibrationError:
         predicted_mean = actual + np.random.randn(100) * 0.5
         predicted_std = np.abs(np.random.randn(100)) * 0.5 + 0.1
 
-        ece_5 = compute_expected_calibration_error(
+        ece_5 = compute_ece_regression(
             predicted_mean=predicted_mean,
             predicted_std=predicted_std,
             actual=actual,
             n_bins=5,
         )
 
-        ece_20 = compute_expected_calibration_error(
+        ece_20 = compute_ece_regression(
             predicted_mean=predicted_mean,
             predicted_std=predicted_std,
             actual=actual,

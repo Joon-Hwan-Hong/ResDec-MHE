@@ -345,17 +345,18 @@ def compute_uncertainty_analysis(
     return result
 
 
-def compute_expected_calibration_error(
+def compute_ece_regression(
     predicted_mean: np.ndarray,
     predicted_std: np.ndarray,
     actual: np.ndarray,
     n_bins: int = 10,
 ) -> float:
     """
-    Compute Expected Calibration Error (ECE) for regression.
+    Compute Expected Calibration Error (ECE) for regression via binned analysis.
 
-    Bins predictions by predicted std, computes actual coverage in each bin,
-    and returns weighted average error.
+    This is distinct from z-score calibration in src.utils.statistics.calibration_error,
+    which checks coverage at 1σ/2σ/3σ levels. ECE bins by predicted uncertainty and
+    measures whether higher predicted std corresponds to larger actual errors.
 
     Args:
         predicted_mean: Predicted mean values

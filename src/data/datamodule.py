@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import DictConfig
 
@@ -27,6 +27,10 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
 
     Wraps dataset creation and DataLoader construction for DDP-safe training.
     Lightning automatically adds DistributedSampler when strategy="ddp".
+
+    Note: For reproducible validation, use PrecomputedDataset (precomputed .npz features).
+    On-the-fly CognitiveResilienceDataset uses random cell sampling which introduces
+    stochastic variation in val/test metrics.
 
     Args:
         config: Full experiment config (needs data section)

@@ -136,11 +136,11 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         # Logging
         "training.logging.log_every_n_steps": (int, lambda v: v > 0),
         # Scheduler
-        "training.scheduler.type": (str, lambda v: v in ("cosine", "step", "plateau", "none")),
+        "training.scheduler.type": (str, lambda v: v in ("cosine",)),
         "training.scheduler.warmup_epochs": (int, lambda v: v >= 0),
         "training.scheduler.eta_min": ((int, float), lambda v: v >= 0),
         # Optimizer type
-        "training.optimizer.type": (str, lambda v: v in ("adamw", "adam", "sgd")),
+        "training.optimizer.type": (str, lambda v: v in ("adamw", "adam")),
         # Sampling
         "data.cell_sampling.sampling_strategy": (str, lambda v: v in ("random", "stratified", "importance")),
         "data.cell_sampling.max_cells_per_type": (int, lambda v: v > 0),
