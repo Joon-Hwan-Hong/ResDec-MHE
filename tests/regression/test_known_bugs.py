@@ -14,6 +14,7 @@ Bugs covered:
     7. Resilience plots went to attention/ directory (Round 13, H3)
     8. LR not scaled by world_size for multi-GPU (Round 14, Task 3)
     9. --final mode used holdout test as val_dataloaders (Round 16, Task 1)
+    10. Bayesian model exported full weights.pt (unsafe without guide) (Round 17, Task 2)
 """
 
 import tempfile
@@ -789,3 +790,69 @@ class TestFinalModeDoesNotUseHoldoutForSelection:
             assert len(resilience_cbs) >= 1, (
                 "ResilienceModelCheckpoint missing from --final mode callbacks"
             )
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Bayesian model exports backbone_weights.pt, not full weights.pt
+# Bug: Round 17, Task 2
+# Fix: _export_weights() in scripts/train.py gates the export:
+#      - Deterministic heads: full state_dict as weights.pt
+#      - Bayesian heads: backbone-only (excluding prediction_head.*) as
+#        backbone_weights.pt. Bayesian inference requires the full .ckpt
+#        with guide and param store; exporting weights.pt would produce
+#        random predictions from N(0,1) priors.
+# ---------------------------------------------------------------------------
+class TestBayesianModelExportsBackboneNotFullWeights:
+    """Verify Bayesian models export backbone_weights.pt, not weights.pt."""
+
+    def test_bayesian_model_exports_backbone_not_full_weights(self, tmp_path):
+        """
+        Round 17, Task 2: Bayesian models must NOT export weights.pt — only
+        backbone_weights.pt (excluding prediction_head.* keys).
+
+        The bug was that both deterministic and Bayesian models exported full
+        weights.pt. For Bayesian heads, the prediction_head uses Pyro priors
+        (N(0,1)) and without the guide, loading weights.pt for inference
+        produces random predictions.
+        """
+        from scripts.train import _export_weights
+
+        module = MagicMock()
+        module.model.state_dict.return_value = {
+            "pseudobulk_encoder.weight": torch.randn(10, 10),
+            "hgt_encoder.weight": torch.randn(10, 10),
+            "prediction_head.fc1.weight": torch.randn(5, 10),
+            "prediction_head.fc2.weight": torch.randn(1, 5),
+        }
+
+        _export_weights(module, tmp_path, is_bayesian=True)
+
+        assert not (tmp_path / "weights.pt").exists(), (
+            "Bayesian model should NOT create weights.pt"
+        )
+        assert (tmp_path / "backbone_weights.pt").exists()
+
+        loaded = torch.load(tmp_path / "backbone_weights.pt", weights_only=True)
+        assert "pseudobulk_encoder.weight" in loaded
+        assert "hgt_encoder.weight" in loaded
+        assert "prediction_head.fc1.weight" not in loaded
+        assert "prediction_head.fc2.weight" not in loaded
+
+    def test_deterministic_model_exports_full_weights(self, tmp_path):
+        """
+        Round 17, Task 2: Deterministic models should export full weights.pt
+        containing all keys including prediction_head.
+        """
+        from scripts.train import _export_weights
+
+        module = MagicMock()
+        full_state = {
+            "pseudobulk_encoder.weight": torch.randn(10, 10),
+            "prediction_head.fc1.weight": torch.randn(5, 10),
+        }
+        module.model.state_dict.return_value = full_state
+
+        _export_weights(module, tmp_path, is_bayesian=False)
+
+        assert (tmp_path / "weights.pt").exists()
+        assert not (tmp_path / "backbone_weights.pt").exists()

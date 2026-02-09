@@ -23,6 +23,7 @@ Outputs saved to: {experiment_dir}/analysis/ or --output-dir
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -156,6 +157,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=100,
         help="Number of top genes per cell type (default: 100)",
+    )
+    param_group.add_argument(
+        "--top-k-interactions",
+        type=int,
+        default=100,
+        help="Number of top CCC interactions to save (default: 100)",
     )
     param_group.add_argument(
         "--n-permutations",
@@ -373,6 +380,7 @@ def run_ccc_importance(
     subject_ids: list[str] | None = None,
     output_dir: Path = None,
     formats: list[str] = None,
+    top_k: int = 100,
 ) -> None:
     """Run cell-cell communication importance analysis."""
     logger.info("Running CCC importance analysis...")
@@ -387,7 +395,7 @@ def run_ccc_importance(
         subject_ids=subject_ids,
     )
 
-    result = analyzer.analyze()
+    result = analyzer.analyze(top_k=top_k)
 
     if output_dir:
         analyzer.save(result, output_dir, formats=formats)
@@ -540,6 +548,12 @@ def main():
         from src.utils.config import load_config
         analysis_config = load_config(args.config)
 
+    # Error handling policy for analysis
+    analysis_error_cfg = {}
+    if analysis_config is not None and hasattr(analysis_config, "error_handling"):
+        analysis_error_cfg = analysis_config.error_handling.get("analysis", {})
+    insufficient_data_policy = analysis_error_cfg.get("insufficient_data", "skip") if analysis_error_cfg else "skip"
+
     # Resolve subject column name for metadata alignment
     # Priority: CLI --subject-column > config.data.subject_column > default
     if args.subject_column:
@@ -560,16 +574,21 @@ def main():
         res_cfg = {}
         out_cfg = {}
 
-    # Apply config fallbacks for unset CLI args (detect by checking against argparse defaults)
-    if args.n_permutations == 1000:  # argparse default
+    # Apply config fallbacks — only override if CLI arg was NOT explicitly provided.
+    # We check sys.argv instead of comparing to defaults, because a user explicitly
+    # passing --n-permutations 1000 should NOT be overridden by config.
+    cli_args_provided = set(sys.argv)
+    if "--n-permutations" not in cli_args_provided:
         args.n_permutations = res_cfg.get("n_permutations", 1000)
-    if args.fdr_threshold == 0.05:  # argparse default
+    if "--fdr-threshold" not in cli_args_provided:
         args.fdr_threshold = res_cfg.get("alpha", 0.05)
-    if args.top_k_genes == 100:  # argparse default
+    if "--top-k-genes" not in cli_args_provided:
         args.top_k_genes = out_cfg.get("top_n_genes", 100)
-    if not args.run_ablation:  # argparse default False
+    if "--top-k-interactions" not in cli_args_provided:
+        args.top_k_interactions = out_cfg.get("top_n_interactions", 100)
+    if "--run-ablation" not in cli_args_provided:
         args.run_ablation = res_cfg.get("run_ablation_study", False)
-    if not args.no_fdr:  # argparse default False
+    if "--no-fdr" not in cli_args_provided:
         args.no_fdr = not res_cfg.get("apply_fdr_correction", True)
 
     # Resolve input paths
@@ -742,24 +761,30 @@ def main():
 
     # Cell type importance
     if not args.skip_cell_type and pathology_attention is not None:
-        # Get pathology levels for stratification (prefer gpath as primary)
-        pathology_levels = None
-        if predictions_df is not None:
-            for col in ["gpath", "amylsqrt", "tangsqrt", "pathology"]:
-                if col in predictions_df.columns:
-                    pathology_levels = predictions_df[col].values
-                    logger.info(f"  Using {col} for pathology stratification")
-                    break
+        try:
+            # Get pathology levels for stratification (prefer gpath as primary)
+            pathology_levels = None
+            if predictions_df is not None:
+                for col in ["gpath", "amylsqrt", "tangsqrt", "pathology"]:
+                    if col in predictions_df.columns:
+                        pathology_levels = predictions_df[col].values
+                        logger.info(f"  Using {col} for pathology stratification")
+                        break
 
-        run_cell_type_importance(
-            pathology_attention=pathology_attention,
-            cell_type_names=cell_type_names,
-            pathology_levels=pathology_levels,
-            region_labels=region_labels,
-            output_dir=output_dir,
-            formats=args.formats,
-        )
-        analyses_run += 1
+            run_cell_type_importance(
+                pathology_attention=pathology_attention,
+                cell_type_names=cell_type_names,
+                pathology_levels=pathology_levels,
+                region_labels=region_labels,
+                output_dir=output_dir,
+                formats=args.formats,
+            )
+            analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping cell type importance analysis: %s", e)
+            else:
+                raise
 
     # Acquire cognition scores early (needed for both gene DE and resilience analysis)
     cognition_scores = None
@@ -782,143 +807,161 @@ def main():
 
     # Gene importance
     if not args.skip_gene and gene_gate is not None:
-        # Extract per-subject pseudobulk from attention weights (if available)
-        per_subject_pb = attention_weights.get("per_subject_pseudobulk")
+        try:
+            # Extract per-subject pseudobulk from attention weights (if available)
+            per_subject_pb = attention_weights.get("per_subject_pseudobulk")
 
-        # Derive resilient/vulnerable group labels (if cognition + pathology available)
-        gene_group_labels = None
-        if cognition_scores is not None and per_subject_pb is not None:
-            # Use the first available pathology measure for group derivation
-            gene_pathology = None
-            for col in ["gpath", "amylsqrt", "tangsqrt", "pathology"]:
-                if predictions_df is not None and col in predictions_df.columns:
-                    gene_pathology = predictions_df[col].values
-                    break
-                elif metadata_df is not None and col in metadata_df.columns:
-                    if subject_ids is not None:
-                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
-                        if aligned is not None:
-                            gene_pathology = aligned
-                            break
+            # Derive resilient/vulnerable group labels (if cognition + pathology available)
+            gene_group_labels = None
+            if cognition_scores is not None and per_subject_pb is not None:
+                # Use the first available pathology measure for group derivation
+                gene_pathology = None
+                for col in ["gpath", "amylsqrt", "tangsqrt", "pathology"]:
+                    if predictions_df is not None and col in predictions_df.columns:
+                        gene_pathology = predictions_df[col].values
+                        break
+                    elif metadata_df is not None and col in metadata_df.columns:
+                        if subject_ids is not None:
+                            aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
+                            if aligned is not None:
+                                gene_pathology = aligned
+                                break
 
-            if gene_pathology is not None:
-                gene_group_labels = derive_resilience_groups(
-                    cognition_scores=cognition_scores,
-                    pathology_scores=gene_pathology,
-                )
-                n_resilient = (gene_group_labels == "resilient").sum()
-                n_vulnerable = (gene_group_labels == "vulnerable").sum()
-                logger.info(
-                    f"  Derived resilience groups for DE: "
-                    f"{n_resilient} resilient, {n_vulnerable} vulnerable"
-                )
+                if gene_pathology is not None:
+                    gene_group_labels = derive_resilience_groups(
+                        cognition_scores=cognition_scores,
+                        pathology_scores=gene_pathology,
+                    )
+                    n_resilient = (gene_group_labels == "resilient").sum()
+                    n_vulnerable = (gene_group_labels == "vulnerable").sum()
+                    logger.info(
+                        f"  Derived resilience groups for DE: "
+                        f"{n_resilient} resilient, {n_vulnerable} vulnerable"
+                    )
 
-        run_gene_importance(
-            gene_gate_weights=gene_gate,
-            cell_type_names=cell_type_names,
-            gene_names=gene_names,
-            region_pseudobulk=region_pseudobulk_dict,
-            top_k=args.top_k_genes,
-            output_dir=output_dir,
-            formats=args.formats,
-            group_labels=gene_group_labels,
-            subject_expression=per_subject_pb,
-            gate_threshold=args.gate_threshold,
-            apply_fdr=not args.no_fdr_correction,
-        )
-        analyses_run += 1
+            run_gene_importance(
+                gene_gate_weights=gene_gate,
+                cell_type_names=cell_type_names,
+                gene_names=gene_names,
+                region_pseudobulk=region_pseudobulk_dict,
+                top_k=args.top_k_genes,
+                output_dir=output_dir,
+                formats=args.formats,
+                group_labels=gene_group_labels,
+                subject_expression=per_subject_pb,
+                gate_threshold=args.gate_threshold,
+                apply_fdr=not args.no_fdr_correction,
+            )
+            analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping gene importance analysis: %s", e)
+            else:
+                raise
 
     # CCC importance (analyzer handles None attention gracefully)
     if not args.skip_ccc and (edge_attention_scores is not None or hgt_edge_metadata is not None or edge_metadata is not None):
-        # Merge HGT-derived edge_metadata with any file-based edge_metadata
-        effective_edge_metadata = edge_metadata if edge_metadata is not None else hgt_edge_metadata
-        run_ccc_importance(
-            edge_attention_scores=edge_attention_scores,
-            edge_metadata=effective_edge_metadata,
-            cell_type_names=cell_type_names,
-            edge_types=edge_type_names,
-            lr_pair_mapping=lr_pair_mapping,
-            region_labels=region_labels,
-            subject_ids=subject_ids,
-            output_dir=output_dir,
-            formats=args.formats,
-        )
-        analyses_run += 1
+        try:
+            # Merge HGT-derived edge_metadata with any file-based edge_metadata
+            effective_edge_metadata = edge_metadata if edge_metadata is not None else hgt_edge_metadata
+            run_ccc_importance(
+                edge_attention_scores=edge_attention_scores,
+                edge_metadata=effective_edge_metadata,
+                cell_type_names=cell_type_names,
+                edge_types=edge_type_names,
+                lr_pair_mapping=lr_pair_mapping,
+                region_labels=region_labels,
+                subject_ids=subject_ids,
+                output_dir=output_dir,
+                formats=args.formats,
+                top_k=args.top_k_interactions,
+            )
+            analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping CCC importance analysis: %s", e)
+            else:
+                raise
 
     # Resilience signatures (requires pathology and cognition data)
     # Runs separately for each available pathology measure (gpath, amylsqrt, tangsqrt)
     # cognition_scores already derived above (shared with gene DE)
     if not args.skip_resilience and pathology_attention is not None:
         if cognition_scores is not None:
+            try:
+                # Acquire pathology scores
+                pathology_columns = ["gpath", "amylsqrt", "tangsqrt"]
+                available_pathology = []
 
-            # Acquire pathology scores
-            pathology_columns = ["gpath", "amylsqrt", "tangsqrt"]
-            available_pathology = []
+                for col in pathology_columns:
+                    if predictions_df is not None and col in predictions_df.columns:
+                        available_pathology.append((col, predictions_df[col].values))
+                    elif metadata_df is not None and col in metadata_df.columns:
+                        if subject_ids is not None:
+                            aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
+                            if aligned is not None:
+                                available_pathology.append((col, aligned))
+                        else:
+                            available_pathology.append((col, metadata_df[col].values))
+                            logger.warning(f"Pathology '{col}' taken without alignment — no subject_ids")
 
-            for col in pathology_columns:
-                if predictions_df is not None and col in predictions_df.columns:
-                    available_pathology.append((col, predictions_df[col].values))
-                elif metadata_df is not None and col in metadata_df.columns:
-                    if subject_ids is not None:
-                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
-                        if aligned is not None:
-                            available_pathology.append((col, aligned))
-                    else:
-                        available_pathology.append((col, metadata_df[col].values))
-                        logger.warning(f"Pathology '{col}' taken without alignment — no subject_ids")
+                # Also check for legacy "pathology" column
+                if not available_pathology:
+                    if metadata_df is not None and "pathology" in metadata_df.columns:
+                        if subject_ids is not None:
+                            aligned = _align_array_by_subject_id(metadata_df, subject_ids, "pathology", source_id_column=metadata_subject_column)
+                            if aligned is not None:
+                                available_pathology.append(("pathology", aligned))
+                        else:
+                            available_pathology.append(("pathology", metadata_df["pathology"].values))
+                    elif predictions_df is not None and "pathology" in predictions_df.columns:
+                        available_pathology.append(("pathology", predictions_df["pathology"].values))
 
-            # Also check for legacy "pathology" column
-            if not available_pathology:
-                if metadata_df is not None and "pathology" in metadata_df.columns:
-                    if subject_ids is not None:
-                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, "pathology", source_id_column=metadata_subject_column)
-                        if aligned is not None:
-                            available_pathology.append(("pathology", aligned))
-                    else:
-                        available_pathology.append(("pathology", metadata_df["pathology"].values))
-                elif predictions_df is not None and "pathology" in predictions_df.columns:
-                    available_pathology.append(("pathology", predictions_df["pathology"].values))
+                if available_pathology:
+                    # Prepare ablation embeddings (prefer fused, fall back to attended)
+                    ablation_embeddings = None
+                    if embeddings is not None:
+                        if isinstance(embeddings, dict):
+                            ablation_embeddings = embeddings.get("fused")
+                            if ablation_embeddings is None:
+                                candidate = embeddings.get("attended")
+                                if candidate is not None and candidate.ndim == 3:
+                                    ablation_embeddings = candidate
+                                elif candidate is not None:
+                                    logger.warning(
+                                        f"Attended embeddings are {candidate.ndim}D, need 3D for ablation. Skipping."
+                                    )
+                        elif isinstance(embeddings, np.ndarray):
+                            ablation_embeddings = embeddings
 
-            if available_pathology:
-                # Prepare ablation embeddings (prefer fused, fall back to attended)
-                ablation_embeddings = None
-                if embeddings is not None:
-                    if isinstance(embeddings, dict):
-                        ablation_embeddings = embeddings.get("fused")
-                        if ablation_embeddings is None:
-                            candidate = embeddings.get("attended")
-                            if candidate is not None and candidate.ndim == 3:
-                                ablation_embeddings = candidate
-                            elif candidate is not None:
-                                logger.warning(
-                                    f"Attended embeddings are {candidate.ndim}D, need 3D for ablation. Skipping."
-                                )
-                    elif isinstance(embeddings, np.ndarray):
-                        ablation_embeddings = embeddings
-
-                for pathology_name, pathology_scores in available_pathology:
-                    logger.info(f"Running resilience signature for {pathology_name}...")
-                    resilience_output_dir = output_dir / f"resilience_{pathology_name}"
-                    run_resilience_signature(
-                        attention=pathology_attention,
-                        cognition_scores=cognition_scores,
-                        pathology_scores=pathology_scores,
-                        cell_type_names=cell_type_names,
-                        n_permutations=args.n_permutations,
-                        random_seed=args.seed,
-                        apply_fdr_correction=not args.no_fdr,
-                        fdr_threshold=args.fdr_threshold,
-                        run_ablation=args.run_ablation,
-                        ablation_method=args.ablation_method,
-                        embeddings=ablation_embeddings,
-                        region_labels=region_labels,
-                        subject_ids=subject_ids,
-                        output_dir=resilience_output_dir,
-                        formats=args.formats,
-                    )
-                    analyses_run += 1
-            else:
-                logger.warning("Skipping resilience signature: no pathology columns found (gpath, amylsqrt, tangsqrt, or pathology)")
+                    for pathology_name, pathology_scores in available_pathology:
+                        logger.info(f"Running resilience signature for {pathology_name}...")
+                        resilience_output_dir = output_dir / f"resilience_{pathology_name}"
+                        run_resilience_signature(
+                            attention=pathology_attention,
+                            cognition_scores=cognition_scores,
+                            pathology_scores=pathology_scores,
+                            cell_type_names=cell_type_names,
+                            n_permutations=args.n_permutations,
+                            random_seed=args.seed,
+                            apply_fdr_correction=not args.no_fdr,
+                            fdr_threshold=args.fdr_threshold,
+                            run_ablation=args.run_ablation,
+                            ablation_method=args.ablation_method,
+                            embeddings=ablation_embeddings,
+                            region_labels=region_labels,
+                            subject_ids=subject_ids,
+                            output_dir=resilience_output_dir,
+                            formats=args.formats,
+                        )
+                        analyses_run += 1
+                else:
+                    logger.warning("Skipping resilience signature: no pathology columns found (gpath, amylsqrt, tangsqrt, or pathology)")
+            except (ValueError, RuntimeError) as e:
+                if insufficient_data_policy == "skip":
+                    logger.warning("Skipping resilience signature analysis: %s", e)
+                else:
+                    raise
         else:
             logger.warning(
                 "Skipping resilience signature: no cognition scores found "
@@ -933,71 +976,83 @@ def main():
                 "data found. Ensure inference was run with --extract-region-attention."
             )
         else:
-            run_regional_analysis(
-                region_attention=region_attention,
-                region_weights=region_weights,
-                gene_gate_weights=gene_gate,
-                region_pseudobulk=region_pseudobulk_dict,
-                region_names=region_names_list,
-                cell_type_names=cell_type_names,
-                gene_names=gene_names,
-                subject_ids=subject_ids,
-                top_k_genes=args.top_k_genes,
-                output_dir=output_dir,
-                formats=args.formats,
-            )
-            analyses_run += 1
+            try:
+                run_regional_analysis(
+                    region_attention=region_attention,
+                    region_weights=region_weights,
+                    gene_gate_weights=gene_gate,
+                    region_pseudobulk=region_pseudobulk_dict,
+                    region_names=region_names_list,
+                    cell_type_names=cell_type_names,
+                    gene_names=gene_names,
+                    subject_ids=subject_ids,
+                    top_k_genes=args.top_k_genes,
+                    output_dir=output_dir,
+                    formats=args.formats,
+                )
+                analyses_run += 1
+            except (ValueError, RuntimeError) as e:
+                if insufficient_data_policy == "skip":
+                    logger.warning("Skipping regional analysis: %s", e)
+                else:
+                    raise
 
     # Uncertainty analysis
     if not args.skip_uncertainty and predictions_df is not None:
         if "predicted_std" in predictions_df.columns:
-            actual = predictions_df.get("actual")
-            actual = actual.values if actual is not None else None
+            try:
+                actual = predictions_df.get("actual")
+                actual = actual.values if actual is not None else None
 
-            # Build covariates from predictions_df if available
-            covariates = None
-            cov_cols = [c for c in predictions_df.columns
-                       if c not in ["subject_id", "predicted_mean", "predicted_std", "actual"]]
-            if cov_cols:
-                covariates = predictions_df[cov_cols].copy()
+                # Build covariates from predictions_df if available
+                covariates = None
+                cov_cols = [c for c in predictions_df.columns
+                           if c not in ["subject_id", "predicted_mean", "predicted_std", "actual"]]
+                if cov_cols:
+                    covariates = predictions_df[cov_cols].copy()
 
-            # Merge metadata numeric columns (aligned by subject_id) for richer correlates
-            if metadata_df is not None and subject_ids is not None:
-                exclude_cols = {metadata_subject_column, "region"}
-                if covariates is not None:
-                    exclude_cols.update(covariates.columns)
+                # Merge metadata numeric columns (aligned by subject_id) for richer correlates
+                if metadata_df is not None and subject_ids is not None:
+                    exclude_cols = {metadata_subject_column, "region"}
+                    if covariates is not None:
+                        exclude_cols.update(covariates.columns)
 
-                numeric_cols = metadata_df.select_dtypes(include=[np.number]).columns
-                meta_cov_cols = [c for c in numeric_cols if c not in exclude_cols]
+                    numeric_cols = metadata_df.select_dtypes(include=[np.number]).columns
+                    meta_cov_cols = [c for c in numeric_cols if c not in exclude_cols]
 
-                if meta_cov_cols:
-                    for col in meta_cov_cols:
-                        aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
-                        if aligned is not None:
-                            if covariates is None:
-                                covariates = pd.DataFrame(index=range(len(subject_ids)))
-                            covariates[col] = aligned
-                    logger.info(f"  Added {len(meta_cov_cols)} metadata covariates: {meta_cov_cols}")
+                    if meta_cov_cols:
+                        for col in meta_cov_cols:
+                            aligned = _align_array_by_subject_id(metadata_df, subject_ids, col, source_id_column=metadata_subject_column)
+                            if aligned is not None:
+                                if covariates is None:
+                                    covariates = pd.DataFrame(index=range(len(subject_ids)))
+                                covariates[col] = aligned
+                        logger.info(f"  Added {len(meta_cov_cols)} metadata covariates: {meta_cov_cols}")
 
-            # Add cell counts as covariates (per-cell-type counts + total)
-            if cell_counts is not None and cell_counts.shape[0] == len(predictions_df):
-                if covariates is None:
-                    covariates = pd.DataFrame(index=range(len(predictions_df)))
-                for ct_idx, ct_name in enumerate(cell_type_names):
-                    covariates[f"cell_count_{ct_name}"] = cell_counts[:, ct_idx]
-                covariates["total_cell_count"] = cell_counts.sum(axis=1)
-                logger.info(f"  Added {len(cell_type_names) + 1} cell count covariates")
+                # Add cell counts as covariates (per-cell-type counts + total)
+                if cell_counts is not None and cell_counts.shape[0] == len(predictions_df):
+                    if covariates is None:
+                        covariates = pd.DataFrame(index=range(len(predictions_df)))
+                    for ct_idx, ct_name in enumerate(cell_type_names):
+                        covariates[f"cell_count_{ct_name}"] = cell_counts[:, ct_idx]
+                    covariates["total_cell_count"] = cell_counts.sum(axis=1)
+                    logger.info(f"  Added {len(cell_type_names) + 1} cell count covariates")
 
-            run_uncertainty_analysis(
-                predicted_mean=predictions_df["predicted_mean"].values,
-                predicted_std=predictions_df["predicted_std"].values,
-                actual=actual,
-                subject_ids=predictions_df.get("subject_id", pd.Series(subject_ids)).tolist() if subject_ids else None,
-                covariates=covariates,
-                output_dir=output_dir,
-                formats=args.formats,
-            )
-            analyses_run += 1
+                run_uncertainty_analysis(
+                    predicted_mean=predictions_df["predicted_mean"].values,
+                    predicted_std=predictions_df["predicted_std"].values,
+                    actual=actual,
+                    subject_ids=predictions_df.get("subject_id", pd.Series(subject_ids)).tolist() if subject_ids else None,
+                    covariates=covariates,
+                    output_dir=output_dir,
+                    formats=args.formats,
+                )
+                analyses_run += 1
+            except (ValueError, RuntimeError) as e:
+                if insufficient_data_policy == "skip":
+                    logger.warning("Skipping uncertainty analysis: %s", e)
+                else:
+                    raise
         else:
             logger.warning("Skipping uncertainty analysis: no predicted_std in predictions")
 
@@ -1008,24 +1063,30 @@ def main():
             from src.utils.io import unpack_pma_attention
             pma_3d = unpack_pma_attention(pma_raw, cell_type_names=cell_type_names)
             if pma_3d is not None:
-                from src.analysis.cell_heterogeneity import CellHeterogeneityAnalyzer
+                try:
+                    from src.analysis.cell_heterogeneity import CellHeterogeneityAnalyzer
 
-                cell_barcodes = attention_weights.get("cell_barcodes")
-                het_output_dir = output_dir / "cell_heterogeneity"
+                    cell_barcodes = attention_weights.get("cell_barcodes")
+                    het_output_dir = output_dir / "cell_heterogeneity"
 
-                logger.info("Running cell heterogeneity analysis...")
-                het_analyzer = CellHeterogeneityAnalyzer(
-                    pma_attention=pma_3d,
-                    cell_type_names=cell_type_names,
-                    subject_ids=subject_ids,
-                    cell_barcodes=cell_barcodes,
-                    top_percentile=args.top_percentile,
-                )
-                het_result = het_analyzer.analyze()
-                het_analyzer.save(het_result, het_output_dir, formats=args.formats)
+                    logger.info("Running cell heterogeneity analysis...")
+                    het_analyzer = CellHeterogeneityAnalyzer(
+                        pma_attention=pma_3d,
+                        cell_type_names=cell_type_names,
+                        subject_ids=subject_ids,
+                        cell_barcodes=cell_barcodes,
+                        top_percentile=args.top_percentile,
+                    )
+                    het_result = het_analyzer.analyze()
+                    het_analyzer.save(het_result, het_output_dir, formats=args.formats)
 
-                analyses_run += 1
-                logger.info(f"Cell heterogeneity analysis saved to {het_output_dir}")
+                    analyses_run += 1
+                    logger.info(f"Cell heterogeneity analysis saved to {het_output_dir}")
+                except (ValueError, RuntimeError) as e:
+                    if insufficient_data_policy == "skip":
+                        logger.warning("Skipping cell heterogeneity analysis: %s", e)
+                    else:
+                        raise
             else:
                 logger.warning("Skipping cell heterogeneity: could not unpack PMA attention")
         else:
@@ -1033,49 +1094,55 @@ def main():
 
     # Embedding analysis (requires subject embeddings)
     if not args.skip_embedding and embeddings is not None:
-        # Build covariates for linear probe analysis
-        covariates = None
-        if predictions_df is not None:
-            cov_cols = [c for c in predictions_df.columns
-                       if c not in ["subject_id", "predicted_mean", "predicted_std"]]
-            if cov_cols:
-                covariates = predictions_df[cov_cols]
+        try:
+            # Build covariates for linear probe analysis
+            covariates = None
+            if predictions_df is not None:
+                cov_cols = [c for c in predictions_df.columns
+                           if c not in ["subject_id", "predicted_mean", "predicted_std"]]
+                if cov_cols:
+                    covariates = predictions_df[cov_cols]
 
-        if isinstance(embeddings, dict):
-            # Multiple embedding types (pseudobulk, hgt, cell, fused, attended)
-            for emb_name, emb_array in embeddings.items():
-                if emb_array is None:
-                    continue
-                # Mean-pool 3D branch embeddings to 2D for analysis
-                if emb_array.ndim == 3:
-                    emb_2d = emb_array.mean(axis=1)
-                elif emb_array.ndim == 2:
-                    emb_2d = emb_array
-                else:
-                    logger.warning(f"Skipping embedding '{emb_name}' with {emb_array.ndim}D shape")
-                    continue
+            if isinstance(embeddings, dict):
+                # Multiple embedding types (pseudobulk, hgt, cell, fused, attended)
+                for emb_name, emb_array in embeddings.items():
+                    if emb_array is None:
+                        continue
+                    # Mean-pool 3D branch embeddings to 2D for analysis
+                    if emb_array.ndim == 3:
+                        emb_2d = emb_array.mean(axis=1)
+                    elif emb_array.ndim == 2:
+                        emb_2d = emb_array
+                    else:
+                        logger.warning(f"Skipping embedding '{emb_name}' with {emb_array.ndim}D shape")
+                        continue
 
-                emb_output_dir = output_dir / f"embedding_{emb_name}"
-                logger.info(f"  Running embedding analysis for '{emb_name}' "
-                           f"(shape {emb_2d.shape}) → {emb_output_dir}")
+                    emb_output_dir = output_dir / f"embedding_{emb_name}"
+                    logger.info(f"  Running embedding analysis for '{emb_name}' "
+                               f"(shape {emb_2d.shape}) → {emb_output_dir}")
+                    run_embedding_analysis(
+                        embeddings=emb_2d,
+                        subject_ids=subject_ids,
+                        covariates=covariates,
+                        output_dir=emb_output_dir,
+                        formats=args.formats,
+                    )
+                    analyses_run += 1
+            else:
+                # Single embedding array (backward compat)
                 run_embedding_analysis(
-                    embeddings=emb_2d,
+                    embeddings=embeddings,
                     subject_ids=subject_ids,
                     covariates=covariates,
-                    output_dir=emb_output_dir,
+                    output_dir=output_dir,
                     formats=args.formats,
                 )
                 analyses_run += 1
-        else:
-            # Single embedding array (backward compat)
-            run_embedding_analysis(
-                embeddings=embeddings,
-                subject_ids=subject_ids,
-                covariates=covariates,
-                output_dir=output_dir,
-                formats=args.formats,
-            )
-            analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping embedding analysis: %s", e)
+            else:
+                raise
 
     logger.info(f"Completed {analyses_run} analyses")
     logger.info(f"Results saved to: {output_dir}")

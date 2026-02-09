@@ -76,53 +76,6 @@ class BetaNLLLoss(nn.Module):
         return f"beta={self.beta}"
 
 
-class CRPSLoss(nn.Module):
-    """
-    Continuous Ranked Probability Score (CRPS) loss for Gaussian predictions.
-
-    For a Gaussian predictive distribution N(μ, σ²), the closed-form CRPS is:
-
-        CRPS(N(μ,σ), y) = σ * [z*(2Φ(z) - 1) + 2φ(z) - 1/√π]
-
-    where z = (y - μ) / σ, Φ is the standard normal CDF, and φ is the PDF.
-
-    Lower CRPS indicates better probabilistic predictions. Rewards both
-    accuracy (mean close to target) and calibration (appropriate uncertainty).
-    """
-
-    def forward(
-        self,
-        mean: torch.Tensor,
-        std: torch.Tensor,
-        target: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Compute mean CRPS loss.
-
-        Args:
-            mean: [B, 1] predicted mean
-            std: [B, 1] predicted standard deviation (must be > 0)
-            target: [B, 1] ground truth
-
-        Returns:
-            Scalar mean CRPS value
-        """
-        if (std <= 0).any():
-            raise ValueError("std must be strictly positive everywhere")
-
-        z = (target - mean) / std
-
-        # Φ(z) via erf: Φ(z) = 0.5 * (1 + erf(z / √2))
-        cdf_z = 0.5 * (1.0 + torch.erf(z / math.sqrt(2.0)))
-
-        # φ(z) = (1/√(2π)) * exp(-z²/2)
-        pdf_z = torch.exp(-0.5 * z ** 2) / math.sqrt(2.0 * math.pi)
-
-        crps = std * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z - 1.0 / math.sqrt(math.pi))
-
-        return crps.mean()
-
-
 def mse_loss(mean: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """
     Simple MSE loss for deterministic prediction head.

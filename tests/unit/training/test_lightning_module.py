@@ -202,6 +202,12 @@ class TestTrainingStep:
         assert loss.dim() == 0
         assert torch.isfinite(loss)
 
+    def test_bayesian_svi_logs_gradient_norms(self, bayesian_config):
+        """Bayesian SVI training step should log gradient norms manually."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        assert hasattr(module, '_log_svi_gradient_norms')
+
 
 class TestValidationStep:
     """Tests for validation_step."""

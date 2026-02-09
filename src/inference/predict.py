@@ -130,6 +130,12 @@ class Predictor:
         else:
             self.device = torch.device(device)
 
+        # Error handling policy for inference
+        error_cfg = {}
+        if hasattr(config, "error_handling") and hasattr(config.error_handling, "inference"):
+            error_cfg = config.error_handling.inference
+        self._missing_field_policy = error_cfg.get("missing_field", "skip") if error_cfg else "skip"
+
         self.model = model.to(self.device)
         self.model.eval()
 
@@ -555,10 +561,18 @@ class Predictor:
             iterator = tqdm(dataloader, desc="Predicting", unit="batch")
 
         for batch in iterator:
-            result = self.predict_batch(
-                batch, extract_hgt_attention, extract_pma_attention,
-                extract_region_attention, extract_embeddings,
-            )
+            try:
+                result = self.predict_batch(
+                    batch, extract_hgt_attention, extract_pma_attention,
+                    extract_region_attention, extract_embeddings,
+                )
+            except KeyError as e:
+                if self._missing_field_policy == "skip":
+                    batch_ids = batch.get("subject_ids", ["unknown"])
+                    logger.warning("Skipping batch (missing field %s): subjects=%s", e, batch_ids)
+                    continue
+                else:
+                    raise
 
             all_mean.append(result["mean"])
             all_attention.append(result["attention_weights"])

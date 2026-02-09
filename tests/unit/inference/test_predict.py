@@ -250,6 +250,24 @@ class TestPredictor:
         result = predictor.predict(dataloader, show_progress=False)
         assert result.subject_ids == ["z", "a", "m"]
 
+    def test_predict_skips_batch_on_missing_field_with_skip_policy(self, mock_config):
+        """Predictor with missing_field='skip' should skip bad batches, not crash."""
+        from omegaconf import OmegaConf, DictConfig
+
+        # Create config with error_handling.inference.missing_field = "skip"
+        config_dict = OmegaConf.to_container(mock_config, resolve=True)
+        config_dict["error_handling"] = {
+            "inference": {"missing_field": "skip"}
+        }
+        config = OmegaConf.create(config_dict)
+
+        predictor = Predictor(
+            model=MagicMock(),
+            config=config,
+            device="cpu",
+        )
+        assert predictor._missing_field_policy == "skip"
+
     def test_from_checkpoint_handles_model_state_dict_key(self, tmp_path, mock_config):
         """from_checkpoint() should handle checkpoints saved with model_state_dict key."""
         from src.models.full_model import CognitiveResilienceModel

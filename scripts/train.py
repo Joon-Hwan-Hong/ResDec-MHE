@@ -46,6 +46,27 @@ from src.utils.reproducibility import set_seed
 logger = logging.getLogger(__name__)
 
 
+def _export_weights(module, model_dir: Path, is_bayesian: bool) -> None:
+    """Export inference-ready weights artifact.
+
+    For deterministic heads: full model state_dict as weights.pt.
+    For Bayesian heads: backbone-only (excluding prediction_head.*) as backbone_weights.pt.
+    Bayesian inference requires the full .ckpt with guide and param store.
+    """
+    if is_bayesian:
+        backbone_state = {
+            k: v for k, v in module.model.state_dict().items()
+            if not k.startswith("prediction_head.")
+        }
+        path = model_dir / "backbone_weights.pt"
+        torch.save(backbone_state, path)
+        logger.info("Saved backbone-only weights to %s (Bayesian model — use .ckpt for inference)", path)
+    else:
+        path = model_dir / "weights.pt"
+        torch.save(module.model.state_dict(), path)
+        logger.info("Saved weights-only artifact to %s", path)
+
+
 def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
     """
     Create training callbacks from config.
@@ -393,9 +414,7 @@ def main() -> None:
         logger.info("Final training complete.")
 
         # Export weights-only artifact for inference (lighter than full Lightning checkpoint)
-        weights_path = experiment.model_dir / "weights.pt"
-        torch.save(module.model.state_dict(), weights_path)
-        logger.info("Saved weights-only artifact to %s", weights_path)
+        _export_weights(module, experiment.model_dir, is_bayesian=config.model.head.type == "bayesian")
 
         # Single unbiased evaluation on holdout test set
         trainer.test(module, dataloaders=test_loader)
@@ -413,9 +432,7 @@ def main() -> None:
         logger.info("Training complete.")
 
         # Export weights-only artifact for inference (lighter than full Lightning checkpoint)
-        weights_path = experiment.model_dir / "weights.pt"
-        torch.save(module.model.state_dict(), weights_path)
-        logger.info("Saved weights-only artifact to %s", weights_path)
+        _export_weights(module, experiment.model_dir, is_bayesian=config.model.head.type == "bayesian")
 
 
 if __name__ == "__main__":
