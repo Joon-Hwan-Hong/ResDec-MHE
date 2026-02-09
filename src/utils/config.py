@@ -133,6 +133,25 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         "model.hgt.n_heads": (int, lambda v: v > 0),
         "data.dataloader.batch_size": (int, lambda v: v > 0),
         "data.dataloader.num_workers": (int, lambda v: v >= 0),
+        # Logging
+        "training.logging.log_every_n_steps": (int, lambda v: v > 0),
+        # Scheduler
+        "training.scheduler.type": (str, lambda v: v in ("cosine", "step", "plateau", "none")),
+        "training.scheduler.warmup_epochs": (int, lambda v: v >= 0),
+        "training.scheduler.eta_min": ((int, float), lambda v: v >= 0),
+        # Optimizer type
+        "training.optimizer.type": (str, lambda v: v in ("adamw", "adam", "sgd")),
+        # Sampling
+        "data.cell_sampling.sampling_strategy": (str, lambda v: v in ("random", "stratified", "importance")),
+        "data.cell_sampling.max_cells_per_type": (int, lambda v: v > 0),
+        "data.cell_sampling.min_cells_threshold": (int, lambda v: v >= 0),
+        # Splits
+        "data.splits.test_frac": ((int, float), lambda v: 0 < v < 1),
+        "data.splits.n_folds": (int, lambda v: v >= 2),
+        # Temperature annealing
+        "training.temperature_annealing.tau_max": ((int, float), lambda v: v > 0),
+        "training.temperature_annealing.tau_min": ((int, float), lambda v: v > 0),
+        "training.temperature_annealing.schedule": (str, lambda v: v in ("exponential", "linear", "cosine")),
     }
 
     for dotpath, (expected_type, validator) in _FIELD_RULES.items():
@@ -152,6 +171,41 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
             )
         elif not validator(value):
             errors.append(f"{dotpath}: invalid value {value!r}")
+
+    # Cross-field validation
+    # 1. tau_min < tau_max
+    try:
+        tau_max = config.training.temperature_annealing.tau_max
+        tau_min = config.training.temperature_annealing.tau_min
+        if tau_min >= tau_max:
+            errors.append(
+                f"Temperature annealing: tau_min ({tau_min}) must be < tau_max ({tau_max})"
+            )
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+        pass
+
+    # 2. LR > eta_min
+    try:
+        lr = config.training.optimizer.lr
+        eta_min = config.training.scheduler.eta_min
+        if eta_min >= lr:
+            errors.append(
+                f"Scheduler eta_min ({eta_min}) must be < optimizer lr ({lr})"
+            )
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+        pass
+
+    # 3. n_regions must match dataset constant if specified
+    try:
+        from src.data.constants import N_REGIONS
+        cfg_n_regions = config.model.n_regions
+        if cfg_n_regions != N_REGIONS:
+            errors.append(
+                f"model.n_regions={cfg_n_regions} but data constant N_REGIONS={N_REGIONS}. "
+                f"Region count is fixed by dataset schema — remove n_regions from config."
+            )
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+        pass  # n_regions not in config — correct behavior
 
     if errors:
         raise ValueError(

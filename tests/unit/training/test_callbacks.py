@@ -503,13 +503,25 @@ class TestPyroCheckpointRestore:
         return callback, trainer, pl_module, checkpoint
 
     def test_pyro_param_store_restored_with_device_migration(self):
-        """Pyro param store tensors are migrated to pl_module.device on restore."""
+        """Pyro param store loaded to CPU in on_load_checkpoint, migrated in on_train_start.
+
+        Note: This is a callback-direct test with mocks — it manually calls hooks
+        in the expected Lightning order (on_load_checkpoint → configure_optimizers →
+        on_train_start) rather than running a real Trainer.fit(ckpt_path=...).
+
+        A real Trainer lifecycle test would additionally verify:
+        - Lightning actually calls hooks in this order during resume
+        - Pyro param store tensors survive guide autograd graph rewiring
+        - Loss continuity after resume matches uninterrupted training
+
+        This is intentional: a real Trainer test requires Pyro SVI training with
+        real data (~seconds per invocation), which is too heavy for unit tests.
+        The mock test verifies our callback logic is correct given the documented
+        Lightning hook order. Framework-level integration is trusted.
+        """
         import pyro
 
         callback, trainer, pl_module, _ = self._make_checkpoint_context()
-
-        # pl_module.device reports cpu
-        pl_module.device = torch.device("cpu")
 
         # Build a checkpoint with CPU tensors in pyro_param_store
         checkpoint = {
@@ -519,26 +531,42 @@ class TestPyroCheckpointRestore:
             }
         }
 
-        # Restore
+        # Step 1: on_load_checkpoint puts params on CPU
         callback.on_load_checkpoint(trainer, pl_module, checkpoint)
 
-        # Verify tensors are on the expected device
         store = pyro.get_param_store()
         for k in ["auto_loc", "auto_scale"]:
             param = store[k]
             assert param.device == torch.device("cpu"), (
-                f"Param {k} should be on cpu, got {param.device}"
+                f"Param {k} should be on cpu after on_load_checkpoint, got {param.device}"
             )
 
         # Verify values are correct
         assert torch.allclose(store["auto_loc"], torch.tensor([1.0, 2.0, 3.0]))
         assert torch.allclose(store["auto_scale"], torch.tensor([0.1, 0.2, 0.3]))
 
-    def test_pyro_optim_state_roundtrip(self):
-        """Pyro optimizer state is saved and restored through checkpoint."""
+        # Step 2: on_train_start migrates to training device
+        pl_module.guide = MagicMock()
+        pl_module.pyro_optim = None
+        pl_module.device = torch.device("cpu")
+        callback.on_train_start(trainer, pl_module)
+
+        # After on_train_start, params should be on the training device (cpu here)
+        for k in ["auto_loc", "auto_scale"]:
+            param = store[k]
+            assert param.device == torch.device("cpu"), (
+                f"Param {k} should be on cpu after on_train_start, got {param.device}"
+            )
+
+    def test_pyro_optim_state_deferred_restore(self):
+        """Pyro optimizer state is stashed during on_load_checkpoint, restored in on_train_start.
+
+        See test_pyro_param_store_restored_with_device_migration docstring for
+        rationale on why this is a callback-direct mock test rather than a real
+        Trainer lifecycle test.
+        """
         callback, trainer, pl_module, _ = self._make_checkpoint_context()
 
-        # Create a mock pyro_optim with get_state/set_state
         mock_optim = MagicMock()
         fake_state = {"step_count": 100, "param_groups": [{"lr": 0.001}]}
         mock_optim.get_state.return_value = fake_state
@@ -550,20 +578,25 @@ class TestPyroCheckpointRestore:
         # Save checkpoint
         checkpoint = {}
         callback.on_save_checkpoint(trainer, pl_module, checkpoint)
-
-        # Verify pyro_optim_state was saved
         assert "pyro_optim_state" in checkpoint
-        assert checkpoint["pyro_optim_state"] == fake_state
 
-        # Now restore — create a fresh mock for the load side
+        # Load checkpoint — pyro_optim should NOT be restored yet
+        pl_module.pyro_optim = None  # Not created yet during on_load_checkpoint
+        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+
+        # State should be stashed, not applied
+        assert hasattr(callback, '_deferred_pyro_optim_state')
+        assert callback._deferred_pyro_optim_state == fake_state
+
+        # Now simulate configure_optimizers + on_train_start
         load_mock_optim = MagicMock()
         pl_module.pyro_optim = load_mock_optim
         pl_module.device = torch.device("cpu")
+        callback.on_train_start(trainer, pl_module)
 
-        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
-
-        # Verify set_state was called with the saved state
+        # NOW set_state should be called
         load_mock_optim.set_state.assert_called_once_with(fake_state)
+        assert callback._deferred_pyro_optim_state is None  # Cleared
 
     def test_legacy_checkpoint_without_rng_states_still_restores_pyro(self):
         """Legacy checkpoint without rng_states still restores Pyro param store."""
@@ -605,14 +638,36 @@ class TestPyroCheckpointRestore:
             "pyro_optim_state": {"step_count": 100},
         }
 
+        # on_load_checkpoint stashes the state
+        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+        assert hasattr(callback, '_deferred_pyro_optim_state')
+
+        # on_train_start emits the warning since pyro_optim is missing
+        pl_module.guide = None  # No guide either
         with patch("src.training.callbacks.logger") as mock_logger:
-            callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+            callback.on_train_start(trainer, pl_module)
             # Should warn about missing pyro_optim
             warning_calls = [
                 call for call in mock_logger.warning.call_args_list
                 if "pyro_optim_state" in call[0][0]
             ]
             assert len(warning_calls) == 1
+
+    def test_on_train_start_migrates_pyro_params_to_device(self):
+        """on_train_start migrates Pyro param store to training device."""
+        import pyro
+
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+        pl_module.guide = MagicMock()
+        pl_module.pyro_optim = None
+        pl_module.device = torch.device("cpu")
+
+        pyro.clear_param_store()
+        pyro.get_param_store().setdefault("test_param", torch.tensor([1.0]))
+
+        callback.on_train_start(trainer, pl_module)
+
+        assert pyro.get_param_store()["test_param"].device == torch.device("cpu")
 
 
 class TestModelCheckpoint:

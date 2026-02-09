@@ -41,10 +41,6 @@ class Experiment:
         return self.exp_dir / "preprocessing"
 
     @property
-    def metrics_dir(self) -> Path:
-        return self.exp_dir / "metrics"
-
-    @property
     def logs_dir(self) -> Path:
         return self.exp_dir / "logs"
 
@@ -98,7 +94,6 @@ class ExperimentManager:
             "analysis",
             "analysis/cell_heterogeneity",
             "preprocessing",
-            "metrics",
             "logs/tensorboard",
         ]
 

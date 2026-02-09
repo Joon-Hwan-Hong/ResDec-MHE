@@ -27,37 +27,6 @@ from src.visualization.config import (
 logger = logging.getLogger(__name__)
 
 
-def load_training_logs(
-    log_dir: str | Path,
-    metrics_file: str = "metrics.csv",
-) -> pd.DataFrame | None:
-    """
-    Load training logs from CSV file.
-
-    Args:
-        log_dir: Directory containing training logs
-        metrics_file: Name of metrics CSV file
-
-    Returns:
-        DataFrame with training metrics or None if not found
-    """
-    log_dir = Path(log_dir)
-    metrics_path = log_dir / metrics_file
-
-    if metrics_path.exists():
-        return pd.read_csv(metrics_path)
-
-    # Try common alternatives
-    alternatives = ["training_logs.csv", "history.csv"]
-    for alt in alternatives:
-        alt_path = log_dir / alt
-        if alt_path.exists():
-            return pd.read_csv(alt_path)
-
-    logger.warning(f"No training metrics found in {log_dir}")
-    return None
-
-
 def load_tensorboard_scalars(
     log_dir: str | Path,
 ) -> pd.DataFrame | None:
@@ -353,15 +322,11 @@ def plot_training_summary(
 
     generated = []
 
-    # Try loading from CSV first
-    df = load_training_logs(log_dir)
-
-    if df is None:
-        # Try TensorBoard
-        df = load_tensorboard_scalars(log_dir)
-        if df is not None:
-            # Pivot TensorBoard format to wide format
-            df = df.pivot_table(index="step", columns="tag", values="value").reset_index()
+    # Load from TensorBoard
+    df = load_tensorboard_scalars(log_dir)
+    if df is not None:
+        # Pivot TensorBoard format to wide format
+        df = df.pivot_table(index="step", columns="tag", values="value").reset_index()
 
     if df is None:
         logger.warning("No training logs found, cannot generate training curves")

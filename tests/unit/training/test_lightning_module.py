@@ -202,6 +202,12 @@ class TestTrainingStep:
         assert loss.dim() == 0
         assert torch.isfinite(loss)
 
+    def test_bayesian_svi_logs_gradient_norms(self, bayesian_config):
+        """Bayesian SVI training step should log gradient norms manually."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        assert hasattr(module, '_log_svi_gradient_norms')
+
 
 class TestValidationStep:
     """Tests for validation_step."""
@@ -727,3 +733,31 @@ class TestBayesianSVILrd:
         module = CognitiveResilienceLightningModule(bayesian_config)
         module.configure_optimizers()
         assert module.pyro_optim.pt_optim_args["lrd"] == 1.0
+
+
+def test_bayesian_svi_gradient_logging_uses_config_interval():
+    """SVI gradient logging cadence should read from config, not hardcoded 10."""
+    from src.training.lightning_module import CognitiveResilienceLightningModule
+    from omegaconf import OmegaConf
+
+    config = OmegaConf.create({
+        "model": {
+            "n_genes": 50, "n_cell_types": 31, "d_embed": 32, "d_fused": 32,
+            "dropout": 0.1,
+            "head": {"type": "bayesian", "d_hidden": 16},
+            "hgt": {"n_layers": 1, "n_heads": 2},
+            "set_transformer": {"n_isab_layers": 1, "n_inducing_points": 4, "n_heads": 2},
+            "pathology_attention": {"d_cond": 16, "n_heads": 2, "n_pathology_features": 3},
+            "gene_gate": {"initial_temperature": 2.0},
+            "cell_type_selector": {"selection_temperature": 1.0},
+        },
+        "training": {
+            "optimizer": {"lr": 1e-3, "weight_decay": 0, "lrd": 0.999},
+            "loss": {"type": "beta_nll", "beta": 0.5},
+            "regularization": {"gene_gate_l1": 0.0},
+            "logging": {"log_every_n_steps": 25},
+        },
+    })
+
+    module = CognitiveResilienceLightningModule(config)
+    assert module._log_every_n_steps == 25

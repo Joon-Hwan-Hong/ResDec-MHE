@@ -99,6 +99,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self._nan_loss_policy = error_cfg.get("nan_loss", "fail")
         self._nan_batch_policy = error_cfg.get("nan_batch", "skip")
 
+        # Gradient logging interval (SVI path uses this directly since
+        # on_after_backward never fires; deterministic path uses GradientNormLogger callback)
+        self._log_every_n_steps = train_cfg.get("logging", {}).get("log_every_n_steps", 10)
+
         # Metrics
         self.metrics = ResilienceMetrics()
 
@@ -182,6 +186,37 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             cognition=batch.get("cognition"),
         )
 
+    def _log_svi_gradient_norms(self) -> None:
+        """Log branch gradient norms after SVI step (manual substitute for on_after_backward)."""
+        branch_names = ["pseudobulk_encoder", "hgt_encoder", "cell_transformer"]
+        norms = {}
+        for branch_name in branch_names:
+            branch_params = [
+                p for n, p in self.model.named_parameters()
+                if branch_name in n and p.grad is not None
+            ]
+            if branch_params:
+                total_norm = torch.sqrt(
+                    sum(p.grad.data.norm(2) ** 2 for p in branch_params)
+                )
+                norms[branch_name] = total_norm.item()
+            else:
+                norms[branch_name] = 0.0
+
+        for branch_name, norm in norms.items():
+            self.log(
+                f"gradients/branch_norm/{branch_name}",
+                norm,
+                on_step=True,
+                on_epoch=False,
+            )
+
+        # Log ratio
+        values = list(norms.values())
+        if values and min(values) > 0:
+            ratio = max(values) / min(values)
+            self.log("gradients/branch_norm_ratio", ratio, on_step=True, on_epoch=False)
+
     def _check_batch_nan(self, batch: dict) -> bool:
         """Check if batch contains NaN values. Returns True if NaN detected."""
         for key, value in batch.items():
@@ -198,6 +233,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         if self._use_bayesian_svi:
             # SVI handles forward, loss, backward, and optimizer step internally
             loss = self._svi_forward(batch)
+            # Log gradient norms manually — SVI bypasses Lightning's backward,
+            # so on_after_backward callbacks never fire.
+            try:
+                should_log = self.trainer.global_step % self._log_every_n_steps == 0
+            except RuntimeError:
+                should_log = False
+            if should_log:
+                self._log_svi_gradient_norms()
         else:
             output = self._forward_batch(batch)
             loss = self._compute_loss(output, batch["cognition"])

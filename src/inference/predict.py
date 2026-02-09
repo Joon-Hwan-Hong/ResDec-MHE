@@ -29,7 +29,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
+from src.data.constants import CELL_TYPE_ORDER, N_REGIONS, REGION_ORDER
 from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 from src.training.lightning_module import CognitiveResilienceLightningModule
 from src.utils.io import save_attention_weights as _io_save_attention_weights
@@ -130,6 +130,12 @@ class Predictor:
         else:
             self.device = torch.device(device)
 
+        # Error handling policy for inference
+        error_cfg = {}
+        if hasattr(config, "error_handling") and hasattr(config.error_handling, "inference"):
+            error_cfg = config.error_handling.inference
+        self._missing_field_policy = error_cfg.get("missing_field", "skip") if error_cfg else "skip"
+
         self.model = model.to(self.device)
         self.model.eval()
 
@@ -229,7 +235,7 @@ class Predictor:
             try:
                 n_ct = model_cfg.n_cell_types
                 n_genes = model_cfg.n_genes
-                n_regions = model_cfg.get("n_regions", 6)
+                n_regions = N_REGIONS
                 n_pathology = model_cfg.pathology_attention.get("n_pathology_features", 3)
                 dummy_kwargs = {
                     "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
@@ -555,10 +561,18 @@ class Predictor:
             iterator = tqdm(dataloader, desc="Predicting", unit="batch")
 
         for batch in iterator:
-            result = self.predict_batch(
-                batch, extract_hgt_attention, extract_pma_attention,
-                extract_region_attention, extract_embeddings,
-            )
+            try:
+                result = self.predict_batch(
+                    batch, extract_hgt_attention, extract_pma_attention,
+                    extract_region_attention, extract_embeddings,
+                )
+            except (KeyError, ValueError) as e:
+                if self._missing_field_policy == "skip":
+                    batch_ids = batch.get("subject_ids", ["unknown"])
+                    logger.warning("Skipping batch (input error %s): subjects=%s", e, batch_ids)
+                    continue
+                else:
+                    raise
 
             all_mean.append(result["mean"])
             all_attention.append(result["attention_weights"])
@@ -623,6 +637,14 @@ class Predictor:
                 # [B, n_cell_types, n_genes] -> [B, 1, n_cell_types, n_genes]
                 all_region_pseudobulk.append(pb[:, np.newaxis, :, :])
                 all_region_mask.append(np.ones((pb.shape[0], 1), dtype=bool))
+
+        # Guard: if all batches were skipped, provide actionable error
+        if not all_mean:
+            raise RuntimeError(
+                "All batches were skipped during inference. This likely means every "
+                "batch failed input validation under missing_field_policy='skip'. "
+                "Check your data for missing required fields (pseudobulk, region_pseudobulk, etc.)."
+            )
 
         # Concatenate results
         mean = np.concatenate(all_mean, axis=0)

@@ -31,11 +31,6 @@ from src.utils.io import (
     load_dataframe,
     save_dataframes_multi_format,
 )
-from src.utils.gpu import (
-    get_gpu_memory_info,
-    clear_gpu_memory,
-    set_visible_gpus,
-)
 from src.utils.device import (
     move_batch_to_device,
 )
@@ -77,10 +72,6 @@ __all__ = [
     "save_dataframe",
     "load_dataframe",
     "save_dataframes_multi_format",
-    # GPU
-    "get_gpu_memory_info",
-    "clear_gpu_memory",
-    "set_visible_gpus",
     # Device
     "move_batch_to_device",
     # Statistics

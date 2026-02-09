@@ -26,6 +26,7 @@ from lightning.pytorch.callbacks import EarlyStopping
 
 from src.data.constants import EPSILON_SOFTMAX
 from src.utils.hashing import hash_config
+from src.utils.reproducibility import get_rng_states, set_rng_states
 
 logger = logging.getLogger(__name__)
 
@@ -325,9 +326,6 @@ class ResilienceModelCheckpoint(pl.Callback):
         checkpoint: dict,
     ) -> None:
         """Add custom metadata to checkpoint dict."""
-        import random
-        import numpy as np
-
         config = pl_module.config
 
         # Convert OmegaConf to plain dict if needed
@@ -340,14 +338,8 @@ class ResilienceModelCheckpoint(pl.Callback):
         model_config = config_dict.get("model", config_dict)
         experiment_hash = hash_config(model_config)
 
-        # RNG states
-        rng_states = {
-            "python": random.getstate(),
-            "numpy": np.random.get_state(),
-            "torch": torch.random.get_rng_state(),
-        }
-        if torch.cuda.is_available():
-            rng_states["cuda"] = torch.cuda.get_rng_state_all()
+        # RNG states (via shared utility — single source of truth)
+        rng_states = get_rng_states()
 
         checkpoint["checkpoint_version"] = CHECKPOINT_VERSION
         checkpoint["experiment_hash"] = experiment_hash
@@ -376,9 +368,6 @@ class ResilienceModelCheckpoint(pl.Callback):
         checkpoint: dict,
     ) -> None:
         """Restore RNG states and Pyro state from checkpoint."""
-        import random
-        import numpy as np
-
         # Restore RNG states (optional — legacy checkpoints may not have them)
         rng_states = checkpoint.get("rng_states")
         if rng_states is None:
@@ -387,26 +376,42 @@ class ResilienceModelCheckpoint(pl.Callback):
                 "Training will not be exactly reproducible from this checkpoint."
             )
         else:
-            random.setstate(rng_states["python"])
-            np.random.set_state(rng_states["numpy"])
-            torch.set_rng_state(rng_states["torch"])
-            if "cuda" in rng_states and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all(rng_states["cuda"])
+            set_rng_states(rng_states)
 
         # Restore Pyro param store for Bayesian SVI (independent of RNG restore)
         if "pyro_param_store" in checkpoint:
             import pyro
-            device = pl_module.device
+            # Use CPU during checkpoint load — Lightning hasn't moved model to
+            # accelerator device yet. Pyro params will migrate with model.
+            device = torch.device("cpu")
             pyro.clear_param_store()
             for k, v in checkpoint["pyro_param_store"].items():
                 pyro.get_param_store().setdefault(k, v.to(device))
 
-        # Restore Pyro optimizer state for exact resume
+        # Stash Pyro optimizer state for deferred restore in on_train_start
+        # (pyro_optim doesn't exist yet — it's created in configure_optimizers)
         if "pyro_optim_state" in checkpoint:
+            self._deferred_pyro_optim_state = checkpoint["pyro_optim_state"]
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """Restore deferred Pyro optimizer state after configure_optimizers."""
+        if hasattr(self, '_deferred_pyro_optim_state') and self._deferred_pyro_optim_state is not None:
             if hasattr(pl_module, 'pyro_optim') and pl_module.pyro_optim is not None:
-                pl_module.pyro_optim.set_state(checkpoint["pyro_optim_state"])
+                pl_module.pyro_optim.set_state(self._deferred_pyro_optim_state)
+                logger.info("Restored Pyro optimizer state (deferred from checkpoint)")
             else:
                 logger.warning(
                     "Checkpoint contains pyro_optim_state but module has no pyro_optim. "
                     "SVI optimizer state not restored."
                 )
+            self._deferred_pyro_optim_state = None  # Clear to avoid re-apply
+
+        # Migrate Pyro param store to training device if needed
+        if hasattr(pl_module, 'guide') and pl_module.guide is not None:
+            import pyro
+            target_device = pl_module.device
+            store = pyro.get_param_store()
+            for k in list(store.keys()):
+                v = store[k]
+                if v.device != target_device:
+                    store[k] = v.to(target_device)

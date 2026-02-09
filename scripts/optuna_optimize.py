@@ -227,7 +227,12 @@ def objective(
     config = build_trial_config(base_config, params)
 
     seed = config.experiment.get("seed", 42)
-    set_seed(seed)
+    repro_cfg = config.get("reproducibility", {})
+    set_seed(
+        seed,
+        deterministic=repro_cfg.get("deterministic", True),
+        benchmark=repro_cfg.get("benchmark", False),
+    )
 
     n_folds = config.data.splits.get("n_folds", 5)
     fold_val_losses = []

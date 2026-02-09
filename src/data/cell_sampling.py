@@ -25,13 +25,9 @@ class CellSampler:
     Note on Worker Reproducibility:
         When using DataLoader with num_workers > 0, each worker process gets a
         copy of the dataset (including this sampler) with the same RNG state.
-        This means different workers may produce the same samples, breaking the
-        expected randomization. For exact reproducibility across runs with
-        multi-worker loading, a worker_init_fn would need to re-seed this
-        sampler's RNG per worker (e.g., with base_seed + worker_id).
-
-        See create_dataloader() docstring for details on why this is not
-        currently implemented and how to add it if needed.
+        Worker-level re-seeding is handled by _worker_init_fn() in
+        src.data.collate, which seeds each worker's CellSampler.rng with
+        (base_seed + worker_id) for unique but reproducible samples per worker.
     """
 
     def __init__(

@@ -6,7 +6,7 @@ predict -> analyze) runs without crashing for both Bayesian and deterministic
 head configurations.
 
 Uses tiny dimensions for speed:
-  d_embed=16, d_fused=16, n_genes=100, n_cell_types=5, n_regions=1,
+  d_embed=16, d_fused=16, n_genes=100, n_cell_types=5, n_regions=6,
   batch_size=4, max_cells_per_type=50, 2 epochs.
 
 Marked @pytest.mark.slow so it can be skipped in fast CI runs.
@@ -34,7 +34,7 @@ from src.inference.predict import Predictor
 N_SAMPLES = 10
 N_CELL_TYPES = 5
 N_GENES = 100
-N_REGIONS = 1
+N_REGIONS = 6
 MAX_CELLS = 50
 BATCH_SIZE = 4
 D_EMBED = 16
@@ -119,10 +119,6 @@ def make_smoke_config(head_type: str) -> OmegaConf:
             },
             "gene_gate": {
                 "initial_temperature": 2.0,
-                "min_temperature": 0.1,
-                "warmup_epochs": 1,
-                "anneal_epochs": 5,
-                "anneal_schedule": "exponential",
             },
             "hgt": {
                 "n_layers": 1,
@@ -140,17 +136,9 @@ def make_smoke_config(head_type: str) -> OmegaConf:
                 "n_inducing_points": 4,
                 "n_pma_seeds": 1,
                 "n_heads": 2,
-                "max_cells_per_type": MAX_CELLS,
-                "min_cells_threshold": 5,
             },
             "cell_type_selector": {
                 "selection_temperature": 1.0,
-            },
-            "region_handler": {
-                "pooling": "weighted_mean",
-                "include_region_context": True,
-                "primary_region": "PFC",
-                "handle_single_region": "mask",
             },
             "pathology_attention": {
                 "d_cond": D_COND,
@@ -160,7 +148,13 @@ def make_smoke_config(head_type: str) -> OmegaConf:
             "head": {
                 "type": head_type,
                 "d_hidden": 16,
-                "dropout": 0.0,
+            },
+        },
+        "data": {
+            "cell_sampling": {
+                "max_cells_per_type": MAX_CELLS,
+                "min_cells_threshold": 5,
+                "sampling_strategy": "random",
             },
         },
         "training": {
@@ -204,6 +198,13 @@ def make_smoke_config(head_type: str) -> OmegaConf:
             "logging": {
                 "log_every_n_steps": 1,
                 "val_check_interval": 1.0,
+            },
+            "temperature_annealing": {
+                "tau_max": 2.0,
+                "tau_min": 0.1,
+                "warmup_epochs": 1,
+                "anneal_epochs": 5,
+                "schedule": "exponential",
             },
         },
         "error_handling": {

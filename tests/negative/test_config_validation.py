@@ -124,3 +124,85 @@ def test_valid_config_passes(default_config: DictConfig) -> None:
     """The default config should pass validation without error."""
     # Should not raise
     validate_config(default_config, required_keys=REQUIRED_KEYS)
+
+
+# ── 11. scheduler type invalid ────────────────────────────────────────────
+
+
+def test_scheduler_type_invalid(default_config: DictConfig) -> None:
+    """scheduler.type='warmup' is not in the allowed enum."""
+    default_config.training.scheduler.type = "warmup"
+    with pytest.raises(ValueError, match=r"training\.scheduler\.type.*invalid value.*warmup"):
+        validate_config(default_config, required_keys=REQUIRED_KEYS)
+
+
+# ── 12. optimizer type invalid ────────────────────────────────────────────
+
+
+def test_optimizer_type_invalid(default_config: DictConfig) -> None:
+    """optimizer.type='rmsprop' is not in the allowed enum."""
+    default_config.training.optimizer.type = "rmsprop"
+    with pytest.raises(ValueError, match=r"training\.optimizer\.type.*invalid value.*rmsprop"):
+        validate_config(default_config, required_keys=REQUIRED_KEYS)
+
+
+# ── 13. sampling strategy invalid ────────────────────────────────────────
+
+
+def test_sampling_strategy_invalid(default_config: DictConfig) -> None:
+    """sampling_strategy='balanced' is not in the allowed enum."""
+    default_config.data.cell_sampling.sampling_strategy = "balanced"
+    with pytest.raises(ValueError, match=r"data\.cell_sampling\.sampling_strategy.*invalid value"):
+        validate_config(default_config, required_keys=REQUIRED_KEYS)
+
+
+# ── 14. temperature annealing schedule invalid ───────────────────────────
+
+
+def test_annealing_schedule_invalid(default_config: DictConfig) -> None:
+    """schedule='step' is not in the allowed enum."""
+    default_config.training.temperature_annealing.schedule = "step"
+    with pytest.raises(ValueError, match=r"training\.temperature_annealing\.schedule.*invalid value"):
+        validate_config(default_config, required_keys=REQUIRED_KEYS)
+
+
+# ── 15. test_frac out of range ─────────────────────────────────────────
+
+
+def test_split_test_frac_out_of_range(default_config: DictConfig) -> None:
+    """test_frac must be in (0, 1)."""
+    default_config.data.splits.test_frac = 1.5
+    with pytest.raises(ValueError, match=r"data\.splits\.test_frac.*invalid value"):
+        validate_config(default_config, required_keys=REQUIRED_KEYS)
+
+
+# ── 16. tau_min >= tau_max ───────────────────────────────────────────────
+
+
+def test_tau_min_gte_tau_max(default_config: DictConfig) -> None:
+    """tau_min >= tau_max should fail cross-field validation."""
+    default_config.training.temperature_annealing.tau_min = 5.0
+    default_config.training.temperature_annealing.tau_max = 2.0
+    with pytest.raises(ValueError, match=r"tau_min.*must be.*tau_max"):
+        validate_config(default_config, required_keys=REQUIRED_KEYS)
+
+
+# ── 17. eta_min >= lr ────────────────────────────────────────────────────
+
+
+def test_eta_min_gte_lr(default_config: DictConfig) -> None:
+    """eta_min >= lr should fail cross-field validation."""
+    default_config.training.scheduler.eta_min = 0.01
+    default_config.training.optimizer.lr = 0.001
+    with pytest.raises(ValueError, match=r"eta_min.*must be.*lr"):
+        validate_config(default_config, required_keys=REQUIRED_KEYS)
+
+
+# ── 18. n_regions mismatch ──────────────────────────────────────────────
+
+
+def test_n_regions_mismatch(default_config: DictConfig) -> None:
+    """model.n_regions != N_REGIONS constant should fail validation."""
+    default_config.model.n_regions = 99
+    with pytest.raises(ValueError, match=r"n_regions.*fixed by dataset schema"):
+        validate_config(default_config, required_keys=REQUIRED_KEYS)

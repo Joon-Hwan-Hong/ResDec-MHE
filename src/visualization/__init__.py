@@ -41,7 +41,6 @@ from src.visualization.prediction_plots import (
 )
 
 from src.visualization.training_curves import (
-    load_training_logs,
     load_tensorboard_scalars,
     plot_loss_curves,
     plot_metric_curves,
@@ -90,7 +89,6 @@ __all__ = [
     "plot_uncertainty_vs_error",
     "plot_uncertainty_correlates",
     # Training curves
-    "load_training_logs",
     "load_tensorboard_scalars",
     "plot_loss_curves",
     "plot_metric_curves",

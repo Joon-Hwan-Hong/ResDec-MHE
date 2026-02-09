@@ -250,6 +250,73 @@ class TestPredictor:
         result = predictor.predict(dataloader, show_progress=False)
         assert result.subject_ids == ["z", "a", "m"]
 
+    def test_predict_skips_batch_on_missing_field_with_skip_policy(self, mock_config):
+        """Predictor with missing_field='skip' should skip bad batches, not crash."""
+        from omegaconf import OmegaConf, DictConfig
+
+        # Create config with error_handling.inference.missing_field = "skip"
+        config_dict = OmegaConf.to_container(mock_config, resolve=True)
+        config_dict["error_handling"] = {
+            "inference": {"missing_field": "skip"}
+        }
+        config = OmegaConf.create(config_dict)
+
+        predictor = Predictor(
+            model=MagicMock(),
+            config=config,
+            device="cpu",
+        )
+        assert predictor._missing_field_policy == "skip"
+
+    def test_predict_raises_on_all_batches_skipped(self, mock_config):
+        """If all batches are skipped, predict() should raise RuntimeError with clear message."""
+        from omegaconf import OmegaConf
+
+        config_dict = OmegaConf.to_container(mock_config, resolve=True)
+        config_dict["error_handling"] = {
+            "inference": {"missing_field": "skip"}
+        }
+        config = OmegaConf.create(config_dict)
+
+        model = MagicMock()
+        predictor = Predictor(model=model, config=config, device="cpu")
+
+        # All batches raise KeyError → all skipped
+        predictor.predict_batch = MagicMock(side_effect=KeyError("pseudobulk"))
+        fake_dataloader = [{"subject_ids": ["s0"]}, {"subject_ids": ["s1"]}]
+
+        with pytest.raises(RuntimeError, match="All batches were skipped"):
+            predictor.predict(fake_dataloader)
+
+    def test_predict_skips_batch_on_value_error_with_skip_policy(self, mock_config):
+        """ValueError from model forward (e.g., shape mismatch) should be caught by skip policy."""
+        from omegaconf import OmegaConf
+
+        config_dict = OmegaConf.to_container(mock_config, resolve=True)
+        config_dict["error_handling"] = {
+            "inference": {"missing_field": "skip"}
+        }
+        config = OmegaConf.create(config_dict)
+
+        model = MagicMock()
+        predictor = Predictor(model=model, config=config, device="cpu")
+
+        # Mock predict_batch to raise ValueError (simulates shape mismatch from model)
+        predictor.predict_batch = MagicMock(
+            side_effect=ValueError("Must provide either region_pseudobulk or pseudobulk")
+        )
+
+        # Create a fake dataloader with one batch
+        fake_batch = {
+            "subject_ids": ["subj_0"],
+            "pseudobulk": torch.zeros(1, 31, 100),
+        }
+        fake_dataloader = [fake_batch]
+
+        # Should not crash — should skip the batch and raise RuntimeError for empty results
+        with pytest.raises(RuntimeError, match="All batches were skipped"):
+            predictor.predict(fake_dataloader)
+
     def test_from_checkpoint_handles_model_state_dict_key(self, tmp_path, mock_config):
         """from_checkpoint() should handle checkpoints saved with model_state_dict key."""
         from src.models.full_model import CognitiveResilienceModel

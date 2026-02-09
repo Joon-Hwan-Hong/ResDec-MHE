@@ -622,7 +622,7 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         d_embed=model_cfg.d_embed,
         d_fused=model_cfg.d_fused,
         d_cond=model_cfg.pathology_attention.d_cond,
-        n_regions=model_cfg.get("n_regions", 6),
+        n_regions=N_REGIONS,
         n_hgt_layers=model_cfg.hgt.n_layers,
         n_hgt_heads=model_cfg.hgt.n_heads,
         n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
