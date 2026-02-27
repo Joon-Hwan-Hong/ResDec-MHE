@@ -608,6 +608,29 @@ def _worker_init_fn(worker_id: int) -> None:
         dataset.sampler.rng = np.random.default_rng(worker_seed)
 
 
+def _deterministic_worker_init_fn(worker_id: int) -> None:
+    """
+    Deterministic seeding for val/test workers — same samples every epoch.
+
+    Unlike _worker_init_fn, uses a fixed seed that doesn't change between
+    epochs. This ensures validation/test cell sampling is consistent across
+    epochs, preventing stochastic variation in validation metrics.
+
+    Args:
+        worker_id: Worker process index (0 to num_workers-1)
+    """
+    import random
+
+    seed = 42 + worker_id
+    np.random.seed(seed)
+    random.seed(seed)
+
+    worker_info = torch.utils.data.get_worker_info()
+    dataset = worker_info.dataset
+    if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
+        dataset.sampler.rng = np.random.default_rng(seed)
+
+
 def create_dataloader(
     dataset,
     batch_size: int = 16,

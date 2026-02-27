@@ -704,34 +704,61 @@ class Predictor:
             region_attention = np.concatenate(all_region_attention, axis=0)  # [N, n_regions]
 
         # Compute mean region_pseudobulk across subjects for regional analysis
-        # Use region_mask to exclude zero-padded missing regions from the mean
+        # Use region_mask to exclude zero-padded missing regions from the mean.
+        # Incremental accumulation avoids stacking all subjects into a single ~1.78 GB array.
         region_pseudobulk_mean = None
         if all_region_pseudobulk:
-            stacked = np.concatenate(all_region_pseudobulk, axis=0)  # [N, n_regions, n_cell_types, n_genes]
             if all_region_mask:
-                stacked_mask = np.concatenate(all_region_mask, axis=0)  # [N, n_regions]
-                # Expand mask to broadcast: [N, n_regions, 1, 1]
-                mask_expanded = stacked_mask[:, :, np.newaxis, np.newaxis]
-                masked = np.where(mask_expanded, stacked, np.nan)
-                region_pseudobulk_mean = np.nanmean(masked, axis=0)  # [n_regions, n_cell_types, n_genes]
-                # Replace NaN for all-missing regions with 0
-                region_pseudobulk_mean = np.nan_to_num(region_pseudobulk_mean, nan=0.0)
+                # Accumulate sum and count batch-by-batch to avoid a full concatenation.
+                region_sum = None
+                region_count = None
+                for rpb, rmask in zip(all_region_pseudobulk, all_region_mask):
+                    # rpb:   [batch, n_regions, n_cell_types, n_genes]
+                    # rmask: [batch, n_regions]
+                    mask_expanded = rmask[:, :, np.newaxis, np.newaxis]  # [batch, n_regions, 1, 1]
+                    masked_rpb = np.where(mask_expanded, rpb, 0.0)
+                    batch_sum = masked_rpb.sum(axis=0)       # [n_regions, n_cell_types, n_genes]
+                    batch_count = mask_expanded.sum(axis=0)  # [n_regions, 1, 1] — broadcasts correctly
+                    if region_sum is None:
+                        region_sum = batch_sum
+                        region_count = batch_count
+                    else:
+                        region_sum += batch_sum
+                        region_count += batch_count
+                # Divide accumulated sum by count; use 0 where no valid subjects existed
+                region_pseudobulk_mean = np.where(
+                    region_count > 0, region_sum / region_count, 0.0
+                )
             else:
                 # Fallback if no mask available (shouldn't happen with proper collate)
-                region_pseudobulk_mean = stacked.mean(axis=0)
+                region_sum = None
+                n_total = 0
+                for rpb in all_region_pseudobulk:
+                    if region_sum is None:
+                        region_sum = rpb.sum(axis=0)
+                    else:
+                        region_sum += rpb.sum(axis=0)
+                    n_total += rpb.shape[0]
+                region_pseudobulk_mean = region_sum / max(n_total, 1)
 
         # Compute per-subject pseudobulk averaged across valid regions
-        # Shape: [n_subjects, n_cell_types, n_genes] — for differential expression analysis
+        # Shape: [n_subjects, n_cell_types, n_genes] — for differential expression analysis.
+        # Process batch-by-batch (axis=1 mean within each batch) then concatenate the
+        # smaller per-subject arrays, avoiding recreating the full stacked array.
         per_subject_pseudobulk = None
         if all_region_pseudobulk:
+            per_subject_parts = []
             if all_region_mask:
-                # Average across region axis (axis=1) per subject, respecting mask
-                mask_expanded = stacked_mask[:, :, np.newaxis, np.newaxis]
-                masked_for_subjects = np.where(mask_expanded, stacked, np.nan)
-                per_subject_pseudobulk = np.nanmean(masked_for_subjects, axis=1)  # [N, n_cell_types, n_genes]
-                per_subject_pseudobulk = np.nan_to_num(per_subject_pseudobulk, nan=0.0)
+                for rpb, rmask in zip(all_region_pseudobulk, all_region_mask):
+                    mask_expanded = rmask[:, :, np.newaxis, np.newaxis]
+                    masked = np.where(mask_expanded, rpb, np.nan)
+                    per_subj = np.nanmean(masked, axis=1)  # [batch, n_cell_types, n_genes]
+                    per_subj = np.nan_to_num(per_subj, nan=0.0)
+                    per_subject_parts.append(per_subj)
             else:
-                per_subject_pseudobulk = stacked.mean(axis=1)  # [N, n_cell_types, n_genes]
+                for rpb in all_region_pseudobulk:
+                    per_subject_parts.append(rpb.mean(axis=1))  # [batch, n_cell_types, n_genes]
+            per_subject_pseudobulk = np.concatenate(per_subject_parts, axis=0)  # [N, n_cell_types, n_genes]
 
         # Concatenate embeddings
         embeddings_dict = None

@@ -20,6 +20,7 @@ Workflow:
 
 import argparse
 import logging
+import os
 import warnings
 from pathlib import Path
 
@@ -182,6 +183,15 @@ def build_trial_config(
             OmegaConf.update(config, "model.dropout", value)
         else:
             logger.warning("Unknown parameter '%s' — skipping", name)
+
+    # Validate n_heads divides d_embed (required by all attention mechanisms)
+    n_heads = config.model.hgt.get("n_heads")
+    d_embed = config.model.get("d_embed")
+    if n_heads and d_embed and d_embed % n_heads != 0:
+        raise ValueError(
+            f"d_embed ({d_embed}) must be divisible by n_heads ({n_heads}). "
+            f"Ensure Optuna search space only samples compatible (d_embed, n_heads) pairs."
+        )
 
     return config
 
@@ -441,7 +451,7 @@ def main() -> None:
                 sys.executable, str(Path(__file__)),
                 "--config", args.config,
                 "--n-trials", str(gpu_trials),
-                "--gpu", str(i),
+                "--gpu", "0",  # Always GPU 0 since CUDA_VISIBLE_DEVICES limits visibility
                 "--storage", args.storage,
                 "--splits-path", args.splits_path,
             ]
@@ -450,8 +460,13 @@ def main() -> None:
             if args.overrides:
                 cmd.extend(args.overrides)
 
-            logger.info(f"Spawning worker on GPU {i}: {gpu_trials} trials")
-            proc = subprocess.Popen(cmd)
+            # Pin each worker to a single GPU via CUDA_VISIBLE_DEVICES
+            # This prevents each process from initializing all GPU contexts
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(i)
+
+            logger.info(f"Spawning worker on GPU {i} (CUDA_VISIBLE_DEVICES={i}): {gpu_trials} trials")
+            proc = subprocess.Popen(cmd, env=env)
             workers.append((i, proc))
 
         # Wait for all workers
