@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/data/datamodule.py
-# hypothesis_version: 6.151.4
-
-[1000, 'ROSMAP_IndividualID', 'cell_type_column', 'cogn_global', 'fit', 'holdout_test', 'max_cells_per_type', 'min_cells_threshold', 'num_workers', 'pathology_columns', 'pin_memory', 'prefetch_factor', 'random', 'rng', 'sampler', 'sampling_strategy', 'seed', 'subject_column', 'supercluster_name', 'target_column', 'test', 'train', 'val']

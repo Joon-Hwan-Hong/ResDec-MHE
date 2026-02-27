@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/utils/reproducibility.py
-# hypothesis_version: 6.151.4
-
-[':4096:8', 'cuda', 'numpy', 'python', 'torch']

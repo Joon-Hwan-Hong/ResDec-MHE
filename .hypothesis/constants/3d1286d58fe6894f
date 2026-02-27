@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/utils/statistics.py
-# hypothesis_version: 6.151.4
-
-[-0.05, 0.0, 0.05, 0.6827, 0.95, 0.9545, 0.9973, 1.0, 33.3, 66.7, '1_sigma', '2_sigma', '3_sigma', 'calibration_error', 'expected_coverage', 'interpretation', 'level', 'n_sigma', 'observed_coverage', 'overconfident', 'resilient', 'underconfident', 'vulnerable', 'well_calibrated']

@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/utils/device.py
-# hypothesis_version: 6.151.4
-
-['batch_size', 'cell_type_order', 'edge_types', 'n_nodes_per_graph', 'node_types', 'subject_ids']

@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/models/branches/hgt_encoder.py
-# hypothesis_version: 6.151.4
-
-[0.1, 1.0, 128, 'cell_types', 'per_cell_type', 'scales']

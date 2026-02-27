@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/visualization/attention_plots.py
-# hypothesis_version: 6.151.4
-
-[0.5, 100, '.3f', 'Attention Weight', 'Cell Type', 'Gene', 'Mean Attention', 'Pathology Level', 'Resilience Signature', 'attention', 'black', 'cell_type', 'high', 'label', 'low', 'mean_attention', 'medium', 'none', 'pathology_tertile', 'right', 'signature', 'std_attention']

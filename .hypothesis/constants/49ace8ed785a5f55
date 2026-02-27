@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/visualization/importance_plots.py
-# hypothesis_version: 6.151.4
-
-[0.05, 0.3, 0.5, ' → ', '--', '-log10(p)', ':', 'Attention Weight', 'Effective Weight', 'FDR-adjusted p-value', 'Gene Index', 'Importance Weight', 'Interaction', 'Top Genes by Region', 'black', 'bold', 'cell_type', 'center', 'display_name', 'edge_type', 'effective_weight', 'gate_weight', 'gene', 'gray', 'interaction', 'log2(Fold Change)', 'log2_fold_change', 'mean', 'mean_attention', 'none', 'p-value', 'p_value', 'padj', 'pvalue', 'rank', 'red', 'region', 'source', 'std_attention', 'target', 'weight', 'y']

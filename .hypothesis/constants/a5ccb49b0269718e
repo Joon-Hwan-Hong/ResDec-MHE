@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/utils/experiment.py
-# hypothesis_version: 6.151.4
-
-['analysis', 'attention', 'checkpoints', 'config.yaml', 'data', 'embedding', 'experiments', 'importance', 'logs', 'logs/tensorboard', 'model', 'plots', 'prediction', 'preprocessing', 'resilience', 'tensorboard', 'training']

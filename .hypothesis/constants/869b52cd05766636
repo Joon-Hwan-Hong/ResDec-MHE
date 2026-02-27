@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.venv/bin/pytest
-# hypothesis_version: 6.151.4
-
-['-script.pyw', '.exe', '__main__']

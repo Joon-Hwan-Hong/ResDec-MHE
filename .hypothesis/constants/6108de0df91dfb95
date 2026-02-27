@@ -1,4 +1,0 @@
-# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/analysis/uncertainty_analysis.py
-# hypothesis_version: 6.151.4
-
-[0.0, 0.05, 0.3, 0.5, 1.0, 100, '1_sigma', 'actual', 'correlation', 'covariate', 'csv', 'has_actual', 'has_covariates', 'interpretation', 'mean_std', 'moderate', 'n_subjects', 'not_significant', 'p_value', 'parquet', 'predicted_mean', 'predicted_std', 'residual', 'significant', 'std_std', 'strong', 'subject_id', 'weak', 'z_score']

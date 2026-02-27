@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.coverage
+.hypothesis/
+.pytest_cache/
+htmlcov/
+
+# Data files (large, not tracked)
+data/snRNAseq/
+data/liana_cache/
+data/metadata_ROSMAP/
+data/mapmycells/
+*.h5ad
+*.h5
+
+# Outputs
+outputs/
+*.pt
+*.ckpt
+
+# Environment
+.env
+.envrc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+docs/
+
+# Temporary
+tmp_*
+*.tmp
+
+# Logs
+*.log
+
+# UV
+uv.lock
