@@ -1,0 +1,22 @@
+A senior engineer reviewed the phase 6 codebase and gave the following feedback, given our preparation to solidify the codebase before full training:
+
+
+
+The reviewer left a comment:
+Smoke config stale knobs: your pushback is partly correct.
+I should not have cited max_cells_per_type / min_cells_threshold as stale in principle.
+But test_pipeline_smoke.py still currently includes keys that are stale/unwired relative to current canonical config:
+
+model.region_handler (test_pipeline_smoke.py (line 149))
+model.head.dropout (test_pipeline_smoke.py (line 163))
+plus duplicated placement of cell sampling knobs under model.set_transformer (test_pipeline_smoke.py (line 143)) while canonical contract uses data.cell_sampling.
+So the corrected finding is: smoke fixture drift exists, but not because those knobs are invalid globally; it’s because they’re placed in outdated model sections in that fixture.
+
+
+
+
+
+
+Conduct a code review on the phase 6 components of docs/plans/2026-01-13-cognitive-resilience-model-design-part2-training-ops.md. In regards to: did everything in the design doc .md file become implemented? Anything missing/lacking in sub-components/features? Any systems design issues? Identify - if present - issues where it should have used a previously existing code/function in other .py modules but instead "redid" a function. How about stale code/depreciated functions (that have equivalence elsewhere)? You are a senior software engineer with a key detail on AI. Identify any issues with integration with previous module components. Be detailed and take your time. This is in preparation to run the full training on the full data. There is no need to fully run all the tests. and I do not want you to spend your efforts and resources looking at the tests, just the codebase of phase 6 and upstream components and their interactions. Give me more than just the first couple that you find. I want all of them. Is there details/features things that should have been implemented in the project/codebase architecture that was missed? Or scaffolding that was intended to be resolved/fully implemented down-the-line (which is now)? This is in preparation for fully solidifying the codebase for a full training of the model. After everything there is no need to run ALL the tests, but those that pertain to integration of phase 6 modules and phase 6 module components themselves are fine.
+
+

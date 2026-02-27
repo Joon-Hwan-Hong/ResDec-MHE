@@ -1,0 +1,12 @@
+query_path: /host/milan/tank/Joon/__datasets/ROSMAP-DLPFC/ROSMAP_DLPFC.h5ad
+extended_result_path: /host/milan/tank/Joon/proj_ml_snrna/data/mapmycells/results/output.json
+csv_result_path: /host/milan/tank/Joon/proj_ml_snrna/data/mapmycells/results/output.csv
+cloud_safe: False
+query_markers:
+  serialized_lookup: /host/milan/tank/Joon/proj_ml_snrna/data/mapmycells/query_markers.n10.20240221800.json
+precomputed_stats:
+  path: /host/milan/tank/Joon/proj_ml_snrna/data/mapmycells/precomputed_stats.siletti.training.h5
+type_assignment:
+  normalization: raw
+  bootstrap_factor: 0.5
+  n_processors: 14

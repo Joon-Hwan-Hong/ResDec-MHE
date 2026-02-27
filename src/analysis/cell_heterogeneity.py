@@ -31,13 +31,13 @@ class CellHeterogeneityResult:
     Attributes:
         summary: Per-cell-type heterogeneity statistics (Gini, entropy, etc.)
         high_attention_cells: Cell barcodes/indices with high attention scores
-        all_scores: All cells with their attention scores
+        all_scores: All cells with their attention scores (None if save_all_scores=False)
         metadata: Additional analysis metadata
     """
 
     summary: pd.DataFrame
     high_attention_cells: pd.DataFrame
-    all_scores: pd.DataFrame
+    all_scores: pd.DataFrame | None
     metadata: dict = field(default_factory=dict)
 
 
@@ -89,16 +89,20 @@ class CellHeterogeneityAnalyzer:
         self.top_percentile = top_percentile
         self.min_cells_per_type = min_cells_per_type
 
-    def analyze(self) -> CellHeterogeneityResult:
+    def analyze(self, save_all_scores: bool = False) -> CellHeterogeneityResult:
         """
         Run cell heterogeneity analysis.
 
+        Args:
+            save_all_scores: If True, build per-cell DataFrame (expensive for large datasets).
+                            If False, return only summary and high-attention cells. Default: False
+
         Returns:
-            CellHeterogeneityResult with summary, high_attention_cells, all_scores
+            CellHeterogeneityResult with summary, high_attention_cells, and optionally all_scores
         """
         summary_rows = []
         high_attention_rows = []
-        all_scores_rows = []
+        all_scores_rows = [] if save_all_scores else None
 
         for ct_idx, ct_name in enumerate(self.cell_type_names):
             ct_attention = self.pma_attention[:, ct_idx, :]  # [n_subjects, n_cells]
@@ -151,25 +155,26 @@ class CellHeterogeneityAnalyzer:
                             row["cell_barcode"] = barcodes[cell_idx]
                     high_attention_rows.append(row)
 
-                # All scores for this subject-celltype
-                for cell_idx in np.where(subj_valid)[0]:
-                    row = {
-                        "subject_id": subj_id,
-                        "cell_type": ct_name,
-                        "cell_idx": int(cell_idx),
-                        "attention_score": float(subj_attention[cell_idx]),
-                        "is_high_attention": bool(subj_attention[cell_idx] >= threshold),
-                    }
-                    barcode_key = f"{subj_idx}_{ct_idx}"
-                    if self.cell_barcodes and barcode_key in self.cell_barcodes:
-                        barcodes = self.cell_barcodes[barcode_key]
-                        if cell_idx < len(barcodes):
-                            row["cell_barcode"] = barcodes[cell_idx]
-                    all_scores_rows.append(row)
+                # All scores for this subject-celltype (only if save_all_scores=True)
+                if save_all_scores:
+                    for cell_idx in np.where(subj_valid)[0]:
+                        row = {
+                            "subject_id": subj_id,
+                            "cell_type": ct_name,
+                            "cell_idx": int(cell_idx),
+                            "attention_score": float(subj_attention[cell_idx]),
+                            "is_high_attention": bool(subj_attention[cell_idx] >= threshold),
+                        }
+                        barcode_key = f"{subj_idx}_{ct_idx}"
+                        if self.cell_barcodes and barcode_key in self.cell_barcodes:
+                            barcodes = self.cell_barcodes[barcode_key]
+                            if cell_idx < len(barcodes):
+                                row["cell_barcode"] = barcodes[cell_idx]
+                        all_scores_rows.append(row)
 
         summary_df = pd.DataFrame(summary_rows)
         high_attention_df = pd.DataFrame(high_attention_rows)
-        all_scores_df = pd.DataFrame(all_scores_rows)
+        all_scores_df = pd.DataFrame(all_scores_rows) if all_scores_rows else None
 
         # Sort summary by Gini coefficient (higher = more heterogeneous)
         if len(summary_df) > 0:
@@ -189,7 +194,7 @@ class CellHeterogeneityAnalyzer:
                 high_attention_df = high_attention_df.merge(
                     self.cell_metadata[meta_cols], left_on="cell_barcode", right_index=True, how="left"
                 )
-        if self.cell_metadata is not None and "cell_barcode" in all_scores_df.columns:
+        if all_scores_df is not None and self.cell_metadata is not None and "cell_barcode" in all_scores_df.columns:
             meta_cols = [c for c in self.cell_metadata.columns if c not in all_scores_df.columns]
             if meta_cols:
                 all_scores_df = all_scores_df.merge(
@@ -244,9 +249,11 @@ class CellHeterogeneityAnalyzer:
             save_dataframe(result.high_attention_cells, path, fmt)
             saved_files[f"high_attention_{fmt}"] = path
 
-            path = output_dir / f"cell_attention_scores.{fmt}"
-            save_dataframe(result.all_scores, path, fmt)
-            saved_files[f"all_scores_{fmt}"] = path
+            # Only save all_scores if it was computed
+            if result.all_scores is not None:
+                path = output_dir / f"cell_attention_scores.{fmt}"
+                save_dataframe(result.all_scores, path, fmt)
+                saved_files[f"all_scores_{fmt}"] = path
 
         # Save HDF5 with raw attention data
         h5_path = output_dir / "cell_attention.h5"
@@ -292,6 +299,7 @@ def compute_cell_heterogeneity(
     min_cells_per_type: int = 10,
     output_dir: str | Path | None = None,
     formats: list[Literal["parquet", "csv"]] | None = None,
+    save_all_scores: bool = False,
 ) -> CellHeterogeneityResult:
     """
     Convenience function to compute and optionally save cell heterogeneity analysis.
@@ -306,6 +314,7 @@ def compute_cell_heterogeneity(
         min_cells_per_type: Minimum cells per type to analyze
         output_dir: If provided, save results to this directory
         formats: Output formats (default: ["parquet", "csv"])
+        save_all_scores: If True, build per-cell DataFrame. Default: False
 
     Returns:
         CellHeterogeneityResult with analysis results
@@ -319,7 +328,7 @@ def compute_cell_heterogeneity(
         top_percentile=top_percentile,
         min_cells_per_type=min_cells_per_type,
     )
-    result = analyzer.analyze()
+    result = analyzer.analyze(save_all_scores=save_all_scores)
 
     if output_dir is not None:
         analyzer.save(result, output_dir, formats=formats)

@@ -1,0 +1,335 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cognitive Resilience Model - Default Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Experiment metadata
+experiment:
+  name: "cognitive_resilience"
+  seed: 42
+  device: "auto"  # "auto", "cuda", "cpu"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+data:
+  # Paths
+  adata_path: "data/snRNAseq/adata_ROSMAP_merged.h5ad"
+  cellchatdb_path: "data/database/CellChatDB_human_interaction.csv"
+  metadata_path: "data/metadata_ROSMAP/"
+  liana_cache_dir: "data/liana_cache/"
+
+  # Preprocessing
+  preprocessing:
+    n_hvg: 4000
+    target_sum: 10000.0
+    min_cells_per_gene: 10
+
+  # Cell type column
+  cell_type_column: "supercluster_name"
+  subject_column: "ROSMAP_IndividualID"
+
+  # Target and pathology columns
+  target_column: "cogn_global"
+  pathology_columns:
+    - "gpath"
+    - "amylsqrt"
+    - "tangsqrt"
+
+  # Data splitting (True Stratified K-Fold CV)
+  # Uses StratifiedKFold for disjoint validation sets across folds.
+  # val_frac is derived: (1 - test_frac) / n_folds ≈ 18% with 5-fold on 90% pool
+  splits:
+    test_frac: 0.1  # Held-out test set fraction
+    n_folds: 5      # CV folds (determines val size = 90%/5 = 18%)
+    stratify_by:
+      - "gpath"
+      - "cogn_global"
+
+  # Cell sampling for Set Transformer
+  cell_sampling:
+    max_cells_per_type: 1000
+    min_cells_threshold: 50
+    sampling_strategy: "random"  # "random", "stratified", "importance"
+
+  # DataLoader
+  dataloader:
+    batch_size: 16
+    num_workers: 4
+    pin_memory: true
+    prefetch_factor: 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+model:
+  # Dimensions
+  n_genes: 4000  # Will be updated after preprocessing
+  n_cell_types: 31
+  # n_regions is fixed at 6 (from constants.N_REGIONS) — determined by dataset schema.
+  # Do NOT add n_regions here; the model reads N_REGIONS from src.data.constants.
+  d_embed: 128
+  d_fused: 128
+  dropout: 0.1   # Shared dropout rate across branches
+
+  # Branch 1: Pseudobulk Encoder
+  pseudobulk:
+    mlp_hidden: [512, 256]
+    use_layer_norm: true
+
+  # Gene Attention Gate
+  gene_gate:
+    initial_temperature: 2.0
+    # min_temperature, warmup_epochs, anneal_epochs, anneal_schedule are
+    # controlled via training.temperature_annealing.* (not model config)
+
+  # Branch 2: HGT Encoder
+  hgt:
+    n_layers: 3
+    n_heads: 4
+    # Edge types from CellChatDB
+    edge_types:
+      - "Secreted_Signaling"
+      - "ECM_Receptor"
+      - "Cell_Cell_Contact"
+      - "Non_protein_Signaling"
+      - "Novel_Uncharacterized"
+
+  # Branch 3: Set Transformer (Cell Transformer)
+  set_transformer:
+    n_isab_layers: 2
+    n_inducing_points: 32
+    n_pma_seeds: 1
+    n_heads: 4                   # Set Transformer attention heads (independent from HGT heads)
+    # max_cells_per_type and min_cells_threshold are controlled via
+    # data.cell_sampling.* (not model config)
+
+  # Cell Type Selector (Soft Attention)
+  # Processes ALL 31 cell types with learned soft attention weights.
+  # No hard top-k selection - fully differentiable.
+  cell_type_selector:
+    selection_temperature: 1.0  # Higher = softer attention distribution
+
+  # Region handling — n_regions is fixed at 6 (from constants.N_REGIONS).
+  # RegionHandler uses learned weighted-mean pooling (see region_handler.py).
+
+  # Pathology-Stratified Attention
+  pathology_attention:
+    d_cond: 64
+    n_heads: 4
+    n_pathology_features: 3
+
+  # Prediction Head
+  head:
+    type: "bayesian"  # "bayesian", "deterministic"
+    d_hidden: 64
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Training Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+training:
+  max_epochs: 100
+  early_stopping:
+    patience: 15
+    min_delta: 0.0001
+    min_epochs: 20               # Don't stop before warmup + stabilization (passed to Trainer, not EarlyStopping)
+    monitor: "val_loss"
+    mode: "min"
+
+  # Optimizer
+  optimizer:
+    type: "adamw"
+    lr: 0.0001
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+    lrd: 0.9999  # Per-step LR decay for Bayesian SVI (ignored in deterministic mode)
+
+  # Learning rate scheduler
+  scheduler:
+    type: "cosine"               # Cosine annealing with linear warmup
+    warmup_epochs: 5             # Linear warmup epochs
+    eta_min: 0.000001            # Minimum learning rate
+
+  # Loss function
+  loss:
+    type: "beta_nll"  # "beta_nll" (Bayesian head) or "mse" (deterministic head)
+    beta: 0.5  # For beta_nll: 0=MSE, 1=NLL
+
+  # Temperature annealing (for gene attention gate)
+  temperature_annealing:
+    tau_max: 2.0                 # Starting temperature (soft)
+    tau_min: 0.1                 # Final temperature (sharp)
+    warmup_epochs: 5             # Keep tau_max for this many epochs
+    anneal_epochs: 50            # Anneal over this many epochs
+    schedule: "exponential"      # Annealing schedule: "exponential", "linear", "cosine"
+
+  # Gradient clipping
+  gradient_clip_val: 1.0
+
+  # Mixed precision
+  precision: "32-true"  # "32-true", "16-mixed", "bf16-mixed"
+
+  # Distributed training
+  devices: "auto"                # Device IDs: "auto", 1, 2, [0,1], etc.
+  strategy: "auto"               # Strategy: "auto", "ddp", "ddp_find_unused_parameters_true"
+  lr_scaling: true               # Scale LR linearly with effective GPU count (Goyal et al. 2017)
+
+  # Checkpointing
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_loss"
+    mode: "min"
+    save_last: true
+
+  # Regularization
+  regularization:
+    gene_gate_l1: 0.0            # L1 penalty on gene gate logits (0 = disabled)
+
+  # Logging
+  logging:
+    log_every_n_steps: 10
+    val_check_interval: 1.0  # Check every epoch
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hyperparameter Optimization (Optuna)
+# ─────────────────────────────────────────────────────────────────────────────
+
+optuna:
+  n_trials: 100
+  timeout: 86400  # 24 hours
+  pruner:
+    type: "median"
+    n_startup_trials: 5
+    # n_warmup_steps: Number of FOLDS to complete before pruning (not epochs).
+    # With 5-fold CV, each fold trains to convergence. Pruning compares
+    # completed fold val_loss across trials. n_warmup_steps=1 means complete
+    # at least 1 fold before considering pruning.
+    # Within-fold warmup protection is handled by MinEpochEarlyStopping (min_epochs=20).
+    n_warmup_steps: 1
+    interval_steps: 1  # Check after each fold completes
+  sampler:
+    type: "tpe"
+    seed: 42
+    n_startup_trials: 10
+
+  # Search space
+  search_space:
+    lr:
+      type: "loguniform"
+      low: 0.00001
+      high: 0.01
+    d_embed:
+      type: "categorical"
+      choices: [64, 128, 256]
+    dropout:
+      type: "uniform"
+      low: 0.0
+      high: 0.3
+    n_hgt_layers:
+      type: "int"
+      low: 2
+      high: 4
+    beta:
+      type: "uniform"
+      low: 0.0
+      high: 1.0
+    weight_decay:
+      type: "loguniform"
+      low: 0.000001
+      high: 0.01
+    batch_size:
+      type: "categorical"
+      choices: [16, 32, 64]
+    n_heads:
+      type: "categorical"
+      choices: [2, 4, 8]
+    n_inducing:
+      type: "categorical"
+      choices: [16, 32, 64]
+    gene_gate_temp:
+      type: "uniform"
+      low: 0.1
+      high: 2.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Inference Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+inference:
+  # Posterior samples for Bayesian head uncertainty
+  num_posterior_samples: 100
+
+  # Attention extraction
+  extract_attention: true
+  attention_output_path: "outputs/attention/"
+
+  # Batch processing
+  batch_size: 32
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Output Paths
+# ─────────────────────────────────────────────────────────────────────────────
+
+paths:
+  output_dir: "outputs/"
+  checkpoint_dir: "outputs/checkpoints/"
+  logs_dir: "outputs/logs/"
+  figures_dir: "outputs/figures/"
+  predictions_dir: "outputs/predictions/"
+  attention_dir: "outputs/attention/"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────────────────────────────────────
+
+error_handling:
+  preprocessing:
+    missing_metadata: "warn"     # Missing optional metadata: "fail", "warn", "ignore"
+    corrupt_file: "fail"         # Corrupt/unreadable file: "fail"
+    insufficient_cells: "skip"   # Subject with <50 total cells: "skip" subject
+  training:
+    nan_loss: "fail"             # NaN loss detected: "fail" immediately
+    nan_batch: "skip"            # Single batch has NaN: "skip" batch, continue
+  inference:
+    missing_field: "skip"        # Subject missing required field: "skip" subject
+  analysis:
+    insufficient_data: "skip"    # Insufficient data for analysis: "skip", log warning
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reproducibility
+# ─────────────────────────────────────────────────────────────────────────────
+
+reproducibility:
+  # Seed lives under experiment.seed (single source of truth)
+  deterministic: true            # Use deterministic algorithms (slower but reproducible)
+  benchmark: false               # Disable cuDNN autotuner for reproducibility
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Visualization
+# ─────────────────────────────────────────────────────────────────────────────
+
+visualization:
+  dpi: 600                       # DPI for saved figures
+  format: "png"                  # Output format for figures
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Analysis
+# ─────────────────────────────────────────────────────────────────────────────
+
+analysis:
+  # Resilience signature extraction
+  resilience:
+    n_permutations: 1000         # Number of permutations for significance testing
+    apply_fdr_correction: true   # Whether to apply FDR correction across cell types
+    fdr_method: "benjamini_hochberg"  # FDR method
+    alpha: 0.05                  # Significance threshold
+    run_ablation_study: false    # Whether to run ablation study (expensive)
+
+  # Output settings
+  output:
+    save_attention_weights: true      # Save all attention weights to HDF5
+    save_cell_level_attention: true   # Save cell-level attention (large files)
+    top_n_genes: 100                  # Number of top genes per cell type to save
+    top_n_interactions: 100           # Number of top CCC interactions to save

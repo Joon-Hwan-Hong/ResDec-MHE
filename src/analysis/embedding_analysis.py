@@ -461,17 +461,13 @@ class EmbeddingAnalyzer:
             max_dist = distances.max() if distances.max() > 0 else 1
             similarities = 1 - squareform(distances) / max_dist
 
-        # Convert to long format (only upper triangle)
-        rows = []
-        for i in range(self.n_subjects):
-            for j in range(i + 1, self.n_subjects):
-                rows.append({
-                    "subject_1": self.subject_ids[i],
-                    "subject_2": self.subject_ids[j],
-                    "similarity": float(similarities[i, j]),
-                })
-
-        return pd.DataFrame(rows)
+        # Vectorized upper-triangle extraction
+        triu_idx = np.triu_indices(self.n_subjects, k=1)
+        return pd.DataFrame({
+            "subject_1": np.array(self.subject_ids)[triu_idx[0]],
+            "subject_2": np.array(self.subject_ids)[triu_idx[1]],
+            "similarity": similarities[triu_idx],
+        })
 
     def _detect_outliers(
         self,
