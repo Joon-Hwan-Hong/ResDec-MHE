@@ -198,6 +198,10 @@ class ISAB(nn.Module):
         # Step 2: Cells attend to inducing points → updated cells
         output, _ = self.mab2(x, h)
 
+        # Zero out padded positions to prevent garbage representations
+        if mask is not None:
+            output = output * mask.unsqueeze(-1).float()
+
         return output
 
 

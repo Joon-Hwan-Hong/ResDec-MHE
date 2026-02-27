@@ -231,6 +231,12 @@ class HGTConvWithEdgeAttr(nn.Module):
             for node_type, x in x_dict.items()
         }
 
+        # Track which nodes received messages (explicit index tracking)
+        received_nodes = {
+            node_type: torch.zeros(x.size(0), dtype=torch.bool, device=x.device)
+            for node_type, x in x_dict.items()
+        }
+
         attn_dict = {} if return_attention else None
 
         # Process each edge type
@@ -356,13 +362,10 @@ class HGTConvWithEdgeAttr(nn.Module):
                 messages_flat,
             )
 
-        # Track which nodes received any messages (non-zero before out_lin)
-        # This is used to zero out isolated nodes after out_lin
-        # Rationale: "no LIANA edges = no communication contribution"
-        received_messages = {
-            node_type: (out.abs().sum(dim=-1) > 0)  # [n_nodes] bool
-            for node_type, out in out_dict.items()
-        }
+            # Mark target nodes as having received messages
+            received_nodes[dst_type][dst_idx.unique()] = True
+
+        received_messages = received_nodes
 
         # Apply output projection
         out_dict = {

@@ -91,7 +91,7 @@ class RegionHandler(nn.Module):
         # Weighted mean pooling
         weights = F.softmax(self.region_weights, dim=0)  # [R]
         masked_weights = weights.unsqueeze(0) * mask_float  # [B, R]
-        weight_sum = masked_weights.sum(dim=1, keepdim=True).clamp(min=torch.finfo(x.dtype).tiny)
+        weight_sum = masked_weights.sum(dim=1, keepdim=True).clamp(min=1e-8)
         normalized_weights = masked_weights / weight_sum  # [B, R]
 
         # Apply weights: [B, R, 1, 1] for broadcasting over [B, R, C, D]

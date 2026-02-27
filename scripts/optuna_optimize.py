@@ -385,30 +385,25 @@ def main() -> None:
     n_trials = args.n_trials or optuna_cfg.get("n_trials", 100)
     timeout = args.timeout or optuna_cfg.get("timeout", None)
 
-    # Load data once (if splits path provided)
-    adata = None
-    metadata = None
-    splits = None
-    if args.splits_path:
-        from src.data.splits import load_splits
-        splits = load_splits(args.splits_path)
-        logger.info("Loaded splits from %s", args.splits_path)
-
-        # Load adata and metadata
-        import scanpy as sc
-        import pandas as pd
-        adata = sc.read_h5ad(config.data.adata_path)
-        metadata_path = Path(config.data.metadata_path)
-        metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
-        logger.info("Loaded adata (%d cells) and metadata", adata.n_obs)
-
-    # Fail fast if data not provided
+    # Fail fast if data not provided (before expensive data loading)
     if args.splits_path is None:
         raise ValueError(
             "Optuna optimization requires pre-computed data splits. "
             "Provide --splits-path /path/to/splits.json. "
             "Use scripts/train.py for single-fold training without splits."
         )
+
+    # Load data once
+    from src.data.splits import load_splits
+    splits = load_splits(args.splits_path)
+    logger.info("Loaded splits from %s", args.splits_path)
+
+    import scanpy as sc
+    import pandas as pd
+    adata = sc.read_h5ad(config.data.adata_path)
+    metadata_path = Path(config.data.metadata_path)
+    metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
+    logger.info("Loaded adata (%d cells) and metadata", adata.n_obs)
 
     # Create study (always use create_study to respect config pruner type)
     study = create_study(config, storage=args.storage)

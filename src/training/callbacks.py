@@ -260,8 +260,8 @@ class GradientNormLogger(pl.Callback):
             return "yellow"
         return "normal"
 
-    def on_after_backward(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        """Log branch gradient norms after backward pass (every N steps)."""
+    def on_before_optimizer_step(self, trainer: pl.Trainer, pl_module: pl.LightningModule, optimizer) -> None:
+        """Log branch gradient norms after DDP sync, before optimizer step (every N steps)."""
         if trainer.global_step % self.log_every_n_steps != 0:
             return
 
