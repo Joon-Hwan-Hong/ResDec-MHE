@@ -200,7 +200,7 @@ class ISAB(nn.Module):
 
         # Zero out padded positions to prevent garbage representations
         if mask is not None:
-            output = output * mask.unsqueeze(-1).float()
+            output = output * mask.unsqueeze(-1).to(output.dtype)
 
         return output
 
