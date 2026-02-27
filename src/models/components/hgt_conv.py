@@ -326,7 +326,7 @@ class HGTConvWithEdgeAttr(nn.Module):
             attn_weights = self.dropout(attn_weights)
 
             if return_attention:
-                attn_dict[edge_type] = attn_weights.detach().clone()
+                attn_dict[edge_type] = attn_weights.detach()
 
             # ─────────────────────────────────────────────────────────────────
             # Step 5: Relation-specific message passing with edge scaling

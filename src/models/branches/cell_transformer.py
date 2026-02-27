@@ -209,27 +209,6 @@ class CellTransformer(nn.Module):
         """
         return self.selector.get_selection_weights()
 
-    def get_selection_ranking(self) -> torch.Tensor:
-        """
-        Get cell type indices sorted by selection importance.
-
-        Returns:
-            Tensor of shape (n_cell_types,) with sorted indices
-        """
-        return self.selector.get_ranking()
-
-    def get_top_k_types(self, k: int) -> torch.Tensor:
-        """
-        Get indices of top-k most important cell types (for interpretability).
-
-        Args:
-            k: Number of top cell types to return
-
-        Returns:
-            Tensor of shape (k,) with indices of most important types
-        """
-        return self.selector.get_selected_types(k)
-
     def extra_repr(self) -> str:
         return (
             f"n_genes={self.n_genes}, n_cell_types={self.n_cell_types}, "

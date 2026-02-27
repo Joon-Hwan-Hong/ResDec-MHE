@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/training/callbacks.py
+# hypothesis_version: 6.151.4
+
+[0.0, 0.1, 0.5, 1.0, 2.0, 3.0, 10.0, '1.0', 'cell_transformer', 'checkpoint_version', 'cosine', 'cpu', 'experiment_hash', 'exponential', 'full_config', 'guide', 'guide_state_dict', 'hgt_encoder', 'linear', 'model', 'model_config', 'normal', 'pseudobulk_encoder', 'pyro_param_store', 'red', 'rng_states', 'timestamp', 'yellow']

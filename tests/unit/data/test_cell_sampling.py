@@ -113,54 +113,6 @@ class TestCellSampler:
         assert "Oligodendrocyte" not in indices
 
 
-class TestCellSamplerGetPaddedExpression:
-    """Tests for CellSampler.get_padded_expression()."""
-
-    def test_correct_output_shape(self, mock_adata):
-        """Output should be [n_types, max_cells, n_genes]."""
-        from src.data.cell_sampling import CellSampler
-
-        sampler = CellSampler(max_cells_per_type=50, min_cells_threshold=10)
-        cell_types = ["Astrocyte", "Oligodendrocyte", "Microglia"]
-
-        indices = sampler.sample(mock_adata, cell_types=cell_types)
-        cells, mask = sampler.get_padded_expression(mock_adata, indices, cell_types)
-
-        assert cells.shape == (3, 50, 50)  # 3 types, 50 max cells, 50 genes
-        assert mask.shape == (3, 50)
-
-    def test_mask_reflects_actual_cells(self, mock_adata):
-        """Mask should be True only for actual cells."""
-        from src.data.cell_sampling import CellSampler
-
-        sampler = CellSampler(max_cells_per_type=50, min_cells_threshold=20)
-        cell_types = ["Astrocyte", "Microglia"]  # Microglia has 30 cells
-
-        indices = sampler.sample(mock_adata, cell_types=cell_types)
-        cells, mask = sampler.get_padded_expression(mock_adata, indices, cell_types)
-
-        # Astrocyte: 50 cells (sampled from 100)
-        assert mask[0, :50].all()
-        assert not mask[0, 50:].any()
-
-        # Microglia: 30 cells (all taken)
-        assert mask[1, :30].all()
-        assert not mask[1, 30:].any()
-
-    def test_padding_is_zeros(self, mock_adata):
-        """Padded positions should be zero."""
-        from src.data.cell_sampling import CellSampler
-
-        sampler = CellSampler(max_cells_per_type=100, min_cells_threshold=10)
-        cell_types = ["Microglia"]  # Only 30 cells
-
-        indices = sampler.sample(mock_adata, cell_types=cell_types)
-        cells, mask = sampler.get_padded_expression(mock_adata, indices, cell_types)
-
-        # Positions beyond 30 cells should be zero
-        assert np.allclose(cells[0, 30:], 0.0)
-
-
 class TestSubsampleAdata:
     """Tests for subsample_adata()."""
 

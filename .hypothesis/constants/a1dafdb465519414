@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/training/lightning_module.py
+# hypothesis_version: 6.151.4
+
+[0.0, 1e-06, 0.01, 0.9, 0.999, 1.0, 'adam', 'adamw', 'attention_weights', 'bayesian', 'beta_nll', 'betas', 'cell_mask', 'cell_type_mask', 'cells', 'cognition', 'config', 'cosine', 'edge_attr_dict_list', 'edge_index_dict_list', 'epoch', 'error_handling', 'eta_min', 'fail', 'frequency', 'gene_gate_l1', 'interval', 'lr_scaling', 'lr_scheduler', 'lrd', 'mean', 'n_pathology_features', 'nan_batch', 'nan_loss', 'optimizer', 'pathology', 'pathology_attention', 'prototype_trace', 'pseudobulk', 'region_mask', 'region_pseudobulk', 'scheduler', 'skip', 'std', 'step', 'test_loss', 'train_loss', 'train_loss_nll', 'training', 'val_elbo', 'val_loss', 'warmup_epochs', 'weight_decay']

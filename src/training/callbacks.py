@@ -24,7 +24,7 @@ from omegaconf import OmegaConf
 
 from lightning.pytorch.callbacks import EarlyStopping
 
-from src.data.constants import EPSILON_SOFTMAX
+from src.data.constants import EPSILON_DIVISION
 from src.utils.hashing import hash_config
 from src.utils.reproducibility import get_rng_states, set_rng_states
 
@@ -164,7 +164,7 @@ class TemperatureAnnealing(pl.Callback):
         epoch = trainer.current_epoch
         tau = self.get_temperature(epoch)
         pl_module.model.pseudobulk_encoder.gene_gate.temperature = tau
-        pl_module.log("gene_gate_temperature", tau)
+        pl_module.log("gene_gate_temperature", tau, sync_dist=True)
 
     def __repr__(self) -> str:
         return (
@@ -242,7 +242,7 @@ class GradientNormLogger(pl.Callback):
         values = list(norms.values())
         if not values:
             return 0.0
-        return max(values) / (min(values) + EPSILON_SOFTMAX)
+        return max(values) / (min(values) + EPSILON_DIVISION)
 
     def get_severity(self, ratio: float) -> str:
         """

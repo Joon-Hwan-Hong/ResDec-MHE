@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/data/datasets.py
+# hypothesis_version: 6.151.4
+
+[1000, 'BrainRegion', 'ROSMAP_IndividualID', '_pseudobulk', 'amylsqrt', 'available_regions', 'ccc_edge_attr', 'ccc_edge_index', 'ccc_edge_type', 'cell_barcodes', 'cell_counts', 'cell_mask', 'cell_type_mask', 'cell_type_order', 'cells', 'cogn_global', 'cognition', 'edge_attr', 'edge_index', 'edge_type', 'gene_names.npy', 'gpath', 'pathology', 'pseudobulk', 'random', 'region_', 'region_mask', 'subject_id', 'supercluster_name', 'tangsqrt', 'target', 'toarray']

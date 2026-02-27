@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/models/full_model.py
+# hypothesis_version: 6.151.4
+
+[0.1, 1.0, 2.0, 128, 'attended', 'attention_weights', 'bayesian', 'cell', 'cell_transformer', 'dropout', 'embeddings', 'fused', 'fusion_layer', 'hgt', 'hgt_attention', 'hgt_encoder', 'initial_temperature', 'mean', 'mlp_hidden', 'n_heads', 'n_pathology_features', 'n_pma_seeds', 'pathology_attention', 'pathology_encoder', 'pma_attention', 'prediction_head', 'pseudobulk', 'pseudobulk_encoder', 'region_attention', 'region_handler', 'std', 'total', 'use_layer_norm']

@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/analysis/cell_heterogeneity.py
+# hypothesis_version: 6.151.4
+
+[10.0, 100, '2.0', 'attention_entropy', 'attention_mean', 'attention_median', 'attention_score', 'attention_std', 'attention_threshold', 'cell_attention.h5', 'cell_barcode', 'cell_idx', 'cell_type', 'cell_type_names', 'csv', 'gini_coefficient', 'gzip', 'h5', 'is_high_attention', 'left', 'max_cells', 'min_cells_per_type', 'n_cell_types', 'n_cells_total', 'n_high_attention', 'n_subjects', 'parquet', 'pma_attention', 'schema_version', 'subject_id', 'subject_ids', 'top_percentile', 'w']

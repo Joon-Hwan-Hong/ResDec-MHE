@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/analysis/gene_importance.py
+# hypothesis_version: 6.151.4
+
+[0.01, 1.0, 100, '2.0', 'cell_type', 'cell_type_names', 'csv', 'effective_weight', 'gate_weight', 'gene', 'gene_gate', 'gene_gate_weights.h5', 'gene_idx', 'gene_names', 'gzip', 'has_region_analysis', 'hdf5', 'log2_fold_change', 'mean_expression', 'mean_resilient', 'mean_vulnerable', 'n_cell_types', 'n_genes', 'padj', 'parquet', 'pvalue', 'r', 'rank', 'region', 'resilient', 'schema_version', 'shape', 'top_k', 'two-sided', 'utf-8', 'vulnerable', 'w', 'weight']

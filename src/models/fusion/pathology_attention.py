@@ -174,7 +174,8 @@ class PathologyStratifiedAttention(nn.Module):
                 scores = scores.masked_fill(all_masked_expanded, -1e9)
 
         # Softmax and attend
-        attention_weights = F.softmax(scores, dim=-1).squeeze(2)  # [B, n_heads, n_cell_types]
+        assert scores.size(2) == 1, f"Expected query dim 1, got {scores.size(2)}"
+        attention_weights = F.softmax(scores, dim=-1)[:, :, 0, :]  # [B, n_heads, n_cell_types]
 
         # Zero out attention for fully-masked samples (softmax gave near-uniform,
         # but these samples should contribute nothing)

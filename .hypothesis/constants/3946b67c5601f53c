@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/utils/config.py
+# hypothesis_version: 6.151.4
+
+['.', '16-mixed', '32-true', 'adam', 'adamw', 'bayesian', 'beta_nll', 'bf16-mixed', 'cosine', 'data.splits.n_folds', 'deterministic', 'exponential', 'importance', 'linear', 'model.d_embed', 'model.d_fused', 'model.dropout', 'model.head.d_hidden', 'model.head.type', 'model.hgt.n_heads', 'model.hgt.n_layers', 'model.n_cell_types', 'model.n_genes', 'mse', 'random', 'stratified', 'training.loss.beta', 'training.loss.type', 'training.max_epochs', 'training.precision', 'w']

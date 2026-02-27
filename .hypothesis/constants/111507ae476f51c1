@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/analysis/cell_type_importance.py
+# hypothesis_version: 6.151.4
+
+[100, 'cell_type', 'csv', 'high', 'low', 'mean_attention', 'medium', 'n_cell_types', 'n_heads', 'n_subjects', 'parquet', 'pathology_tertile', 'rank', 'region', 'std_attention']

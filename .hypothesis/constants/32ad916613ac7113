@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/utils/io.py
+# hypothesis_version: 6.151.4
+
+[0.0, '.csv', '.parquet', '2.0', 'O', 'S', 'U', '[n_cell_types]', '[n_edge_types]', '[n_regions]', 'aggregated', 'attention', 'attrs', 'cell_barcodes', 'cell_counts', 'cell_type_names', 'cell_type_selection', 'csv', 'description', 'edge_type', 'edge_type_names', 'embeddings', 'gene_gate', 'gene_gate_weights', 'gene_names', 'gzip', 'hgt_attention', 'max_cells', 'mean_by_cell_type', 'mean_by_edge_type', 'metadata', 'n_heads', 'n_layers', 'n_samples', 'n_seeds', 'n_subjects', 'parquet', 'pathology_attention', 'per_cell_type', 'per_sample', 'pma_attention', 'r', 'region_attention', 'region_names', 'region_pseudobulk', 'region_weights', 'schema_version', 'shape', 'source', 'std_by_edge_type', 'subject_ids', 'target', 'utf-8', 'w', '|']

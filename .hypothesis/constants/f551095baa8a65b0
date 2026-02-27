@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/data/constants.py
+# hypothesis_version: 6.151.4
+
+[1e-10, 1e-08, 1e-06, '-', '/', 'AG', 'Amygdala excitatory', 'Astrocyte', 'Bergmann glia', 'CGE interneuron', 'Cell-Cell Contact', 'Cell_Cell_Contact', 'Choroid plexus', 'EC', 'ECM-Receptor', 'ECM_Receptor', 'Ependymal', 'Fibroblast', 'HC', 'Hippocampal CA1-3', 'Hippocampal CA4', 'Lower rhombic lip', 'MGE interneuron', 'MTC', 'Mammillary body', 'Medium spiny neuron', 'Microglia', 'Miscellaneous', 'Oligodendrocyte', 'PFC', 'Secreted Signaling', 'Secreted_Signaling', 'Splatter', 'TH', 'Thalamic excitatory', 'Upper rhombic lip', 'Vascular', '_', 'data', 'database', '||']

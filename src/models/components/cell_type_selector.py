@@ -106,22 +106,6 @@ class CellTypeSelector(nn.Module):
         _, indices = torch.topk(self.selection_logits, k)
         return indices
 
-    def get_selection_mask(self, k: int) -> torch.Tensor:
-        """
-        Get boolean mask indicating selected cell types.
-
-        Args:
-            k: Number of cell types to select
-
-        Returns:
-            Boolean tensor of shape (n_cell_types,), True for selected types
-        """
-        selected_indices = self.get_selected_types(k)
-        mask = torch.zeros(self.n_cell_types, dtype=torch.bool,
-                          device=self.selection_logits.device)
-        mask[selected_indices] = True
-        return mask
-
     def get_ranking(self) -> torch.Tensor:
         """
         Get cell type indices sorted by selection importance (descending).

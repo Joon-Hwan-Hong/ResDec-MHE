@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/data/collate.py
+# hypothesis_version: 6.151.4
+
+['available_regions', 'batch_size', 'ccc_edge_attr', 'ccc_edge_index', 'ccc_edge_type', 'cell_barcodes', 'cell_counts', 'cell_mask', 'cell_type_mask', 'cell_type_order', 'cells', 'cognition', 'ddp', 'ddp_spawn', 'deepspeed', 'dp', 'edge_attr_dict_list', 'edge_index_dict_list', 'edge_types', 'graph_batch', 'graph_ptr', 'n_nodes_per_graph', 'node_types', 'pathology', 'pseudobulk', 'region_mask', 'region_pseudobulk', 'rng', 'sampler', 'subject_id', 'subject_ids']

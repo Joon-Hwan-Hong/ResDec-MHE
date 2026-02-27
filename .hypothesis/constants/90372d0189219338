@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/inference/extract_attention.py
+# hypothesis_version: 6.151.4
+
+['edge_type_names', 'ignore', 'mean_by_edge_type', 'n_layers', 'n_samples', 'per_sample', 'std_by_edge_type']

@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/data/cell_sampling.py
+# hypothesis_version: 6.151.4
+
+[1000, 'ROSMAP_IndividualID', 'importance', 'importance_score', 'leiden', 'louvain', 'n_genes', 'random', 'stratified', 'supercluster_name', 'toarray', 'values']

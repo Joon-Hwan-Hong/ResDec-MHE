@@ -381,9 +381,9 @@ class SetTransformerEncoder(nn.Module):
         # This avoids any attention computation on all-masked inputs
         if all_empty:
             if self.n_pma_seeds == 1:
-                pooled = self.empty_embedding.to(device).unsqueeze(0).expand(batch_size, -1)
+                pooled = self.empty_embedding.unsqueeze(0).expand(batch_size, -1)
             else:
-                pooled = self.empty_embedding.to(device).unsqueeze(0).unsqueeze(0).expand(
+                pooled = self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
                     batch_size, self.n_pma_seeds, -1
                 )
             attention = None

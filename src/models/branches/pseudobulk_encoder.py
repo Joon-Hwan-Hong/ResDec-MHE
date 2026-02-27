@@ -156,21 +156,6 @@ class PseudobulkEncoder(nn.Module):
         """
         return self.gene_gate.get_gate_weights()
 
-    def get_top_genes_per_cell_type(
-        self, k: int = 100, gene_names: list[str] | None = None
-    ) -> dict[int, list[tuple[int | str, float]]]:
-        """
-        Get top-k genes by attention weight for each cell type.
-
-        Args:
-            k: Number of top genes to return per cell type
-            gene_names: Optional list of gene names for readable output
-
-        Returns:
-            Dict mapping cell type index to list of (gene_id/name, weight) tuples
-        """
-        return self.gene_gate.get_top_genes_per_cell_type(k=k, gene_names=gene_names)
-
     def extra_repr(self) -> str:
         return (
             f"n_cell_types={self.n_cell_types}, "

@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/visualization/training_curves.py
+# hypothesis_version: 6.151.4
+
+[0.3, '#8C564B', '#9467BD', '#E377C2', 'Epoch', 'Learning Rate', 'Loss', 'Step', 'Training Loss', 'Training Metrics', 'Training Progress', 'Validation Loss', 'Value', 'best', 'dpi', 'learning_rate', 'log', 'loss', 'lr', 'o', 'offset points', 'plots', 'png', 's', 'scalars', 'step', 'tag', 'train', 'upper right', 'val', 'value', 'wall_time']

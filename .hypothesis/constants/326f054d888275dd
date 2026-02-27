@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/data/splits.py
+# hypothesis_version: 6.151.4
+
+[0.1, 1.0, '=', 'ROSMAP_IndividualID', 'SPLIT SUMMARY', '_', '__rare_combined__', 'cogn_global', 'cognition_bin', 'cognition_column', 'drop', 'folds', 'gpath', 'high', 'holdout_test', 'low', 'medium', 'metadata', 'n_folds', 'n_subjects', 'n_test', 'n_train_val', 'pathology_bin', 'pathology_column', 'r', 'random_state', 'test', 'test_frac', 'train', 'train_frac_per_fold', 'train_val_pool', 'val', 'val_frac_per_fold', 'w']

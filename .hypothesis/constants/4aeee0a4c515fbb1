@@ -1,0 +1,4 @@
+# file: /host/milan/tank/Joon/proj_ml_snrna/.claude/worktrees/production-readiness-fixes/src/analysis/regional_analysis.py
+# hypothesis_version: 6.151.4
+
+[0.0, 100, 'attention_weight', 'cell_type', 'csv', 'effective_weight', 'gate_weight', 'gene', 'gene_idx', 'has_attention_data', 'has_gene_importance', 'has_region_weights', 'mean_attention', 'mean_expression', 'n_regions', 'n_subjects', 'normalized_weight', 'parquet', 'placeholder', 'rank', 'real', 'region', 'std_attention', 'subject_id', 'top_k_genes', 'weight']
