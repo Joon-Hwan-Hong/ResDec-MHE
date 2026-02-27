@@ -399,7 +399,7 @@ class TestCollateForHgt:
         sample_b = create_mock_sample(n_genes=n_genes, n_cell_types=n_cell_types)
         sample_b["cell_type_order"] = order_b
 
-        with pytest.raises(ValueError, match="different cell_type_order"):
+        with pytest.raises(AssertionError, match="cell_type_order mismatch"):
             collate_for_hgt([sample_a, sample_b])
 
 

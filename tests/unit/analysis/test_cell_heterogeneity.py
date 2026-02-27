@@ -93,13 +93,25 @@ class TestCellHeterogeneityAnalyzer:
             pma_attention=sample_data["pma_attention"],
             cell_type_names=sample_data["cell_type_names"],
         )
-        result = analyzer.analyze()
+        result = analyzer.analyze(save_all_scores=True)
         saved = analyzer.save(result, tmp_path, formats=["parquet", "csv"])
         assert (tmp_path / "cell_attention_summary.parquet").exists()
         assert (tmp_path / "cell_attention_summary.csv").exists()
         assert (tmp_path / "high_attention_cells.parquet").exists()
         assert (tmp_path / "cell_attention_scores.parquet").exists()
         assert isinstance(saved, dict)
+
+    def test_save_without_all_scores(self, sample_data, tmp_path):
+        """Default behavior: all_scores files should not be created."""
+        analyzer = CellHeterogeneityAnalyzer(
+            pma_attention=sample_data["pma_attention"],
+            cell_type_names=sample_data["cell_type_names"],
+        )
+        result = analyzer.analyze()  # save_all_scores=False by default
+        assert result.all_scores is None
+        saved = analyzer.save(result, tmp_path, formats=["parquet"])
+        assert (tmp_path / "cell_attention_summary.parquet").exists()
+        assert not (tmp_path / "cell_attention_scores.parquet").exists()
 
     def test_save_with_no_subject_ids(self, sample_data, tmp_path):
         """Save should work when subject_ids not provided."""
@@ -139,7 +151,7 @@ class TestAnalyzerDirectUsage:
             pma_attention=sample_data["pma_attention"],
             cell_type_names=sample_data["cell_type_names"],
         )
-        result = analyzer.analyze()
+        result = analyzer.analyze(save_all_scores=True)
         summary, high, scores = result.summary, result.high_attention_cells, result.all_scores
         assert isinstance(summary, pd.DataFrame)
         assert isinstance(high, pd.DataFrame)

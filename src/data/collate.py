@@ -325,16 +325,12 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cell_type_names = batch[0].get("cell_type_order", CELL_TYPE_ORDER)
     edge_type_names = ALL_EDGE_TYPES
 
-    # Validate all samples have the same cell_type_order (structural invariant)
-    # This catches dataset mixing bugs where samples have different orderings
-    for i, s in enumerate(batch[1:], start=1):
-        sample_order = s.get("cell_type_order", CELL_TYPE_ORDER)
-        if sample_order != cell_type_names:
-            raise ValueError(
-                f"Sample {i} has different cell_type_order than sample 0. "
-                f"All samples in a batch must have the same cell type ordering. "
-                f"Sample 0: {cell_type_names[:3]}... Sample {i}: {sample_order[:3]}..."
-            )
+    # Debug assertion: cell_type_order is a structural invariant set at dataset
+    # construction. Skip in production (python -O) to avoid O(batch_size × n_ct) per batch.
+    assert all(
+        s.get("cell_type_order", CELL_TYPE_ORDER) == cell_type_names
+        for s in batch[1:]
+    ), "cell_type_order mismatch within batch — dataset construction bug"
 
     # Sanitize names for PyG compatibility (uses shared sanitize_key from constants)
     sanitized_cell_types = [sanitize_key(ct) for ct in cell_type_names]
