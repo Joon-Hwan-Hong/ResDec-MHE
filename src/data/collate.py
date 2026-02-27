@@ -301,6 +301,20 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cognition = torch.stack([s["cognition"] for s in batch], dim=0)
     cells = torch.stack([s["cells"] for s in batch], dim=0)
     cell_mask = torch.stack([s["cell_mask"] for s in batch], dim=0)
+
+    # Dynamic padding: trim cells/cell_mask to actual max cell count in batch.
+    # This avoids wasting memory on padding when no sample in the batch uses
+    # the full max_cells_per_type (e.g., 2000 configured but batch max is 300).
+    if cell_mask.any():
+        # cell_mask shape: [B, n_cell_types, max_cells]
+        # Find the highest valid cell index across all samples and cell types
+        max_valid = cell_mask.any(dim=0).any(dim=0).long()  # [max_cells] bool
+        if max_valid.any():
+            actual_max = max_valid.nonzero()[-1].item() + 1
+            if actual_max < cell_mask.shape[2]:
+                cells = cells[:, :, :actual_max, :]
+                cell_mask = cell_mask[:, :, :actual_max]
+
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────

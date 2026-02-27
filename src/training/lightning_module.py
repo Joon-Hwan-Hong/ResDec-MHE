@@ -198,6 +198,11 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         if self._use_bayesian_svi:
             loss = self._svi_forward(batch)
+            # Apply gene gate L1 regularization (also needed in SVI path)
+            if self._gene_gate_l1_lambda > 0:
+                gate_logits = self.model.pseudobulk_encoder.gene_gate.gate_logits
+                l1_penalty = self._gene_gate_l1_lambda * gate_logits.abs().mean()
+                loss = loss + l1_penalty
         else:
             output = self._forward_batch(batch)
             loss = self._compute_loss(output, batch["cognition"])
@@ -326,6 +331,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                     model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
                     device=self.device,
                 ),
+                "edge_index_dict_list": [{}],
+                "edge_attr_dict_list": [{}],
                 "cognition": torch.zeros(1, 1, device=self.device),
             }
             with torch.no_grad():

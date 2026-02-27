@@ -231,14 +231,21 @@ class CognitiveResilienceDataset(Dataset):
         adata_subject = self.adata[subject_mask]
 
         # ─────────────────────────────────────────────────────────────────────
+        # Densify expression matrix ONCE (avoids 3x .toarray() calls)
+        # ─────────────────────────────────────────────────────────────────────
+        X_dense = adata_subject.X
+        if hasattr(X_dense, "toarray"):
+            X_dense = X_dense.toarray()
+
+        # ─────────────────────────────────────────────────────────────────────
         # Pseudobulk expression
         # ─────────────────────────────────────────────────────────────────────
-        pseudobulk, cell_type_mask, cell_counts = self._compute_pseudobulk(adata_subject)
+        pseudobulk, cell_type_mask, cell_counts = self._compute_pseudobulk(adata_subject, X_dense)
 
         # ─────────────────────────────────────────────────────────────────────
         # Cell-level data for Set Transformer
         # ─────────────────────────────────────────────────────────────────────
-        cells, cell_mask, cell_barcodes = self._get_cell_level_data(adata_subject)
+        cells, cell_mask, cell_barcodes = self._get_cell_level_data(adata_subject, X_dense)
 
         # ─────────────────────────────────────────────────────────────────────
         # CCC graph features
@@ -249,7 +256,7 @@ class CognitiveResilienceDataset(Dataset):
         # Region mask and multi-region pseudobulk
         # ─────────────────────────────────────────────────────────────────────
         region_mask = self._get_region_mask(adata_subject)
-        region_pseudobulks, available_regions = self._compute_pseudobulk_by_region(adata_subject)
+        region_pseudobulks, available_regions = self._compute_pseudobulk_by_region(adata_subject, X_dense)
 
         # ─────────────────────────────────────────────────────────────────────
         # Phenotypes
@@ -289,16 +296,20 @@ class CognitiveResilienceDataset(Dataset):
 
         return sample
 
-    def _compute_pseudobulk(self, adata_subject: AnnData) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Compute pseudobulk expression and cell counts for each cell type."""
+    def _compute_pseudobulk(
+        self, adata_subject: AnnData, X_dense: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Compute pseudobulk expression and cell counts for each cell type.
+
+        Args:
+            adata_subject: AnnData subset for one subject
+            X_dense: Pre-densified expression matrix [n_cells, n_genes]
+        """
         pseudobulk = np.zeros((self.n_cell_types, self.n_genes), dtype=np.float32)
         cell_type_mask = np.zeros(self.n_cell_types, dtype=bool)
         cell_counts = np.zeros(self.n_cell_types, dtype=np.int64)
 
-        # Get expression matrix
-        X = adata_subject.X
-        if hasattr(X, "toarray"):
-            X = X.toarray()
+        X = X_dense
 
         for ct_idx, ct_name in enumerate(self.cell_type_order):
             ct_mask = adata_subject.obs[self.cell_type_column] == ct_name
@@ -313,7 +324,7 @@ class CognitiveResilienceDataset(Dataset):
         return pseudobulk, cell_type_mask, cell_counts
 
     def _compute_pseudobulk_by_region(
-        self, adata_subject: AnnData
+        self, adata_subject: AnnData, X_dense: np.ndarray,
     ) -> tuple[dict[str, np.ndarray], list[int]]:
         """
         Compute per-region pseudobulk for multi-region data.
@@ -324,6 +335,7 @@ class CognitiveResilienceDataset(Dataset):
 
         Args:
             adata_subject: AnnData subset for one subject
+            X_dense: Pre-densified expression matrix [n_cells, n_genes]
 
         Returns:
             region_pseudobulks: Dict mapping "region_{idx}_pseudobulk" -> [n_cell_types, n_genes]
@@ -336,10 +348,7 @@ class CognitiveResilienceDataset(Dataset):
         if self.region_column not in adata_subject.obs.columns:
             return region_pseudobulks, available_regions
 
-        # Get expression matrix once
-        X = adata_subject.X
-        if hasattr(X, "toarray"):
-            X = X.toarray()
+        X = X_dense
 
         for region_idx, region_name in enumerate(REGION_ORDER):
             # Filter cells for this region
@@ -390,7 +399,7 @@ class CognitiveResilienceDataset(Dataset):
         return region_mask
 
     def _get_cell_level_data(
-        self, adata_subject: AnnData,
+        self, adata_subject: AnnData, X_dense: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
         """
         Get cell-level expression for ALL cell types using CellSampler.
@@ -398,6 +407,10 @@ class CognitiveResilienceDataset(Dataset):
         Returns data for all 31 cell types. Cell types with fewer cells than
         min_cells_threshold will have empty data (all-False mask). The model's
         CellTypeSelector learns which types to use for prediction.
+
+        Args:
+            adata_subject: AnnData subset for one subject
+            X_dense: Pre-densified expression matrix [n_cells, n_genes]
 
         Returns:
             cells: [n_cell_types, max_cells, n_genes] expression data
@@ -416,10 +429,7 @@ class CognitiveResilienceDataset(Dataset):
             cell_types=self.cell_type_order,  # ALL 31 types
         )
 
-        # Get expression matrix and obs index for barcodes
-        X = adata_subject.X
-        if hasattr(X, "toarray"):
-            X = X.toarray()
+        X = X_dense
         obs_index = adata_subject.obs.index
 
         for i, ct_name in enumerate(self.cell_type_order):

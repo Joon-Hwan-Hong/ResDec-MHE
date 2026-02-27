@@ -185,6 +185,34 @@ def setup_trainer(
     devices = train_cfg.get("devices", "auto")
     strategy = train_cfg.get("strategy", "auto")
 
+    # Profiler setup
+    profiler = None
+    profiler_cfg = train_cfg.get("profiler", None)
+    if profiler_cfg is not None and profiler_cfg.get("type", None):
+        profiler_type = profiler_cfg.type
+        if profiler_type == "simple":
+            from lightning.pytorch.profilers import SimpleProfiler
+            profiler = SimpleProfiler(
+                dirpath=config.paths.get("logs_dir", "outputs/logs"),
+                filename="profiler_simple",
+            )
+        elif profiler_type == "pytorch":
+            from lightning.pytorch.profilers import PyTorchProfiler
+            profiler = PyTorchProfiler(
+                dirpath=config.paths.get("logs_dir", "outputs/logs"),
+                filename="profiler_pytorch",
+                emit_nvtx=profiler_cfg.get("emit_nvtx", False),
+                export_to_chrome=profiler_cfg.get("export_to_chrome", True),
+                row_limit=profiler_cfg.get("row_limit", 20),
+                schedule=torch.profiler.schedule(
+                    wait=profiler_cfg.get("wait", 1),
+                    warmup=profiler_cfg.get("warmup", 1),
+                    active=profiler_cfg.get("active", 3),
+                    repeat=profiler_cfg.get("repeat", 1),
+                ) if profiler_cfg.get("use_schedule", False) else None,
+            )
+            logger.info(f"PyTorch profiler enabled, output to {config.paths.get('logs_dir', 'outputs/logs')}")
+
     trainer = pl.Trainer(
         max_epochs=train_cfg.max_epochs,
         min_epochs=train_cfg.early_stopping.get("min_epochs", 1),
@@ -200,6 +228,7 @@ def setup_trainer(
         deterministic=repro_cfg.get("deterministic", True),
         benchmark=repro_cfg.get("benchmark", False),
         enable_progress_bar=True,
+        profiler=profiler,
     )
 
     return trainer
