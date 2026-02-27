@@ -298,6 +298,7 @@ def save_figure(
         facecolor="white" if not transparent else "none",
         edgecolor="none",
     )
+    plt.close(fig)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

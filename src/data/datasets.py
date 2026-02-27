@@ -456,7 +456,7 @@ class CognitiveResilienceDataset(Dataset):
         from src.data.liana_processing import build_subject_ccc_features
 
         liana_df = self.liana_results[subject_id]
-        features = build_subject_ccc_features(liana_df, self.cell_type_order)
+        features = build_subject_ccc_features(liana_df, self.cell_type_order, compute_adjacency=False)
 
         return features["edge_index"], features["edge_type"], features["edge_attr"]
 

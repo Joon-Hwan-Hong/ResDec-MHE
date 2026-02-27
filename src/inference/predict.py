@@ -303,6 +303,7 @@ class Predictor:
         from src.utils.device import move_batch_to_device
         return move_batch_to_device(batch, self.device)
 
+    @torch.no_grad()
     def _predict_batch_bayesian(
         self,
         batch: dict[str, Any],
@@ -353,17 +354,16 @@ class Predictor:
         # Point estimate from posterior median
         median = self.guide.median()
         conditioned = pyro.poutine.condition(self.model, data=median)
-        with torch.no_grad():
-            output_median = conditioned(**model_kwargs)
+        output_median = conditioned(**model_kwargs)
 
         # Collect posterior samples for epistemic uncertainty
         means = []
         for _ in range(num_samples):
             guide_trace = pyro.poutine.trace(self.guide).get_trace(**model_kwargs)
             conditioned_sample = pyro.poutine.replay(self.model, trace=guide_trace)
-            with torch.no_grad():
-                out = conditioned_sample(**model_kwargs)
-            means.append(out["mean"])
+            out = conditioned_sample(**model_kwargs)
+            means.append(out["mean"].detach())
+            del out  # Free GPU memory for intermediates (attention, embeddings, etc.)
 
         means_stacked = torch.stack(means, dim=0)  # [num_samples, B, 1]
         epistemic_std = means_stacked.std(dim=0)    # [B, 1]
