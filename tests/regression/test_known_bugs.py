@@ -643,7 +643,6 @@ class TestFinalModeDoesNotUseHoldoutForSelection:
             patch("scripts.train.setup_trainer") as mock_setup_trainer,
             patch("src.data.splits.load_splits") as mock_load_splits,
             patch("src.data.splits.get_final_train_subjects") as mock_get_final,
-            patch("src.data.loaders.create_fold_dataloaders") as mock_create_loaders,
             patch("scripts.train.torch") as mock_torch,
         ):
             # Configure mock config
@@ -679,14 +678,6 @@ class TestFinalModeDoesNotUseHoldoutForSelection:
             }
             mock_load_splits.return_value = mock_splits
             mock_get_final.return_value = ["subj_C", "subj_D", "subj_E"]
-
-            # create_fold_dataloaders returns mock loaders
-            mock_train_loader = MagicMock(name="train_loader")
-            mock_test_loader = MagicMock(name="test_loader")
-            mock_create_loaders.side_effect = [
-                (mock_train_loader, MagicMock()),  # train call (discard val)
-                (MagicMock(), mock_test_loader),    # test call (discard train)
-            ]
 
             # setup_callbacks returns realistic callbacks to be filtered
             mock_setup_callbacks.return_value = [

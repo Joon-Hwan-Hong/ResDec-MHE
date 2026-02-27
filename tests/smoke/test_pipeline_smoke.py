@@ -301,9 +301,9 @@ def test_full_pipeline_smoke(head_type, train_loader, val_loader, tmp_path):
 
     resilience_checkpoint = ResilienceModelCheckpoint()
 
-    # Bayesian SVI uses manual optimization (automatic_optimization=False),
-    # which is incompatible with Lightning's gradient_clip_val. SVI handles
-    # its own gradient clipping via Pyro's ClippedAdam optimizer.
+    # Bayesian SVI uses differentiable_loss through Lightning's automatic
+    # optimization, but gradient_clip_val is disabled for SVI because Pyro's
+    # ClippedAdam handles its own gradient clipping internally.
     grad_clip = config.training.gradient_clip_val if head_type != "bayesian" else None
 
     trainer = pl.Trainer(
@@ -327,8 +327,8 @@ def test_full_pipeline_smoke(head_type, train_loader, val_loader, tmp_path):
     assert last_ckpt.exists(), f"Expected checkpoint at {last_ckpt}"
 
     # Use best checkpoint if available, otherwise fall back to last.ckpt.
-    # For Bayesian/SVI (manual optimization), ModelCheckpoint may not see
-    # val_loss in time, so best_model_path can be empty. last.ckpt is
+    # With only 2 smoke-test epochs, best_model_path may be empty if
+    # val_loss wasn't logged before the first checkpoint. last.ckpt is
     # always saved by save_last=True.
     best_ckpt_path = checkpoint_callback.best_model_path
     ckpt_to_load = best_ckpt_path if best_ckpt_path else str(last_ckpt)

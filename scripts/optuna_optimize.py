@@ -68,8 +68,8 @@ def create_study(config: DictConfig, storage: str | None = None) -> optuna.Study
     elif pruner_cfg.type == "median":
         pruner = optuna.pruners.MedianPruner(
             n_startup_trials=pruner_cfg.get("n_startup_trials", 5),
-            n_warmup_steps=pruner_cfg.get("n_warmup_steps", 25),
-            interval_steps=pruner_cfg.get("interval_steps", 5),
+            n_warmup_steps=pruner_cfg.get("n_warmup_steps", 1),
+            interval_steps=pruner_cfg.get("interval_steps", 1),
         )
     else:
         raise ValueError(f"Unknown pruner type: {pruner_cfg.type}")
@@ -379,7 +379,7 @@ def main() -> None:
     config = load_config(args.config, overrides=args.overrides)
 
     from src.utils.config import validate_config
-    validate_config(config, required_keys=["experiment", "data", "model", "training"])
+    validate_config(config, required_keys=["experiment", "data", "model", "training", "optuna", "paths"])
 
     optuna_cfg = config.optuna
     n_trials = args.n_trials or optuna_cfg.get("n_trials", 100)
