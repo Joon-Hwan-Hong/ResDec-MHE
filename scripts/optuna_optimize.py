@@ -20,6 +20,7 @@ Workflow:
 
 import argparse
 import logging
+import os
 import warnings
 from pathlib import Path
 
@@ -182,6 +183,15 @@ def build_trial_config(
             OmegaConf.update(config, "model.dropout", value)
         else:
             logger.warning("Unknown parameter '%s' — skipping", name)
+
+    # Validate n_heads divides d_embed (required by all attention mechanisms)
+    n_heads = config.model.hgt.get("n_heads")
+    d_embed = config.model.get("d_embed")
+    if n_heads and d_embed and d_embed % n_heads != 0:
+        raise ValueError(
+            f"d_embed ({d_embed}) must be divisible by n_heads ({n_heads}). "
+            f"Ensure Optuna search space only samples compatible (d_embed, n_heads) pairs."
+        )
 
     return config
 
@@ -385,30 +395,25 @@ def main() -> None:
     n_trials = args.n_trials or optuna_cfg.get("n_trials", 100)
     timeout = args.timeout or optuna_cfg.get("timeout", None)
 
-    # Load data once (if splits path provided)
-    adata = None
-    metadata = None
-    splits = None
-    if args.splits_path:
-        from src.data.splits import load_splits
-        splits = load_splits(args.splits_path)
-        logger.info("Loaded splits from %s", args.splits_path)
-
-        # Load adata and metadata
-        import scanpy as sc
-        import pandas as pd
-        adata = sc.read_h5ad(config.data.adata_path)
-        metadata_path = Path(config.data.metadata_path)
-        metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
-        logger.info("Loaded adata (%d cells) and metadata", adata.n_obs)
-
-    # Fail fast if data not provided
+    # Fail fast if data not provided (before expensive data loading)
     if args.splits_path is None:
         raise ValueError(
             "Optuna optimization requires pre-computed data splits. "
             "Provide --splits-path /path/to/splits.json. "
             "Use scripts/train.py for single-fold training without splits."
         )
+
+    # Load data once
+    from src.data.splits import load_splits
+    splits = load_splits(args.splits_path)
+    logger.info("Loaded splits from %s", args.splits_path)
+
+    import scanpy as sc
+    import pandas as pd
+    adata = sc.read_h5ad(config.data.adata_path)
+    metadata_path = Path(config.data.metadata_path)
+    metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
+    logger.info("Loaded adata (%d cells) and metadata", adata.n_obs)
 
     # Create study (always use create_study to respect config pruner type)
     study = create_study(config, storage=args.storage)
@@ -446,7 +451,7 @@ def main() -> None:
                 sys.executable, str(Path(__file__)),
                 "--config", args.config,
                 "--n-trials", str(gpu_trials),
-                "--gpu", str(i),
+                "--gpu", "0",  # Always GPU 0 since CUDA_VISIBLE_DEVICES limits visibility
                 "--storage", args.storage,
                 "--splits-path", args.splits_path,
             ]
@@ -455,8 +460,13 @@ def main() -> None:
             if args.overrides:
                 cmd.extend(args.overrides)
 
-            logger.info(f"Spawning worker on GPU {i}: {gpu_trials} trials")
-            proc = subprocess.Popen(cmd)
+            # Pin each worker to a single GPU via CUDA_VISIBLE_DEVICES
+            # This prevents each process from initializing all GPU contexts
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(i)
+
+            logger.info(f"Spawning worker on GPU {i} (CUDA_VISIBLE_DEVICES={i}): {gpu_trials} trials")
+            proc = subprocess.Popen(cmd, env=env)
             workers.append((i, proc))
 
         # Wait for all workers

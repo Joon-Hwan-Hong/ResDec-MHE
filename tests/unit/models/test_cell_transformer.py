@@ -185,13 +185,6 @@ class TestCellTypeSelection:
         weights = small_transformer.get_selection_weights()
         assert torch.allclose(weights.sum(), torch.tensor(1.0), atol=1e-5)
 
-    def test_selection_ranking(self, small_transformer, small_config):
-        """Test selection ranking returns all indices."""
-        ranking = small_transformer.get_selection_ranking()
-        assert ranking.shape == (small_config["n_cell_types"],)
-        # All indices should be present
-        assert set(ranking.tolist()) == set(range(small_config["n_cell_types"]))
-
     def test_selection_temperature_property(self, small_transformer, small_config):
         """Test selection temperature property."""
         assert small_transformer.selection_temperature == small_config["selection_temperature"]
@@ -199,15 +192,6 @@ class TestCellTypeSelection:
         new_temp = 2.0
         small_transformer.selection_temperature = new_temp
         assert small_transformer.selection_temperature == new_temp
-
-    def test_get_top_k_types(self, small_transformer, small_config):
-        """Test getting top-k most important cell types."""
-        k = 3
-        top_k = small_transformer.get_top_k_types(k)
-        assert top_k.shape == (k,)
-        # All indices should be valid
-        assert (top_k >= 0).all()
-        assert (top_k < small_config["n_cell_types"]).all()
 
 
 # ============================================================================

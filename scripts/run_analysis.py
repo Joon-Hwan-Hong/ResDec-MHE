@@ -988,6 +988,8 @@ def main():
             try:
                 actual = predictions_df.get("actual")
                 actual = actual.values if actual is not None else None
+                if actual is not None and np.all(np.isnan(actual)):
+                    actual = None
 
                 # Build covariates from predictions_df if available
                 covariates = None

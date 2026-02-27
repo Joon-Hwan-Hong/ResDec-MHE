@@ -169,49 +169,6 @@ class TestTopKSelection:
         assert set(selected.tolist()) == {0, 1, 2, 3, 4}
 
 
-class TestSelectionMask:
-    """Tests for selection mask generation."""
-
-    def test_mask_shape(self):
-        """Mask should have shape (n_cell_types,)."""
-        from src.models.components.cell_type_selector import CellTypeSelector
-
-        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
-        mask = selector.get_selection_mask(k=8)
-
-        assert mask.shape == (N_CELL_TYPES,)
-
-    def test_mask_has_k_true_values(self):
-        """Mask should have exactly k True values."""
-        from src.models.components.cell_type_selector import CellTypeSelector
-
-        selector = CellTypeSelector(n_cell_types=20)
-        selector.selection_logits.data = torch.randn(20)
-
-        mask = selector.get_selection_mask(k=5)
-
-        assert mask.sum() == 5
-
-    def test_mask_matches_selected_indices(self):
-        """Mask True positions should match selected indices."""
-        from src.models.components.cell_type_selector import CellTypeSelector
-
-        selector = CellTypeSelector(n_cell_types=10)
-        selector.selection_logits.data = torch.randn(10)
-
-        selected = selector.get_selected_types(k=4)
-        mask = selector.get_selection_mask(k=4)
-
-        # All selected indices should be True in mask
-        for idx in selected:
-            assert mask[idx].item() is True
-
-        # All non-selected should be False
-        for idx in range(10):
-            if idx not in selected:
-                assert mask[idx].item() is False
-
-
 class TestRanking:
     """Tests for cell type ranking."""
 
@@ -334,15 +291,6 @@ class TestGradientFlow:
 class TestDevicePlacement:
     """Tests for device handling."""
 
-    def test_mask_on_same_device(self):
-        """Generated mask should be on same device as selector."""
-        from src.models.components.cell_type_selector import CellTypeSelector
-
-        selector = CellTypeSelector(n_cell_types=10)
-        mask = selector.get_selection_mask(k=3)
-
-        assert mask.device == selector.selection_logits.device
-
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_works_on_cuda(self):
         """Should work correctly on CUDA device."""
@@ -351,11 +299,9 @@ class TestDevicePlacement:
         selector = CellTypeSelector(n_cell_types=10).cuda()
         weights = selector.get_selection_weights()
         selected = selector.get_selected_types(k=3)
-        mask = selector.get_selection_mask(k=3)
 
         assert weights.device.type == "cuda"
         assert selected.device.type == "cuda"
-        assert mask.device.type == "cuda"
 
 
 # =============================================================================
@@ -382,10 +328,8 @@ class TestEdgeCases:
 
         selector = CellTypeSelector(n_cell_types=5)
         selected = selector.get_selected_types(k=5)
-        mask = selector.get_selection_mask(k=5)
 
         assert set(selected.tolist()) == {0, 1, 2, 3, 4}
-        assert mask.all()
 
     def test_k_equals_one(self):
         """Select single most important cell type."""

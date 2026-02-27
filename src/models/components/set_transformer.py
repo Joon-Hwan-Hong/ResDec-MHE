@@ -198,6 +198,10 @@ class ISAB(nn.Module):
         # Step 2: Cells attend to inducing points → updated cells
         output, _ = self.mab2(x, h)
 
+        # Zero out padded positions to prevent garbage representations
+        if mask is not None:
+            output = output * mask.unsqueeze(-1).to(output.dtype)
+
         return output
 
 
@@ -377,9 +381,9 @@ class SetTransformerEncoder(nn.Module):
         # This avoids any attention computation on all-masked inputs
         if all_empty:
             if self.n_pma_seeds == 1:
-                pooled = self.empty_embedding.to(device).unsqueeze(0).expand(batch_size, -1)
+                pooled = self.empty_embedding.unsqueeze(0).expand(batch_size, -1)
             else:
-                pooled = self.empty_embedding.to(device).unsqueeze(0).unsqueeze(0).expand(
+                pooled = self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
                     batch_size, self.n_pma_seeds, -1
                 )
             attention = None
@@ -392,51 +396,54 @@ class SetTransformerEncoder(nn.Module):
                 )
             return pooled, attention
 
-        # Normal processing for non-empty samples
-        # Project to model dimension
-        h = self.input_proj(x)
-
-        # Apply ISAB layers
-        for isab in self.isab_layers:
-            h = isab(h, mask)
-
-        # Pool with PMA
-        pooled, attention = self.pma(h, mask, return_attention=return_attention)
-
-        # Squeeze if single seed
-        if self.n_pma_seeds == 1:
-            pooled = pooled.squeeze(1)  # (batch, d_model)
-
-        # Replace empty sample outputs with learned empty embedding
+        # Split batch into valid and empty sub-batches to prevent NaN gradient
+        # propagation. nn.MultiheadAttention produces NaN for fully-masked inputs,
+        # and torch.where doesn't block gradient flow through the NaN branch.
         if mask is not None and not has_valid_cells.all():
-            empty_mask = ~has_valid_cells  # (batch,)
-            if self.n_pma_seeds == 1:
-                # pooled: (batch, d_model)
-                pooled = torch.where(
-                    empty_mask.unsqueeze(-1),
-                    self.empty_embedding.to(device).unsqueeze(0).expand(batch_size, -1),
-                    pooled
-                )
-            else:
-                # pooled: (batch, n_seeds, d_model)
-                pooled = torch.where(
-                    empty_mask.unsqueeze(-1).unsqueeze(-1),
-                    self.empty_embedding.to(device).unsqueeze(0).unsqueeze(0).expand(
-                        batch_size, self.n_pma_seeds, -1
-                    ),
-                    pooled
-                )
+            # Mixed batch: some samples have valid cells, some don't
+            valid_indices = has_valid_cells.nonzero(as_tuple=True)[0]
+            n_valid = valid_indices.size(0)
 
-            # Also replace attention for empty samples to avoid NaN
-            # attention shape: (batch, n_heads, n_seeds, n_cells)
-            if attention is not None:
+            # Process only valid samples through attention
+            x_valid = x[valid_indices]
+            mask_valid = mask[valid_indices]
+
+            h_valid = self.input_proj(x_valid)
+            for isab in self.isab_layers:
+                h_valid = isab(h_valid, mask_valid)
+            pooled_valid, attention_valid = self.pma(
+                h_valid, mask_valid, return_attention=return_attention
+            )
+            if self.n_pma_seeds == 1:
+                pooled_valid = pooled_valid.squeeze(1)  # (n_valid, d_model)
+
+            # Allocate full-batch output with empty_embedding for all samples
+            if self.n_pma_seeds == 1:
+                pooled = self.empty_embedding.unsqueeze(0).expand(batch_size, -1).clone()
+            else:
+                pooled = self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
+                    batch_size, self.n_pma_seeds, -1
+                ).clone()
+
+            # Scatter valid results back into full-batch tensor
+            pooled[valid_indices] = pooled_valid
+
+            # Handle attention
+            attention = None
+            if return_attention and attention_valid is not None:
                 n_cells = x.size(1)
-                zero_attention = torch.zeros(
+                attention = torch.zeros(
                     batch_size, self.pma.mab.n_heads, self.n_pma_seeds, n_cells,
                     device=device, dtype=x.dtype
                 )
-                # Expand empty_mask to match attention shape
-                empty_mask_expanded = empty_mask.view(batch_size, 1, 1, 1).expand_as(attention)
-                attention = torch.where(empty_mask_expanded, zero_attention, attention)
+                attention[valid_indices] = attention_valid
+        else:
+            # All samples have valid cells — process entire batch
+            h = self.input_proj(x)
+            for isab in self.isab_layers:
+                h = isab(h, mask)
+            pooled, attention = self.pma(h, mask, return_attention=return_attention)
+            if self.n_pma_seeds == 1:
+                pooled = pooled.squeeze(1)  # (batch, d_model)
 
         return pooled, attention

@@ -207,49 +207,6 @@ class CellSampler:
 
         return sampled
 
-    def get_padded_expression(
-        self,
-        adata: AnnData,
-        sampled_indices: dict[str, np.ndarray],
-        cell_types: list[str],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Get padded expression matrix from sampled indices.
-
-        Args:
-            adata: AnnData object
-            sampled_indices: Dict from sample()
-            cell_types: Ordered list of cell types
-
-        Returns:
-            Tuple of:
-            - cells: [n_cell_types, max_cells, n_genes] expression
-            - mask: [n_cell_types, max_cells] valid cell mask
-        """
-        n_types = len(cell_types)
-        n_genes = adata.n_vars
-
-        cells = np.zeros((n_types, self.max_cells_per_type, n_genes), dtype=np.float32)
-        mask = np.zeros((n_types, self.max_cells_per_type), dtype=bool)
-
-        # Get expression matrix
-        X = adata.X
-        if hasattr(X, "toarray"):
-            X = X.toarray()
-
-        for ct_idx, ct_name in enumerate(cell_types):
-            if ct_name not in sampled_indices:
-                continue
-
-            indices = sampled_indices[ct_name]
-            n_sampled = len(indices)
-
-            if n_sampled > 0:
-                cells[ct_idx, :n_sampled] = X[indices]
-                mask[ct_idx, :n_sampled] = True
-
-        return cells, mask
-
 
 def subsample_adata(
     adata: AnnData,

@@ -55,3 +55,4 @@ tmp_*
 
 # UV
 uv.lock
+.claude/

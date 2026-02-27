@@ -164,7 +164,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         Falls back to standard forward if guide hasn't been prototyped yet
         (safety net only — guide is prototyped in configure_optimizers).
         """
-        if self.guide.prototype_trace is None:
+        if getattr(self.guide, 'prototype_trace', None) is None:
             # Guide hasn't been prototyped yet (no SVI step has run).
             # Fall back to standard forward pass with prior samples.
             return self._forward_batch(batch)
@@ -198,6 +198,11 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         if self._use_bayesian_svi:
             loss = self._svi_forward(batch)
+            # Apply gene gate L1 regularization (also needed in SVI path)
+            if self._gene_gate_l1_lambda > 0:
+                gate_logits = self.model.pseudobulk_encoder.gene_gate.gate_logits
+                l1_penalty = self._gene_gate_l1_lambda * gate_logits.abs().mean()
+                loss = loss + l1_penalty
         else:
             output = self._forward_batch(batch)
             loss = self._compute_loss(output, batch["cognition"])
@@ -212,6 +217,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         bs = batch["cognition"].shape[0]
         self.log("train_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
+
+        # For Bayesian path, also log NLL (comparable scale to val_loss)
+        if self._use_bayesian_svi:
+            with torch.no_grad():
+                nll_output = self._forward_batch_posterior(batch)
+                nll_loss = self._compute_loss(nll_output, batch["cognition"])
+            self.log("train_loss_nll", nll_loss, sync_dist=True, batch_size=bs)
+
         return loss
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
@@ -326,6 +339,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                     model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
                     device=self.device,
                 ),
+                "edge_index_dict_list": [{}],
+                "edge_attr_dict_list": [{}],
                 "cognition": torch.zeros(1, 1, device=self.device),
             }
             with torch.no_grad():

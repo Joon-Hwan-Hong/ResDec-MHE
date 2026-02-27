@@ -647,10 +647,9 @@ class TestAllMaskedRegions:
         assert torch.isfinite(handler.region_embedding.weight.grad).all(), \
             "All-masked region_embedding gradients have NaN"
 
-        # Known limitation: region_weights.grad is NaN due to 0/tiny backward pass.
-        # This documents the current behavior for future fix tracking.
-        assert not torch.isfinite(handler.region_weights.grad).all(), \
-            "Expected NaN in region_weights.grad for all-masked case (known limitation)"
+        # With 1e-8 epsilon clamp, region_weights.grad is now finite (zero)
+        assert torch.isfinite(handler.region_weights.grad).all(), \
+            "region_weights.grad should be finite with 1e-8 clamp"
 
     def test_mixed_batch_some_all_masked(self):
         """Batch with some fully-masked and some valid samples."""

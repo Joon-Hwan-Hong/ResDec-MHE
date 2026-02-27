@@ -398,7 +398,7 @@ class TestCellHeterogeneityPipeline:
             top_percentile=10.0,
             min_cells_per_type=10,
         )
-        result = analyzer.analyze()
+        result = analyzer.analyze(save_all_scores=True)
         summary_df = result.summary
         high_attention_df = result.high_attention_cells
         all_scores_df = result.all_scores
@@ -452,7 +452,7 @@ class TestCellHeterogeneityPipeline:
             top_percentile=10.0,
             min_cells_per_type=5,
         )
-        result = analyzer.analyze()
+        result = analyzer.analyze(save_all_scores=True)
         high_attention_df = result.high_attention_cells
         all_scores_df = result.all_scores
 

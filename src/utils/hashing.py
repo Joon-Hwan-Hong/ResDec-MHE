@@ -52,22 +52,3 @@ def hash_config(config: dict[str, Any]) -> str:
     """
     config_str = json.dumps(config, sort_keys=True, default=str)
     return hashlib.sha256(config_str.encode()).hexdigest()
-
-
-def hash_file(filepath: str) -> str:
-    """
-    Generate SHA256 hash of a file.
-
-    Useful for tracking data file versions.
-
-    Args:
-        filepath: Path to file
-
-    Returns:
-        SHA256 hash of file contents
-    """
-    sha256_hash = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(chunk)
-    return sha256_hash.hexdigest()

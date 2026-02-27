@@ -50,6 +50,15 @@ def plot_predicted_vs_actual(
     """
     setup_seaborn_style()
 
+    # Filter NaN values before plotting and regression
+    valid_mask = np.isfinite(actual) & np.isfinite(predicted_mean)
+    if predicted_std is not None:
+        valid_mask &= np.isfinite(predicted_std)
+    actual = actual[valid_mask]
+    predicted_mean = predicted_mean[valid_mask]
+    if predicted_std is not None:
+        predicted_std = predicted_std[valid_mask]
+
     fig, ax = plt.subplots(figsize=figsize)
 
     # Scatter plot

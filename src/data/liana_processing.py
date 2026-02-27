@@ -449,6 +449,7 @@ def build_subject_ccc_features(
     liana_results: pd.DataFrame,
     cell_types: list[str],
     edge_types: list[str] | None = None,
+    compute_adjacency: bool = True,
 ) -> dict[str, np.ndarray]:
     """
     Build CCC feature matrices for a single subject.
@@ -457,13 +458,16 @@ def build_subject_ccc_features(
         liana_results: LIANA+ results for one subject
         cell_types: Ordered list of cell types
         edge_types: List of edge type names (default: ALL_EDGE_TYPES)
+        compute_adjacency: Whether to compute and return the adjacency matrix.
+            Set to False to skip unused computation in the hot path (default: True)
 
     Returns:
         Dictionary with:
-        - 'adjacency': [n_cell_types, n_cell_types] interaction strength (raw magnitude_rank)
         - 'edge_index': [2, n_edges] edge indices
         - 'edge_type': [n_edges] edge type indices
         - 'edge_attr': [n_edges, 1] edge attributes (1.0 - magnitude_rank, so higher = stronger)
+        - 'adjacency' (optional): [n_cell_types, n_cell_types] interaction strength (raw magnitude_rank)
+            Only included if compute_adjacency=True
 
     Note:
         edge_attr is inverted from LIANA+'s magnitude_rank convention:
@@ -540,19 +544,20 @@ def build_subject_ccc_features(
         edge_type = np.zeros((0,), dtype=np.int64)
         edge_attr = np.zeros((0, 1), dtype=np.float32)
 
-    # Also build dense adjacency matrix
-    adjacency = liana_to_adjacency_matrix(
-        liana_results, cell_types,
-        fill_value=1.0  # No interaction = rank 1.0
-    )
-
-    return {
-        "adjacency": adjacency,
+    result = {
         "edge_index": edge_index,
         "edge_type": edge_type,
         "edge_attr": edge_attr,
         "n_edges": len(edge_src),
     }
+
+    if compute_adjacency:
+        result["adjacency"] = liana_to_adjacency_matrix(
+            liana_results, cell_types,
+            fill_value=1.0  # No interaction = rank 1.0
+        )
+
+    return result
 
 
 def extract_lr_pairs_by_edge(

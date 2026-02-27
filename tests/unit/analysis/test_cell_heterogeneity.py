@@ -101,27 +101,17 @@ class TestCellHeterogeneityAnalyzer:
         assert (tmp_path / "cell_attention_scores.parquet").exists()
         assert isinstance(saved, dict)
 
-    def test_analyze_without_all_scores(self, sample_data):
-        """By default, analyze() should not build all_scores DataFrame."""
+    def test_save_without_all_scores(self, sample_data, tmp_path):
+        """Default behavior: all_scores files should not be created."""
         analyzer = CellHeterogeneityAnalyzer(
             pma_attention=sample_data["pma_attention"],
             cell_type_names=sample_data["cell_type_names"],
         )
-        result = analyzer.analyze(save_all_scores=False)
+        result = analyzer.analyze()  # save_all_scores=False by default
         assert result.all_scores is None
-        assert isinstance(result.summary, pd.DataFrame)
-        assert isinstance(result.high_attention_cells, pd.DataFrame)
-
-    def test_analyze_with_all_scores(self, sample_data):
-        """When save_all_scores=True, analyze() should build all_scores DataFrame."""
-        analyzer = CellHeterogeneityAnalyzer(
-            pma_attention=sample_data["pma_attention"],
-            cell_type_names=sample_data["cell_type_names"],
-        )
-        result = analyzer.analyze(save_all_scores=True)
-        assert result.all_scores is not None
-        assert isinstance(result.all_scores, pd.DataFrame)
-        assert len(result.all_scores) > 0
+        saved = analyzer.save(result, tmp_path, formats=["parquet"])
+        assert (tmp_path / "cell_attention_summary.parquet").exists()
+        assert not (tmp_path / "cell_attention_scores.parquet").exists()
 
     def test_save_with_no_subject_ids(self, sample_data, tmp_path):
         """Save should work when subject_ids not provided."""

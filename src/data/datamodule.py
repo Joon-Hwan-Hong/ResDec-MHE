@@ -11,7 +11,7 @@ import lightning.pytorch as pl
 import torch
 from omegaconf import DictConfig
 
-from src.data.collate import create_dataloader
+from src.data.collate import create_dataloader, _deterministic_worker_init_fn
 from src.data.datasets import CognitiveResilienceDataset, PrecomputedDataset
 from src.data.splits import get_fold_subjects, get_final_train_subjects
 
@@ -174,7 +174,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
-        """Create validation DataLoader."""
+        """Create validation DataLoader with deterministic cell sampling."""
         return create_dataloader(
             self._val_ds,
             batch_size=self.batch_size,
@@ -184,10 +184,11 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             multiregion=True,
             use_hgt_format=True,
             prefetch_factor=self._dl_cfg.get("prefetch_factor", 2),
+            worker_init_fn=_deterministic_worker_init_fn,
         )
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
-        """Create test DataLoader."""
+        """Create test DataLoader with deterministic cell sampling."""
         return create_dataloader(
             self._test_ds,
             batch_size=self.batch_size,
@@ -197,6 +198,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             multiregion=True,
             use_hgt_format=True,
             prefetch_factor=self._dl_cfg.get("prefetch_factor", 2),
+            worker_init_fn=_deterministic_worker_init_fn,
         )
 
     def _make_worker_init_fn(self):

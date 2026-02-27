@@ -116,7 +116,11 @@ class GeneAttentionGate(nn.Module):
         Returns:
             Gate weights of shape (n_cell_types, n_genes), each row sums to 1
         """
-        return F.softmax(self.gate_logits / self._temperature, dim=-1)
+        # Floor temperature at 0.05 for numerical stability: with n_genes~3000,
+        # logits / tau can exceed ~60 when tau < 0.05, causing softmax to
+        # saturate and gradients to vanish for non-max genes ("gate freeze").
+        tau = max(self._temperature, 0.05)
+        return F.softmax(self.gate_logits / tau, dim=-1)
 
     def get_top_genes_per_cell_type(
         self, k: int = 100, gene_names: list[str] | None = None

@@ -213,17 +213,15 @@ class GeneImportanceAnalyzer:
         Returns:
             DataFrame with columns: cell_type, gene, gene_idx, weight
         """
-        rows = []
-        for ct_idx, ct_name in enumerate(self.cell_type_names):
-            for gene_idx, gene_name in enumerate(self.gene_names):
-                rows.append({
-                    "cell_type": ct_name,
-                    "gene": gene_name,
-                    "gene_idx": gene_idx,
-                    "weight": float(self.gene_gate_weights[ct_idx, gene_idx]),
-                })
+        n_ct = len(self.cell_type_names)
+        n_genes = len(self.gene_names)
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame({
+            "cell_type": np.repeat(self.cell_type_names, n_genes),
+            "gene": np.tile(self.gene_names, n_ct),
+            "gene_idx": np.tile(np.arange(n_genes), n_ct),
+            "weight": self.gene_gate_weights.ravel(),
+        })
 
     def _compute_top_genes(self, top_k: int = 100) -> pd.DataFrame:
         """

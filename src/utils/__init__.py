@@ -10,7 +10,6 @@ from src.utils.config import (
 from src.utils.hashing import (
     generate_experiment_hash,
     hash_config,
-    hash_file,
 )
 from src.utils.reproducibility import (
     set_seed,
@@ -55,7 +54,6 @@ __all__ = [
     # Hashing
     "generate_experiment_hash",
     "hash_config",
-    "hash_file",
     # Reproducibility
     "set_seed",
     "get_rng_states",

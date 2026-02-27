@@ -62,6 +62,7 @@ class BetaNLLLoss(nn.Module):
             raise ValueError("std must be strictly positive everywhere")
 
         var = std ** 2
+        var = torch.clamp(var, min=1e-12)  # Floor for log-variance stability
 
         # Log-variance term (unchanged by β)
         log_var_term = 0.5 * torch.log(var)

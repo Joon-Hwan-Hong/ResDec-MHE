@@ -301,6 +301,20 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cognition = torch.stack([s["cognition"] for s in batch], dim=0)
     cells = torch.stack([s["cells"] for s in batch], dim=0)
     cell_mask = torch.stack([s["cell_mask"] for s in batch], dim=0)
+
+    # Dynamic padding: trim cells/cell_mask to actual max cell count in batch.
+    # This avoids wasting memory on padding when no sample in the batch uses
+    # the full max_cells_per_type (e.g., 2000 configured but batch max is 300).
+    if cell_mask.any():
+        # cell_mask shape: [B, n_cell_types, max_cells]
+        # Find the highest valid cell index across all samples and cell types
+        max_valid = cell_mask.any(dim=0).any(dim=0).long()  # [max_cells] bool
+        if max_valid.any():
+            actual_max = max_valid.nonzero()[-1].item() + 1
+            if actual_max < cell_mask.shape[2]:
+                cells = cells[:, :, :actual_max, :]
+                cell_mask = cell_mask[:, :, :actual_max]
+
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -311,16 +325,12 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cell_type_names = batch[0].get("cell_type_order", CELL_TYPE_ORDER)
     edge_type_names = ALL_EDGE_TYPES
 
-    # Validate all samples have the same cell_type_order (structural invariant)
-    # This catches dataset mixing bugs where samples have different orderings
-    for i, s in enumerate(batch[1:], start=1):
-        sample_order = s.get("cell_type_order", CELL_TYPE_ORDER)
-        if sample_order != cell_type_names:
-            raise ValueError(
-                f"Sample {i} has different cell_type_order than sample 0. "
-                f"All samples in a batch must have the same cell type ordering. "
-                f"Sample 0: {cell_type_names[:3]}... Sample {i}: {sample_order[:3]}..."
-            )
+    # Debug assertion: cell_type_order is a structural invariant set at dataset
+    # construction. Skip in production (python -O) to avoid O(batch_size × n_ct) per batch.
+    assert all(
+        s.get("cell_type_order", CELL_TYPE_ORDER) == cell_type_names
+        for s in batch[1:]
+    ), "cell_type_order mismatch within batch — dataset construction bug"
 
     # Sanitize names for PyG compatibility (uses shared sanitize_key from constants)
     sanitized_cell_types = [sanitize_key(ct) for ct in cell_type_names]
@@ -594,6 +604,29 @@ def _worker_init_fn(worker_id: int) -> None:
         dataset.sampler.rng = np.random.default_rng(worker_seed)
 
 
+def _deterministic_worker_init_fn(worker_id: int) -> None:
+    """
+    Deterministic seeding for val/test workers — same samples every epoch.
+
+    Unlike _worker_init_fn, uses a fixed seed that doesn't change between
+    epochs. This ensures validation/test cell sampling is consistent across
+    epochs, preventing stochastic variation in validation metrics.
+
+    Args:
+        worker_id: Worker process index (0 to num_workers-1)
+    """
+    import random
+
+    seed = 42 + worker_id
+    np.random.seed(seed)
+    random.seed(seed)
+
+    worker_info = torch.utils.data.get_worker_info()
+    dataset = worker_info.dataset
+    if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
+        dataset.sampler.rng = np.random.default_rng(seed)
+
+
 def create_dataloader(
     dataset,
     batch_size: int = 16,
@@ -672,7 +705,7 @@ def create_dataloader(
 # Canonical implementations live in src.utils.device.  Re-exported here for
 # backward-compatibility so that existing ``from src.data.collate import
 # move_batch_to_device`` statements continue to work.
-from src.utils.device import _move_to_device, move_batch_to_device  # noqa: F401
+from src.utils.device import move_batch_to_device  # noqa: F401
 
 
 def get_effective_batch_size(batch_size: int, num_gpus: int, strategy: str = "ddp") -> int:

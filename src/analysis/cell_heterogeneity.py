@@ -94,8 +94,8 @@ class CellHeterogeneityAnalyzer:
         Run cell heterogeneity analysis.
 
         Args:
-            save_all_scores: If True, build per-cell DataFrame (expensive for large datasets).
-                            If False, return only summary and high-attention cells. Default: False
+            save_all_scores: If True, build per-cell attention scores DataFrame.
+                Default False to avoid ~12M row DataFrame for large datasets.
 
         Returns:
             CellHeterogeneityResult with summary, high_attention_cells, and optionally all_scores
@@ -155,8 +155,8 @@ class CellHeterogeneityAnalyzer:
                             row["cell_barcode"] = barcodes[cell_idx]
                     high_attention_rows.append(row)
 
-                # All scores for this subject-celltype (only if save_all_scores=True)
-                if save_all_scores:
+                # All scores for this subject-celltype (optional, can be ~12M rows)
+                if all_scores_rows is not None:
                     for cell_idx in np.where(subj_valid)[0]:
                         row = {
                             "subject_id": subj_id,
@@ -249,7 +249,6 @@ class CellHeterogeneityAnalyzer:
             save_dataframe(result.high_attention_cells, path, fmt)
             saved_files[f"high_attention_{fmt}"] = path
 
-            # Only save all_scores if it was computed
             if result.all_scores is not None:
                 path = output_dir / f"cell_attention_scores.{fmt}"
                 save_dataframe(result.all_scores, path, fmt)

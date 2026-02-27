@@ -252,32 +252,6 @@ class TestGradientFlow:
 # 5. INTERPRETABILITY TESTS
 # =============================================================================
 
-class TestInterpretability:
-    """Tests for interpretability methods."""
-
-    def test_get_top_genes_per_cell_type(self, small_encoder):
-        """Should return top genes for each cell type."""
-        results = small_encoder.get_top_genes_per_cell_type(k=5)
-        assert len(results) == 5  # 5 cell types
-        for ct_idx in range(5):
-            assert len(results[ct_idx]) == 5  # k=5
-
-    def test_get_top_genes_with_names(self, small_encoder):
-        """Should use gene names when provided."""
-        gene_names = [f"gene_{i}" for i in range(20)]
-        results = small_encoder.get_top_genes_per_cell_type(k=3, gene_names=gene_names)
-        # Check that results contain gene name strings, not indices
-        for ct_idx in range(5):
-            name, weight = results[ct_idx][0]
-            assert isinstance(name, str)
-            assert name.startswith("gene_")
-
-    def test_get_top_genes_k_exceeds_n_genes(self, small_encoder):
-        """k > n_genes should return all genes."""
-        results = small_encoder.get_top_genes_per_cell_type(k=100)
-        for ct_idx in range(5):
-            assert len(results[ct_idx]) == 20  # capped at n_genes
-
     def test_extra_repr(self, small_encoder):
         """extra_repr should contain key info."""
         repr_str = small_encoder.extra_repr()
