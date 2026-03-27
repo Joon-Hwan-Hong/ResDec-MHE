@@ -159,6 +159,11 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         # GPU reference to last training batch for epoch-end NLL computation (P7)
         self._last_train_batch_ref: dict | None = None
 
+        # Batch reference for GE noise re-evaluation (set in training_step,
+        # cleared by GradientModulationCallback.on_train_batch_end).
+        self._current_batch: dict | None = None
+        self._is_ge_reevaluation: bool = False
+
     def _compute_loss(self, output: dict, cognition: torch.Tensor) -> torch.Tensor:
         """Compute loss with branching based on head type."""
         if self._use_mse_loss:
@@ -491,14 +496,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             metrics = self.metrics.compute(all_means, all_stds, all_targets)
             for name, value in metrics.items():
                 if not (isinstance(value, float) and math.isnan(value)):
-                    self.log(f"{prefix}_{name}", value, rank_zero_only=True)
+                    self.log(f"{prefix}_{name}", value, rank_zero_only=True, sync_dist=True)
 
             # Bootstrap CI on R² (validation only, ~50ms for 1000 resamples on N=93)
             if prefix == "val":
                 ci = self.metrics.bootstrap_ci(all_means, target=all_targets, metrics=["r2"])
                 if "r2" in ci:
-                    self.log("val_r2_ci_lower", ci["r2"][0], rank_zero_only=True)
-                    self.log("val_r2_ci_upper", ci["r2"][1], rank_zero_only=True)
+                    self.log("val_r2_ci_lower", ci["r2"][0], rank_zero_only=True, sync_dist=True)
+                    self.log("val_r2_ci_upper", ci["r2"][1], rank_zero_only=True, sync_dist=True)
 
     def on_validation_epoch_end(self) -> None:
         """Compute epoch-level metrics from accumulated predictions."""

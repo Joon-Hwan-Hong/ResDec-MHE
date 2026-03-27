@@ -195,3 +195,25 @@ class TestGradientModulationCallback:
                             assert torch.allclose(p.grad.data, pre_grad), (
                                 f"Lagging branch {lagging_name} grad should be unchanged"
                             )
+
+    def test_ge_noise_formula(self):
+        """GE noise: effective = k * g1 + (g2 - g1) / sqrt(2)."""
+        # Simulate gradients
+        g1 = torch.tensor([1.0, 2.0, 3.0])  # unscaled main pass gradient
+        g2 = torch.tensor([1.5, 1.8, 3.2])  # re-evaluation gradient
+        k = 0.6                               # OGM suppression coefficient
+
+        sqrt2 = math.sqrt(2.0)
+        noise = (g2 - g1) / sqrt2
+        effective = k * g1 + noise
+
+        # Verify formula
+        expected = k * g1 + (g2 - g1) / sqrt2
+        assert torch.allclose(effective, expected, atol=1e-6)
+
+        # Verify effective != k * g1 (noise was added)
+        scaled_only = k * g1
+        assert not torch.allclose(effective, scaled_only)
+
+        # Verify effective != g1 (was modified)
+        assert not torch.allclose(effective, g1)

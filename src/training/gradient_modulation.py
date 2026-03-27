@@ -1,15 +1,27 @@
 """
-OGM-GE gradient modulation (Peng et al., CVPR 2022) adapted for multi-branch regression.
+Adapted OGM-GE gradient modulation for multi-branch regression.
 
-Original paper uses per-modality softmax prediction scores (classification) as the
-discrepancy ratio. Our adaptation uses gradient norms since we have regression with
-a Bayesian head.
+Adapts Peng et al., "Balanced Multimodal Learning via On-the-fly Gradient
+Modulation," CVPR 2022 (Oral). Original uses per-modality softmax prediction
+scores for the discrepancy ratio (classification-specific). Our adaptation
+uses gradient norms as the discrepancy ratio since the model is regression
+with a Bayesian head — no class labels, no per-branch softmax predictions.
 
-Core principle: Monitor per-branch gradient norm discrepancy. Suppress dominant
-branches (k < 1). Leave lagging branches unchanged (k = 1).
+Core principle: monitor per-branch contribution discrepancy, suppress
+dominant branches, leave lagging branches unchanged.
 
-GE (Generalization Enhancement) injects noise computed from a second forward pass
-with different dropout masks to improve generalization.
+OGM component (paper Equation 10):
+    k_i = 1 - tanh(alpha * rho_i) if rho_i > 1 (dominant -> suppressed)
+    k_i = 1                  otherwise    (lagging -> unchanged)
+    where rho_i = g_i / mean(g) is the gradient-norm discrepancy ratio.
+
+GE component (paper Equations 12-17):
+    Adds noise h ~ N(0, Sigma^sgd) to recover the SGD noise that OGM's gradient
+    scaling reduces. Approximated by re-evaluating the loss on the same batch
+    with a different dropout mask and computing noise = (g_2 - g_1) / sqrt(2).
+
+Reference: https://github.com/GeWu-Lab/OGM-GE_CVPR2022
+Fallback: GradNorm (Chen et al., ICML 2018) — see design doc S1 Out of Scope.
 """
 
 import logging
@@ -95,7 +107,11 @@ class GradientModulationCallback(pl.Callback):
         self._branch_params: dict[str, list[torch.nn.Parameter]] | None = None
 
     def _build_param_cache(self, model: torch.nn.Module) -> None:
-        """Build parameter-to-branch mapping once, reused every call."""
+        """Build parameter-to-branch mapping once, reused every call.
+
+        Note: This logic mirrors GradientNormLogger._build_param_cache in callbacks.py.
+        Intentionally duplicated to avoid coupling these two independent callbacks.
+        """
         self._branch_params = {name: [] for name in BRANCH_NAMES}
         for param_name, param in model.named_parameters():
             for branch_name in BRANCH_NAMES:
@@ -104,7 +120,10 @@ class GradientModulationCallback(pl.Callback):
                     break
 
     def _compute_branch_norms(self, model: torch.nn.Module) -> dict[str, float]:
-        """Compute L2 gradient norm for each encoder branch."""
+        """Compute L2 gradient norm for each encoder branch.
+
+        Note: This logic mirrors GradientNormLogger.compute_branch_norms in callbacks.py.
+        """
         if self._branch_params is None:
             self._build_param_cache(model)
 
@@ -216,7 +235,15 @@ class GradientModulationCallback(pl.Callback):
             if p.grad is not None:
                 saved_grads[id(p)] = p.grad.data.clone()
 
+        # Also save guide gradients (they must be restored after GE re-evaluation)
+        if pl_module.guide is not None:
+            for p in pl_module.guide.parameters():
+                if p.grad is not None:
+                    saved_grads[id(p)] = p.grad.data.clone()
+
         # Step 3: Zero all gradients
+        # set_to_none=False so p.grad exists for the noise computation below
+        # (the noise formula needs g2 = p.grad.data from the re-evaluation pass)
         model.zero_grad(set_to_none=False)
         if pl_module.guide is not None:
             pl_module.guide.zero_grad(set_to_none=False)

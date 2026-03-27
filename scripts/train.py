@@ -41,6 +41,7 @@ from src.training.callbacks import (
 from src.training.lightning_module import CognitiveResilienceLightningModule
 from src.utils.config import load_config
 from src.utils.experiment import ExperimentManager
+from src.utils.hashing import hash_config
 from src.utils.reproducibility import set_seed
 
 logger = logging.getLogger(__name__)
@@ -159,7 +160,9 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
             )
         )
 
-    # GradientNormLogger
+    # GradientNormLogger must be appended BEFORE GradientModulationCallback.
+    # Both use on_before_optimizer_step; Lightning calls callbacks in list order.
+    # GradientNormLogger needs to see raw (unmodified) gradient norms.
     log_cfg = train_cfg.get("logging", {})
     callbacks.append(
         GradientNormLogger(
@@ -170,6 +173,12 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
     # OGM-GE gradient modulation (Peng et al., CVPR 2022)
     gm_cfg = train_cfg.get("gradient_modulation", {})
     if gm_cfg.get("enabled", False):
+        method = gm_cfg.get("method", "ogm_ge")
+        if method != "ogm_ge":
+            raise ValueError(
+                f"Unknown gradient_modulation.method='{method}'. "
+                f"Only 'ogm_ge' is currently supported."
+            )
         from src.training.gradient_modulation import GradientModulationCallback
         callbacks.append(
             GradientModulationCallback(
@@ -373,31 +382,64 @@ def main() -> None:
     pyro.settings.set(module_local_params=True)
 
     # Create experiment directory structure via ExperimentManager.
-    # Under DDP (torchrun), each rank runs this script independently.
-    # generate_experiment_hash includes a timestamp, so ranks would create
-    # different directories.  Rank 0 creates the experiment; other ranks
-    # receive the path via a shared temp file.
+    # Under DDP, generate_experiment_hash includes a timestamp, so ranks
+    # would create different directories.  Rank 0 creates the experiment;
+    # other ranks receive the path via a shared temp file.
+    #
+    # We check config.training.devices (not os.environ WORLD_SIZE) to
+    # determine DDP intent, because Lightning's DDPStrategy doesn't set
+    # WORLD_SIZE until trainer.fit() spawns worker processes.  The launcher
+    # process (which becomes rank 0) runs this code BEFORE trainer.fit(),
+    # so WORLD_SIZE is still 1.  Using config.training.devices ensures rank 0
+    # writes .ddp_exp_path before rank 1 is spawned and polls for it.
     import os
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
     base_dir = config.paths.get("output_dir", "outputs/")
     config_dict = OmegaConf.to_container(config, resolve=True)
 
-    if world_size > 1:
+    # Determine intended device count from config (not env var)
+    devices_cfg = config.training.get("devices", 1)
+    if devices_cfg == "auto":
+        import torch as _torch
+        n_devices = _torch.cuda.device_count()
+    elif isinstance(devices_cfg, (list, tuple)):
+        n_devices = len(devices_cfg)
+    else:
+        n_devices = int(devices_cfg)
+
+    if n_devices > 1:
         exp_path_file = Path(base_dir) / ".ddp_exp_path"
         if local_rank == 0:
+            # Delete stale file from previous runs BEFORE creating experiment.
+            # Without this, rank 1 reads the stale path immediately (race condition).
+            if exp_path_file.exists():
+                exp_path_file.unlink()
             exp_manager = ExperimentManager(base_dir=base_dir)
             experiment = exp_manager.create_experiment(config_dict)
             exp_path_file.write_text(str(experiment.exp_dir))
             logger.info("Experiment created: %s", experiment.exp_hash)
         else:
-            # Wait for rank 0 to write the experiment path
+            # Wait for rank 0 to create the experiment and write the path file.
+            # The file was deleted by rank 0 at startup, so existence means
+            # rank 0 has written the NEW path (not a stale one).
             import time as _time
             for _ in range(300):  # up to 30s
                 if exp_path_file.exists():
                     break
                 _time.sleep(0.1)
+            else:
+                raise TimeoutError(
+                    f"Rank {local_rank}: timed out waiting for rank 0 to create experiment. "
+                    f"Check rank 0 logs for errors."
+                )
             exp_dir = Path(exp_path_file.read_text().strip())
+            # Validate: experiment directory name contains full config hash.
+            config_hash = hash_config(config_dict)
+            if config_hash not in exp_dir.name:
+                raise ValueError(
+                    f"Rank {local_rank}: experiment path '{exp_dir.name}' does not contain "
+                    f"expected config hash '{config_hash}'. Possible stale .ddp_exp_path file."
+                )
             from src.utils.experiment import Experiment
             experiment = Experiment(
                 exp_dir=exp_dir,
