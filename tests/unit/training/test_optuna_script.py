@@ -51,6 +51,7 @@ def optuna_config():
                 "type": "adamw",
                 "lr": 1e-4,
                 "weight_decay": 1e-4,
+                "guide_lr": 0.005,
             },
             "scheduler": {
                 "type": "cosine",
@@ -78,6 +79,7 @@ def optuna_config():
                 "anneal_epochs": 50,
                 "schedule": "exponential",
             },
+            "gradient_modulation": {"enabled": True, "alpha": 1.0},
             "regularization": {"gene_gate_l1": 0.0},
             "logging": {
                 "log_every_n_steps": 10,
@@ -124,10 +126,13 @@ def optuna_config():
                 "n_hgt_layers": {"type": "int", "low": 2, "high": 4},
                 "beta": {"type": "uniform", "low": 0.0, "high": 1.0},
                 "weight_decay": {"type": "loguniform", "low": 1e-6, "high": 1e-2},
-                "batch_size": {"type": "categorical", "choices": [16, 32, 64]},
+                "batch_size": {"type": "categorical", "choices": [16]},
                 "n_heads": {"type": "categorical", "choices": [2, 4, 8]},
                 "n_inducing": {"type": "categorical", "choices": [16, 32, 64]},
                 "gene_gate_temp": {"type": "uniform", "low": 0.1, "high": 2.0},
+                "guide_lr": {"type": "loguniform", "low": 0.001, "high": 0.05},
+                "selection_temperature": {"type": "uniform", "low": 0.5, "high": 3.0},
+                "ogm_alpha": {"type": "uniform", "low": 0.5, "high": 2.0},
             },
         },
         "paths": {
@@ -412,3 +417,133 @@ class TestBuildTrialConfigSimpleMappings:
         params = {"gene_gate_temp": 1.5}
         trial_config = build_trial_config(optuna_config, params)
         assert trial_config.model.gene_gate.initial_temperature == 1.5
+
+
+class TestBuildTrialConfigNewParams:
+    """Tests for new HPO search space parameters."""
+
+    def test_build_trial_config_guide_lr(self, optuna_config):
+        """guide_lr maps to training.optimizer.guide_lr."""
+        from scripts.optuna_optimize import build_trial_config
+        params = {"guide_lr": 0.02}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.training.optimizer.guide_lr == 0.02
+
+    def test_build_trial_config_selection_temperature(self, optuna_config):
+        """selection_temperature maps to model.cell_type_selector.selection_temperature."""
+        from scripts.optuna_optimize import build_trial_config
+        params = {"selection_temperature": 2.0}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.model.cell_type_selector.selection_temperature == 2.0
+
+    def test_build_trial_config_ogm_alpha(self, optuna_config):
+        """ogm_alpha maps to training.gradient_modulation.alpha."""
+        from scripts.optuna_optimize import build_trial_config
+        params = {"ogm_alpha": 1.5}
+        trial_config = build_trial_config(optuna_config, params)
+        assert trial_config.training.gradient_modulation.alpha == 1.5
+
+
+class TestShortenAnnealingForHPO:
+    """Tests for proportional annealing schedule shortening."""
+
+    def test_shorten_annealing_scales_warmup(self, optuna_config):
+        """Warmup epochs scale proportionally to max_epochs reduction."""
+        from scripts.optuna_optimize import shorten_annealing_for_hpo
+        optuna_config.training.max_epochs = 30
+        config = shorten_annealing_for_hpo(optuna_config, full_max_epochs=100)
+        assert config.training.temperature_annealing.warmup_epochs == 2
+
+    def test_shorten_annealing_scales_anneal_epochs(self, optuna_config):
+        """Anneal epochs scale proportionally."""
+        from scripts.optuna_optimize import shorten_annealing_for_hpo
+        optuna_config.training.max_epochs = 30
+        config = shorten_annealing_for_hpo(optuna_config, full_max_epochs=100)
+        assert config.training.temperature_annealing.anneal_epochs == 15
+
+    def test_shorten_annealing_scales_kl_warmup(self, optuna_config):
+        """KL annealing warmup also scales proportionally."""
+        from scripts.optuna_optimize import shorten_annealing_for_hpo
+        optuna_config.training.kl_annealing = {
+            "enabled": True, "alpha_min": 0.01,
+            "warmup_epochs": 5, "schedule": "linear",
+        }
+        optuna_config.training.max_epochs = 30
+        config = shorten_annealing_for_hpo(optuna_config, full_max_epochs=100)
+        assert config.training.kl_annealing.warmup_epochs == 2
+
+    def test_shorten_annealing_updates_min_epochs(self, optuna_config):
+        """min_epochs is set to warmup + anneal (shortened)."""
+        from scripts.optuna_optimize import shorten_annealing_for_hpo
+        optuna_config.training.max_epochs = 30
+        config = shorten_annealing_for_hpo(optuna_config, full_max_epochs=100)
+        assert config.training.early_stopping.min_epochs == 17
+
+    def test_shorten_annealing_no_change_when_same_epochs(self, optuna_config):
+        """No scaling when max_epochs == full_max_epochs."""
+        from scripts.optuna_optimize import shorten_annealing_for_hpo
+        config = shorten_annealing_for_hpo(optuna_config, full_max_epochs=100)
+        assert config.training.temperature_annealing.warmup_epochs == 5
+        assert config.training.temperature_annealing.anneal_epochs == 50
+
+    def test_shorten_annealing_minimum_one_epoch(self, optuna_config):
+        """Shortened values are at least 1 epoch."""
+        from scripts.optuna_optimize import shorten_annealing_for_hpo
+        optuna_config.training.max_epochs = 5
+        config = shorten_annealing_for_hpo(optuna_config, full_max_epochs=100)
+        assert config.training.temperature_annealing.warmup_epochs >= 1
+        assert config.training.temperature_annealing.anneal_epochs >= 1
+
+
+class TestPerTrialMetricLogging:
+    """Tests for rich per-trial metric storage."""
+
+    def test_store_fold_metrics_sets_user_attrs(self):
+        """store_fold_metrics stores expected metrics as trial user attrs."""
+        from scripts.optuna_optimize import store_fold_metrics
+        import torch
+
+        trial = MagicMock()
+        metrics = {
+            "val_nll": torch.tensor(0.45),
+            "val_r2": torch.tensor(0.30),
+            "val_mae": torch.tensor(0.77),
+            "val_rmse": torch.tensor(0.99),
+            "val_crps": torch.tensor(0.55),
+            "val_calibration_error": torch.tensor(0.02),
+            "val_mean_std": torch.tensor(1.05),
+            "val_pearson_r": torch.tensor(0.55),
+        }
+        store_fold_metrics(trial, fold_idx=0, metrics=metrics)
+
+        attr_calls = {call[0][0]: call[0][1] for call in trial.set_user_attr.call_args_list}
+        assert "fold_0_val_r2" in attr_calls
+        assert abs(attr_calls["fold_0_val_r2"] - 0.30) < 1e-4
+        assert "fold_0_val_mae" in attr_calls
+        assert "fold_0_val_crps" in attr_calls
+        assert "fold_0_val_calibration_error" in attr_calls
+        assert "fold_0_val_mean_std" in attr_calls
+
+    def test_store_fold_metrics_handles_missing(self):
+        """store_fold_metrics gracefully handles missing metrics."""
+        from scripts.optuna_optimize import store_fold_metrics
+
+        trial = MagicMock()
+        metrics = {"val_nll": 0.45}
+        store_fold_metrics(trial, fold_idx=0, metrics=metrics)
+
+        attr_calls = {call[0][0] for call in trial.set_user_attr.call_args_list}
+        assert "fold_0_val_nll" in attr_calls
+        assert "fold_0_val_r2" not in attr_calls
+
+    def test_store_fold_metrics_converts_tensors(self):
+        """store_fold_metrics converts torch tensors to Python floats."""
+        from scripts.optuna_optimize import store_fold_metrics
+        import torch
+
+        trial = MagicMock()
+        metrics = {"val_r2": torch.tensor(0.31)}
+        store_fold_metrics(trial, fold_idx=2, metrics=metrics)
+
+        call_value = trial.set_user_attr.call_args_list[0][0][1]
+        assert isinstance(call_value, float)

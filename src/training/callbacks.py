@@ -11,7 +11,7 @@ TemperatureAnnealing: Anneals gene attention gate temperature during training.
   - Post-anneal: clamps at tau_min
 
 GradientNormLogger: Monitors per-branch gradient norms to detect training
-  imbalances across the three encoder branches (pseudobulk, HGT, cell transformer).
+  imbalances across the two encoder branches (HGT, cell transformer).
 """
 
 import logging
@@ -30,7 +30,14 @@ from src.utils.reproducibility import get_rng_states, set_rng_states
 
 logger = logging.getLogger(__name__)
 
-BRANCH_NAMES = ("pseudobulk_encoder", "hgt_encoder", "cell_transformer")
+BRANCH_NAMES = ("hgt_encoder", "cell_transformer")
+
+# Maps branch name → model attribute that indicates whether the branch is enabled.
+# Used by GradientNormLogger to skip disabled branches during ablation.
+_BRANCH_FLAG = {
+    "hgt_encoder": "use_hgt_encoder",
+    "cell_transformer": "use_cell_transformer",
+}
 
 
 class MinEpochEarlyStopping(EarlyStopping):
@@ -162,23 +169,31 @@ class TemperatureAnnealing(pl.Callback):
     def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Set gene gate temperature at the start of each epoch.
 
-        On checkpoint resume, the temperature buffer may contain a stale
-        value. This callback is authoritative — it recomputes from
+        Sets temperature on both gene gates (HGT branch and CellTransformer
+        branch). On checkpoint resume, the temperature buffer may contain a
+        stale value. This callback is authoritative — it recomputes from
         trainer.current_epoch, which Lightning restores correctly.
         """
         epoch = trainer.current_epoch
         tau = self.get_temperature(epoch)
-        gate = getattr(
-            getattr(getattr(pl_module, "model", None), "pseudobulk_encoder", None),
-            "gene_gate", None,
-        )
-        if gate is None:
+
+        model = getattr(pl_module, "model", None)
+        # HGT gene gate (on full_model directly)
+        hgt_gate = getattr(model, "hgt_gene_gate", None)
+        if hgt_gate is not None:
+            hgt_gate.temperature = tau
+        # CT gene gate (inside cell_transformer)
+        ct_gate = getattr(getattr(model, "cell_transformer", None), "gene_gate", None)
+        if ct_gate is not None:
+            ct_gate.temperature = tau
+        if hgt_gate is None and ct_gate is None:
             raise AttributeError(
-                "TemperatureAnnealing requires model.pseudobulk_encoder.gene_gate "
-                "but the attribute path does not exist on the current model."
+                "TemperatureAnnealing requires at least one gene gate on model "
+                "(model.hgt_gene_gate or model.cell_transformer.gene_gate) "
+                "but neither exists."
             )
-        gate.temperature = tau
-        pl_module.log("gene_gate_temperature", tau, rank_zero_only=True)
+
+        pl_module.log("gene_gate_temperature", tau, rank_zero_only=True, sync_dist=True)
 
     def __repr__(self) -> str:
         return (
@@ -192,7 +207,7 @@ class GradientNormLogger(pl.Callback):
     """
     Log per-branch gradient L2 norms to detect training imbalances.
 
-    Monitors pseudobulk_encoder, hgt_encoder, and cell_transformer branches.
+    Monitors hgt_encoder and cell_transformer branches.
     Logs individual norms and the max/min ratio.
 
     Severity levels based on max/min ratio:
@@ -219,12 +234,21 @@ class GradientNormLogger(pl.Callback):
         # Cached parameter-to-branch mapping (built on first call)
         self._branch_params: dict[str, list[torch.nn.Parameter]] | None = None
 
+    # Maps branch name → list of param name prefixes that belong to that branch.
+    # hgt_gene_gate and hgt_input_proj live at the model level but are logically
+    # part of the HGT encoder branch.
+    _BRANCH_PREFIXES: dict[str, tuple[str, ...]] = {
+        "hgt_encoder": ("hgt_encoder", "hgt_gene_gate", "hgt_input_proj"),
+        "cell_transformer": ("cell_transformer",),
+    }
+
     def _build_param_cache(self, model: torch.nn.Module) -> None:
         """Build parameter-to-branch mapping once, reused every call."""
         self._branch_params = {name: [] for name in BRANCH_NAMES}
         for param_name, param in model.named_parameters():
             for branch_name in BRANCH_NAMES:
-                if branch_name in param_name:
+                prefixes = self._BRANCH_PREFIXES.get(branch_name, (branch_name,))
+                if any(prefix in param_name for prefix in prefixes):
                     self._branch_params[branch_name].append(param)
                     break
 
@@ -316,7 +340,13 @@ class GradientNormLogger(pl.Callback):
                 rank_zero_only=True,
             )
 
-        ratio = self.compute_norm_ratio(norms)
+        # Exclude disabled branches from ratio computation (ablation runs
+        # intentionally zero out disabled branches, which is not an imbalance).
+        active_norms = {
+            name: norm for name, norm in norms.items()
+            if getattr(pl_module.model, _BRANCH_FLAG.get(name, ""), True)
+        }
+        ratio = self.compute_norm_ratio(active_norms)
         pl_module.log(
             "gradients/branch_norm_ratio",
             ratio,
@@ -403,7 +433,7 @@ class KLAnnealingCallback(pl.Callback):
             return
         kl_weight = self.get_kl_weight(trainer.current_epoch)
         elbo.kl_weight = kl_weight
-        pl_module.log("kl_weight", kl_weight, rank_zero_only=True)
+        pl_module.log("kl_weight", kl_weight, rank_zero_only=True, sync_dist=True)
 
     def __repr__(self) -> str:
         return (

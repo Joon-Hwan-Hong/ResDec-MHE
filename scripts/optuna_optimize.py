@@ -14,7 +14,7 @@ Workflow:
    a. Sample hyperparameters from search space
    b. Build trial config (override base config with sampled params)
    c. Train on each CV fold with pruning callback
-   d. Return mean val_loss across all folds
+   d. Return mean val_nll (predictive quality) across all folds
 3. Save study to SQLite database
 """
 
@@ -31,7 +31,32 @@ from omegaconf import DictConfig, OmegaConf
 logger = logging.getLogger(__name__)
 
 
-def create_study(config: DictConfig, storage: str | None = None) -> optuna.Study:
+def _make_storage(path: str | None):
+    """Build Optuna JournalStorage from a file path.
+
+    JournalFileBackend uses atomic file operations for safe multi-process
+    coordination on a single node. Never use SQLite for parallel optimization
+    (Optuna docs: "never use SQLite3 for parallel optimization").
+    """
+    if path is None:
+        return None
+    from optuna.storages import JournalStorage
+    from optuna.storages.journal import JournalFileBackend
+    return JournalStorage(JournalFileBackend(path))
+
+
+def _collect_all_subject_ids(splits: dict) -> list[str]:
+    """Return deduplicated list of all subject IDs across all splits."""
+    ids: set[str] = set()
+    ids.update(splits.get("holdout_test", []))
+    ids.update(splits.get("train_val_pool", []))
+    for fold in splits.get("folds", []):
+        ids.update(fold.get("train", []))
+        ids.update(fold.get("val", []))
+    return sorted(ids)
+
+
+def create_study(config: DictConfig, storage=None) -> optuna.Study:
     """
     Create Optuna study with configured sampler and pruner.
 
@@ -41,7 +66,7 @@ def create_study(config: DictConfig, storage: str | None = None) -> optuna.Study
 
     Args:
         config: Full experiment config with optuna section
-        storage: Optional Optuna storage URL (e.g., sqlite:///outputs/optuna.db)
+        storage: Optional Optuna storage (JournalStorage object or None for in-memory)
 
     Returns:
         Configured Optuna Study (direction=minimize)
@@ -139,6 +164,7 @@ def build_trial_config(
     Maps sampled parameters to their config locations:
     - lr -> training.optimizer.lr
     - weight_decay -> training.optimizer.weight_decay
+    - guide_lr -> training.optimizer.guide_lr
     - d_embed -> model.d_embed + model.d_fused
     - dropout -> model.dropout
     - n_hgt_layers -> model.hgt.n_layers
@@ -147,6 +173,8 @@ def build_trial_config(
     - n_heads -> model.hgt.n_heads + model.pathology_attention.n_heads + model.set_transformer.n_heads
     - n_inducing -> model.set_transformer.n_inducing_points
     - gene_gate_temp -> model.gene_gate.initial_temperature
+    - selection_temperature -> model.cell_type_selector.selection_temperature
+    - ogm_alpha -> training.gradient_modulation.alpha
 
     Args:
         base_config: Base experiment config (not modified)
@@ -166,6 +194,9 @@ def build_trial_config(
         "batch_size": "data.dataloader.batch_size",
         "n_inducing": "model.set_transformer.n_inducing_points",
         "gene_gate_temp": "model.gene_gate.initial_temperature",
+        "guide_lr": "training.optimizer.guide_lr",
+        "selection_temperature": "model.cell_type_selector.selection_temperature",
+        "ogm_alpha": "training.gradient_modulation.alpha",
     }
 
     for name, value in params.items():
@@ -198,6 +229,82 @@ def build_trial_config(
     return config
 
 
+def shorten_annealing_for_hpo(
+    config: DictConfig,
+    full_max_epochs: int = 100,
+) -> DictConfig:
+    """
+    Proportionally shorten annealing schedules for HPO trials.
+
+    When HPO uses fewer max_epochs than full training, temperature annealing
+    and KL annealing schedules must be shortened proportionally so the model
+    still completes its full annealing cycle within the trial budget.
+
+    Also updates early_stopping.min_epochs to match the shortened schedule
+    (warmup + anneal), so early stopping can fire after annealing completes.
+
+    Args:
+        config: Trial config (modified in-place and returned)
+        full_max_epochs: The max_epochs used in full training (for computing ratio)
+
+    Returns:
+        The same config with shortened annealing schedules
+    """
+    ratio = config.training.max_epochs / full_max_epochs
+    if ratio >= 1.0:
+        return config
+
+    # Temperature annealing
+    ta = config.training.temperature_annealing
+    ta.warmup_epochs = max(1, round(ta.warmup_epochs * ratio))
+    ta.anneal_epochs = max(1, round(ta.anneal_epochs * ratio))
+
+    # KL annealing
+    kl = config.training.get("kl_annealing", {})
+    if kl and kl.get("enabled", False):
+        kl.warmup_epochs = max(1, round(kl.warmup_epochs * ratio))
+
+    # Update min_epochs to match shortened schedule
+    new_min = ta.warmup_epochs + ta.anneal_epochs
+    config.training.early_stopping.min_epochs = new_min
+
+    return config
+
+
+_FOLD_METRICS = (
+    "val_nll", "val_r2", "val_mae", "val_rmse", "val_crps",
+    "val_calibration_error", "val_mean_std", "val_pearson_r",
+    "val_spearman_rho",
+)
+
+
+def store_fold_metrics(
+    trial,
+    fold_idx: int,
+    metrics: dict,
+) -> None:
+    """
+    Store per-fold validation metrics as Optuna trial user attributes.
+
+    Stored as `fold_{i}_{metric_name}` in the trial's SQLite record,
+    queryable via study.trials_dataframe() for post-hoc multi-metric
+    analysis (e.g., "which hyperparameters produce the best R²?").
+
+    Args:
+        trial: Optuna trial object
+        fold_idx: Cross-validation fold index
+        metrics: Dict from trainer.callback_metrics
+    """
+    import torch
+
+    for name in _FOLD_METRICS:
+        value = metrics.get(name)
+        if value is not None:
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            trial.set_user_attr(f"fold_{fold_idx}_{name}", float(value))
+
+
 def objective(
     trial: optuna.Trial,
     base_config: DictConfig,
@@ -206,15 +313,16 @@ def objective(
     metadata=None,
     splits: dict | None = None,
     precomputed_dir: str | Path | None = None,
+    preloaded_cache: dict[str, dict] | None = None,
 ) -> float:
     """
-    Optuna objective function: train model and return mean val_loss across folds.
+    Optuna objective function: train model and return mean val_nll across folds.
 
     This function:
     1. Samples hyperparameters
     2. Builds trial config
     3. Trains on each CV fold (with pruning callback)
-    4. Returns mean validation loss across folds
+    4. Returns mean val_nll (predictive quality) across folds
 
     Args:
         trial: Optuna trial object
@@ -226,21 +334,30 @@ def objective(
         precomputed_dir: If provided, DataModule loads pre-built features from
             this directory instead of reconstructing them from raw AnnData each
             trial, avoiding ~300k redundant computations across trials/folds.
+        preloaded_cache: Pre-loaded subject tensors from
+            ``PrecomputedDataset.load_subject_cache``. Eliminates per-trial
+            disk I/O (~14 s / trial) during HPO.
 
     Returns:
-        Mean validation loss across CV folds (lower is better)
+        Mean val_nll across CV folds (lower is better)
     """
     import lightning.pytorch as pl
     from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 
     from scripts.train import setup_callbacks
     from src.utils.reproducibility import set_seed
-    from src.training.callbacks import MinEpochEarlyStopping, ResilienceModelCheckpoint
+    from src.training.callbacks import (
+        GradientNormLogger, MinEpochEarlyStopping, ResilienceModelCheckpoint,
+    )
     from src.training.lightning_module import CognitiveResilienceLightningModule
 
     # Sample and build config
     params = sample_hyperparameters(trial, base_config)
     config = build_trial_config(base_config, params)
+
+    # Shorten annealing schedules proportionally for HPO trials
+    full_max_epochs = base_config.training.get("max_epochs", 100)
+    config = shorten_annealing_for_hpo(config, full_max_epochs=full_max_epochs)
 
     seed = config.experiment.get("seed", 42)
     repro_cfg = config.get("reproducibility", {})
@@ -262,9 +379,11 @@ def objective(
         devices = "auto"
 
     # Callback types to exclude for Optuna trials:
-    # - ModelCheckpoint: trials don't save checkpoints
-    # - ResilienceModelCheckpoint: same reason
+    # - ModelCheckpoint / ResilienceModelCheckpoint: trials don't save checkpoints
     # - LearningRateMonitor: no logger in trial trainers
+    # - GradientNormLogger: unnecessary overhead per trial (no TensorBoard)
+    # - GradientModulationCallback: OGM-GE adds per-step overhead; trials run
+    #   single-GPU so gradient modulation behaviour may differ from DDP training
     #
     # Note: We do NOT use PyTorchLightningPruningCallback because:
     # 1. Each fold creates a new Trainer, causing epoch counter resets
@@ -274,7 +393,13 @@ def objective(
     # Instead, we report only at fold boundaries (see trial.report below).
     # Pruning semantics: n_warmup_steps=1 means complete 1 fold before pruning.
     # Within-fold warmup protection is handled by MinEpochEarlyStopping.
-    _EXCLUDED_TRIAL_CALLBACKS = (ModelCheckpoint, ResilienceModelCheckpoint, LearningRateMonitor)
+    _excluded = [ModelCheckpoint, ResilienceModelCheckpoint, LearningRateMonitor, GradientNormLogger]
+    try:
+        from src.training.gradient_modulation import GradientModulationCallback
+        _excluded.append(GradientModulationCallback)
+    except ImportError:
+        pass
+    _EXCLUDED_TRIAL_CALLBACKS = tuple(_excluded)
 
     # Per-fold results are in-memory — no fold-level checkpointing.
     # If the process crashes at fold K, folds 0..K-1 results are lost.
@@ -298,19 +423,23 @@ def objective(
             if not isinstance(cb, _EXCLUDED_TRIAL_CALLBACKS)
         ]
 
-        # Trainer for this fold (no checkpointing for trials)
+        # Trainer for this fold (no checkpointing for trials).
+        # strategy="auto" overrides config's "ddp" — trials run single-GPU.
         trainer = pl.Trainer(
             max_epochs=config.training.max_epochs,
             min_epochs=config.training.early_stopping.get("min_epochs", 1),
             accelerator=accelerator,
             devices=devices,
+            strategy="auto",
             precision=config.training.get("precision", "32-true"),
             gradient_clip_val=config.training.get("gradient_clip_val", None),
+            gradient_clip_algorithm="norm",
             callbacks=callbacks,
             enable_progress_bar=False,
             enable_model_summary=False,
             enable_checkpointing=False,
             logger=False,
+            val_check_interval=config.training.get("logging", {}).get("val_check_interval", 1.0),
             deterministic=False,   # Speed over reproducibility for HP search
             benchmark=True,        # Enable cuDNN autotuner for HP search
         )
@@ -335,14 +464,21 @@ def objective(
             config=config, metadata=metadata, splits=splits,
             fold_idx=fold_idx, adata=adata,
             precomputed_dir=precomputed_dir,
+            preloaded_cache=preloaded_cache,
         )
         trainer.fit(module, datamodule=dm)
 
-        # val_loss = ELBO for Bayesian head, MSE for deterministic head
-        # (see lightning_module.py docstring for rationale)
-        val_loss = trainer.callback_metrics.get("val_loss")
-        if val_loss is not None:
-            fold_val_losses.append(val_loss.item())
+        # Use val_nll (predictive quality) not val_loss (ELBO) as objective.
+        # ELBO = NLL + KL, and KL annealing makes ELBO non-stationary across
+        # epochs — trials with different convergence rates aren't comparable.
+        # val_nll measures pure predictive quality, consistent with early
+        # stopping and checkpoint monitors.
+        val_nll = trainer.callback_metrics.get("val_nll")
+        if val_nll is not None:
+            fold_val_losses.append(val_nll.item())
+
+        # Store per-fold diagnostic metrics for post-hoc analysis
+        store_fold_metrics(trial, fold_idx, trainer.callback_metrics)
 
         # Report intermediate value for pruning
         running_mean = sum(fold_val_losses) / len(fold_val_losses) if fold_val_losses else float("inf")
@@ -355,7 +491,7 @@ def objective(
         # empty_cache() would force re-allocation and hurt performance.
         # Python reference counting deallocates the old module/trainer above.
 
-    # Return mean val_loss across folds
+    # Return mean val_nll across folds
     if fold_val_losses:
         return sum(fold_val_losses) / len(fold_val_losses)
     return float("inf")  # Placeholder when data not provided
@@ -388,7 +524,8 @@ def main() -> None:
         "--storage",
         type=str,
         default=None,
-        help="Optuna storage URL (e.g., sqlite:///outputs/optuna.db)",
+        help="Optuna journal file path for persistent storage (e.g., outputs/optuna_journal.log). "
+             "Uses JournalFileBackend for safe multi-process coordination.",
     )
     parser.add_argument(
         "--gpu",
@@ -402,6 +539,13 @@ def main() -> None:
         default=1,
         help="Number of GPUs for parallel trial execution. Each GPU runs trials independently. "
              "Requires --storage for multi-process coordination (default: 1).",
+    )
+    parser.add_argument(
+        "--n-folds",
+        type=int,
+        default=1,
+        help="Number of CV folds per trial (default: 1). Use 1 for fast HPO, "
+             "then retrain best config with full 5-fold CV.",
     )
     parser.add_argument(
         "--splits-path",
@@ -432,6 +576,10 @@ def main() -> None:
 
     from src.utils.config import validate_config
     validate_config(config, required_keys=["experiment", "data", "model", "training", "optuna", "paths"])
+
+    # Override n_folds for HPO (default: 1 fold for fast search)
+    OmegaConf.update(config, "data.splits.n_folds", args.n_folds)
+    logger.info("HPO using %d CV fold(s) per trial", args.n_folds)
 
     optuna_cfg = config.optuna
     n_trials = args.n_trials or optuna_cfg.get("n_trials", 100)
@@ -471,18 +619,17 @@ def main() -> None:
         logger.info("Loaded adata (%d cells)", adata.n_obs)
 
     # Create study (always use create_study to respect config pruner type)
-    study = create_study(config, storage=args.storage)
+    storage = _make_storage(args.storage)
+    study = create_study(config, storage=storage)
 
-    # Per-trial timeout callback: fails individual trials that exceed the limit
-    # without killing the entire study (unlike the global timeout).
+    # Per-trial timeout: Optuna 4.x removed MaxTrialDurationCallback.
+    # Early stopping (patience=15) and fold-level pruning provide sufficient
+    # protection against runaway trials. Log the configured value for reference.
     callbacks = []
     if per_trial_timeout:
-        from datetime import timedelta
-        callbacks.append(
-            optuna.callbacks.MaxTrialDurationCallback(timedelta(seconds=per_trial_timeout))
-        )
         logger.info(
-            "Per-trial timeout: %d s (%.1f hours)",
+            "Per-trial timeout configured: %d s (%.1f hours) — "
+            "enforced via early stopping + fold-level pruning",
             per_trial_timeout, per_trial_timeout / 3600,
         )
 
@@ -500,7 +647,7 @@ def main() -> None:
         if args.storage is None:
             raise ValueError(
                 "Multi-GPU optimization requires persistent storage for coordination. "
-                "Provide --storage sqlite:///outputs/optuna.db"
+                "Provide --storage outputs/optuna_journal.log"
             )
 
         import subprocess
@@ -526,6 +673,7 @@ def main() -> None:
                     "--gpu", "0",  # Always GPU 0 since CUDA_VISIBLE_DEVICES limits visibility
                     "--storage", args.storage,
                     "--splits-path", args.splits_path,
+                    "--n-folds", str(args.n_folds),
                 ]
                 if args.precomputed_dir:
                     cmd.extend(["--precomputed-dir", args.precomputed_dir])
@@ -538,6 +686,7 @@ def main() -> None:
                 # This prevents each process from initializing all GPU contexts
                 env = os.environ.copy()
                 env["CUDA_VISIBLE_DEVICES"] = str(i)
+                env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
                 stdout_path = log_dir / f"optuna_gpu{i}_stdout.log"
                 stderr_path = log_dir / f"optuna_gpu{i}_stderr.log"
@@ -565,22 +714,41 @@ def main() -> None:
         # Reload study to report results (all workers wrote to same storage)
         study = optuna.load_study(
             study_name=config.experiment.get("name", "cognitive_resilience"),
-            storage=args.storage,
+            storage=storage,
         )
     else:
         # Single-GPU mode (original behavior)
         # Limitation: interrupted trials are NOT resumed. If the process crashes
-        # mid-trial, the trial is marked FAIL in the study database and a new trial
+        # mid-trial, the trial is marked FAIL in the study journal and a new trial
         # with new hyperparameters starts on re-run. Per-fold results (fold_val_losses
-        # list in objective()) are in-memory and lost on crash. For expensive training
-        # runs, consider: (1) shorter max_epochs for HP search, (2) SQLite storage
-        # for completed trial persistence, (3) per-fold result files if needed.
+        # list in objective()) are in-memory and lost on crash.
+        import torch as _torch
+
+        # Pre-load all subject tensors once — reused across all trials in this
+        # worker, eliminating ~14 s of disk I/O per trial.
+        preloaded_cache = None
+        if args.precomputed_dir:
+            from src.data.datasets import PrecomputedDataset
+            all_subject_ids = _collect_all_subject_ids(splits)
+            preloaded_cache = PrecomputedDataset.load_subject_cache(
+                args.precomputed_dir, all_subject_ids,
+            )
+
+        def _safe_objective(trial):
+            """Wrapper that frees CUDA memory after OOM so subsequent trials can proceed."""
+            try:
+                return objective(
+                    trial, config, gpu_id=gpu_id,
+                    adata=adata, metadata=metadata, splits=splits,
+                    precomputed_dir=args.precomputed_dir,
+                    preloaded_cache=preloaded_cache,
+                )
+            except _torch.cuda.OutOfMemoryError:
+                _torch.cuda.empty_cache()
+                raise  # Let Optuna mark as FAIL and continue
+
         study.optimize(
-            lambda trial: objective(
-                trial, config, gpu_id=gpu_id,
-                adata=adata, metadata=metadata, splits=splits,
-                precomputed_dir=args.precomputed_dir,
-            ),
+            _safe_objective,
             n_trials=n_trials,
             timeout=timeout,
             callbacks=callbacks or None,
@@ -602,4 +770,8 @@ def main() -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    import torch
+    torch.set_float32_matmul_precision("high")
+
     main()

@@ -362,6 +362,16 @@ def main() -> None:
     from src.utils.config import validate_config
     validate_config(config, required_keys=["experiment", "data", "model", "training", "paths"])
 
+    # Clean up stale /dev/shm caches from previous HPO or DDP runs.
+    from src.utils.shm import cleanup_stale_shm
+    cleanup_stale_shm()
+
+    # Enable TF32 Tensor Cores for float32 matmuls on Ada GPUs.
+    # Same exponent range as FP32, shorter mantissa (10 vs 23 bits).
+    # Negligible precision impact for training; ~2-3x speedup on FP32 ops
+    # not already covered by bf16-mixed.
+    torch.set_float32_matmul_precision("high")
+
     # Set global seed (same on all DDP ranks for identical model initialization).
     # Rank-specific seeding for data augmentation is handled at the DataLoader
     # worker level (see CognitiveResilienceDataModule._make_worker_init_fn).
@@ -395,6 +405,13 @@ def main() -> None:
     import os
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     base_dir = config.paths.get("output_dir", "outputs/")
+
+    # Inject fold index into config so the experiment hash is fold-specific.
+    # Without this, concurrent folds with identical config could race to
+    # write checkpoints to the same directory (hash collision).
+    if not args.final:
+        OmegaConf.update(config, "experiment.fold_idx", args.fold)
+
     config_dict = OmegaConf.to_container(config, resolve=True)
 
     # Determine intended device count from config (not env var)
@@ -416,7 +433,16 @@ def main() -> None:
                 exp_path_file.unlink()
             exp_manager = ExperimentManager(base_dir=base_dir)
             experiment = exp_manager.create_experiment(config_dict)
-            exp_path_file.write_text(str(experiment.exp_dir))
+            # Atomic write: write to temp file then os.rename() so non-zero
+            # ranks polling never read a truncated/partial path.
+            import tempfile as _tempfile
+            tmp_fd, tmp_path = _tempfile.mkstemp(dir=str(exp_path_file.parent))
+            os.write(tmp_fd, str(experiment.exp_dir).encode())
+            os.close(tmp_fd)
+            os.rename(tmp_path, str(exp_path_file))
+            # Clean up coordination file on exit so it doesn't confuse future runs.
+            import atexit
+            atexit.register(lambda f=exp_path_file: f.unlink(missing_ok=True))
             logger.info("Experiment created: %s", experiment.exp_hash)
         else:
             # Wait for rank 0 to create the experiment and write the path file.
@@ -464,6 +490,16 @@ def main() -> None:
     data_cfg = config.data
     adata = None
     metadata = None
+
+    # Fall back to config values when CLI args are not provided
+    if args.precomputed_dir is None:
+        args.precomputed_dir = data_cfg.get("precomputed_dir", None)
+    if args.splits_path is None:
+        # Check default location
+        default_splits = Path("outputs/splits.json")
+        if default_splits.exists():
+            args.splits_path = str(default_splits)
+            logger.info("Using default splits path: %s", args.splits_path)
 
     if args.precomputed_dir and not args.splits_path:
         raise ValueError(
@@ -549,6 +585,14 @@ def main() -> None:
             OmegaConf.update(config, "model.head.target_mean", target_mean)
             logger.info("Auto-computed target_mean=%.4f from training set", target_mean)
 
+        # Re-seed immediately before model construction to ensure identical
+        # weight initialization regardless of preceding data-loading stochasticity.
+        set_seed(
+            seed,
+            deterministic=repro_cfg.get("deterministic", True),
+            benchmark=repro_cfg.get("benchmark", False),
+        )
+
         # Build Lightning module (after target_mean is injected into config)
         module = CognitiveResilienceLightningModule(config)
         logger.info("Model built: %s", type(module.model).__name__)
@@ -611,6 +655,14 @@ def main() -> None:
             target_mean = dm.train_target_mean
             OmegaConf.update(config, "model.head.target_mean", target_mean)
             logger.info("Auto-computed target_mean=%.4f from training set", target_mean)
+
+        # Re-seed immediately before model construction to ensure identical
+        # weight initialization regardless of preceding data-loading stochasticity.
+        set_seed(
+            seed,
+            deterministic=repro_cfg.get("deterministic", True),
+            benchmark=repro_cfg.get("benchmark", False),
+        )
 
         # Build Lightning module (after target_mean is injected into config)
         module = CognitiveResilienceLightningModule(config)

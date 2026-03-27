@@ -98,7 +98,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         if self._use_bayesian_svi:
             # Safe to clear globally: the CV loop creates exactly one module at a
             # time per fold and does not hold references to previous fold modules
-            # when constructing the next one (see scripts/optuna_optimize.py fold loop).
+            # when constructing the next one (see scripts/hpo.py train_fn).
             # Constraint: only one CognitiveResilienceLightning instance may exist
             # per process at a time. Under DDP, each rank is a separate process,
             # so this is safe across ranks.
@@ -109,7 +109,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             # for the process lifetime. Safe for training (one module per process).
             # Re-enable with pyro.enable_validation(True) for debugging.
             pyro.enable_validation(False)
-            self.elbo = KLAnnealedELBO(kl_weight=1.0)
+            kl_cfg = config.training.get("kl_annealing", {})
+            kl_temp = kl_cfg.get("temperature", 1.0) if kl_cfg else 1.0
+            self.elbo = KLAnnealedELBO(kl_weight=1.0, temperature=kl_temp)
             # automatic_optimization stays True (default) —
             # differentiable_loss returns a loss tensor that flows through
             # Lightning's standard backward + optimizer step + DDP gradient sync.
@@ -156,13 +158,32 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self._test_targets: list[torch.Tensor] = []
         self._test_stds: list[torch.Tensor] = []
 
-        # GPU reference to last training batch for epoch-end NLL computation (P7)
+        # CPU-cached last training batch for epoch-end NLL computation (P7)
         self._last_train_batch_ref: dict | None = None
 
         # Batch reference for GE noise re-evaluation (set in training_step,
         # cleared by GradientModulationCallback.on_train_batch_end).
         self._current_batch: dict | None = None
         self._is_ge_reevaluation: bool = False
+
+    def _gene_gate_l1_penalty(self) -> torch.Tensor:
+        """Compute L1 penalty on all gene gate logits (HGT + CT gates).
+
+        Returns:
+            Scalar L1 penalty tensor (mean of absolute gate logits across all gates).
+        """
+        logits_list = []
+        hgt_gate = getattr(self.model, "hgt_gene_gate", None)
+        if hgt_gate is not None and hasattr(hgt_gate, "gate_logits"):
+            logits_list.append(hgt_gate.gate_logits)
+        ct = getattr(self.model, "cell_transformer", None)
+        ct_gate = getattr(ct, "gene_gate", None) if ct is not None else None
+        if ct_gate is not None and hasattr(ct_gate, "gate_logits"):
+            logits_list.append(ct_gate.gate_logits)
+        if not logits_list:
+            return torch.tensor(0.0, device=self.device)
+        all_logits = torch.cat([l.flatten() for l in logits_list])
+        return self._gene_gate_l1_lambda * all_logits.abs().mean()
 
     def _compute_loss(self, output: dict, cognition: torch.Tensor) -> torch.Tensor:
         """Compute loss with branching based on head type."""
@@ -171,11 +192,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         else:
             loss = self.loss_fn(output["mean"], output["std"], cognition)
 
-        # Optional gene gate L1 regularization
+        # Optional gene gate L1 regularization (both gates)
         if self._gene_gate_l1_lambda > 0:
-            gate_logits = self.model.pseudobulk_encoder.gene_gate.gate_logits
-            l1_penalty = self._gene_gate_l1_lambda * gate_logits.abs().mean()
-            loss = loss + l1_penalty
+            loss = loss + self._gene_gate_l1_penalty()
 
         return loss
 
@@ -200,14 +219,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             "pathology": batch.get("pathology"),
             "cognition": batch.get("cognition"),
         }
-        # Flat cell format (preferred — less memory)
-        if "cell_data" in batch:
-            kwargs["cell_data"] = batch["cell_data"]
-            kwargs["cell_offsets"] = batch["cell_offsets"]
-        else:
-            # Legacy padded format
-            kwargs["cells"] = batch.get("cells")
-            kwargs["cell_mask"] = batch.get("cell_mask")
+        # Flat cell format
+        kwargs["cell_data"] = batch["cell_data"]
+        kwargs["cell_offsets"] = batch["cell_offsets"]
         return kwargs
 
     def _forward_batch(self, batch: dict) -> dict:
@@ -241,8 +255,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                         and not getattr(self, '_is_prototyping', False)
                         and not getattr(self, '_is_ge_reevaluation', False)):
                     bs = batch["cognition"].shape[0]
-                    self.log("train_nll", nll.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
-                    self.log("train_kl_weighted", kl.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
+                    self.log("train_nll", nll.detach(), prog_bar=False, sync_dist=True, batch_size=bs)
+                    self.log("train_kl_weighted", kl.detach(), prog_bar=False, sync_dist=True, batch_size=bs)
             else:
                 loss = self.elbo.differentiable_loss(
                     self.model, self.guide,
@@ -322,9 +336,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             loss = self._svi_forward(batch)
             # Apply gene gate L1 regularization (also needed in SVI path)
             if self._gene_gate_l1_lambda > 0:
-                gate_logits = self.model.pseudobulk_encoder.gene_gate.gate_logits
-                l1_penalty = self._gene_gate_l1_lambda * gate_logits.abs().mean()
-                loss = loss + l1_penalty
+                loss = loss + self._gene_gate_l1_penalty()
         else:
             output = self._forward_batch(batch)
             loss = self._compute_loss(output, batch["cognition"])
@@ -338,23 +350,41 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 logger.warning("NaN loss at batch %d — skipping", batch_idx)
                 return None
 
-        # Cache batch for GE noise re-evaluation (GradientModulationCallback)
+        # Cache batch for GE noise re-evaluation (GradientModulationCallback).
+        # Cleared after CPU copy below to avoid holding an extra GPU batch ref
+        # when gradient modulation is disabled (the callback would clear it).
         self._current_batch = batch
 
         bs = batch["cognition"].shape[0]
         # For Bayesian head: train_loss = ELBO (the actual optimization target).
         # For deterministic head: train_loss = MSE.
-        self.log("train_loss", loss, prog_bar=True, sync_dist=False, batch_size=bs)
+        # DDP-1: sync_dist=False — per-step allreduce on training loss is
+        # unnecessary overhead. Lightning already reduces gradients via DDP.
+        # Each rank logs its local loss; Lightning averages across steps.
+        self.log("train_loss", loss, prog_bar=True, batch_size=bs)
 
-        # Keep GPU reference to last batch for epoch-end NLL computation.
-        # on_train_epoch_end runs immediately after the last training_step,
-        # before DataLoader fetches next epoch's data, so reference is valid.
+        # Cache last batch on CPU for epoch-end NLL computation.
+        # Moved to CPU to release ~10 GB GPU memory during validation.
+        # on_train_epoch_end moves it back to GPU (~50ms over PCIe4).
         # Under DDP, each rank caches its own last batch. train_loss_nll is
         # logged with sync_dist=True, averaging each rank's NLL estimate.
         if self._use_bayesian_svi:
-            self._last_train_batch_ref = batch
+            self._last_train_batch_ref = {
+                k: v.cpu() if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+                if isinstance(v, torch.Tensor) or k == "subject_ids"
+            }
 
         return loss
+
+    def on_train_batch_end(self, outputs, batch, batch_idx) -> None:
+        """Release GPU batch ref cached for GradientModulationCallback.
+
+        GradientModulationCallback.on_after_backward reads _current_batch
+        (fires before this hook). When gradient modulation is disabled, no
+        callback clears it, so we do it here unconditionally.
+        """
+        self._current_batch = None
 
     def on_train_epoch_end(self) -> None:
         """Check NaN skip rate and compute NLL on last batch (Bayesian only)."""
@@ -376,11 +406,17 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self._epoch_total_batches = 0
 
         if self._use_bayesian_svi and self._last_train_batch_ref is not None:
-            # Last batch is still on GPU — use directly, no transfer needed.
+            # Move cached batch back to GPU for NLL computation.
+            # Cost: ~50ms for 10 GB over PCIe4, negligible vs training time.
+            device = self.device
+            gpu_batch = {
+                k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+                for k, v in self._last_train_batch_ref.items()
+            }
             with torch.no_grad():
-                nll_output = self._forward_batch_posterior(self._last_train_batch_ref)
-                nll_loss = self._compute_loss(nll_output, self._last_train_batch_ref["cognition"])
-            bs = self._last_train_batch_ref["cognition"].shape[0]
+                nll_output = self._forward_batch_posterior(gpu_batch)
+                nll_loss = self._compute_loss(nll_output, gpu_batch["cognition"])
+            bs = gpu_batch["cognition"].shape[0]
             self.log("train_loss_nll", nll_loss, sync_dist=True, batch_size=bs)
             self._last_train_batch_ref = None
 
@@ -607,12 +643,12 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 device=device,
             ),
             "region_mask": torch.ones(1, N_REGIONS, dtype=torch.bool, device=device),
-            "cells": torch.zeros(
-                1, model_cfg.n_cell_types, 1, model_cfg.n_genes,
+            "cell_data": torch.zeros(
+                0, model_cfg.n_genes,
                 device=device,
             ),
-            "cell_mask": torch.ones(
-                1, model_cfg.n_cell_types, 1, dtype=torch.bool,
+            "cell_offsets": torch.zeros(
+                1, model_cfg.n_cell_types + 1, dtype=torch.long,
                 device=device,
             ),
             "cell_type_mask": torch.ones(
@@ -697,14 +733,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
             # Set 1/N KL normalization (Graves 2011, Blundell et al. 2015).
             # KL complexity cost applies once per dataset, not once per sample.
-            try:
-                train_ds = self.trainer.datamodule.train_dataset
-                if train_ds is None:
-                    train_ds = self.trainer.datamodule.train_ds
-                n_train = len(train_ds)
-            except (AttributeError, TypeError):
-                n_train = 1
-                logger.warning("Could not determine training set size for 1/N KL scaling; using n_train=1")
+            train_ds = self.trainer.datamodule.train_dataset
+            if train_ds is None or len(train_ds) == 0:
+                raise RuntimeError(
+                    "Cannot determine training set size for 1/N KL scaling: "
+                    "datamodule.train_dataset is None or empty. "
+                    "Ensure datamodule.setup('fit') has been called."
+                )
+            n_train = len(train_ds)
             self.elbo.n_train = n_train
             logger.info(f"KL 1/N normalization: n_train={n_train}")
 
@@ -719,14 +755,20 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             # on_load_checkpoint already prototyped (checkpoint resume), this is a no-op.
             self._prototype_guide_if_needed(caller="configure_optimizers")
 
-            # Collect model + guide parameters
-            all_params = list(self.model.parameters()) + list(self.guide.parameters())
-            optimizer = torch.optim.Adam(
-                all_params,
-                lr=effective_lr,
-                weight_decay=opt_cfg.get("weight_decay", 0),
-                betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
-            )
+            # Separate param groups: encoder (model) and guide (variational posterior).
+            # Guide params start from loc=0 and need higher LR to converge within
+            # training budget. Standard SVI practice: Pyro's ClippedAdam uses lr=0.01.
+            guide_lr = opt_cfg.get("guide_lr", None)
+            if guide_lr is None:
+                guide_lr = effective_lr
+            logger.info(f"Optimizer LR: encoder={effective_lr}, guide={guide_lr}")
+
+            weight_decay = opt_cfg.get("weight_decay", 0)
+            betas = tuple(opt_cfg.get("betas", [0.9, 0.999]))
+            optimizer = torch.optim.Adam([
+                {"params": list(self.model.parameters()), "lr": effective_lr},
+                {"params": list(self.guide.parameters()), "lr": guide_lr},
+            ], weight_decay=weight_decay, betas=betas)
             # ExponentialLR replicates ClippedAdam's lrd parameter
             lrd = opt_cfg.get("lrd", 1.0)
             scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lrd)
@@ -758,7 +800,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         eta_min = sched_cfg.get("eta_min", 1e-6)
 
         if sched_cfg.type == "cosine":
-            t_max = train_cfg.max_epochs - warmup_epochs
+            # Allow explicit T_max override (e.g., to keep schedule calibrated
+            # at 100 epochs while training for 150 — epochs beyond T_max train
+            # at eta_min, acting as a low-LR fine-tuning phase).
+            t_max = sched_cfg.get("T_max", train_cfg.max_epochs - warmup_epochs)
             if t_max <= 0:
                 raise ValueError(
                     f"warmup_epochs ({warmup_epochs}) must be less than "

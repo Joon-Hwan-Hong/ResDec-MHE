@@ -339,9 +339,13 @@ class SetTransformerEncoder(nn.Module):
         use_gradient_checkpointing: Whether to use gradient checkpointing
         n_cell_types: Number of cell types for conditioned inducing points.
             Passed through to ISAB layers. None disables conditioning.
+        external_proj: When True, skip creating/applying the input_proj layer.
+            The caller is responsible for projecting input from d_input to d_model
+            before passing to forward(). Used by CellTransformer to project flat
+            cell data before padding, saving ~9.5 GB VRAM.
 
     Shape:
-        - Input: (batch, n_cells, d_input)
+        - Input: (batch, n_cells, d_input) or (batch, n_cells, d_model) if external_proj
         - Mask: (batch, n_cells) boolean, True = valid cell
         - Output: (batch, n_pma_seeds, d_model) or (batch, d_model) if n_pma_seeds=1
     """
@@ -357,6 +361,7 @@ class SetTransformerEncoder(nn.Module):
         dropout: float = 0.1,
         use_gradient_checkpointing: bool = False,
         n_cell_types: Optional[int] = None,
+        external_proj: bool = False,
     ):
         super().__init__()
 
@@ -364,13 +369,16 @@ class SetTransformerEncoder(nn.Module):
         self.d_model = d_model
         self.n_pma_seeds = n_pma_seeds
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.external_proj = external_proj
 
-        # Input embedding
-        self.input_proj = nn.Sequential(
-            nn.Linear(d_input, d_model),
-            nn.LayerNorm(d_model),
-            nn.Dropout(dropout),
-        )
+        # Input embedding (skipped when projection is applied externally,
+        # e.g. CellTransformer projects flat data before padding to save VRAM)
+        if not external_proj:
+            self.input_proj = nn.Sequential(
+                nn.Linear(d_input, d_model),
+                nn.LayerNorm(d_model),
+                nn.Dropout(dropout),
+            )
 
         # Stack of ISAB blocks
         self.isab_layers = nn.ModuleList([
@@ -458,12 +466,16 @@ class SetTransformerEncoder(nn.Module):
             # (NaN * 0 = NaN in IEEE 754, so use masked_fill instead of multiply)
             x_valid = x_valid.masked_fill(~mask_valid.unsqueeze(-1), 0.0)
 
-            if self.use_gradient_checkpointing and self.training:
+            if self.external_proj:
+                h_valid = x_valid
+            elif self.use_gradient_checkpointing and self.training:
                 h_valid = grad_checkpoint(self.input_proj, x_valid, use_reentrant=False)
+            else:
+                h_valid = self.input_proj(x_valid)
+            if self.use_gradient_checkpointing and self.training:
                 for isab in self.isab_layers:
                     h_valid = grad_checkpoint(isab, h_valid, mask_valid, ct_idx_valid, use_reentrant=False)
             else:
-                h_valid = self.input_proj(x_valid)
                 for isab in self.isab_layers:
                     h_valid = isab(h_valid, mask_valid, ct_idx=ct_idx_valid)
             pooled_valid, attention_valid = self.pma(
@@ -502,12 +514,16 @@ class SetTransformerEncoder(nn.Module):
             # (NaN * 0 = NaN in IEEE 754, so use masked_fill instead of multiply)
             if mask is not None:
                 x = x.masked_fill(~mask.unsqueeze(-1), 0.0)
-            if self.use_gradient_checkpointing and self.training:
+            if self.external_proj:
+                h = x
+            elif self.use_gradient_checkpointing and self.training:
                 h = grad_checkpoint(self.input_proj, x, use_reentrant=False)
+            else:
+                h = self.input_proj(x)
+            if self.use_gradient_checkpointing and self.training:
                 for isab in self.isab_layers:
                     h = grad_checkpoint(isab, h, mask, ct_idx, use_reentrant=False)
             else:
-                h = self.input_proj(x)
                 for isab in self.isab_layers:
                     h = isab(h, mask, ct_idx=ct_idx)
             pooled, attention = self.pma(h, mask, return_attention=return_attention)

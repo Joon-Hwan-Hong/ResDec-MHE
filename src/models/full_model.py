@@ -1,18 +1,17 @@
 """
 Cognitive Resilience Model - Full end-to-end architecture.
 
-Combines all branches (PseudobulkEncoder, HGTEncoderTensor, CellTransformer) with
+Two-branch architecture combining HGT and CellTransformer encoders with
 RegionHandler, FusionLayer, PathologyEncoder, PathologyStratifiedAttention,
 and prediction heads to predict cognitive resilience from multi-modal inputs.
 
 Data flow:
-    region_pseudobulk [B, n_regions, 31, G] -> PseudobulkEncoder (per region)
+    region_pseudobulk [B, n_regions, 31, G] -> GeneAttentionGate_HGT -> Linear(G, d)
         -> RegionHandler -> pooled [B, 31, d] + region_context [B, d]
-    ccc_edge_index [2, E_total], ccc_edge_type [E_total], ccc_edge_attr [E_total, 1]
         -> HGTEncoderTensor -> hgt_emb [B, 31, d]
-    cells [B, 31, max_cells, G] -> CellTransformer -> cell_emb [B, 31, d]
+    cell_data [total_cells, G] + cell_offsets [B, 32] -> CellTransformer -> cell_emb [B, 31, d]
 
-    [pooled, hgt_emb, cell_emb] -> FusionLayer -> fused [B, 31, d_fused]
+    [hgt_emb, cell_emb] -> FusionLayer -> fused [B, 31, d_fused]
     [pathology, region_context] -> PathologyEncoder -> path_emb [B, d_cond]
     [fused, path_emb] -> PathologyStratifiedAttention -> attended [B, d_fused] + weights
     attended -> PredictionHead -> mean [B, 1] (+ std [B, 1] if Bayesian)
@@ -24,7 +23,9 @@ Expected Input Format:
     - ccc_edge_index: [2, E_total] flat edge indices
     - ccc_edge_type: [E_total] edge type indices
     - ccc_edge_attr: [E_total, 1] edge attributes
-    - cells, cell_mask, pathology, etc.
+    - cell_data: [total_cells, n_genes] concatenated cell expressions
+    - cell_offsets: [B, n_cell_types + 1] cumulative offsets
+    - pathology, etc.
 
     For single-region data, use pseudobulk [B, n_cell_types, n_genes] which will
     be automatically expanded to region format.
@@ -39,10 +40,12 @@ import torch.nn as nn
 from pyro.nn import PyroModule
 
 from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX
-from src.models.branches import PseudobulkEncoder, CellTransformer
+from src.models.branches import CellTransformer
 from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
-from src.models.components import RegionHandler
+from src.models.components import GeneAttentionGate, RegionHandler
 from src.models.fusion import FusionLayer, PathologyEncoder, PathologyStratifiedAttention
+from src.models.fusion.cross_attention_fusion import CrossAttentionFusionLayer
+from src.models.fusion.normalized_concat_fusion import NormalizedConcatFusionLayer
 from src.models.heads import BayesianPredictionHead, DeterministicPredictionHead
 
 logger = logging.getLogger(__name__)
@@ -52,10 +55,9 @@ class CognitiveResilienceModel(PyroModule):
     """
     Full end-to-end model for cognitive resilience prediction.
 
-    Integrates three encoding branches:
-    - PseudobulkEncoder: Gene expression -> cell-type embeddings
-    - HGTEncoderTensor: Cell-cell communication graph -> CCC embeddings (batched tensors)
-    - CellTransformer: Cell-level data -> heterogeneity embeddings
+    Two-branch architecture:
+    - HGT branch: GeneAttentionGate → Linear → RegionHandler → HGTEncoderTensor
+    - CellTransformer: GeneAttentionGate → SetTransformer → cell-level embeddings
 
     These are fused and processed through pathology-conditioned attention
     to produce a final cognition prediction.
@@ -77,8 +79,7 @@ class CognitiveResilienceModel(PyroModule):
         n_attention_heads: Number of attention heads in PathologyStratifiedAttention (default: 4)
         gene_gate_temperature: Initial temperature for gene attention gate (default: 2.0,
             per design doc τ_max). Higher = softer attention. Annealed during training.
-        selection_temperature: Temperature for cell type selection softmax (default: 1.0,
-            per design doc). Fixed during training unless explicitly annealed.
+            Applied to both HGT and CellTransformer gene gates.
         use_bayesian_head: Whether to use Bayesian prediction head (default: True)
         d_head_hidden: Hidden dimension in prediction head (default: 64)
         dropout: Dropout probability (default: 0.1)
@@ -92,8 +93,8 @@ class CognitiveResilienceModel(PyroModule):
         ccc_edge_index: [2, E_total] flat edge indices
         ccc_edge_type: [E_total] edge type indices
         ccc_edge_attr: [E_total, 1] edge attributes
-        cells: [B, n_cell_types, max_cells, n_genes]
-        cell_mask: [B, n_cell_types, max_cells]
+        cell_data: [total_cells, n_genes] concatenated cell expressions
+        cell_offsets: [B, n_cell_types + 1] cumulative offsets
         cell_type_mask: [B, n_cell_types] (optional, for masking missing cell types)
         pathology: [B, 3]
         cognition: [B, 1] (optional, for training)
@@ -118,23 +119,21 @@ class CognitiveResilienceModel(PyroModule):
         n_inducing_points: int = 32,
         n_attention_heads: int = 4,
         gene_gate_temperature: float = 2.0,
-        selection_temperature: float = 1.0,
         use_bayesian_head: bool = True,
         d_head_hidden: int = 64,
         dropout: float = 0.1,
         n_pathology_features: int = 3,
         n_pma_seeds: int = 1,
-        mlp_hidden: list[int] | None = None,
-        use_layer_norm: bool = True,
         node_types: Optional[list[str]] = None,
         edge_categories: Optional[list[str]] = None,
-        use_pseudobulk_encoder: bool = True,
         use_hgt_encoder: bool = True,
         use_cell_transformer: bool = True,
         condition_on_cell_type: bool = True,
         use_gradient_checkpointing: bool = False,
         use_torch_compile: bool = False,
         target_mean: float = 0.0,
+        fusion_type: str = "concat",
+        fusion_n_heads: int = 4,
     ):
         super().__init__("cognitive_resilience_model")
 
@@ -162,13 +161,12 @@ class CognitiveResilienceModel(PyroModule):
         self.d_cond = d_cond
         self.n_regions = n_regions
         self.use_bayesian_head = use_bayesian_head
-        self.use_pseudobulk_encoder = use_pseudobulk_encoder
+        self.n_pma_seeds = n_pma_seeds
         self.use_hgt_encoder = use_hgt_encoder
         self.use_cell_transformer = use_cell_transformer
         self.use_gradient_checkpointing = use_gradient_checkpointing
 
         disabled = [name for name, on in [
-            ("pseudobulk_encoder", use_pseudobulk_encoder),
             ("hgt_encoder", use_hgt_encoder),
             ("cell_transformer", use_cell_transformer),
         ] if not on]
@@ -179,16 +177,16 @@ class CognitiveResilienceModel(PyroModule):
         self.node_types = node_types if node_types is not None else list(CELL_TYPE_ORDER)
         self.edge_categories = edge_categories if edge_categories is not None else list(ALL_EDGE_TYPES)
 
-        # Branch 1: Pseudobulk Encoder (applied per region)
-        self.pseudobulk_encoder = PseudobulkEncoder(
+        # HGT input pipeline: GeneAttentionGate → Linear → RegionHandler → HGT
+        # Replaces the former PseudobulkEncoder. The gene gate learns cell-type-
+        # specific gene attention (same mechanism as CellTransformer's gate),
+        # and the linear projection maps from gene space to embedding space.
+        self.hgt_gene_gate = GeneAttentionGate(
             n_cell_types=n_cell_types,
             n_genes=n_genes,
-            d_embed=d_embed,
-            mlp_hidden=mlp_hidden,
-            dropout=dropout,
             temperature=gene_gate_temperature,
-            use_layer_norm=use_layer_norm,
         )
+        self.hgt_input_proj = nn.Linear(n_genes, d_embed)
 
         # Region Handler (pools across regions)
         self.region_handler = RegionHandler(
@@ -212,7 +210,9 @@ class CognitiveResilienceModel(PyroModule):
             use_gradient_checkpointing=use_gradient_checkpointing,
         )
 
-        # Branch 3: Cell Transformer (cell-level heterogeneity)
+        # Branch 2: Cell Transformer (cell-level heterogeneity)
+        # CellTransformer has its own GeneAttentionGate internally (Task 2).
+        # gene_gate_temperature is passed to control both gates identically.
         self.cell_transformer = CellTransformer(
             n_genes=n_genes,
             n_cell_types=n_cell_types,
@@ -222,18 +222,39 @@ class CognitiveResilienceModel(PyroModule):
             n_inducing=n_inducing_points,
             n_pma_seeds=n_pma_seeds,
             dropout=dropout,
-            selection_temperature=selection_temperature,
+            gene_gate_temperature=gene_gate_temperature,
             use_gradient_checkpointing=use_gradient_checkpointing,
             condition_on_cell_type=condition_on_cell_type,
         )
 
         # Fusion Layer
-        self.fusion_layer = FusionLayer(
-            d_embed=d_embed,
-            d_fused=d_fused,
-            n_cell_types=n_cell_types,
-            dropout=dropout,
-        )
+        _xattn_types = {"cross_attention": "standard", "crossfuse": "reverse", "crossfuse_blend": "blend"}
+        if fusion_type in _xattn_types:
+            self.fusion_layer = CrossAttentionFusionLayer(
+                d_embed=d_embed,
+                d_fused=d_fused,
+                n_cell_types=n_cell_types,
+                n_heads=fusion_n_heads,
+                dropout=dropout,
+                n_pma_seeds=n_pma_seeds,
+                attention_mode=_xattn_types[fusion_type],
+            )
+        elif fusion_type == "concat_normalized":
+            self.fusion_layer = NormalizedConcatFusionLayer(
+                d_embed=d_embed,
+                d_fused=d_fused,
+                n_cell_types=n_cell_types,
+                dropout=dropout,
+                n_pma_seeds=n_pma_seeds,
+            )
+        else:
+            self.fusion_layer = FusionLayer(
+                d_embed=d_embed,
+                d_fused=d_fused,
+                n_cell_types=n_cell_types,
+                dropout=dropout,
+                n_pma_seeds=n_pma_seeds,
+            )
 
         # Pathology Encoder (combines pathology with region context)
         self.pathology_encoder = PathologyEncoder(
@@ -276,20 +297,23 @@ class CognitiveResilienceModel(PyroModule):
         if use_torch_compile:
             import torch._dynamo.config
             torch._dynamo.config.cache_size_limit = 64
-            self.pseudobulk_encoder = torch.compile(self.pseudobulk_encoder)
+            self.hgt_input_proj = torch.compile(self.hgt_input_proj)
             self.fusion_layer = torch.compile(self.fusion_layer)
             self.pathology_encoder = torch.compile(self.pathology_encoder)
             self.cell_transformer = torch.compile(self.cell_transformer, dynamic=True)
             if not use_bayesian_head:
                 self.prediction_head = torch.compile(self.prediction_head)
 
-    def _encode_pseudobulk_per_region(
+    def _encode_hgt_input_per_region(
         self,
         region_pseudobulk: torch.Tensor,  # [B, n_regions, n_cell_types, n_genes]
         region_mask: Optional[torch.Tensor] = None,  # [B, n_regions]
     ) -> torch.Tensor:
         """
-        Apply PseudobulkEncoder to each region independently.
+        Apply GeneAttentionGate + Linear projection to each region independently.
+
+        Replaces PseudobulkEncoder. The gate learns cell-type-specific gene
+        importance, and the linear layer projects from gene space to d_embed.
 
         When region_mask is provided, only encodes regions that are active in
         at least one sample (avoids wasting compute on zero-filled regions).
@@ -309,21 +333,23 @@ class CognitiveResilienceModel(PyroModule):
                 n_active = active_indices.size(0)
 
                 flat = active_data.reshape(B * n_active, C, G)
-                encoded_active = self.pseudobulk_encoder(flat)  # [B*n_active, C, d_embed]
-                encoded_active = encoded_active.view(B, n_active, C, self.d_embed)
+                gated = self.hgt_gene_gate(flat)          # [B*n_active, C, G]
+                projected = self.hgt_input_proj(gated)    # [B*n_active, C, d_embed]
+                projected = projected.view(B, n_active, C, self.d_embed)
 
                 # Reconstruct full-sized tensor with zeros for inactive regions
                 encoded = torch.zeros(
                     B, R, C, self.d_embed,
-                    device=region_pseudobulk.device, dtype=encoded_active.dtype,
+                    device=region_pseudobulk.device, dtype=projected.dtype,
                 )
-                encoded[:, active_indices] = encoded_active
+                encoded[:, active_indices] = projected
                 return encoded
 
         # Default: encode all regions
         flat = region_pseudobulk.view(B * R, C, G)
-        encoded = self.pseudobulk_encoder(flat)  # [B * R, C, d_embed]
-        return encoded.view(B, R, C, self.d_embed)
+        gated = self.hgt_gene_gate(flat)          # [B*R, C, G]
+        projected = self.hgt_input_proj(gated)    # [B*R, C, d_embed]
+        return projected.view(B, R, C, self.d_embed)
 
     def forward(
         self,
@@ -336,10 +362,7 @@ class CognitiveResilienceModel(PyroModule):
         ccc_edge_index: Optional[torch.Tensor] = None,     # [2, E_total] flat
         ccc_edge_type: Optional[torch.Tensor] = None,      # [E_total]
         ccc_edge_attr: Optional[torch.Tensor] = None,      # [E_total, 1]
-        # Cell-level inputs (padded format)
-        cells: Optional[torch.Tensor] = None,              # [B, n_cell_types, max_cells, n_genes]
-        cell_mask: Optional[torch.Tensor] = None,          # [B, n_cell_types, max_cells]
-        # Cell-level inputs (flat format — preferred when available)
+        # Cell-level inputs (flat format)
         cell_data: Optional[torch.Tensor] = None,          # [total_cells, n_genes]
         cell_offsets: Optional[torch.Tensor] = None,        # [B, n_types + 1]
         cell_type_mask: Optional[torch.Tensor] = None,     # [B, n_cell_types] (optional)
@@ -368,14 +391,14 @@ class CognitiveResilienceModel(PyroModule):
             ccc_edge_index: [2, E_total] flat edge indices
             ccc_edge_type: [E_total] edge type indices
             ccc_edge_attr: [E_total, 1] edge attributes
-            cells: [B, n_cell_types, max_cells, n_genes] cell-level expression
-            cell_mask: [B, n_cell_types, max_cells] bool mask for valid cells
+            cell_data: [total_cells, n_genes] concatenated cell expressions
+            cell_offsets: [B, n_types + 1] cumulative offsets into cell_data
             cell_type_mask: [B, n_cell_types] optional mask for missing cell types.
                 Only affects PathologyStratifiedAttention (masked types get -inf scores
                 before softmax). HGT and CellTransformer still process all 31 types:
                 HGT needs all node types for correct message-passing topology, and
-                CellTransformer already handles empty types via cell_mask (producing
-                zero embeddings).
+                CellTransformer already handles empty types via zero cell counts
+                (producing zero embeddings).
             pathology: [B, 3] pathology features (amyloid, tau, global)
             cognition: [B, 1] target cognition scores (optional, for training)
             return_hgt_attention: Whether to return HGT attention weights (for interpretability)
@@ -429,38 +452,24 @@ class CognitiveResilienceModel(PyroModule):
                 f"got {list(cell_type_mask.shape)}"
             )
 
-        # Validate cell inputs — need either flat (cell_data+cell_offsets) or padded (cells+cell_mask)
-        has_flat = cell_data is not None and cell_offsets is not None
-        has_padded = cells is not None and cell_mask is not None
-        if not has_flat and not has_padded:
+        # Validate cell inputs — need flat format (cell_data + cell_offsets)
+        if cell_data is None or cell_offsets is None:
             raise ValueError(
-                "Must provide either (cell_data, cell_offsets) or (cells, cell_mask) — "
+                "Must provide (cell_data, cell_offsets) — "
                 "check collate function output"
             )
         if pathology is None:
             raise ValueError("pathology tensor is required but got None — check collate function output")
 
         # ─────────────────────────────────────────────────────────────────────
-        # Branch 1: Pseudobulk encoding + region handling
+        # Branch 1: HGT input pipeline + region handling + HGT encoding
+        # GeneAttentionGate → Linear → RegionHandler → HGT
         # ─────────────────────────────────────────────────────────────────────
-        if self.use_pseudobulk_encoder:
-            # [B, n_regions, n_cell_types, n_genes] -> [B, n_regions, n_cell_types, d_embed]
-            region_encoded = self._encode_pseudobulk_per_region(region_pseudobulk, region_mask)
-            # Pool across regions: [B, n_cell_types, d_embed] + [B, d_embed] + [B, n_regions]
-            pseudobulk_emb, region_context, region_attn = self.region_handler(region_encoded, region_mask)
-        else:
-            pseudobulk_emb = torch.zeros(B, self.n_cell_types, self.d_embed, device=device)
-            region_context = torch.zeros(B, self.d_embed, device=device)
-            region_attn = None
+        # [B, n_regions, n_cell_types, n_genes] -> [B, n_regions, n_cell_types, d_embed]
+        region_encoded = self._encode_hgt_input_per_region(region_pseudobulk, region_mask)
+        # Pool across regions: [B, n_cell_types, d_embed] + [B, d_embed] + [B, n_regions]
+        hgt_node_features, region_context, region_attn = self.region_handler(region_encoded, region_mask)
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Branch 2: HGT encoding (cell-cell communication) - Batched tensors
-        # Design decision: HGT receives region-pooled (not region-specific) features
-        # because CCC edges represent communication patterns across the subject's
-        # cell types, while RegionHandler's learned attention weights naturally
-        # prioritize the region with strongest signal (typically PFC, which is also
-        # where LIANA CCC edges originate). See architecture doc Part 1, §3.2.
-        # ─────────────────────────────────────────────────────────────────────
         hgt_attention = None
         if self.use_hgt_encoder:
             # Handle no-edges case
@@ -470,7 +479,7 @@ class CognitiveResilienceModel(PyroModule):
                 ccc_edge_attr = torch.zeros(0, 1, device=device)
 
             hgt_result = self.hgt_encoder(
-                pseudobulk_emb, ccc_edge_index, ccc_edge_type, ccc_edge_attr,
+                hgt_node_features, ccc_edge_index, ccc_edge_type, ccc_edge_attr,
                 return_attention=return_hgt_attention,
             )
             if return_hgt_attention:
@@ -481,51 +490,37 @@ class CognitiveResilienceModel(PyroModule):
             hgt_emb = torch.zeros(B, self.n_cell_types, self.d_embed, device=device)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Branch 3: Cell transformer (cell-level heterogeneity)
+        # Branch 2: Cell transformer (cell-level heterogeneity)
         # ─────────────────────────────────────────────────────────────────────
         pma_attention = None
-        selection_weights = None
         if self.use_cell_transformer:
-            # Supports flat format (cell_data + cell_offsets) or padded format
-            # (cells + cell_mask). Flat format avoids the 4D padded tensor
-            # (~9.5 GB) by reconstructing only the needed padded slices inside
-            # forward_flat.
-            if has_flat:
-                if self.use_gradient_checkpointing and self.training:
-                    cell_emb, selection_weights, pma_attention = torch.utils.checkpoint.checkpoint(
-                        self.cell_transformer.forward_flat,
-                        cell_data, cell_offsets,
-                        use_reentrant=False,
-                        return_attention=return_pma_attention,
-                        apply_selection_weights=True,
-                    )
-                else:
-                    cell_emb, selection_weights, pma_attention = self.cell_transformer.forward_flat(
-                        cell_data, cell_offsets,
-                        return_attention=return_pma_attention,
-                        apply_selection_weights=True,
-                    )
+            if self.use_gradient_checkpointing and self.training:
+                cell_emb, pma_attention = torch.utils.checkpoint.checkpoint(
+                    self.cell_transformer,
+                    cell_data, cell_offsets,
+                    use_reentrant=False,
+                    return_attention=return_pma_attention,
+                )
             else:
-                if self.use_gradient_checkpointing and self.training:
-                    cell_emb, selection_weights, pma_attention = torch.utils.checkpoint.checkpoint(
-                        self.cell_transformer,
-                        cells, cell_mask,
-                        use_reentrant=False,
-                        return_attention=return_pma_attention,
-                        apply_selection_weights=True,
-                    )
-                else:
-                    cell_emb, selection_weights, pma_attention = self.cell_transformer(
-                        cells, cell_mask, return_attention=return_pma_attention, apply_selection_weights=True
-                    )
+                cell_emb, pma_attention = self.cell_transformer(
+                    cell_data, cell_offsets,
+                    return_attention=return_pma_attention,
+                )
         else:
-            cell_emb = torch.zeros(B, self.n_cell_types, self.d_embed, device=device)
+            cell_emb = torch.zeros(B, self.n_cell_types, self.n_pma_seeds * self.d_embed, device=device)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Fusion: combine all three branches
+        # Fusion: combine HGT + Cell branches
         # ─────────────────────────────────────────────────────────────────────
         # [B, n_cell_types, d_fused]
-        fused = self.fusion_layer(pseudobulk_emb, hgt_emb, cell_emb)
+        if self.use_gradient_checkpointing and self.training:
+            fused = torch.utils.checkpoint.checkpoint(
+                self.fusion_layer,
+                hgt_emb, cell_emb,
+                use_reentrant=False,
+            )
+        else:
+            fused = self.fusion_layer(hgt_emb, cell_emb)
 
         # ─────────────────────────────────────────────────────────────────────
         # Pathology encoding with region context
@@ -558,7 +553,6 @@ class CognitiveResilienceModel(PyroModule):
 
         if return_embeddings:
             output['embeddings'] = {
-                'pseudobulk': pseudobulk_emb,  # [B, n_cell_types, d_embed]
                 'hgt': hgt_emb,                # [B, n_cell_types, d_embed]
                 'cell': cell_emb,              # [B, n_cell_types, d_embed]
                 'fused': fused,                # [B, n_cell_types, d_fused]
@@ -583,8 +577,6 @@ class CognitiveResilienceModel(PyroModule):
         ccc_edge_index=None,
         ccc_edge_type=None,
         ccc_edge_attr=None,
-        cells=None,
-        cell_mask=None,
         cell_data=None,
         cell_offsets=None,
         cell_type_mask=None,
@@ -624,24 +616,17 @@ class CognitiveResilienceModel(PyroModule):
                 f"got {list(cell_type_mask.shape)}"
             )
 
-        has_flat = cell_data is not None and cell_offsets is not None
-        has_padded = cells is not None and cell_mask is not None
-        if not has_flat and not has_padded:
+        if cell_data is None or cell_offsets is None:
             raise ValueError(
-                "Must provide either (cell_data, cell_offsets) or (cells, cell_mask)"
+                "Must provide (cell_data, cell_offsets)"
             )
         if pathology is None:
             raise ValueError("pathology tensor is required")
 
-        # Branch 1: Pseudobulk + region
-        if self.use_pseudobulk_encoder:
-            region_encoded = self._encode_pseudobulk_per_region(region_pseudobulk, region_mask)
-            pseudobulk_emb, region_context, _ = self.region_handler(region_encoded, region_mask)
-        else:
-            pseudobulk_emb = torch.zeros(B, self.n_cell_types, self.d_embed, device=device)
-            region_context = torch.zeros(B, self.d_embed, device=device)
+        # Branch 1: HGT input pipeline + region handling + HGT
+        region_encoded = self._encode_hgt_input_per_region(region_pseudobulk, region_mask)
+        hgt_node_features, region_context, _ = self.region_handler(region_encoded, region_mask)
 
-        # Branch 2: HGT
         if self.use_hgt_encoder:
             if ccc_edge_index is None:
                 ccc_edge_index = torch.zeros(2, 0, dtype=torch.long, device=device)
@@ -649,26 +634,21 @@ class CognitiveResilienceModel(PyroModule):
                 ccc_edge_attr = torch.zeros(0, 1, device=device)
 
             hgt_emb = self.hgt_encoder(
-                pseudobulk_emb, ccc_edge_index, ccc_edge_type, ccc_edge_attr,
+                hgt_node_features, ccc_edge_index, ccc_edge_type, ccc_edge_attr,
             )
         else:
             hgt_emb = torch.zeros(B, self.n_cell_types, self.d_embed, device=device)
 
-        # Branch 3: Cell transformer
+        # Branch 2: Cell transformer
         if self.use_cell_transformer:
-            if has_flat:
-                cell_emb, _, _ = self.cell_transformer.forward_flat(
-                    cell_data, cell_offsets, return_attention=False, apply_selection_weights=True,
-                )
-            else:
-                cell_emb, _, _ = self.cell_transformer(
-                    cells, cell_mask, return_attention=False, apply_selection_weights=True,
-                )
+            cell_emb, _ = self.cell_transformer(
+                cell_data, cell_offsets, return_attention=False,
+            )
         else:
-            cell_emb = torch.zeros(B, self.n_cell_types, self.d_embed, device=device)
+            cell_emb = torch.zeros(B, self.n_cell_types, self.n_pma_seeds * self.d_embed, device=device)
 
         # Fusion + pathology + attention
-        fused = self.fusion_layer(pseudobulk_emb, hgt_emb, cell_emb)
+        fused = self.fusion_layer(hgt_emb, cell_emb)
         path_emb = self.pathology_encoder(pathology, region_context)
         attended, attention_weights = self.pathology_attention(
             fused, path_emb, cell_type_mask=cell_type_mask,
@@ -676,19 +656,6 @@ class CognitiveResilienceModel(PyroModule):
         )
 
         return {"attended": attended, "attention_weights": attention_weights}
-
-    def get_cell_type_importance(self) -> dict[str, float]:
-        """
-        Get cell type selection weights from CellTransformer.
-
-        Returns:
-            Dict mapping cell type name to importance weight
-        """
-        weights = self.cell_transformer.get_selection_weights()
-        return {
-            name: weights[idx].item()
-            for idx, name in enumerate(self.node_types)
-        }
 
     def get_region_importance(self) -> dict[str, float]:
         """
@@ -726,9 +693,9 @@ class CognitiveResilienceModel(PyroModule):
 
         Returns:
             Dict with 'total' and per-component counts:
-                'pseudobulk_encoder', 'region_handler', 'hgt_encoder',
-                'cell_transformer', 'fusion_layer', 'pathology_encoder',
-                'pathology_attention', 'prediction_head'.
+                'hgt_gene_gate', 'hgt_input_proj', 'region_handler',
+                'hgt_encoder', 'cell_transformer', 'fusion_layer',
+                'pathology_encoder', 'pathology_attention', 'prediction_head'.
         """
         def _count(module: nn.Module) -> int:
             return sum(
@@ -737,7 +704,8 @@ class CognitiveResilienceModel(PyroModule):
             )
 
         components = {
-            'pseudobulk_encoder': self.pseudobulk_encoder,
+            'hgt_gene_gate': self.hgt_gene_gate,
+            'hgt_input_proj': self.hgt_input_proj,
             'region_handler': self.region_handler,
             'hgt_encoder': self.hgt_encoder,
             'cell_transformer': self.cell_transformer,
@@ -782,7 +750,7 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
     Args:
         model_cfg: Model config section (config.model) with nested keys
             for hgt, set_transformer, pathology_attention, gene_gate,
-            cell_type_selector, head, and pseudobulk sub-configs.
+            head, and fusion sub-configs.
 
     Returns:
         Configured CognitiveResilienceModel instance.
@@ -790,6 +758,7 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
     head_type = model_cfg.get("head", {}).get("type", "deterministic")
     use_bayesian = head_type == "bayesian"
     use_torch_compile = model_cfg.get("use_torch_compile", False)
+    fusion_cfg = model_cfg.get("fusion", {})
     # node_types and edge_categories are intentionally not configurable —
     # they are fixed to the 31 Allen ABC cell types (CELL_TYPE_ORDER) and
     # 5 CellChatDB edge categories (ALL_EDGE_TYPES) from constants.py.
@@ -807,19 +776,17 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         n_inducing_points=model_cfg.set_transformer.n_inducing_points,
         n_attention_heads=model_cfg.pathology_attention.n_heads,
         gene_gate_temperature=_cfg_get(model_cfg.gene_gate, "initial_temperature", 2.0, "model.gene_gate"),
-        selection_temperature=_cfg_get(model_cfg.cell_type_selector, "selection_temperature", 1.0, "model.cell_type_selector"),
         use_bayesian_head=use_bayesian,
         d_head_hidden=model_cfg.head.d_hidden,
         dropout=_cfg_get(model_cfg, "dropout", 0.1, "model"),
         n_pathology_features=_cfg_get(model_cfg.pathology_attention, "n_pathology_features", 3, "model.pathology_attention"),
         n_pma_seeds=_cfg_get(model_cfg.set_transformer, "n_pma_seeds", 1, "model.set_transformer"),
-        mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") is not None else None,
-        use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
-        use_pseudobulk_encoder=model_cfg.get("use_pseudobulk_encoder", True),
         use_hgt_encoder=model_cfg.get("use_hgt_encoder", True),
         use_cell_transformer=model_cfg.get("use_cell_transformer", True),
         condition_on_cell_type=_cfg_get(model_cfg.set_transformer, "condition_on_cell_type", True, "model.set_transformer"),
         use_gradient_checkpointing=model_cfg.get("use_gradient_checkpointing", False),
         use_torch_compile=use_torch_compile,
         target_mean=model_cfg.head.get("target_mean", 0.0) or 0.0,
+        fusion_type=fusion_cfg.get("type", "concat"),
+        fusion_n_heads=fusion_cfg.get("n_heads", 4),
     )

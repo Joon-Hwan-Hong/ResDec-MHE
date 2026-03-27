@@ -60,7 +60,7 @@ data:
   # DataLoader
   dataloader:
     batch_size: 16
-    num_workers: 12  # 8-12 for PrecomputedDataset; reduce to 4 for on-the-fly AnnData mode
+    num_workers: 12  # Only used in AnnData mode; PrecomputedDataset always uses 0 workers (heap-loaded, no I/O)
     pin_memory: true
     prefetch_factor: 2
 
@@ -70,26 +70,21 @@ data:
 
 model:
   # Dimensions
-  n_genes: 4797  # 4000 HVGs + 797 CellChatDB L-R genes (from preprocessed AnnData)
+  n_genes: 4796  # 4000 HVGs + 796 CellChatDB L-R genes (from preprocessed AnnData)
   n_cell_types: 31
   # n_regions is fixed at 6 (from constants.N_REGIONS) — determined by dataset schema.
   # Do NOT add n_regions here; the model reads N_REGIONS from src.data.constants.
-  d_embed: 128
-  d_fused: 128
+  d_embed: 64   # HPO3/4 found 64 optimal (21/25 top trials)
+  d_fused: 64
   dropout: 0.1   # Shared dropout rate across branches
 
-  # Branch 1: Pseudobulk Encoder
-  pseudobulk:
-    mlp_hidden: [512, 256]
-    use_layer_norm: true
-
-  # Gene Attention Gate
+  # Gene Attention Gate (shared config for both HGT and CellTransformer gates)
   gene_gate:
     initial_temperature: 2.0
     # min_temperature, warmup_epochs, anneal_epochs, anneal_schedule are
     # controlled via training.temperature_annealing.* (not model config)
 
-  # Branch 2: HGT Encoder
+  # Branch 1: HGT Encoder (GeneAttentionGate → Linear → RegionHandler → HGT)
   hgt:
     n_layers: 3
     n_heads: 4
@@ -101,7 +96,7 @@ model:
       - "Non_protein_Signaling"
       - "Novel_Uncharacterized"
 
-  # Branch 3: Set Transformer (Cell Transformer)
+  # Branch 2: Cell Transformer (GeneAttentionGate → Set Transformer)
   set_transformer:
     n_isab_layers: 2
     n_inducing_points: 32
@@ -111,14 +106,13 @@ model:
     # max_cells_per_type and min_cells_threshold are controlled via
     # data.cell_sampling.* (not model config)
 
-  # Cell Type Selector (Soft Attention)
-  # Processes ALL 31 cell types with learned soft attention weights.
-  # No hard top-k selection - fully differentiable.
-  cell_type_selector:
-    selection_temperature: 1.0  # Higher = softer attention distribution
-
   # Region handling — n_regions is fixed at 6 (from constants.N_REGIONS).
   # RegionHandler uses learned weighted-mean pooling (see region_handler.py).
+
+  # Fusion Layer (merges HGT and CellTransformer embeddings)
+  fusion:
+    type: cross_attention  # "concat", "concat_normalized", "cross_attention", "crossfuse", "crossfuse_blend"
+    n_heads: 4             # Attention heads for attention-based fusion types (ignored by concat)
 
   # Pathology-Stratified Attention
   pathology_attention:
@@ -126,10 +120,9 @@ model:
     n_heads: 4
     n_pathology_features: 3
 
-  # Branch ablation flags (all true by default).
+  # Branch ablation flags (both true by default).
   # Set to false to disable a branch for ablation studies.
   # Disabled branches pass zeros to the fusion layer.
-  use_pseudobulk_encoder: true
   use_hgt_encoder: true
   use_cell_transformer: true
 
@@ -203,19 +196,27 @@ training:
 
   # Gradient modulation — OGM-GE (Peng et al., CVPR 2022)
   # Suppresses dominant branches to reduce gradient imbalance.
+  # NOTE: Ablation showed OGM-GE is harmful (R² drops 0.35). Disabled by default.
   gradient_modulation:
-    enabled: true
+    enabled: false
     method: "ogm_ge"
     alpha: 1.0              # Suppression sensitivity (paper tunes per dataset)
     ge_enabled: true         # GE noise injection for generalization
-    log_modulation: true     # Log k_i values to TensorBoard
+    log_modulation: false    # Log k_i values to TensorBoard
 
   # Mixed precision
+  # NOTE: Results are tied to this precision setting. Changing between bf16-mixed
+  # and 32-true produces different numerics (not a bug — expected FP behavior).
+  # Results are only reproducible on the same GPU architecture (TF32 rounding
+  # varies across generations, e.g., Ampere vs Ada Lovelace).
+  # For strict cross-machine reproducibility, set:
+  #   torch.set_float32_matmul_precision("highest")
+  # at the cost of ~2-3x slower float32 matmuls.
   precision: "bf16-mixed"  # "bf16-mixed" (Ada GPUs), "32-true" (debug), "16-mixed"
 
   # Distributed training
   devices: "auto"                # Device IDs: "auto", 1, 2, [0,1], etc.
-  strategy: "ddp"                # Pyro module_local_params=True handles param sync; tensorized HGT has no unused params
+  strategy: "ddp"                # subprocess-based DDP. Uses staggered MAP_SHARED loading + /dev/shm for zero-copy data sharing across ranks.
   lr_scaling: true               # Scale LR linearly with effective GPU count (Goyal et al. 2017)
 
   # Checkpointing
@@ -245,13 +246,12 @@ optuna:
   pruner:
     type: "median"
     n_startup_trials: 5
-    # n_warmup_steps: Number of FOLDS to complete before pruning (not epochs).
-    # With 5-fold CV, each fold trains to convergence. Pruning compares
-    # completed fold val_loss across trials. n_warmup_steps=1 means complete
-    # at least 1 fold before considering pruning.
-    # Within-fold warmup protection is handled by MinEpochEarlyStopping (min_epochs=20).
-    n_warmup_steps: 1
-    interval_steps: 1  # Report/check every N folds (1 = check after each fold for fastest pruning)
+    # n_warmup_steps: Number of EPOCHS to complete before pruning.
+    # Epoch-level pruning uses global_step = fold_idx * max_epochs + epoch
+    # to avoid cross-fold step collisions. n_warmup_steps=10 lets temperature
+    # and KL annealing warmup (5 epochs each) settle before the pruner acts.
+    n_warmup_steps: 10
+    interval_steps: 1  # Check at every validation epoch
   sampler:
     type: "tpe"
     seed: 42
@@ -259,42 +259,54 @@ optuna:
 
   # Search space
   search_space:
+    # Narrowed ranges from 100-trial HPO (round 1). Fixed categoricals where
+    # signal was unambiguous; continuous ranges tightened to top-25% region.
     lr:
       type: "loguniform"
-      low: 0.00001
-      high: 0.01
+      low: 0.00005
+      high: 0.001
     d_embed:
       type: "categorical"
-      choices: [64, 128, 256]
+      choices: [64]  # 21/25 top trials; 128/256 consistently worse
     dropout:
       type: "uniform"
-      low: 0.0
-      high: 0.3
+      low: 0.08
+      high: 0.28
     n_hgt_layers:
       type: "int"
       low: 2
-      high: 4
+      high: 2  # 24/25 top trials; 3-4 layers overfit
     beta:
       type: "uniform"
-      low: 0.0
-      high: 1.0
+      low: 0.03
+      high: 0.6
     weight_decay:
       type: "loguniform"
-      low: 0.000001
-      high: 0.01
+      low: 0.00005
+      high: 0.003
     batch_size:
       type: "categorical"
-      choices: [16, 32, 64]
+      choices: [16]  # 32/64 cause OOM on 48 GB GPUs
     n_heads:
       type: "categorical"
       choices: [2, 4, 8]
     n_inducing:
       type: "categorical"
-      choices: [16, 32, 64]
+      choices: [64]  # 15/25 top trials; mean_nll=0.65 vs 0.79 for 16
     gene_gate_temp:
       type: "uniform"
-      low: 0.1
-      high: 2.0
+      low: 0.2
+      high: 1.0
+    guide_lr:
+      type: "loguniform"
+      low: 0.001
+      high: 0.0025
+    fusion_type:
+      type: "categorical"
+      choices: ["concat_normalized", "cross_attention", "crossfuse", "crossfuse_blend"]
+    fusion_n_heads:
+      type: "categorical"
+      choices: [2, 4, 8]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Inference Configuration
@@ -348,14 +360,24 @@ error_handling:
 reproducibility:
   # Seed lives under experiment.seed (single source of truth)
   deterministic: true            # Use deterministic algorithms (slower but reproducible)
-  benchmark: false               # Disable cuDNN autotuner for reproducibility
+  benchmark: true                # cuDNN autotuner (reproducibility already broken, see below)
   # Note: Even with deterministic=true, CUDA runs are NOT bit-exact due to:
   #   1. scatter_add in HGT message passing (atomicAdd non-determinism)
   #   2. scatter_reduce_ in HGT softmax (amax reduction)
   #   3. nn.MultiheadAttention FlashAttention kernel with dropout
   # CPU runs ARE bit-exact. See src/utils/reproducibility.py for details.
+  #
   # For full reproducibility, also set PYTHONHASHSEED=<seed> in the
-  # launch environment (must be set before Python starts).
+  # launch environment (must be set before Python starts). The launch
+  # scripts (run_all_folds_ngpu.sh, run_fold_slurm.sh) set this
+  # automatically. HPO worker subprocesses inherit it from the
+  # orchestrator environment.
+  #
+  # GPU architecture matters: TF32 tensor core rounding differs across
+  # GPU generations (Ampere vs Ada Lovelace). Results are only
+  # reproducible on the same GPU architecture with the same precision
+  # setting. benchmark=false is required to avoid cuDNN autotuner
+  # selecting different algorithms across runs.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Visualization

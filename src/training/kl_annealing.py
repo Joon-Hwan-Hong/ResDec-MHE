@@ -21,24 +21,33 @@ from pyro.util import warn_if_nan
 class KLAnnealedELBO(TraceMeanField_ELBO):
     """TraceMeanField_ELBO with a tunable KL weight for annealing.
 
-    When kl_weight=1.0 and n_train=1, this is mathematically equivalent to
-    TraceMeanField_ELBO. When kl_weight<1.0, the KL divergence term is
-    down-weighted. The 1/N normalization (Graves 2011, Blundell et al. 2015)
-    amortizes the KL complexity cost across the training set.
+    When kl_weight=1.0, n_train=1, and temperature=1.0, this is mathematically
+    equivalent to TraceMeanField_ELBO. When kl_weight<1.0, the KL divergence
+    term is down-weighted. The 1/N normalization (Graves 2011, Blundell et al.
+    2015) amortizes the KL complexity cost across the training set.
+
+    Cold posterior tempering (Wenzel et al., ICML 2020): temperature < 1.0
+    scales down KL further, giving the posterior more freedom to fit data.
+    temperature=1.0 is standard Bayesian inference.
 
     Args:
         kl_weight: Multiplicative weight for the KL divergence term (0 to 1).
         n_train: Training set size N for 1/N KL normalization.
+        temperature: Cold posterior temperature T. KL is scaled by T.
+            T=1.0 is standard; T<1.0 down-weights KL (Wenzel et al., 2020).
         **kwargs: Passed to TraceMeanField_ELBO (e.g., num_particles).
     """
 
-    def __init__(self, kl_weight: float = 1.0, n_train: int = 1, **kwargs):
+    def __init__(self, kl_weight: float = 1.0, n_train: int = 1,
+                 temperature: float = 1.0, **kwargs):
         super().__init__(**kwargs)
         self.kl_weight = kl_weight
         self.n_train = n_train
+        self.temperature = temperature
 
     def __repr__(self) -> str:
-        return f"KLAnnealedELBO(kl_weight={self.kl_weight}, n_train={self.n_train}, num_particles={self.num_particles})"
+        return (f"KLAnnealedELBO(kl_weight={self.kl_weight}, n_train={self.n_train}, "
+                f"temperature={self.temperature}, num_particles={self.num_particles})")
 
     def differentiable_loss(self, model, guide, *args, **kwargs):
         """Compute KL-annealed ELBO loss.
@@ -53,7 +62,7 @@ class KLAnnealedELBO(TraceMeanField_ELBO):
         """Return (nll, weighted_kl, total) for logging.
 
         Returns:
-            Tuple of (nll, (kl_weight / n_train) * kl, nll + (kl_weight / n_train) * kl).
+            Tuple of (nll, T * (kl_weight / n_train) * kl, nll + T * (kl_weight / n_train) * kl).
             All three are differentiable tensors.
         """
         return self._compute_parts(model, guide, *args, **kwargs)
@@ -69,10 +78,11 @@ class KLAnnealedELBO(TraceMeanField_ELBO):
         with fallback to sampling-based KL when kl_divergence is not implemented.
 
         The 1/N normalization amortizes the KL complexity cost across the training
-        set (Graves 2011, Blundell et al. 2015).
+        set (Graves 2011, Blundell et al. 2015). Cold posterior tempering
+        (Wenzel et al., ICML 2020) further scales KL by temperature T.
 
         Returns:
-            Tuple of (nll, (kl_weight / n_train) * kl, nll + (kl_weight / n_train) * kl).
+            Tuple of (nll, T * (kl_weight / n_train) * kl, nll + T * (kl_weight / n_train) * kl).
         """
         # Accumulators start as Python 0.0 — torch's operator dispatch handles
         # device placement when the first tensor is added, avoiding the
@@ -135,7 +145,7 @@ class KLAnnealedELBO(TraceMeanField_ELBO):
             nll_total = nll_total + nll_particle / self.num_particles
             kl_total = kl_total + kl_particle / self.num_particles
 
-        weighted_kl = (self.kl_weight / self.n_train) * kl_total
+        weighted_kl = self.temperature * (self.kl_weight / self.n_train) * kl_total
         total = nll_total + weighted_kl
 
         warn_if_nan(total, "loss")

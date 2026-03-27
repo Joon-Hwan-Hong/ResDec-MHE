@@ -10,7 +10,6 @@ from src.models.components import (
     RegionHandler,
 )
 from src.models.branches import (
-    PseudobulkEncoder,
     HGTEncoderTensor,
     CellTransformer,
 )
@@ -35,7 +34,6 @@ __all__ = [
     "CellTypeSelector",
     "RegionHandler",
     # Branches
-    "PseudobulkEncoder",
     "HGTEncoderTensor",
     "CellTransformer",
     # Fusion

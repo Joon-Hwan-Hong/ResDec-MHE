@@ -1,19 +1,13 @@
 """
-Cell Transformer (Branch 3) for cell-level heterogeneity modeling.
+Cell Transformer branch for cell-level heterogeneity modeling.
 
-Combines CellTypeSelector with SetTransformerEncoder to capture within-cell-type
-variation for all cell types, weighted by learned importance.
+Uses SetTransformerEncoder to capture within-cell-type variation for all cell types.
 
 Architecture:
-    Input: Cell-level data [batch, n_cell_types, max_cells, n_genes]
-    → SetTransformerEncoder (per cell type, all 31 types)
-    → CellTypeSelector weights (soft attention, differentiable)
-    → Output: Weighted embeddings [batch, n_cell_types, d_embed]
-
-Design decision (2026-01-27):
-    Uses soft attention weighting instead of hard top-k selection.
-    This makes cell type selection fully differentiable, allowing the model
-    to learn which cell types are most relevant for predicting cognitive resilience.
+    Input: Flat cell data [total_cells, n_genes] + offsets [B, n_types + 1]
+    -> Gene gate -> input_proj on flat data -> Pad to [B*n_types, max_cells, d_model]
+    -> SetTransformerEncoder (per cell type, all 31 types)
+    -> Output: Embeddings [batch, n_cell_types, d_embed]
 """
 
 from typing import Optional
@@ -21,7 +15,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from src.models.components.cell_type_selector import CellTypeSelector
+from src.models.components.gene_attention_gate import GeneAttentionGate
 from src.models.components.set_transformer import SetTransformerEncoder
 
 
@@ -29,9 +23,8 @@ class CellTransformer(nn.Module):
     """
     Cell-level transformer for modeling within-cell-type heterogeneity.
 
-    Processes ALL cell types through SetTransformer and weights their
-    contributions using learned soft attention. This is fully differentiable,
-    allowing the model to learn which cell types are most relevant.
+    Processes ALL cell types through SetTransformerEncoder to produce
+    per-cell-type embeddings.
 
     Args:
         n_genes: Number of input genes
@@ -42,22 +35,18 @@ class CellTransformer(nn.Module):
         n_inducing: Number of inducing points for ISAB
         n_pma_seeds: Number of seed vectors for PMA pooling
         dropout: Dropout probability
-        selection_temperature: Temperature for cell type selection (higher = softer)
         use_gradient_checkpointing: Whether to use gradient checkpointing for memory savings
         condition_on_cell_type: Whether to use cell-type-conditioned inducing points.
             When True (default), each cell type gets a learned offset added to the
             shared inducing points, allowing the encoder to specialize per type.
+        gene_gate_temperature: Initial temperature for GeneAttentionGate softmax.
+            Higher = softer/more uniform, lower = sharper/more selective.
 
     Shape:
-        - cells: (batch, n_cell_types, max_cells, n_genes) cell expression
-        - cell_mask: (batch, n_cell_types, max_cells) valid cell mask
-        - Output: (batch, n_cell_types, d_model) weighted embeddings for ALL types
-
-    Note:
-        Unlike the previous hard top-k selection, this version:
-        1. Processes all 31 cell types (not just k selected)
-        2. Weights each embedding by learned soft attention
-        3. Is fully differentiable (gradients flow to selection_logits)
+        - cell_data: (total_cells, n_genes) concatenated cell expression
+        - cell_offsets: (B, n_cell_types + 1) cumulative offsets into cell_data
+        - Output: (B, n_cell_types, n_pma_seeds * d_model) embeddings for ALL types
+            When n_pma_seeds=1, output is (B, n_cell_types, d_model).
     """
 
     def __init__(
@@ -70,9 +59,9 @@ class CellTransformer(nn.Module):
         n_inducing: int = 32,
         n_pma_seeds: int = 1,
         dropout: float = 0.1,
-        selection_temperature: float = 1.0,
         use_gradient_checkpointing: bool = False,
         condition_on_cell_type: bool = True,
+        gene_gate_temperature: float = 2.0,
     ):
         super().__init__()
 
@@ -84,17 +73,31 @@ class CellTransformer(nn.Module):
         self.n_genes = n_genes
         self.n_cell_types = n_cell_types
         self.d_model = d_model
+        self.n_pma_seeds = n_pma_seeds
         self.condition_on_cell_type = condition_on_cell_type
 
-        # Cell type selector (soft attention weights, differentiable)
-        self.selector = CellTypeSelector(
+        # Gene attention gate: learns cell-type-specific gene importance
+        self.gene_gate = GeneAttentionGate(
             n_cell_types=n_cell_types,
-            temperature=selection_temperature,
+            n_genes=n_genes,
+            temperature=gene_gate_temperature,
+        )
+
+        # Input projection: applied to flat cell data BEFORE padding.
+        # This projects [total_cells, n_genes] -> [total_cells, d_model] so
+        # the padded tensor is [B*n_types, max_cells, d_model] (~0.13 GB)
+        # instead of [B*n_types, max_cells, n_genes] (~9.5 GB).
+        self.input_proj = nn.Sequential(
+            nn.Linear(n_genes, d_model),
+            nn.LayerNorm(d_model),
+            nn.Dropout(dropout),
         )
 
         # Set Transformer encoder (shared across all cell types)
+        # external_proj=True: input_proj is applied here in CellTransformer
+        # before padding, so SetTransformerEncoder skips its own projection.
         self.set_encoder = SetTransformerEncoder(
-            d_input=n_genes,
+            d_input=d_model,
             d_model=d_model,
             n_heads=n_heads,
             n_isab_layers=n_isab_layers,
@@ -103,157 +106,66 @@ class CellTransformer(nn.Module):
             dropout=dropout,
             use_gradient_checkpointing=use_gradient_checkpointing,
             n_cell_types=n_cell_types if condition_on_cell_type else None,
+            external_proj=True,
         )
-
-    @property
-    def selection_temperature(self) -> float:
-        """Current temperature for cell type selection."""
-        return self.selector.temperature
-
-    @selection_temperature.setter
-    def selection_temperature(self, value: float) -> None:
-        """Set temperature for cell type selection."""
-        self.selector.temperature = value
 
     def forward(
-        self,
-        cells: torch.Tensor,
-        cell_mask: Optional[torch.Tensor] = None,
-        return_attention: bool = False,
-        apply_selection_weights: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Encode cell-level data for ALL cell types with soft selection weighting.
-
-        Uses batched processing for efficiency: all cell types are processed
-        together in a single forward pass through SetTransformerEncoder, which
-        is ~31x faster than sequential processing.
-
-        Args:
-            cells: Cell expression (batch, n_cell_types, max_cells, n_genes)
-            cell_mask: Valid cell mask (batch, n_cell_types, max_cells), True=valid
-            return_attention: Whether to return PMA attention weights
-            apply_selection_weights: Whether to scale embeddings by selection weights.
-                Setting False disables gradient flow to CellTypeSelector.selection_logits
-                (the parameter will not learn). Use only for ablation studies.
-                CognitiveResilienceModel always passes True.
-
-        Returns:
-            embeddings: (batch, n_cell_types, d_model) weighted embeddings for ALL types
-            selection_weights: (n_cell_types,) soft attention weights (sum to 1)
-            attention: Attention weights [B, n_cell_types, n_heads, n_seeds, max_cells] (if requested)
-
-        Note:
-            Selection weights are differentiable - gradients flow back to
-            selector.selection_logits, allowing the model to learn which
-            cell types are most important for the prediction task.
-        """
-        if cells.dim() != 4:
-            raise ValueError(
-                f"Expected 4D cells (batch, n_cell_types, max_cells, n_genes), "
-                f"got shape {cells.shape}"
-            )
-
-        batch_size, n_ct, max_cells, n_genes = cells.shape
-
-        if n_ct != self.n_cell_types:
-            raise ValueError(
-                f"Expected {self.n_cell_types} cell types, got {n_ct}"
-            )
-        if n_genes != self.n_genes:
-            raise ValueError(
-                f"Expected {self.n_genes} genes, got {n_genes}"
-            )
-
-        # Get soft selection weights (differentiable)
-        selection_weights = self.selector.get_selection_weights()  # (n_cell_types,)
-
-        # ─────────────────────────────────────────────────────────────────────
-        # BATCHED PROCESSING: Process all cell types in one forward pass
-        # ─────────────────────────────────────────────────────────────────────
-        # Reshape from [B, n_cell_types, max_cells, n_genes]
-        #           to [B * n_cell_types, max_cells, n_genes]
-        cells_flat = cells.view(batch_size * self.n_cell_types, max_cells, n_genes)
-
-        # Similarly reshape mask
-        mask_flat = None
-        if cell_mask is not None:
-            mask_flat = cell_mask.view(batch_size * self.n_cell_types, max_cells)
-
-        # Generate cell type indices for conditioned inducing points
-        # Pattern: [0,1,...,n_ct-1, 0,1,...,n_ct-1, ...] repeated B times
-        ct_idx = None
-        if self.condition_on_cell_type:
-            ct_idx = torch.arange(
-                self.n_cell_types, device=cells.device
-            ).repeat(batch_size)
-
-        # Single forward pass through Set Transformer
-        embeddings_flat, attention_flat = self.set_encoder(
-            cells_flat, mask=mask_flat, return_attention=return_attention,
-            ct_idx=ct_idx,
-        )
-        # embeddings_flat: [B * n_cell_types, d_model]
-        # attention_flat: [B * n_cell_types, n_heads, n_seeds, max_cells] or None
-
-        # Reshape back to [B, n_cell_types, d_model]
-        embeddings = embeddings_flat.view(batch_size, self.n_cell_types, self.d_model)
-
-        # Handle attention weights for interpretability
-        attention_out = None
-        if return_attention and attention_flat is not None:
-            # Reshape: [B * n_cell_types, n_heads, n_seeds, max_cells] -> [B, n_cell_types, ...]
-            attn_shape = attention_flat.shape[1:]
-            attention_out = attention_flat.view(batch_size, self.n_cell_types, *attn_shape)
-
-        # Apply selection weights (differentiable scaling)
-        if apply_selection_weights:
-            # Scale each cell type's embedding by its selection weight
-            # selection_weights: (n_cell_types,) -> (1, n_cell_types, 1)
-            weights = selection_weights.view(1, -1, 1)
-            embeddings = embeddings * weights
-
-        return embeddings, selection_weights.detach(), attention_out
-
-    def forward_flat(
         self,
         cell_data: torch.Tensor,       # [total_cells, n_genes]
         cell_offsets: torch.Tensor,     # [B, n_types + 1]
         return_attention: bool = False,
-        apply_selection_weights: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Forward pass from flat cell representation.
 
-        Reconstructs padded tensor from flat representation and delegates
-        to the SetTransformerEncoder. Mathematically identical to forward().
+        Reconstructs padded groups from flat representation and processes
+        through SetTransformerEncoder.
 
         Args:
             cell_data: [total_cells, n_genes] concatenated cell expressions
             cell_offsets: [B, n_types + 1] absolute offsets into cell_data
             return_attention: Whether to return PMA attention weights
-            apply_selection_weights: Whether to scale embeddings by selection weights
 
         Returns:
-            embeddings: (B, n_cell_types, d_model) weighted embeddings
-            selection_weights: (n_cell_types,) soft attention weights (sum to 1)
-            attention: Attention weights (if requested)
+            embeddings: (B, n_cell_types, n_pma_seeds * d_model) embeddings.
+                Each cell type carries n_pma_seeds distinct subpopulation summaries
+                concatenated along the feature dim. When n_pma_seeds=1, shape is
+                (B, n_cell_types, d_model).
+            attention: Attention weights (if requested), else None
         """
         B = cell_offsets.shape[0]
         n_types = self.n_cell_types
         device = cell_data.device
 
-        # Get soft selection weights
-        selection_weights = self.selector.get_selection_weights()
-
         # Compute per-(sample, type) cell counts
         counts = cell_offsets[:, 1:] - cell_offsets[:, :-1]  # [B, n_types]
+
+        # Apply gene attention gate BEFORE SetTransformer processing.
+        # Gate weights are [n_cell_types, n_genes]; we expand them to match
+        # the flat cell_data layout using each cell's type index.
+        total_cells = cell_data.shape[0]
+        if total_cells > 0:
+            counts_flat = counts.reshape(-1)  # [B * n_types]
+            # Compute scaled gate weights once: [n_cell_types, n_genes]
+            scaled_gate = self.gene_gate.get_gate_weights() * self.gene_gate.n_genes
+            # Build per-cell type index via repeat_interleave
+            type_indices = torch.arange(n_types, device=device).repeat(B)
+            per_cell_type = torch.repeat_interleave(type_indices, counts_flat)
+            # Apply gate: gather the correct row for each cell, multiply
+            cell_data = cell_data * scaled_gate[per_cell_type].to(cell_data.dtype)
+
+        # Project flat cell data BEFORE padding: [total_cells, n_genes] -> [total_cells, d_model]
+        # This means the padded tensor is [B*n_types, max_cells, d_model] (~0.13 GB)
+        # instead of [B*n_types, max_cells, n_genes] (~9.5 GB with 4797 genes).
+        if total_cells > 0:
+            cell_data = self.input_proj(cell_data)
+
         max_cells = max(int(counts.max().item()), 1) if counts.numel() > 0 else 1
 
-        # Build padded tensor [B * n_types, max_cells, n_genes]
-        n_genes = cell_data.shape[1] if cell_data.shape[0] > 0 else self.n_genes
+        # Build padded tensor [B * n_types, max_cells, d_model]
+        pad_dim = self.d_model
         cells_grouped = torch.zeros(
-            B * n_types, max_cells, n_genes,
-            device=device, dtype=cell_data.dtype,
+            B * n_types, max_cells, pad_dim,
+            device=device, dtype=cell_data.dtype if total_cells > 0 else torch.float32,
         )
         mask_grouped = torch.zeros(
             B * n_types, max_cells,
@@ -289,31 +201,37 @@ class CellTransformer(nn.Module):
             ct_idx=ct_idx,
         )
 
-        embeddings = embeddings_flat.view(B, n_types, self.d_model)
+        # When n_pma_seeds > 1, SetTransformerEncoder returns
+        # (B*n_types, n_pma_seeds, d_model). Reshape to concatenate seeds
+        # along feature dim: (B, n_types, n_pma_seeds * d_model).
+        # This preserves each seed's distinct subpopulation summary for
+        # the fusion layer to learn how to integrate.
+        if self.n_pma_seeds > 1:
+            embeddings_flat = embeddings_flat.reshape(
+                B * n_types, self.n_pma_seeds * self.d_model
+            )  # (B*n_types, n_pma_seeds * d_model)
+        embeddings = embeddings_flat.reshape(B, n_types, -1)
 
         attention_out = None
         if return_attention and attention_flat is not None:
             attn_shape = attention_flat.shape[1:]
             attention_out = attention_flat.view(B, n_types, *attn_shape)
 
-        if apply_selection_weights:
-            weights = selection_weights.view(1, -1, 1)
-            embeddings = embeddings * weights
+        return embeddings, attention_out
 
-        return embeddings, selection_weights.detach(), attention_out
+    @property
+    def gene_gate_temperature(self) -> float:
+        """Current gene gate temperature (delegates to GeneAttentionGate)."""
+        return self.gene_gate.temperature
 
-    def get_selection_weights(self) -> torch.Tensor:
-        """
-        Get soft selection weights for all cell types.
-
-        Returns:
-            Tensor of shape (n_cell_types,) with selection probabilities
-        """
-        return self.selector.get_selection_weights()
+    @gene_gate_temperature.setter
+    def gene_gate_temperature(self, value: float) -> None:
+        """Set gene gate temperature (delegates to GeneAttentionGate)."""
+        self.gene_gate.temperature = value
 
     def extra_repr(self) -> str:
         return (
             f"n_genes={self.n_genes}, n_cell_types={self.n_cell_types}, "
-            f"d_model={self.d_model}, temperature={self.selection_temperature}, "
+            f"d_model={self.d_model}, "
             f"condition_on_cell_type={self.condition_on_cell_type}"
         )
