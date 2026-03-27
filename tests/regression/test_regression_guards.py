@@ -75,9 +75,18 @@ class TestEmptyCCCEdgesNoSyntheticInjection:
         model.eval()
 
         pseudobulk = torch.randn(B, N_CELL_TYPES, 50)
-        cells = torch.randn(B, N_CELL_TYPES, 4, 50)
-        cell_mask = torch.ones(B, N_CELL_TYPES, 4, dtype=torch.bool)
         pathology = torch.randn(B, 3)
+
+        # Flat cell format: 4 cells per type, all types
+        cells_per_type = 4
+        total_cells_per_sample = N_CELL_TYPES * cells_per_type
+        # cell_data: [total_cells_all_samples, n_genes]
+        cell_data = torch.randn(B * total_cells_per_sample, 50)
+        # cell_offsets: [B, n_cell_types + 1] with cumulative offsets
+        single_offsets = torch.arange(0, (N_CELL_TYPES + 1) * cells_per_type, cells_per_type, dtype=torch.long)
+        cell_offsets = torch.stack([
+            single_offsets + i * total_cells_per_sample for i in range(B)
+        ])
 
         # Empty CCC edges -- zero edges per sample
         with torch.no_grad():
@@ -86,8 +95,8 @@ class TestEmptyCCCEdgesNoSyntheticInjection:
                 ccc_edge_index=torch.zeros(2, 0, dtype=torch.long),
                 ccc_edge_type=torch.zeros(0, dtype=torch.long),
                 ccc_edge_attr=torch.zeros(0, 1),
-                cells=cells,
-                cell_mask=cell_mask,
+                cell_data=cell_data,
+                cell_offsets=cell_offsets,
                 pathology=pathology,
             )
 

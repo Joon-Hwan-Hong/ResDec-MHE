@@ -103,13 +103,20 @@ def create_mock_dataset_sample(
     Returns:
         Dictionary matching CognitiveResilienceDataset.__getitem__() output
     """
+    # Flat cell format: cell_data [total_cells, n_genes], cell_offsets [N_CELL_TYPES + 1]
+    total_cells = N_CELL_TYPES * max_cells
+    cell_data = torch.randn(total_cells, n_genes)
+    cell_offsets = torch.arange(
+        0, (N_CELL_TYPES + 1) * max_cells, max_cells, dtype=torch.long,
+    )
+
     sample = {
         "subject_id": subject_id,
         "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
         "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
         "cell_counts": torch.randint(10, 100, (N_CELL_TYPES,)),
-        "cells": torch.randn(N_CELL_TYPES, max_cells, n_genes),
-        "cell_mask": torch.ones(N_CELL_TYPES, max_cells, dtype=torch.bool),
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, n_edges)),
         "ccc_edge_type": torch.randint(0, N_EDGE_TYPES, (n_edges,)),
         "ccc_edge_attr": torch.rand(n_edges, 1),
@@ -183,8 +190,8 @@ def convert_collated_batch_to_model_input(
     - ccc_edge_index: [2, E_total] flat edge indices with batch offsets
     - ccc_edge_type: [E_total] edge type indices
     - ccc_edge_attr: [E_total, 1] edge attributes
-    - cells: [B, n_cell_types, max_cells, n_genes]
-    - cell_mask: [B, n_cell_types, max_cells]
+    - cell_data: [total_cells, n_genes] flat concatenated cells
+    - cell_offsets: [B, n_cell_types + 1] cumulative offsets
     - pathology: [B, 3]
     - cognition: [B, 1] (optional)
 
@@ -199,8 +206,8 @@ def convert_collated_batch_to_model_input(
     result = {
         "region_pseudobulk": region_pseudobulk,
         "region_mask": collated["region_mask"],
-        "cells": collated["cells"],
-        "cell_mask": collated["cell_mask"],
+        "cell_data": collated["cell_data"],
+        "cell_offsets": collated["cell_offsets"],
         "pathology": collated["pathology"],
         "cognition": collated["cognition"],
     }
@@ -232,8 +239,8 @@ def convert_multiregion_collated_to_model_input(collated: dict) -> dict:
     result = {
         "region_pseudobulk": region_pseudobulk,
         "region_mask": collated["region_mask"],
-        "cells": collated["cells"],
-        "cell_mask": collated["cell_mask"],
+        "cell_data": collated["cell_data"],
+        "cell_offsets": collated["cell_offsets"],
         "pathology": collated["pathology"],
         "cognition": collated["cognition"],
     }
@@ -321,14 +328,14 @@ class TestCollatedBatchKeysMatchModelInput:
         ]
         collated = collate_fn(batch)
 
-        # Keys expected from collate_fn output
+        # Keys expected from collate_fn output (flat cell format)
         required_keys = [
             "pseudobulk",
             "region_mask",
             "ccc_edge_index",
             "ccc_edge_attr",
-            "cells",
-            "cell_mask",
+            "cell_data",
+            "cell_offsets",
             "pathology",
             "cognition",
             "batch_size",
@@ -357,12 +364,12 @@ class TestCollatedBatchKeysMatchModelInput:
         collated = collate_fn(batch)
         model_input = convert_collated_batch_to_model_input(collated, n_genes)
 
-        # Model forward should accept these exact keys
+        # Model forward should accept these exact keys (flat cell format)
         required_forward_params = [
             "region_pseudobulk",
             "region_mask",
-            "cells",
-            "cell_mask",
+            "cell_data",
+            "cell_offsets",
             "pathology",
         ]
 
@@ -401,8 +408,8 @@ class TestCollatedBatchShapesCompatible:
             batch_size, N_REGIONS, N_CELL_TYPES, n_genes
         )
 
-    def test_cells_shape(self, n_genes, max_cells):
-        """Cells should have shape [B, n_cell_types, max_cells, n_genes]."""
+    def test_cell_data_shape(self, n_genes, max_cells):
+        """cell_data should have shape [total_cells, n_genes] (flat format)."""
         batch_size = 4
         batch = [
             create_mock_dataset_sample(n_genes=n_genes, max_cells=max_cells)
@@ -410,10 +417,11 @@ class TestCollatedBatchShapesCompatible:
         ]
         collated = collate_fn(batch)
 
-        assert collated["cells"].shape == (batch_size, N_CELL_TYPES, max_cells, n_genes)
+        total_cells = batch_size * N_CELL_TYPES * max_cells
+        assert collated["cell_data"].shape == (total_cells, n_genes)
 
-    def test_cell_mask_shape(self, n_genes, max_cells):
-        """Cell mask should have shape [B, n_cell_types, max_cells]."""
+    def test_cell_offsets_shape(self, n_genes, max_cells):
+        """cell_offsets should have shape [B, n_cell_types + 1] (flat format)."""
         batch_size = 4
         batch = [
             create_mock_dataset_sample(n_genes=n_genes, max_cells=max_cells)
@@ -421,8 +429,8 @@ class TestCollatedBatchShapesCompatible:
         ]
         collated = collate_fn(batch)
 
-        assert collated["cell_mask"].shape == (batch_size, N_CELL_TYPES, max_cells)
-        assert collated["cell_mask"].dtype == torch.bool
+        assert collated["cell_offsets"].shape == (batch_size, N_CELL_TYPES + 1)
+        assert collated["cell_offsets"].dtype == torch.long
 
     def test_region_mask_shape(self, n_genes, max_cells):
         """Region mask should have shape [B, n_regions]."""
@@ -648,7 +656,7 @@ class TestMixedBatchSingleAndMultiRegion:
 
         # Enable gradients on inputs
         model_input["region_pseudobulk"].requires_grad_(True)
-        model_input["cells"].requires_grad_(True)
+        model_input["cell_data"].requires_grad_(True)
 
         output = model(**model_input)
         loss = output["mean"].sum()
@@ -656,7 +664,7 @@ class TestMixedBatchSingleAndMultiRegion:
 
         # Check gradients flow to inputs
         assert model_input["region_pseudobulk"].grad is not None
-        assert model_input["cells"].grad is not None
+        assert model_input["cell_data"].grad is not None
 
 
 class TestModelOutputKeysAndShapes:

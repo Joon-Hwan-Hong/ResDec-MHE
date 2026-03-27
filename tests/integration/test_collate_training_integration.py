@@ -63,6 +63,13 @@ def _make_sample(
     if available_regions is None:
         available_regions = list(range(n_regions))
 
+    # Flat cell format: cell_data [total_cells, n_genes], cell_offsets [n_cell_types + 1]
+    total_cells = n_cell_types * max_cells
+    cell_data = torch.randn(total_cells, n_genes)
+    cell_offsets = torch.arange(
+        0, (n_cell_types + 1) * max_cells, max_cells, dtype=torch.long,
+    )
+
     sample = {
         "subject_id": subject_id,
         "pseudobulk": torch.randn(n_cell_types, n_genes),
@@ -70,8 +77,8 @@ def _make_sample(
         "cell_counts": torch.full((n_cell_types,), max_cells, dtype=torch.long),
         "pathology": torch.randn(3),
         "cognition": torch.randn(1),
-        "cells": torch.randn(n_cell_types, max_cells, n_genes),
-        "cell_mask": torch.ones(n_cell_types, max_cells, dtype=torch.bool),
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         "region_mask": torch.zeros(n_regions, dtype=torch.bool),
     }
 
@@ -201,13 +208,25 @@ class TestCollateToTrainingStep:
     def test_bayesian_forward_produces_finite_loss(self):
         """Bayesian head: configure_optimizers -> training_step -> finite loss."""
         import pyro
+        from unittest.mock import MagicMock, patch
         pyro.clear_param_store()
 
         config = _make_config("bayesian")
         module = CognitiveResilienceLightningModule(config)
 
-        # Prototype the guide (normally done inside configure_optimizers)
-        module.configure_optimizers()
+        # Prototype the guide (normally done inside configure_optimizers).
+        # configure_optimizers accesses self.trainer.datamodule.train_dataset
+        # for 1/N KL scaling, so mock it.
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_ds = MagicMock()
+        mock_ds.__len__ = MagicMock(return_value=100)
+        mock_trainer.datamodule.train_dataset = mock_ds
+        with patch.object(
+            type(module), "trainer",
+            new_callable=lambda: property(lambda self: mock_trainer),
+        ):
+            module.configure_optimizers()
 
         samples = [_make_sample(f"subj_{i}") for i in range(4)]
         batch = collate_for_hgt_multiregion(samples)
@@ -263,28 +282,33 @@ class TestCollateToTrainingStep:
                         f"Region {r} should be False for sample {b}"
                     )
 
-    def test_variable_cell_counts_padded_correctly(self):
-        """Samples with max_cells=5 and max_cells=15 padded to 15."""
+    def test_variable_cell_counts_concatenated_correctly(self):
+        """Samples with max_cells=5 and max_cells=15 produce correct flat cell_data."""
         s1 = _make_sample("subj_0", max_cells=5)
         s2 = _make_sample("subj_1", max_cells=15)
         batch = collate_for_hgt_multiregion([s1, s2])
 
-        cells = batch["cells"]
-        cell_mask = batch["cell_mask"]
+        cell_data = batch["cell_data"]
+        cell_offsets = batch["cell_offsets"]
 
-        # Padded to max in batch (15)
-        assert cells.shape[1] == N_CELL_TYPES
-        assert cells.shape[2] == 15, f"Expected max_cells=15, got {cells.shape[2]}"
-        assert cell_mask.shape[2] == 15
-
-        # Sample 0 (originally 5 cells): mask True for [:5], False for [5:]
-        assert cell_mask[0, :, :5].all(), "First 5 cells should be valid for sample 0"
-        assert not cell_mask[0, :, 5:].any(), (
-            "Padded positions should be False for sample 0"
+        # Total cells: 5*N_CELL_TYPES + 15*N_CELL_TYPES
+        total_cells = 5 * N_CELL_TYPES + 15 * N_CELL_TYPES
+        assert cell_data.shape == (total_cells, N_GENES), (
+            f"Expected cell_data shape ({total_cells}, {N_GENES}), got {cell_data.shape}"
         )
 
-        # Sample 1 (originally 15 cells): all True
-        assert cell_mask[1, :, :15].all(), "All 15 cells should be valid for sample 1"
+        # cell_offsets: [2, N_CELL_TYPES + 1] (one row per sample)
+        assert cell_offsets.shape == (2, N_CELL_TYPES + 1)
+
+        # Sample 0 offsets should span 5 cells per type
+        s0_offsets = cell_offsets[0]
+        for ct in range(N_CELL_TYPES):
+            assert (s0_offsets[ct + 1] - s0_offsets[ct]) == 5
+
+        # Sample 1 offsets should span 15 cells per type
+        s1_offsets = cell_offsets[1]
+        for ct in range(N_CELL_TYPES):
+            assert (s1_offsets[ct + 1] - s1_offsets[ct]) == 15
 
     def test_no_edges_still_works(self):
         """Samples with n_edges=0 -> collate -> training_step -> finite loss."""

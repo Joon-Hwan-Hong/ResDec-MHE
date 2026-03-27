@@ -259,7 +259,7 @@ class TestKLAnnealingCallback:
         # kl_weight should be set to alpha_min at epoch 0
         assert abs(elbo.kl_weight - 0.01) < 1e-6
         pl_module.log.assert_called_once_with(
-            "kl_weight", pytest.approx(0.01, abs=1e-6), rank_zero_only=True,
+            "kl_weight", pytest.approx(0.01, abs=1e-6), rank_zero_only=True, sync_dist=True,
         )
 
     def test_on_train_epoch_start_no_elbo_is_noop(self):

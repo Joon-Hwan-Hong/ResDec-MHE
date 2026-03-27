@@ -21,14 +21,21 @@ def create_mock_dataset_sample(
     max_cells: int = 50,
     n_edges: int = 20,
 ) -> dict:
-    """Create a sample matching CognitiveResilienceDataset output format."""
+    """Create a sample matching CognitiveResilienceDataset output format (flat cell format)."""
+    # Flat cell format: cell_data [total_cells, n_genes], cell_offsets [N_CELL_TYPES + 1]
+    total_cells = N_CELL_TYPES * max_cells
+    cell_data = torch.randn(total_cells, n_genes)
+    cell_offsets = torch.arange(
+        0, (N_CELL_TYPES + 1) * max_cells, max_cells, dtype=torch.long,
+    )
+
     return {
         "subject_id": "TEST_SUBJECT",
         "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
         "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
         "cell_counts": torch.randint(10, 100, (N_CELL_TYPES,)),
-        "cells": torch.randn(N_CELL_TYPES, max_cells, n_genes),
-        "cell_mask": torch.ones(N_CELL_TYPES, max_cells, dtype=torch.bool),
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, n_edges)),
         "ccc_edge_type": torch.randint(0, 5, (n_edges,)),
         "ccc_edge_attr": torch.rand(n_edges, 1),
@@ -44,13 +51,49 @@ def create_mock_sample_with_empty_cell_types(
     n_edges: int = 20,
     empty_types: list[int] = None,
 ) -> dict:
-    """Create sample with some cell types having all cells masked."""
-    sample = create_mock_dataset_sample(n_genes, max_cells, n_edges)
-    if empty_types:
-        for ct_idx in empty_types:
-            sample["cell_mask"][ct_idx, :] = False
-            sample["cell_type_mask"][ct_idx] = False
-    return sample
+    """Create sample with some cell types having zero cells (flat format).
+
+    For empty cell types, the cell_offsets for that type have equal start/end
+    (zero cells), and cell_type_mask is set to False.
+    """
+    if empty_types is None:
+        empty_types = []
+
+    # Build per-type cell counts
+    cells_per_type = []
+    for ct in range(N_CELL_TYPES):
+        if ct in empty_types:
+            cells_per_type.append(0)
+        else:
+            cells_per_type.append(max_cells)
+
+    total_cells = sum(cells_per_type)
+    cell_data = torch.randn(max(total_cells, 0), n_genes) if total_cells > 0 else torch.empty(0, n_genes)
+
+    # Build offsets from per-type counts
+    offsets = [0]
+    for c in cells_per_type:
+        offsets.append(offsets[-1] + c)
+    cell_offsets = torch.tensor(offsets, dtype=torch.long)
+
+    cell_type_mask = torch.ones(N_CELL_TYPES, dtype=torch.bool)
+    for ct_idx in empty_types:
+        cell_type_mask[ct_idx] = False
+
+    return {
+        "subject_id": "TEST_SUBJECT",
+        "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
+        "cell_type_mask": cell_type_mask,
+        "cell_counts": torch.tensor(cells_per_type, dtype=torch.long),
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
+        "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, n_edges)),
+        "ccc_edge_type": torch.randint(0, 5, (n_edges,)),
+        "ccc_edge_attr": torch.rand(n_edges, 1),
+        "pathology": torch.rand(3),
+        "cognition": torch.randn(1),
+        "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
+    }
 
 
 class TestDatasetToCollate:
@@ -65,7 +108,8 @@ class TestDatasetToCollate:
 
         assert result["batch_size"] == 4
         assert result["pseudobulk"].shape[0] == 4
-        assert result["cells"].shape[0] == 4
+        assert "cell_data" in result
+        assert "cell_offsets" in result
 
     def test_collate_for_hgt_accepts_dataset_format(self):
         """collate_for_hgt should accept dataset output format."""
@@ -105,8 +149,8 @@ class TestCollateToCellTransformer:
 
         # Forward pass should work
         embeddings, selection_weights, _ = transformer(
-            collated["cells"],
-            collated["cell_mask"],
+            collated["cell_data"],
+            collated["cell_offsets"],
         )
 
         # Verify output shapes
@@ -132,9 +176,9 @@ class TestCollateToCellTransformer:
         )
 
         # Enable gradients for input
-        cells = collated["cells"].clone().requires_grad_(True)
+        cells = collated["cell_data"].clone().requires_grad_(True)
 
-        embeddings, _, _ = transformer(cells, collated["cell_mask"])
+        embeddings, _, _ = transformer(cells, collated["cell_offsets"])
         loss = embeddings.sum()
         loss.backward()
 
@@ -171,8 +215,8 @@ class TestEndToEndPipeline:
         )
 
         embeddings, selection_weights, attention = transformer(
-            collated["cells"],
-            collated["cell_mask"],
+            collated["cell_data"],
+            collated["cell_offsets"],
             return_attention=True,
         )
 
@@ -189,13 +233,10 @@ class TestEndToEndPipeline:
 
         n_genes = 100
 
-        # Create samples with sparse cell masks
+        # Create samples with few cells per type (sparse)
         samples = []
         for i in range(4):
-            sample = create_mock_dataset_sample(n_genes=n_genes, max_cells=100)
-            # Make cell mask sparse - only 10 valid cells per type
-            sample["cell_mask"] = torch.zeros(N_CELL_TYPES, 100, dtype=torch.bool)
-            sample["cell_mask"][:, :10] = True
+            sample = create_mock_dataset_sample(n_genes=n_genes, max_cells=10)
             samples.append(sample)
 
         collated = collate_fn(samples)
@@ -209,7 +250,7 @@ class TestEndToEndPipeline:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cells"], collated["cell_mask"])
+        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         # Should produce valid outputs despite sparse data
         assert torch.isfinite(embeddings).all()
@@ -221,13 +262,11 @@ class TestEndToEndPipeline:
 
         n_genes = 100
 
+        # Create samples with varying numbers of cells per type
         samples = []
         for i in range(4):
-            sample = create_mock_dataset_sample(n_genes=n_genes, max_cells=100)
-            # Vary number of valid cells per sample
-            n_valid = (i + 1) * 20  # 20, 40, 60, 80
-            sample["cell_mask"] = torch.zeros(N_CELL_TYPES, 100, dtype=torch.bool)
-            sample["cell_mask"][:, :n_valid] = True
+            max_cells = (i + 1) * 20  # 20, 40, 60, 80
+            sample = create_mock_dataset_sample(n_genes=n_genes, max_cells=max_cells)
             samples.append(sample)
 
         collated = collate_fn(samples)
@@ -241,7 +280,7 @@ class TestEndToEndPipeline:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cells"], collated["cell_mask"])
+        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         # All samples should have valid embeddings
         assert embeddings.shape[0] == 4
@@ -430,7 +469,7 @@ class TestCrossBranchConsistency:
             n_isab_layers=2,
             n_inducing=16,
         )
-        cell_out, _, _ = cell_transformer(collated["cells"], collated["cell_mask"])
+        cell_out, _, _ = cell_transformer(collated["cell_data"], collated["cell_offsets"])
 
         # Branch 2: HGT (verify output dimension matches)
         hgt_encoder = HGTEncoderTensor(
@@ -462,7 +501,7 @@ class TestCrossBranchConsistency:
         cell_transformer = CellTransformer(n_genes=n_genes, n_cell_types=N_CELL_TYPES)
 
         pb_out = pb_encoder(collated["pseudobulk"])
-        cell_out, _, _ = cell_transformer(collated["cells"], collated["cell_mask"])
+        cell_out, _, _ = cell_transformer(collated["cell_data"], collated["cell_offsets"])
 
         # Both should have n_cell_types in dimension 1
         assert pb_out.shape[1] == N_CELL_TYPES
@@ -529,7 +568,7 @@ class TestDataLoaderIntegration:
         n_batches = 0
         for batch in loader:
             assert torch.isfinite(batch["pseudobulk"]).all()
-            assert torch.isfinite(batch["cells"]).all()
+            assert torch.isfinite(batch["cell_data"]).all()
             n_batches += 1
 
         assert n_batches == 4  # 10 samples / 3 = 4 batches (last has 1 sample)
@@ -561,7 +600,7 @@ class TestGradientFlowAudit:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cells"], collated["cell_mask"])
+        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
         loss = embeddings.sum()
         loss.backward()
 
@@ -626,7 +665,7 @@ class TestGradientFlowAudit:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cells"], collated["cell_mask"])
+        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
         loss = embeddings.sum()
         loss.backward()
 
@@ -668,7 +707,7 @@ class TestPipelineEdgeCases:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cells"], collated["cell_mask"])
+        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         # Should produce finite outputs despite empty cell types
         assert torch.isfinite(embeddings).all()
@@ -709,7 +748,7 @@ class TestPipelineEdgeCases:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cells"], collated["cell_mask"])
+        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         assert embeddings.shape[0] == 1
         assert torch.isfinite(embeddings).all()
@@ -733,7 +772,7 @@ class TestNumericalStabilityEndToEnd:
         for i in range(4):
             sample = create_mock_dataset_sample(n_genes=n_genes)
             sample["pseudobulk"] = sample["pseudobulk"] * 100
-            sample["cells"] = sample["cells"] * 100
+            sample["cell_data"] = sample["cell_data"] * 100
             samples.append(sample)
 
         collated = collate_fn(samples)
@@ -747,7 +786,7 @@ class TestNumericalStabilityEndToEnd:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cells"], collated["cell_mask"])
+        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         assert torch.isfinite(embeddings).all()
 
@@ -761,7 +800,7 @@ class TestNumericalStabilityEndToEnd:
         for i in range(4):
             sample = create_mock_dataset_sample(n_genes=n_genes)
             sample["pseudobulk"] = sample["pseudobulk"] * 1e-6
-            sample["cells"] = sample["cells"] * 1e-6
+            sample["cell_data"] = sample["cell_data"] * 1e-6
             samples.append(sample)
 
         collated = collate_fn(samples)
@@ -775,7 +814,7 @@ class TestNumericalStabilityEndToEnd:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cells"], collated["cell_mask"])
+        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         assert torch.isfinite(embeddings).all()
 
@@ -798,7 +837,7 @@ class TestNumericalStabilityEndToEnd:
 
         pb_out = pb_encoder(collated["pseudobulk"])
         cell_out, weights, attention = cell_transformer(
-            collated["cells"], collated["cell_mask"], return_attention=True
+            collated["cell_data"], collated["cell_offsets"], return_attention=True
         )
 
         # Check all outputs

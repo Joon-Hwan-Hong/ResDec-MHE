@@ -333,7 +333,7 @@ class TestFusionLayerDimensionValidation:
         hgt = torch.randn(2, N_CELL_TYPES, 64)
         cell = torch.randn(2, N_CELL_TYPES, 32)  # Wrong: 32 instead of 64
 
-        with pytest.raises(ValueError, match="d_embed=64 for cell_emb"):
+        with pytest.raises(ValueError, match="d_cell_emb=64 for cell_emb"):
             layer(pseudobulk, hgt, cell)
 
 

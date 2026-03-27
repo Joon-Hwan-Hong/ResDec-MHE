@@ -475,6 +475,15 @@ class Predictor:
                 num_samples, *shape
             )
 
+        # fc_mean.bias is a regular nn.Parameter (not a PyroSample), so it won't
+        # appear in the guide's posterior samples. Get it from the model directly
+        # and expand to [S, 1] for batched matmul compatibility.
+        if "fc_mean.bias" not in head_weights:
+            fc_mean_bias = self.model.prediction_head.fc_mean.bias.detach()  # [1]
+            head_weights["fc_mean.bias"] = fc_mean_bias.unsqueeze(0).expand(
+                num_samples, -1,
+            )  # [S, 1]
+
         # Batched forward pass: run all posterior samples simultaneously
         # via batched matmul instead of num_samples sequential head calls.
         # attended: [B, d] -> [S, B, d]

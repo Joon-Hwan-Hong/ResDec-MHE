@@ -269,3 +269,27 @@ def set_random_seeds(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+@pytest.fixture(autouse=True)
+def clear_pyro_param_store():
+    """Clear Pyro's global param store and reset settings before every test.
+
+    Pyro uses a global param store that persists across tests. If a test
+    creates Pyro parameters (e.g., via SVI, AutoDiagonalNormal) and another
+    test later creates a new BayesianPredictionHead with the same parameter
+    names, the stale entries collide — the new guide sees nn.Parameter objects
+    instead of Pyro's unconstrained params, causing
+    'Parameter has no attribute unconstrained' errors.
+
+    Also resets module_local_params to False (Pyro default). Some tests
+    import scripts.train which calls pyro.settings.set(module_local_params=True)
+    at module scope. This global setting persists across tests and breaks SVI
+    tests that expect parameters in the global param store.
+
+    Clearing before (not after) each test ensures a clean slate regardless
+    of whether the previous test cleaned up after itself.
+    """
+    import pyro
+    pyro.clear_param_store()
+    pyro.settings.set(module_local_params=False)

@@ -297,15 +297,20 @@ class TestRealCollateInference:
     """Verify real collate_for_hgt_multiregion produces batches the model accepts."""
 
     def _make_hgt_sample(self, idx):
-        """Create sample with HGT-compatible edge dicts and region data."""
+        """Create sample with HGT-compatible edge dicts and region data (flat cell format)."""
         n_edges = 10
+        total_cells = N_CELL_TYPES * MAX_CELLS
+        cell_data = torch.randn(total_cells, N_GENES)
+        cell_offsets = torch.arange(
+            0, (N_CELL_TYPES + 1) * MAX_CELLS, MAX_CELLS, dtype=torch.long,
+        )
         return {
             "subject_id": f"SUBJ_{idx:03d}",
             "pseudobulk": torch.randn(N_CELL_TYPES, N_GENES),
             "cognition": torch.randn(1),
             "pathology": torch.randn(3),
-            "cells": torch.randn(N_CELL_TYPES, MAX_CELLS, N_GENES),
-            "cell_mask": torch.ones(N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
             "cell_counts": torch.full((N_CELL_TYPES,), MAX_CELLS, dtype=torch.long),
             "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
@@ -344,8 +349,8 @@ class TestRealCollateInference:
                 region_mask=batch.get("region_mask"),
                 pseudobulk=batch.get("pseudobulk"),
                 cell_type_mask=batch.get("cell_type_mask"),
-                cells=batch.get("cells"),
-                cell_mask=batch.get("cell_mask"),
+                cell_data=batch.get("cell_data"),
+                cell_offsets=batch.get("cell_offsets"),
                 pathology=batch.get("pathology"),
                 ccc_edge_index=batch.get("ccc_edge_index"),
                 ccc_edge_type=batch.get("ccc_edge_type"),
@@ -463,32 +468,67 @@ class TestBayesianCheckpointResume:
         config = _make_config("bayesian")
         module = CognitiveResilienceLightningModule(config)
 
-        # Create synthetic data with simple collate
+        # Create synthetic data with simple collate (flat cell format)
         class _SimpleDS(torch.utils.data.Dataset):
             def __len__(self):
                 return 8
             def __getitem__(self, idx):
+                total_cells = N_CELL_TYPES * MAX_CELLS
+                cell_data = torch.randn(total_cells, N_GENES)
+                cell_offsets = torch.arange(
+                    0, (N_CELL_TYPES + 1) * MAX_CELLS, MAX_CELLS, dtype=torch.long,
+                )
                 return {
                     "pseudobulk": torch.randn(N_CELL_TYPES, N_GENES),
                     "cognition": torch.randn(1),
                     "pathology": torch.randn(3),
                     "region_pseudobulk": torch.randn(N_REGIONS, N_CELL_TYPES, N_GENES),
                     "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
-                    "cells": torch.randn(N_CELL_TYPES, MAX_CELLS, N_GENES),
-                    "cell_mask": torch.ones(N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+                    "cell_data": cell_data,
+                    "cell_offsets": cell_offsets,
                     "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
                 }
 
         def _collate(batch):
             result = {}
+            # Handle cell_data / cell_offsets specially (flat format)
+            if "cell_data" in batch[0]:
+                all_cell_data = []
+                all_cell_offsets = []
+                cumulative = 0
+                for b in batch:
+                    all_cell_data.append(b["cell_data"])
+                    all_cell_offsets.append(b["cell_offsets"] + cumulative)
+                    cumulative += int(b["cell_offsets"][-1])
+                result["cell_data"] = torch.cat(all_cell_data, dim=0)
+                result["cell_offsets"] = torch.stack(all_cell_offsets)
             for key in batch[0]:
+                if key in ("cell_data", "cell_offsets"):
+                    continue
                 if isinstance(batch[0][key], torch.Tensor):
                     result[key] = torch.stack([b[key] for b in batch])
+            result["batch_size"] = len(batch)
             return result
 
         ds = _SimpleDS()
-        train_dl = torch.utils.data.DataLoader(ds, batch_size=4, collate_fn=_collate)
-        val_dl = torch.utils.data.DataLoader(ds, batch_size=4, collate_fn=_collate)
+
+        # Bayesian SVI requires trainer.datamodule.train_dataset for 1/N KL scaling
+        class _SimpleDataModule(pl.LightningDataModule):
+            def __init__(self, dataset, collate_fn):
+                super().__init__()
+                self.train_dataset = dataset
+                self.val_dataset = dataset
+                self._collate_fn = collate_fn
+            def train_dataloader(self):
+                return torch.utils.data.DataLoader(
+                    self.train_dataset, batch_size=4, collate_fn=self._collate_fn,
+                )
+            def val_dataloader(self):
+                return torch.utils.data.DataLoader(
+                    self.val_dataset, batch_size=4, collate_fn=self._collate_fn,
+                )
+
+        datamodule = _SimpleDataModule(ds, _collate)
 
         ckpt_dir = tmp_path / "ckpts"
         ckpt_dir.mkdir()
@@ -505,7 +545,7 @@ class TestBayesianCheckpointResume:
             enable_progress_bar=False, enable_model_summary=False,
             logger=False, deterministic=True,
         )
-        trainer.fit(module, train_dataloaders=train_dl, val_dataloaders=val_dl)
+        trainer.fit(module, datamodule=datamodule)
 
         # Verify checkpoint exists
         last_ckpt = ckpt_dir / "last.ckpt"
@@ -526,7 +566,7 @@ class TestBayesianCheckpointResume:
         # dtype objects (UInt32DType etc.) that can't be allowlisted exhaustively.
         # Safe here since we just created this checkpoint.
         trainer2.fit(
-            module2, train_dataloaders=train_dl, val_dataloaders=val_dl,
+            module2, datamodule=datamodule,
             ckpt_path=str(last_ckpt), weights_only=False,
         )
 

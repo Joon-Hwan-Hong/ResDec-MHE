@@ -81,6 +81,13 @@ class SyntheticDataset(torch.utils.data.Dataset):
                 edge_index_dict[key] = torch.tensor([[0], [0]], dtype=torch.long)
                 edge_attr_dict[key] = torch.rand(1, 1)
 
+        # Flat cell format: cell_data [total_cells, n_genes], cell_offsets [n_cell_types + 1]
+        total_cells = self.n_cell_types * self.max_cells
+        cell_data = torch.randn(total_cells, self.n_genes)
+        cell_offsets = torch.arange(
+            0, (self.n_cell_types + 1) * self.max_cells, self.max_cells, dtype=torch.long,
+        )
+
         return {
             "pseudobulk": torch.randn(self.n_cell_types, self.n_genes),
             "cognition": torch.randn(1),
@@ -89,10 +96,8 @@ class SyntheticDataset(torch.utils.data.Dataset):
                 self.n_regions, self.n_cell_types, self.n_genes
             ),
             "region_mask": torch.ones(self.n_regions, dtype=torch.bool),
-            "cells": torch.randn(self.n_cell_types, self.max_cells, self.n_genes),
-            "cell_mask": torch.ones(
-                self.n_cell_types, self.max_cells, dtype=torch.bool
-            ),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             "cell_type_mask": torch.ones(self.n_cell_types, dtype=torch.bool),
             "edge_index_dict": edge_index_dict,
             "edge_attr_dict": edge_attr_dict,
@@ -100,9 +105,27 @@ class SyntheticDataset(torch.utils.data.Dataset):
 
 
 def simple_collate(batch):
-    """Stack tensors and collect dicts from a list of sample dicts."""
+    """Stack tensors and collect dicts from a list of sample dicts.
+
+    Handles flat cell format: cell_data is concatenated and cell_offsets
+    are adjusted with cumulative offsets across samples.
+    """
     result = {}
+    # Handle cell_data / cell_offsets specially (flat format)
+    if "cell_data" in batch[0]:
+        all_cell_data = []
+        all_cell_offsets = []
+        cumulative = 0
+        for b in batch:
+            all_cell_data.append(b["cell_data"])
+            all_cell_offsets.append(b["cell_offsets"] + cumulative)
+            cumulative += int(b["cell_offsets"][-1])
+        result["cell_data"] = torch.cat(all_cell_data, dim=0)
+        result["cell_offsets"] = torch.stack(all_cell_offsets)
+
     for key in batch[0]:
+        if key in ("cell_data", "cell_offsets"):
+            continue  # Already handled above
         if isinstance(batch[0][key], torch.Tensor):
             result[key] = torch.stack([b[key] for b in batch])
         elif isinstance(batch[0][key], dict):
@@ -110,6 +133,7 @@ def simple_collate(batch):
             result[key + "_list"] = [b[key] for b in batch]
         else:
             result[key] = [b[key] for b in batch]
+    result["batch_size"] = len(batch)
     return result
 
 
@@ -244,6 +268,29 @@ def make_smoke_config(head_type: str) -> OmegaConf:
     return OmegaConf.create(cfg)
 
 
+class SyntheticDataModule(pl.LightningDataModule):
+    """Wraps SyntheticDataset for Bayesian SVI which needs trainer.datamodule.train_dataset."""
+
+    def __init__(self, train_dataset, val_dataset, batch_size, collate_fn):
+        super().__init__()
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self._batch_size = batch_size
+        self._collate_fn = collate_fn
+
+    def train_dataloader(self):
+        return torch.utils.data.DataLoader(
+            self.train_dataset, batch_size=self._batch_size, shuffle=True,
+            num_workers=0, collate_fn=self._collate_fn,
+        )
+
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(
+            self.val_dataset, batch_size=self._batch_size, shuffle=False,
+            num_workers=0, collate_fn=self._collate_fn,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
@@ -292,7 +339,7 @@ def val_loader(synthetic_dataset):
 
 @pytest.mark.slow
 @pytest.mark.parametrize("head_type", ["deterministic", "bayesian"])
-def test_full_pipeline_smoke(head_type, train_loader, val_loader, tmp_path):
+def test_full_pipeline_smoke(head_type, synthetic_dataset, train_loader, val_loader, tmp_path):
     """
     Full pipeline smoke test: data -> train -> checkpoint -> predict.
 
@@ -344,7 +391,18 @@ def test_full_pipeline_smoke(head_type, train_loader, val_loader, tmp_path):
     )
 
     # ── Step 3: Train for 2 epochs ──
-    trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    # Bayesian SVI requires trainer.datamodule.train_dataset for 1/N KL scaling,
+    # so we use a LightningDataModule wrapper instead of raw dataloaders.
+    if head_type == "bayesian":
+        datamodule = SyntheticDataModule(
+            train_dataset=synthetic_dataset,
+            val_dataset=synthetic_dataset,
+            batch_size=BATCH_SIZE,
+            collate_fn=simple_collate,
+        )
+        trainer.fit(module, datamodule=datamodule)
+    else:
+        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     # ── Step 4: Verify checkpoint exists ──
     last_ckpt = checkpoint_dir / "last.ckpt"
