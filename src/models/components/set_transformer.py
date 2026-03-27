@@ -146,6 +146,9 @@ class ISAB(nn.Module):
         n_heads: Number of attention heads
         n_inducing: Number of inducing points (m)
         dropout: Dropout probability
+        n_cell_types: Number of cell types for conditioned inducing points.
+            When set, a zero-initialized [n_cell_types, d_model] embedding is
+            added; at forward time, ct_idx selects a per-sample offset.
 
     Shape:
         - Input: (batch, n_cells, d_model)
@@ -158,16 +161,26 @@ class ISAB(nn.Module):
         n_heads: int,
         n_inducing: int = 32,
         dropout: float = 0.1,
+        n_cell_types: Optional[int] = None,
     ):
         super().__init__()
 
         self.d_model = d_model
         self.n_inducing = n_inducing
 
-        # Learnable inducing points
-        self.inducing_points = nn.Parameter(
-            torch.randn(n_inducing, d_model) * 0.02
-        )
+        # Learnable inducing points (Xavier initialization, matching PMA seed vectors)
+        self.inducing_points = nn.Parameter(torch.empty(n_inducing, d_model))
+        nn.init.xavier_uniform_(self.inducing_points)
+
+        # Optional cell-type-conditioned offset for inducing points.
+        # When active, each cell type gets inducing = base + embed[ct],
+        # allowing the shared encoder to specialize attention patterns per type.
+        # Zero-initialized so behavior matches unconditional at init.
+        self.cell_type_embed: Optional[nn.Parameter] = None
+        if n_cell_types is not None:
+            self.cell_type_embed = nn.Parameter(
+                torch.zeros(n_cell_types, d_model)
+            )
 
         # Two MABs: one for each attention direction
         self.mab1 = MultiheadAttentionBlock(d_model, n_heads, dropout=dropout)
@@ -177,6 +190,7 @@ class ISAB(nn.Module):
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        ct_idx: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Forward pass.
@@ -184,6 +198,9 @@ class ISAB(nn.Module):
         Args:
             x: Input tensor (batch, n_cells, d_model)
             mask: Boolean mask (batch, n_cells), True = valid cell
+            ct_idx: Cell type index per sample (batch,), optional.
+                When provided and cell_type_embed exists, inducing points
+                are offset by a learned per-type embedding.
 
         Returns:
             Updated tensor (batch, n_cells, d_model)
@@ -192,6 +209,13 @@ class ISAB(nn.Module):
 
         # Expand inducing points for batch
         inducing = self.inducing_points.unsqueeze(0).expand(batch_size, -1, -1)
+
+        # Cell-type-conditioned inducing points
+        if ct_idx is not None and self.cell_type_embed is not None:
+            # ct_idx: [batch] — cell type index per sample
+            # cell_type_embed[ct_idx]: [batch, d_model] → [batch, 1, d_model]
+            # Broadcasts to offset all inducing points for each sample
+            inducing = inducing + self.cell_type_embed[ct_idx].unsqueeze(1)
 
         # Create padding mask for attention (True = ignore)
         key_padding_mask = None
@@ -204,7 +228,13 @@ class ISAB(nn.Module):
         # Step 2: Cells attend to inducing points → updated cells
         output, _ = self.mab2(x, h)
 
+        # Skip connection: identity path for gradient flow
+        # This guarantees gradient ≥ identity through the ISAB block,
+        # preventing gradient starvation through the LayerNorm Jacobian
+        output = output + x
+
         # Zero out padded positions to prevent garbage representations
+        # (applied after skip so masked positions don't leak input values)
         if mask is not None:
             output = output * mask.unsqueeze(-1).to(output.dtype)
 
@@ -306,6 +336,9 @@ class SetTransformerEncoder(nn.Module):
         n_inducing: Number of inducing points for ISAB
         n_pma_seeds: Number of seed vectors for PMA pooling
         dropout: Dropout probability
+        use_gradient_checkpointing: Whether to use gradient checkpointing
+        n_cell_types: Number of cell types for conditioned inducing points.
+            Passed through to ISAB layers. None disables conditioning.
 
     Shape:
         - Input: (batch, n_cells, d_input)
@@ -323,6 +356,7 @@ class SetTransformerEncoder(nn.Module):
         n_pma_seeds: int = 1,
         dropout: float = 0.1,
         use_gradient_checkpointing: bool = False,
+        n_cell_types: Optional[int] = None,
     ):
         super().__init__()
 
@@ -340,7 +374,7 @@ class SetTransformerEncoder(nn.Module):
 
         # Stack of ISAB blocks
         self.isab_layers = nn.ModuleList([
-            ISAB(d_model, n_heads, n_inducing, dropout)
+            ISAB(d_model, n_heads, n_inducing, dropout, n_cell_types=n_cell_types)
             for _ in range(n_isab_layers)
         ])
 
@@ -356,6 +390,7 @@ class SetTransformerEncoder(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         return_attention: bool = False,
+        ct_idx: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Encode cell set to fixed-size representation.
@@ -364,6 +399,8 @@ class SetTransformerEncoder(nn.Module):
             x: Cell expression (batch, n_cells, d_input)
             mask: Valid cell mask (batch, n_cells), True = valid
             return_attention: Whether to return PMA attention weights
+            ct_idx: Cell type index per sample (batch,), optional.
+                Passed through to ISAB layers for conditioned inducing points.
 
         Returns:
             embedding: (batch, d_model) if n_pma_seeds=1, else (batch, n_seeds, d_model)
@@ -415,6 +452,7 @@ class SetTransformerEncoder(nn.Module):
             # Process only valid samples through attention
             x_valid = x[valid_indices]
             mask_valid = mask[valid_indices]
+            ct_idx_valid = ct_idx[valid_indices] if ct_idx is not None else None
 
             # Zero masked positions before input_proj to prevent NaN propagation
             # (NaN * 0 = NaN in IEEE 754, so use masked_fill instead of multiply)
@@ -423,11 +461,11 @@ class SetTransformerEncoder(nn.Module):
             if self.use_gradient_checkpointing and self.training:
                 h_valid = grad_checkpoint(self.input_proj, x_valid, use_reentrant=False)
                 for isab in self.isab_layers:
-                    h_valid = grad_checkpoint(isab, h_valid, mask_valid, use_reentrant=False)
+                    h_valid = grad_checkpoint(isab, h_valid, mask_valid, ct_idx_valid, use_reentrant=False)
             else:
                 h_valid = self.input_proj(x_valid)
                 for isab in self.isab_layers:
-                    h_valid = isab(h_valid, mask_valid)
+                    h_valid = isab(h_valid, mask_valid, ct_idx=ct_idx_valid)
             pooled_valid, attention_valid = self.pma(
                 h_valid, mask_valid, return_attention=return_attention
             )
@@ -467,11 +505,11 @@ class SetTransformerEncoder(nn.Module):
             if self.use_gradient_checkpointing and self.training:
                 h = grad_checkpoint(self.input_proj, x, use_reentrant=False)
                 for isab in self.isab_layers:
-                    h = grad_checkpoint(isab, h, mask, use_reentrant=False)
+                    h = grad_checkpoint(isab, h, mask, ct_idx, use_reentrant=False)
             else:
                 h = self.input_proj(x)
                 for isab in self.isab_layers:
-                    h = isab(h, mask)
+                    h = isab(h, mask, ct_idx=ct_idx)
             pooled, attention = self.pma(h, mask, return_attention=return_attention)
             if self.n_pma_seeds == 1:
                 pooled = pooled.squeeze(1)  # (batch, d_model)

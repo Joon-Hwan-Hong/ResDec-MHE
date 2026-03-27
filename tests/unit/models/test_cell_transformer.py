@@ -794,3 +794,76 @@ class TestCellTransformerFlatInput:
 
         assert cell_data.grad is not None
         assert not torch.all(cell_data.grad == 0)
+
+
+# ============================================================================
+# Task 5: Cell-type conditioning in CellTransformer
+# ============================================================================
+
+
+class TestCellTransformerCellTypeConditioning:
+    """Tests for cell-type-conditioned inducing points in CellTransformer."""
+
+    def test_condition_on_cell_type_default_true(self):
+        """CellTransformer should enable cell type conditioning by default."""
+        from src.models.branches.cell_transformer import CellTransformer
+        ct = CellTransformer(n_genes=100, n_cell_types=31, d_model=64, n_heads=4)
+        assert ct.condition_on_cell_type is True
+        # Verify ISAB layers have cell_type_embed
+        for isab in ct.set_encoder.isab_layers:
+            assert isab.cell_type_embed is not None
+
+    def test_condition_on_cell_type_disabled(self):
+        """Setting condition_on_cell_type=False should disable conditioning."""
+        from src.models.branches.cell_transformer import CellTransformer
+        ct = CellTransformer(
+            n_genes=100, n_cell_types=31, d_model=64, n_heads=4,
+            condition_on_cell_type=False,
+        )
+        assert ct.condition_on_cell_type is False
+        for isab in ct.set_encoder.isab_layers:
+            assert isab.cell_type_embed is None
+
+    def test_forward_with_conditioning(self):
+        """forward() should pass ct_idx to SetTransformerEncoder."""
+        import torch
+        from src.models.branches.cell_transformer import CellTransformer
+        torch.manual_seed(42)
+        ct = CellTransformer(
+            n_genes=100, n_cell_types=4, d_model=64, n_heads=4,
+            n_isab_layers=1, n_inducing=8,
+            condition_on_cell_type=True,
+        )
+        # Initialize embed for visible effect
+        for isab in ct.set_encoder.isab_layers:
+            torch.nn.init.normal_(isab.cell_type_embed, std=0.1)
+
+        cells = torch.randn(2, 4, 10, 100)
+        mask = torch.ones(2, 4, 10, dtype=torch.bool)
+        emb, _, _ = ct(cells, cell_mask=mask)
+        assert emb.shape == (2, 4, 64)
+
+    def test_forward_flat_with_conditioning(self):
+        """forward_flat() should also pass ct_idx."""
+        import torch
+        from src.models.branches.cell_transformer import CellTransformer
+        torch.manual_seed(42)
+        ct = CellTransformer(
+            n_genes=100, n_cell_types=4, d_model=64, n_heads=4,
+            n_isab_layers=1, n_inducing=8,
+            condition_on_cell_type=True,
+        )
+
+        # Build flat representation: 2 samples, 4 types, 5 cells each
+        n_cells = 5
+        B, n_types = 2, 4
+        cell_data = torch.randn(B * n_types * n_cells, 100)
+        # Each sample has n_types * n_cells cells laid out contiguously
+        # Sample 0: offsets [0, 5, 10, 15, 20], Sample 1: offsets [20, 25, 30, 35, 40]
+        offsets = torch.stack([
+            torch.arange(0, n_types + 1) * n_cells + b * n_types * n_cells
+            for b in range(B)
+        ])
+
+        emb, _, _ = ct.forward_flat(cell_data, offsets)
+        assert emb.shape == (2, 4, 64)

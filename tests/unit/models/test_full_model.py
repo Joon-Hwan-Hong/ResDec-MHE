@@ -4,6 +4,7 @@ Unit tests for CognitiveResilienceModel (full end-to-end model).
 Focus areas:
 - TestInitialization: Component creation verification
 - TestForwardPass: Output structure and shapes
+- TestCellTypeConditioningConfig: Config wiring for condition_on_cell_type
 
 Note: Full gradient flow and integration tests are in Task 8.
 """
@@ -12,7 +13,7 @@ import pytest
 import torch
 
 from src.data.constants import N_CELL_TYPES, N_REGIONS
-from src.models.full_model import CognitiveResilienceModel
+from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 
 
 class TestInitialization:
@@ -385,12 +386,12 @@ class TestInterpretability:
         assert counts['pseudobulk_encoder'] == 168_750
         assert counts['region_handler'] == 198
         assert counts['hgt_encoder'] == 136_649
-        assert counts['cell_transformer'] == 40_031
+        assert counts['cell_transformer'] == 41_023
         assert counts['fusion_layer'] == 3_168
         assert counts['pathology_encoder'] == 1_456
         assert counts['pathology_attention'] == 3_908
         assert counts['prediction_head'] == 817
-        assert counts['total'] == 354_977
+        assert counts['total'] == 355_969
 
     def test_num_parameters_trainable_only_false(self, model):
         """num_parameters(trainable_only=False) should include all params."""
@@ -622,4 +623,134 @@ class TestEdgeCases:
 
         with pytest.raises(ValueError, match="Must provide either region_pseudobulk or pseudobulk"):
             small_model(**inputs)
+
+
+class TestBranchAblation:
+    """Test branch ablation flags."""
+
+    @pytest.fixture
+    def sample_inputs(self):
+        B = 2
+        n_genes = 50
+        n_cell_types = N_CELL_TYPES
+        max_cells = 10
+        n_edges = 5
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
+        return {
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
+            'ccc_edge_attr': torch.rand(B * n_edges, 1),
+            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
+            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'pathology': torch.randn(B, 3),
+            'cognition': torch.randn(B, 1),
+        }
+
+    def _make_model(self, **overrides):
+        defaults = dict(
+            n_genes=50, n_cell_types=N_CELL_TYPES, d_embed=32, d_fused=32,
+            d_cond=16, n_regions=N_REGIONS, n_hgt_layers=1, n_hgt_heads=4,
+            n_isab_layers=1, n_inducing_points=4, n_attention_heads=4,
+            use_bayesian_head=False, d_head_hidden=16, dropout=0.0,
+        )
+        defaults.update(overrides)
+        return CognitiveResilienceModel(**defaults)
+
+    def test_disable_cell_transformer(self, sample_inputs):
+        """Model runs with cell transformer disabled."""
+        model = self._make_model(use_cell_transformer=False)
+        output = model(**sample_inputs)
+        assert 'mean' in output
+        assert output['mean'].shape == (2, 1)
+
+    def test_disable_hgt_encoder(self, sample_inputs):
+        """Model runs with HGT encoder disabled."""
+        model = self._make_model(use_hgt_encoder=False)
+        output = model(**sample_inputs)
+        assert 'mean' in output
+        assert output['mean'].shape == (2, 1)
+
+    def test_disable_pseudobulk_encoder(self, sample_inputs):
+        """Model runs with pseudobulk encoder disabled."""
+        model = self._make_model(use_pseudobulk_encoder=False)
+        output = model(**sample_inputs)
+        assert 'mean' in output
+        assert output['mean'].shape == (2, 1)
+
+    def test_disabled_branch_produces_zero_embeddings(self, sample_inputs):
+        """Disabled branch should contribute zeros to fusion."""
+        model = self._make_model(use_cell_transformer=False)
+        output = model(**sample_inputs, return_embeddings=True)
+        cell_emb = output['embeddings']['cell']
+        assert (cell_emb == 0).all(), "Disabled cell transformer should produce all-zero embeddings"
+
+    def test_all_branches_enabled_by_default(self):
+        """Default model has all branches enabled."""
+        model = self._make_model()
+        assert model.use_pseudobulk_encoder is True
+        assert model.use_hgt_encoder is True
+        assert model.use_cell_transformer is True
+
+
+class TestCellTypeConditioningConfig:
+    """Tests for condition_on_cell_type config wiring."""
+
+    def test_default_config_enables_conditioning(self):
+        """Default config should enable cell type conditioning."""
+        from omegaconf import OmegaConf
+        cfg = OmegaConf.load("configs/default.yaml")
+        model = build_model_from_config(cfg.model)
+        assert model.cell_transformer.condition_on_cell_type is True
+
+    def test_config_can_disable_conditioning(self):
+        """Setting condition_on_cell_type=false should disable it."""
+        from omegaconf import OmegaConf
+        cfg = OmegaConf.load("configs/default.yaml")
+        cfg.model.set_transformer.condition_on_cell_type = False
+        model = build_model_from_config(cfg.model)
+        assert model.cell_transformer.condition_on_cell_type is False
+        for isab in model.cell_transformer.set_encoder.isab_layers:
+            assert isab.cell_type_embed is None
+
+    def test_constructor_passes_condition_on_cell_type(self):
+        """CognitiveResilienceModel constructor passes condition_on_cell_type to CellTransformer."""
+        model = CognitiveResilienceModel(
+            n_genes=50,
+            n_cell_types=N_CELL_TYPES,
+            d_embed=32,
+            d_fused=32,
+            d_cond=16,
+            n_regions=N_REGIONS,
+            n_hgt_layers=1,
+            n_hgt_heads=4,
+            n_isab_layers=1,
+            n_inducing_points=4,
+            n_attention_heads=4,
+            use_bayesian_head=False,
+            d_head_hidden=16,
+            condition_on_cell_type=False,
+        )
+        assert model.cell_transformer.condition_on_cell_type is False
+
+    def test_constructor_defaults_conditioning_true(self):
+        """CognitiveResilienceModel defaults condition_on_cell_type=True."""
+        model = CognitiveResilienceModel(
+            n_genes=50,
+            n_cell_types=N_CELL_TYPES,
+            d_embed=32,
+            d_fused=32,
+            d_cond=16,
+            n_regions=N_REGIONS,
+            n_hgt_layers=1,
+            n_hgt_heads=4,
+            n_isab_layers=1,
+            n_inducing_points=4,
+            n_attention_heads=4,
+            use_bayesian_head=False,
+            d_head_hidden=16,
+        )
+        assert model.cell_transformer.condition_on_cell_type is True
 

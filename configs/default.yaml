@@ -107,6 +107,7 @@ model:
     n_inducing_points: 32
     n_pma_seeds: 1
     n_heads: 4                   # Set Transformer attention heads (independent from HGT heads)
+    condition_on_cell_type: true  # Cell-type-conditioned inducing points (novel)
     # max_cells_per_type and min_cells_threshold are controlled via
     # data.cell_sampling.* (not model config)
 
@@ -124,6 +125,13 @@ model:
     d_cond: 64
     n_heads: 4
     n_pathology_features: 3
+
+  # Branch ablation flags (all true by default).
+  # Set to false to disable a branch for ablation studies.
+  # Disabled branches pass zeros to the fusion layer.
+  use_pseudobulk_encoder: true
+  use_hgt_encoder: true
+  use_cell_transformer: true
 
   # Gradient checkpointing (trades ~5% compute for 5-8 GB memory savings)
   use_gradient_checkpointing: true
@@ -160,6 +168,7 @@ training:
     weight_decay: 0.0001
     betas: [0.9, 0.999]
     lrd: 0.9999  # Per-step LR decay for Bayesian SVI (ignored in deterministic mode)
+    guide_lr: 0.005  # Separate LR for SVI guide params (25x encoder LR); null = use encoder LR
 
   # Learning rate scheduler
   scheduler:
@@ -186,6 +195,7 @@ training:
     alpha_min: 0.01            # Floor >0 to maintain minimal regularization
     warmup_epochs: 5           # Must be <= temperature_annealing.warmup_epochs
     schedule: "linear"         # Linear ramp from alpha_min to 1.0
+    temperature: 1.0           # Cold posterior (Wenzel et al., 2020): T<1 scales down KL. 1.0 = standard.
 
   # Gradient clipping (L2 norm). Under bf16-mixed, parameter gradients are
   # float32 (master weights), so this threshold applies to unscaled norms.

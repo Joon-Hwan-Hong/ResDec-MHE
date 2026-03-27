@@ -43,6 +43,10 @@ class CellTransformer(nn.Module):
         n_pma_seeds: Number of seed vectors for PMA pooling
         dropout: Dropout probability
         selection_temperature: Temperature for cell type selection (higher = softer)
+        use_gradient_checkpointing: Whether to use gradient checkpointing for memory savings
+        condition_on_cell_type: Whether to use cell-type-conditioned inducing points.
+            When True (default), each cell type gets a learned offset added to the
+            shared inducing points, allowing the encoder to specialize per type.
 
     Shape:
         - cells: (batch, n_cell_types, max_cells, n_genes) cell expression
@@ -68,6 +72,7 @@ class CellTransformer(nn.Module):
         dropout: float = 0.1,
         selection_temperature: float = 1.0,
         use_gradient_checkpointing: bool = False,
+        condition_on_cell_type: bool = True,
     ):
         super().__init__()
 
@@ -79,6 +84,7 @@ class CellTransformer(nn.Module):
         self.n_genes = n_genes
         self.n_cell_types = n_cell_types
         self.d_model = d_model
+        self.condition_on_cell_type = condition_on_cell_type
 
         # Cell type selector (soft attention weights, differentiable)
         self.selector = CellTypeSelector(
@@ -96,6 +102,7 @@ class CellTransformer(nn.Module):
             n_pma_seeds=n_pma_seeds,
             dropout=dropout,
             use_gradient_checkpointing=use_gradient_checkpointing,
+            n_cell_types=n_cell_types if condition_on_cell_type else None,
         )
 
     @property
@@ -173,9 +180,18 @@ class CellTransformer(nn.Module):
         if cell_mask is not None:
             mask_flat = cell_mask.view(batch_size * self.n_cell_types, max_cells)
 
+        # Generate cell type indices for conditioned inducing points
+        # Pattern: [0,1,...,n_ct-1, 0,1,...,n_ct-1, ...] repeated B times
+        ct_idx = None
+        if self.condition_on_cell_type:
+            ct_idx = torch.arange(
+                self.n_cell_types, device=cells.device
+            ).repeat(batch_size)
+
         # Single forward pass through Set Transformer
         embeddings_flat, attention_flat = self.set_encoder(
-            cells_flat, mask=mask_flat, return_attention=return_attention
+            cells_flat, mask=mask_flat, return_attention=return_attention,
+            ct_idx=ct_idx,
         )
         # embeddings_flat: [B * n_cell_types, d_model]
         # attention_flat: [B * n_cell_types, n_heads, n_seeds, max_cells] or None
@@ -260,9 +276,17 @@ class CellTransformer(nn.Module):
             cells_grouped[row_idx, col_idx] = cell_data
             mask_grouped[row_idx, col_idx] = True
 
+        # Generate cell type indices for conditioned inducing points
+        ct_idx = None
+        if self.condition_on_cell_type:
+            ct_idx = torch.arange(
+                n_types, device=cell_data.device
+            ).repeat(B)
+
         # SetTransformerEncoder forward
         embeddings_flat, attention_flat = self.set_encoder(
-            cells_grouped, mask=mask_grouped, return_attention=return_attention
+            cells_grouped, mask=mask_grouped, return_attention=return_attention,
+            ct_idx=ct_idx,
         )
 
         embeddings = embeddings_flat.view(B, n_types, self.d_model)
@@ -290,5 +314,6 @@ class CellTransformer(nn.Module):
     def extra_repr(self) -> str:
         return (
             f"n_genes={self.n_genes}, n_cell_types={self.n_cell_types}, "
-            f"d_model={self.d_model}, temperature={self.selection_temperature}"
+            f"d_model={self.d_model}, temperature={self.selection_temperature}, "
+            f"condition_on_cell_type={self.condition_on_cell_type}"
         )

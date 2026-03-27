@@ -889,3 +889,293 @@ class TestMultiSeedMasking:
         # Encoder parameters should get gradients
         has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 for p in enc.parameters())
         assert has_grad, "No parameter received gradients"
+
+
+# =============================================================================
+# 11. ISAB XAVIER INIT TESTS
+# =============================================================================
+
+class TestISABXavierInit:
+    """Tests for ISAB inducing point initialization scale."""
+
+    def test_inducing_points_xavier_scale(self):
+        """ISAB inducing points should use Xavier init, not small randn * 0.02."""
+        from src.models.components.set_transformer import ISAB
+        isab = ISAB(d_model=128, n_heads=4, n_inducing=32)
+        # Xavier uniform for [32, 128]: limit = sqrt(6 / (32 + 128)) = 0.1936
+        # std of uniform(-limit, limit) = limit / sqrt(3) ≈ 0.112
+        # With randn * 0.02, std would be ~0.02
+        std = isab.inducing_points.data.std().item()
+        assert std > 0.05, (
+            f"Inducing points std={std:.4f}, expected Xavier scale (~0.11), "
+            f"not randn*0.02 scale (~0.02)"
+        )
+
+    def test_inducing_points_match_pma_init_style(self):
+        """ISAB inducing points should use same init style as PMA seed vectors."""
+        from src.models.components.set_transformer import ISAB, PMA
+        isab = ISAB(d_model=128, n_heads=4, n_inducing=32)
+        pma = PMA(d_model=128, n_heads=4, n_seeds=1)
+        # Both should use Xavier — similar scale (not identical due to different shapes)
+        isab_std = isab.inducing_points.data.std().item()
+        pma_std = pma.seed_vectors.data.std().item()
+        ratio = max(isab_std, pma_std) / min(isab_std, pma_std)
+        assert ratio < 3.0, (
+            f"ISAB std={isab_std:.4f}, PMA std={pma_std:.4f}, ratio={ratio:.1f} — "
+            f"expected similar init scales"
+        )
+
+
+# =============================================================================
+# 12. ISAB SKIP CONNECTION TESTS
+# =============================================================================
+
+class TestISABSkipConnection:
+    """Tests for ISAB input-to-output skip connection."""
+
+    def test_output_includes_input_skip(self):
+        """ISAB output should be mab2(x, h) + x (skip connection)."""
+        import torch
+        from src.models.components.set_transformer import ISAB
+        torch.manual_seed(42)
+        isab = ISAB(d_model=64, n_heads=4, n_inducing=16, dropout=0.0)
+
+        x = torch.randn(1, 5, 64)
+
+        # Compute what the forward does internally
+        inducing = isab.inducing_points.unsqueeze(0)
+        h, _ = isab.mab1(inducing, x)
+        mab2_output, _ = isab.mab2(x, h)
+
+        # With skip connection: output = mab2_output + x
+        expected = mab2_output + x
+        output = isab(x)
+
+        torch.testing.assert_close(output, expected, rtol=1e-5, atol=1e-5)
+
+    def test_skip_connection_with_mask(self):
+        """Skip connection should work correctly with padding mask."""
+        import torch
+        from src.models.components.set_transformer import ISAB
+        torch.manual_seed(42)
+        isab = ISAB(d_model=64, n_heads=4, n_inducing=16, dropout=0.0)
+
+        x = torch.randn(2, 8, 64)
+        mask = torch.ones(2, 8, dtype=torch.bool)
+        mask[0, 5:] = False  # Mask last 3 cells in sample 0
+
+        output = isab(x, mask=mask)
+
+        # Masked positions should be zeroed out (mask applied after skip)
+        assert (output[0, 5:] == 0).all(), "Masked positions should be zero"
+        # Unmasked positions should be non-zero
+        assert (output[0, :5] != 0).any(), "Unmasked positions should be non-zero"
+
+    def test_skip_connection_gradient_magnitude(self):
+        """Skip connection should improve gradient flow vs no-skip baseline."""
+        import torch
+        from src.models.components.set_transformer import ISAB
+        torch.manual_seed(42)
+        isab = ISAB(d_model=64, n_heads=4, n_inducing=16, dropout=0.0)
+
+        x = torch.randn(2, 10, 64, requires_grad=True)
+        output = isab(x)
+        output.sum().backward()
+
+        # With skip connection, average gradient magnitude should be substantial
+        # (identity Jacobian contributes ~1.0 per element)
+        avg_grad = x.grad.abs().mean().item()
+        assert avg_grad > 0.5, (
+            f"Average |gradient|={avg_grad:.4f}, expected >0.5 with skip connection"
+        )
+
+
+# =============================================================================
+# 13. ISAB CELL-TYPE CONDITIONING TESTS
+# =============================================================================
+
+class TestISABCellTypeConditioning:
+    """Tests for cell-type-conditioned inducing points in ISAB."""
+
+    def test_different_cell_types_produce_different_outputs(self):
+        """Different ct_idx values should produce different ISAB outputs."""
+        import torch
+        import torch.nn as nn
+        from src.models.components.set_transformer import ISAB
+        torch.manual_seed(42)
+        isab = ISAB(d_model=64, n_heads=4, n_inducing=16, n_cell_types=31)
+
+        # Initialize cell_type_embed with non-zero values
+        nn.init.normal_(isab.cell_type_embed, std=0.1)
+
+        x = torch.randn(2, 10, 64)
+        ct_idx_a = torch.tensor([0, 1])
+        ct_idx_b = torch.tensor([15, 25])
+
+        out_a = isab(x, ct_idx=ct_idx_a)
+        out_b = isab(x, ct_idx=ct_idx_b)
+
+        assert not torch.allclose(out_a, out_b, atol=1e-6), (
+            "Different cell type indices should produce different outputs"
+        )
+
+    def test_same_cell_type_same_output(self):
+        """Same ct_idx should produce identical outputs."""
+        import torch
+        from src.models.components.set_transformer import ISAB
+        torch.manual_seed(42)
+        isab = ISAB(d_model=64, n_heads=4, n_inducing=16, n_cell_types=31)
+        isab.eval()
+
+        x = torch.randn(2, 10, 64)
+        ct_idx = torch.tensor([5, 5])
+
+        with torch.no_grad():
+            out1 = isab(x, ct_idx=ct_idx)
+            out2 = isab(x, ct_idx=ct_idx)
+
+        torch.testing.assert_close(out1, out2)
+
+    def test_no_conditioning_without_n_cell_types(self):
+        """Without n_cell_types, ct_idx should have no effect."""
+        import torch
+        from src.models.components.set_transformer import ISAB
+        torch.manual_seed(42)
+        isab = ISAB(d_model=64, n_heads=4, n_inducing=16)  # no n_cell_types
+        isab.eval()
+
+        x = torch.randn(2, 10, 64)
+        with torch.no_grad():
+            out_none = isab(x, ct_idx=None)
+            out_with = isab(x, ct_idx=torch.tensor([0, 1]))
+
+        torch.testing.assert_close(out_none, out_with)
+
+    def test_cell_type_embed_shape(self):
+        """cell_type_embed should have shape [n_cell_types, d_model]."""
+        from src.models.components.set_transformer import ISAB
+        isab = ISAB(d_model=128, n_heads=4, n_inducing=32, n_cell_types=31)
+        assert isab.cell_type_embed is not None
+        assert isab.cell_type_embed.shape == (31, 128)
+
+    def test_cell_type_embed_none_when_disabled(self):
+        """cell_type_embed should be None when n_cell_types not provided."""
+        from src.models.components.set_transformer import ISAB
+        isab = ISAB(d_model=128, n_heads=4, n_inducing=32)
+        assert isab.cell_type_embed is None
+
+    def test_cell_type_embed_zero_init(self):
+        """cell_type_embed should be zero-initialized (no change at init)."""
+        import torch
+        from src.models.components.set_transformer import ISAB
+        isab = ISAB(d_model=64, n_heads=4, n_inducing=16, n_cell_types=31)
+        assert (isab.cell_type_embed.data == 0).all(), (
+            "cell_type_embed should be zero-initialized"
+        )
+
+    def test_conditioning_gradient_flows_to_embed(self):
+        """Gradients should flow back to cell_type_embed."""
+        import torch
+        from src.models.components.set_transformer import ISAB
+        torch.manual_seed(42)
+        isab = ISAB(d_model=64, n_heads=4, n_inducing=16, dropout=0.0, n_cell_types=31)
+
+        x = torch.randn(4, 10, 64)
+        ct_idx = torch.tensor([0, 5, 10, 20])
+        output = isab(x, ct_idx=ct_idx)
+        output.sum().backward()
+
+        assert isab.cell_type_embed.grad is not None
+        # Only the used cell types should have non-zero gradient
+        used_types = set(ct_idx.tolist())
+        for i in range(31):
+            if i in used_types:
+                assert isab.cell_type_embed.grad[i].abs().sum() > 0, (
+                    f"cell_type_embed[{i}] should have gradient (was used)"
+                )
+            else:
+                assert isab.cell_type_embed.grad[i].abs().sum() == 0, (
+                    f"cell_type_embed[{i}] should have zero gradient (not used)"
+                )
+
+
+# =============================================================================
+# 14. SET TRANSFORMER ENCODER CELL-TYPE CONDITIONING TESTS
+# =============================================================================
+
+class TestSetTransformerEncoderCellTypeConditioning:
+    """Tests for ct_idx plumbing through SetTransformerEncoder."""
+
+    def test_encoder_accepts_n_cell_types(self):
+        """SetTransformerEncoder should accept n_cell_types parameter."""
+        from src.models.components.set_transformer import SetTransformerEncoder
+        encoder = SetTransformerEncoder(
+            d_input=100, d_model=64, n_heads=4, n_cell_types=31,
+        )
+        # Verify it propagated to ISAB layers
+        for isab in encoder.isab_layers:
+            assert isab.cell_type_embed is not None
+            assert isab.cell_type_embed.shape == (31, 64)
+
+    def test_encoder_accepts_ct_idx_in_forward(self):
+        """SetTransformerEncoder.forward should accept and use ct_idx."""
+        import torch
+        import torch.nn as nn
+        from src.models.components.set_transformer import SetTransformerEncoder
+        torch.manual_seed(42)
+        encoder = SetTransformerEncoder(
+            d_input=100, d_model=64, n_heads=4, n_cell_types=31,
+        )
+        # Initialize embeddings for visible effect
+        for isab in encoder.isab_layers:
+            nn.init.normal_(isab.cell_type_embed, std=0.1)
+
+        x = torch.randn(4, 10, 100)
+        mask = torch.ones(4, 10, dtype=torch.bool)
+        ct_a = torch.tensor([0, 1, 2, 3])
+        ct_b = torch.tensor([10, 11, 12, 13])
+
+        encoder.eval()
+        with torch.no_grad():
+            out_a, _ = encoder(x, mask=mask, ct_idx=ct_a)
+            out_b, _ = encoder(x, mask=mask, ct_idx=ct_b)
+
+        assert not torch.allclose(out_a, out_b, atol=1e-5), (
+            "Different ct_idx should produce different encoder outputs"
+        )
+
+    def test_encoder_without_conditioning(self):
+        """Encoder without n_cell_types should work the same as before."""
+        import torch
+        from src.models.components.set_transformer import SetTransformerEncoder
+        torch.manual_seed(42)
+        encoder = SetTransformerEncoder(d_input=100, d_model=64, n_heads=4)
+
+        x = torch.randn(2, 10, 100)
+        encoder.eval()
+        with torch.no_grad():
+            out1, _ = encoder(x)
+            out2, _ = encoder(x, ct_idx=torch.tensor([0, 1]))
+
+        # Without n_cell_types, ct_idx is ignored
+        torch.testing.assert_close(out1, out2)
+
+    def test_encoder_ct_idx_with_mixed_batch(self):
+        """ct_idx should work correctly with mixed valid/empty samples."""
+        import torch
+        from src.models.components.set_transformer import SetTransformerEncoder
+        torch.manual_seed(42)
+        encoder = SetTransformerEncoder(
+            d_input=100, d_model=64, n_heads=4, n_cell_types=31,
+        )
+
+        x = torch.randn(3, 10, 100)
+        mask = torch.ones(3, 10, dtype=torch.bool)
+        mask[1, :] = False  # Sample 1 is all-empty
+        ct_idx = torch.tensor([0, 5, 10])
+
+        # Should not crash on mixed batch with ct_idx
+        output, _ = encoder(x, mask=mask, ct_idx=ct_idx)
+        assert output.shape == (3, 64)
+        # Empty sample should get empty_embedding (not NaN)
+        assert not output[1].isnan().any()
