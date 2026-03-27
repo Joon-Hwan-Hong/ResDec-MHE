@@ -252,6 +252,29 @@ class TestSaveFigure:
         assert path.exists()
         plt.close(fig)
 
+    def test_save_figure_does_not_close_figure(self, tmp_path):
+        """save_figure should NOT close the figure — caller manages lifecycle."""
+        fig, ax = plt.subplots()
+        ax.plot([1, 2, 3], [1, 2, 3])
+        fig_num = fig.number
+
+        path1 = tmp_path / "test_figure_1.png"
+        save_figure(fig, str(path1))
+
+        # Figure should still be tracked by matplotlib's figure manager
+        assert fig_num in plt.get_fignums(), (
+            "save_figure should not close the figure"
+        )
+
+        # Figure should still be usable — save again
+        path2 = tmp_path / "test_figure_2.png"
+        fig.savefig(str(path2))
+
+        assert path1.exists()
+        assert path2.exists()
+        assert path2.stat().st_size > 0, "Second save should produce non-empty file"
+        plt.close(fig)
+
 
 # =============================================================================
 # Utility Function Tests

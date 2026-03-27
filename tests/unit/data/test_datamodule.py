@@ -144,6 +144,19 @@ class TestCognitiveResilienceDataModule:
         train_loader = dm.train_dataloader()
         assert train_loader is not None
 
+    def test_final_mode_val_dataloader_returns_none(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
+        """In final mode, val_dataloader() returns None since no validation set exists."""
+        dm = CognitiveResilienceDataModule(
+            config=minimal_config,
+            metadata=mock_metadata,
+            splits=mock_splits,
+            fold_idx=0,
+            precomputed_dir=precomputed_dir,
+            final_mode=True,
+        )
+        dm.setup(stage="fit")
+        assert dm.val_dataloader() is None
+
     def test_final_mode_test_dataloader(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
         """Final mode provides test dataloader for holdout evaluation."""
         dm = CognitiveResilienceDataModule(

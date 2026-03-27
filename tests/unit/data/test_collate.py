@@ -385,7 +385,7 @@ class TestCollateForHgt:
         assert result["cell_type_order"] == CELL_TYPE_ORDER
 
     def test_raises_on_mismatched_cell_type_order(self):
-        """Should raise ValueError when samples have different cell_type_order."""
+        """Should raise RuntimeError when samples have different cell_type_order."""
         from src.data.collate import collate_for_hgt
 
         n_cell_types = 3
@@ -399,7 +399,7 @@ class TestCollateForHgt:
         sample_b = create_mock_sample(n_genes=n_genes, n_cell_types=n_cell_types)
         sample_b["cell_type_order"] = order_b
 
-        with pytest.raises(AssertionError, match="cell_type_order mismatch"):
+        with pytest.raises(RuntimeError, match="cell_type_order mismatch"):
             collate_for_hgt([sample_a, sample_b])
 
 

@@ -88,11 +88,20 @@ class RegionHandler(nn.Module):
         # Ensure mask is float for computation
         mask_float = region_mask.float()  # [B, R]
 
-        # Weighted mean pooling
-        weights = F.softmax(self.region_weights, dim=0)  # [R]
-        masked_weights = weights.unsqueeze(0) * mask_float  # [B, R]
-        weight_sum = masked_weights.sum(dim=1, keepdim=True).clamp(min=1e-8)
-        normalized_weights = masked_weights / weight_sum  # [B, R]
+        # Masked softmax: set absent regions to -inf so they get zero weight
+        # This prevents gradient flow to masked region parameters
+        region_mask_bool = region_mask.bool()  # handle float masks
+        raw_weights = self.region_weights.unsqueeze(0).expand(B, -1)  # [B, R]
+        masked_logits = raw_weights.masked_fill(~region_mask_bool, float('-inf'))
+        # Handle all-masked edge case (shouldn't happen, but guard anyway):
+        # Replace -inf rows with 0 so softmax doesn't produce NaN, then zero out after
+        all_masked = ~region_mask_bool.any(dim=1, keepdim=True)  # [B, 1]
+        if all_masked.any():
+            masked_logits = masked_logits.masked_fill(all_masked.expand_as(masked_logits), 0.0)
+        normalized_weights = F.softmax(masked_logits, dim=1)  # [B, R]
+        # Zero out weights for all-masked rows so pooled output is zero
+        if all_masked.any():
+            normalized_weights = normalized_weights * (~all_masked).float()  # [B, R]
 
         # Apply weights: [B, R, 1, 1] for broadcasting over [B, R, C, D]
         pooled = (x * normalized_weights.unsqueeze(-1).unsqueeze(-1)).sum(dim=1)

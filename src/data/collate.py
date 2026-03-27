@@ -177,8 +177,21 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cell_counts = torch.stack([s["cell_counts"] for s in batch], dim=0)
     pathology = torch.stack([s["pathology"] for s in batch], dim=0)
     cognition = torch.stack([s["cognition"] for s in batch], dim=0)
-    cells = torch.stack([s["cells"] for s in batch], dim=0)
-    cell_mask = torch.stack([s["cell_mask"] for s in batch], dim=0)
+    # Pad cells/cell_mask to batch max (samples may have different max_cells after H7)
+    max_cells_in_batch = max(s["cells"].shape[1] for s in batch)
+    cells_list = []
+    mask_list = []
+    for s in batch:
+        c = s["cells"]      # [n_cell_types, subject_max_cells, n_genes]
+        m = s["cell_mask"]   # [n_cell_types, subject_max_cells]
+        pad_size = max_cells_in_batch - c.shape[1]
+        if pad_size > 0:
+            c = torch.nn.functional.pad(c, (0, 0, 0, pad_size))  # pad cells dim
+            m = torch.nn.functional.pad(m, (0, pad_size))          # pad mask dim
+        cells_list.append(c)
+        mask_list.append(m)
+    cells = torch.stack(cells_list, dim=0)
+    cell_mask = torch.stack(mask_list, dim=0)
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -299,8 +312,21 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cell_counts = torch.stack([s["cell_counts"] for s in batch], dim=0)
     pathology = torch.stack([s["pathology"] for s in batch], dim=0)
     cognition = torch.stack([s["cognition"] for s in batch], dim=0)
-    cells = torch.stack([s["cells"] for s in batch], dim=0)
-    cell_mask = torch.stack([s["cell_mask"] for s in batch], dim=0)
+    # Pad cells/cell_mask to batch max (samples may have different max_cells after H7)
+    max_cells_in_batch = max(s["cells"].shape[1] for s in batch)
+    cells_list = []
+    mask_list = []
+    for s in batch:
+        c = s["cells"]      # [n_cell_types, subject_max_cells, n_genes]
+        m = s["cell_mask"]   # [n_cell_types, subject_max_cells]
+        pad_size = max_cells_in_batch - c.shape[1]
+        if pad_size > 0:
+            c = torch.nn.functional.pad(c, (0, 0, 0, pad_size))  # pad cells dim
+            m = torch.nn.functional.pad(m, (0, pad_size))          # pad mask dim
+        cells_list.append(c)
+        mask_list.append(m)
+    cells = torch.stack(cells_list, dim=0)
+    cell_mask = torch.stack(mask_list, dim=0)
 
     # Dynamic padding: trim cells/cell_mask to actual max cell count in batch.
     # This avoids wasting memory on padding when no sample in the batch uses
@@ -325,12 +351,14 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cell_type_names = batch[0].get("cell_type_order", CELL_TYPE_ORDER)
     edge_type_names = ALL_EDGE_TYPES
 
-    # Debug assertion: cell_type_order is a structural invariant set at dataset
-    # construction. Skip in production (python -O) to avoid O(batch_size × n_ct) per batch.
-    assert all(
-        s.get("cell_type_order", CELL_TYPE_ORDER) == cell_type_names
-        for s in batch[1:]
-    ), "cell_type_order mismatch within batch — dataset construction bug"
+    # Validate cell_type_order consistency (structural invariant from dataset construction).
+    # Must be a proper check, not assert, since assert is disabled under python -O.
+    for s in batch[1:]:
+        if s.get("cell_type_order", CELL_TYPE_ORDER) != cell_type_names:
+            raise RuntimeError(
+                "cell_type_order mismatch within batch — dataset construction bug. "
+                f"Expected {cell_type_names[:3]}..., got {s.get('cell_type_order', 'N/A')[:3]}..."
+            )
 
     # Sanitize names for PyG compatibility (uses shared sanitize_key from constants)
     sanitized_cell_types = [sanitize_key(ct) for ct in cell_type_names]

@@ -203,6 +203,7 @@ def objective(
     adata=None,
     metadata=None,
     splits: dict | None = None,
+    precomputed_dir: str | Path | None = None,
 ) -> float:
     """
     Optuna objective function: train model and return mean val_loss across folds.
@@ -220,6 +221,9 @@ def objective(
         adata: Pre-loaded AnnData object (optional, for data loading)
         metadata: Pre-loaded metadata DataFrame (optional, for data loading)
         splits: Pre-computed splits dict (optional, for data loading)
+        precomputed_dir: If provided, DataModule loads pre-built features from
+            this directory instead of reconstructing them from raw AnnData each
+            trial, avoiding ~300k redundant computations across trials/folds.
 
     Returns:
         Mean validation loss across CV folds (lower is better)
@@ -308,6 +312,7 @@ def objective(
         dm = CognitiveResilienceDataModule(
             config=config, metadata=metadata, splits=splits,
             fold_idx=fold_idx, adata=adata,
+            precomputed_dir=precomputed_dir,
         )
         trainer.fit(module, datamodule=dm)
 
@@ -374,6 +379,14 @@ def main() -> None:
         type=str,
         default=None,
         help="Path to pre-computed splits JSON file",
+    )
+    parser.add_argument(
+        "--precomputed-dir",
+        type=str,
+        default=None,
+        help="Path to pre-built feature directory. Skips per-fold feature "
+             "reconstruction from raw AnnData, avoiding redundant computation "
+             "across trials and folds.",
     )
     parser.add_argument(
         "overrides",
@@ -455,6 +468,8 @@ def main() -> None:
                 "--storage", args.storage,
                 "--splits-path", args.splits_path,
             ]
+            if args.precomputed_dir:
+                cmd.extend(["--precomputed-dir", args.precomputed_dir])
             if timeout:
                 cmd.extend(["--timeout", str(timeout)])
             if args.overrides:
@@ -492,6 +507,7 @@ def main() -> None:
             lambda trial: objective(
                 trial, config, gpu_id=gpu_id,
                 adata=adata, metadata=metadata, splits=splits,
+                precomputed_dir=args.precomputed_dir,
             ),
             n_trials=n_trials,
             timeout=timeout,

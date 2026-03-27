@@ -560,3 +560,20 @@ class TestSelectionWeightGradientBlocking:
         assert not torch.all(grad_on == 0), (
             "selection_logits.grad is all zeros with apply_selection_weights=True"
         )
+
+
+# ============================================================================
+# H3: Returned selection_weights should be detached
+# ============================================================================
+
+
+class TestSelectionWeightsDetached:
+    """H3: Returned selection_weights should be detached for safety."""
+
+    def test_returned_selection_weights_are_detached(self, small_transformer, sample_data):
+        """selection_weights returned by forward() should not have grad_fn."""
+        cells, cell_mask = sample_data
+        embeddings, selection_weights, _ = small_transformer(cells, cell_mask)
+
+        assert selection_weights.grad_fn is None, \
+            "Returned selection_weights should be detached (no grad_fn)"

@@ -76,7 +76,8 @@ def save_attention_weights(
 
         if pathology_attention is not None:
             ds = f.create_dataset("pathology_attention", data=pathology_attention,
-                                  compression=compression, compression_opts=compression_opts)
+                                  compression=compression, compression_opts=compression_opts,
+                                  chunks=True)
             ds.attrs["shape"] = "[n_subjects, n_heads, n_cell_types]"
 
         if cell_type_selection is not None:
@@ -94,12 +95,14 @@ def save_attention_weights(
 
         if region_pseudobulk is not None:
             ds = f.create_dataset("region_pseudobulk", data=region_pseudobulk,
-                                  compression=compression, compression_opts=compression_opts)
+                                  compression=compression, compression_opts=compression_opts,
+                                  chunks=True)
             ds.attrs["shape"] = "[n_regions, n_cell_types, n_genes]"
 
         if per_subject_pseudobulk is not None:
             ds = f.create_dataset("per_subject_pseudobulk", data=per_subject_pseudobulk,
-                                  compression=compression, compression_opts=compression_opts)
+                                  compression=compression, compression_opts=compression_opts,
+                                  chunks=True)
             ds.attrs["shape"] = "[n_subjects, n_cell_types, n_genes]"
             ds.attrs["description"] = "Per-subject pseudobulk expression averaged across regions"
 

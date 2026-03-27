@@ -46,24 +46,36 @@ from src.utils.reproducibility import set_seed
 logger = logging.getLogger(__name__)
 
 
-def _export_weights(module, model_dir: Path, is_bayesian: bool) -> None:
+def _export_weights(module, model_dir: Path, is_bayesian: bool, best_ckpt_path: str | None = None) -> None:
     """Export inference-ready weights artifact.
 
     For deterministic heads: full model state_dict as weights.pt.
     For Bayesian heads: backbone-only (excluding prediction_head.*) as backbone_weights.pt.
     Bayesian inference requires the full .ckpt with guide and param store.
+
+    Args:
+        module: Lightning module (used if best_ckpt_path is None)
+        model_dir: Directory to save weights
+        is_bayesian: Whether model uses Bayesian head
+        best_ckpt_path: If provided, load weights from this checkpoint instead of module
     """
+    if best_ckpt_path:
+        checkpoint = torch.load(best_ckpt_path, map_location="cpu", weights_only=False)
+        state_dict = checkpoint.get("state_dict", {})
+        # Strip 'model.' prefix from Lightning state dict
+        model_state = {k[6:]: v for k, v in state_dict.items() if k.startswith("model.")}
+        logger.info("Loading best checkpoint weights from %s", best_ckpt_path)
+    else:
+        model_state = module.model.state_dict()
+
     if is_bayesian:
-        backbone_state = {
-            k: v for k, v in module.model.state_dict().items()
-            if not k.startswith("prediction_head.")
-        }
+        backbone_state = {k: v for k, v in model_state.items() if not k.startswith("prediction_head.")}
         path = model_dir / "backbone_weights.pt"
         torch.save(backbone_state, path)
         logger.info("Saved backbone-only weights to %s (Bayesian model — use .ckpt for inference)", path)
     else:
         path = model_dir / "weights.pt"
-        torch.save(module.model.state_dict(), path)
+        torch.save(model_state, path)
         logger.info("Saved weights-only artifact to %s", path)
 
 
@@ -269,12 +281,25 @@ def main() -> None:
         help="Path to precomputed feature directory (skip on-the-fly preprocessing)",
     )
     parser.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training from (e.g., outputs/.../last.ckpt). "
+             "Restores model weights, optimizer state, epoch, and scheduler state.",
+    )
+    parser.add_argument(
         "overrides",
         nargs="*",
         help="Config overrides in dotlist format (e.g., training.max_epochs=50)",
     )
 
     args = parser.parse_args()
+
+    if args.resume_from and not Path(args.resume_from).exists():
+        raise FileNotFoundError(f"Resume checkpoint not found: {args.resume_from}")
+
+    if args.resume_from:
+        logger.info("Will resume training from checkpoint: %s", args.resume_from)
 
     # Load config
     config = load_config(args.config, overrides=args.overrides)
@@ -412,7 +437,7 @@ def main() -> None:
         )
 
         # Train without val_dataloaders -- holdout is never seen during training
-        trainer.fit(module, datamodule=dm)
+        trainer.fit(module, datamodule=dm, ckpt_path=args.resume_from)
         logger.info("Final training complete.")
 
         # Export weights-only artifact for inference (lighter than full Lightning checkpoint)
@@ -431,11 +456,14 @@ def main() -> None:
         logger.info("Fold %d DataModule created", args.fold)
 
         # Train
-        trainer.fit(module, datamodule=dm)
+        trainer.fit(module, datamodule=dm, ckpt_path=args.resume_from)
         logger.info("Training complete.")
 
-        # Export weights-only artifact for inference (lighter than full Lightning checkpoint)
-        _export_weights(module, experiment.model_dir, is_bayesian=config.model.head.type == "bayesian")
+        # Export best checkpoint weights (not last epoch)
+        best_ckpt = getattr(trainer.checkpoint_callback, "best_model_path", None)
+        _export_weights(module, experiment.model_dir,
+                        is_bayesian=config.model.head.type == "bayesian",
+                        best_ckpt_path=best_ckpt if best_ckpt else None)
 
 
 if __name__ == "__main__":

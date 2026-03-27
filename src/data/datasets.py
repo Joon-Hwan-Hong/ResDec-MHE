@@ -417,9 +417,6 @@ class CognitiveResilienceDataset(Dataset):
             cell_mask: [n_cell_types, max_cells] valid cell mask
             cell_barcodes: list of lists of barcode strings per cell type
         """
-        # Allocate for ALL cell types (not just a subset)
-        cells = np.zeros((self.n_cell_types, self.max_cells_per_type, self.n_genes), dtype=np.float32)
-        cell_mask = np.zeros((self.n_cell_types, self.max_cells_per_type), dtype=bool)
         cell_barcodes: list[list[str]] = [[] for _ in range(self.n_cell_types)]
 
         # Use CellSampler for reproducible sampling across ALL cell types
@@ -428,6 +425,17 @@ class CognitiveResilienceDataset(Dataset):
             cell_type_column=self.cell_type_column,
             cell_types=self.cell_type_order,  # ALL 31 types
         )
+
+        # Determine actual max cells across all types for this subject
+        actual_max = max(
+            (len(sampled_indices.get(ct, [])) for ct in self.cell_type_order),
+            default=0,
+        )
+        # Clamp to at least 1 to avoid zero-sized dimension
+        actual_max = max(actual_max, 1)
+
+        cells = np.zeros((self.n_cell_types, actual_max, self.n_genes), dtype=np.float32)
+        cell_mask = np.zeros((self.n_cell_types, actual_max), dtype=bool)
 
         X = X_dense
         obs_index = adata_subject.obs.index

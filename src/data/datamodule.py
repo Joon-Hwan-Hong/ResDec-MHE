@@ -173,8 +173,13 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             worker_init_fn=self._make_worker_init_fn(),
         )
 
-    def val_dataloader(self) -> torch.utils.data.DataLoader:
-        """Create validation DataLoader with deterministic cell sampling."""
+    def val_dataloader(self) -> torch.utils.data.DataLoader | None:
+        """Create validation DataLoader with deterministic cell sampling.
+
+        Returns None in final_mode (no validation set exists).
+        """
+        if self._val_ds is None:
+            return None
         return create_dataloader(
             self._val_ds,
             batch_size=self.batch_size,

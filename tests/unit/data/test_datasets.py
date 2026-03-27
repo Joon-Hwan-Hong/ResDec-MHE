@@ -687,16 +687,17 @@ class TestOutputSchema:
         assert sample["cell_counts"].ndim == 1
         assert sample["cell_counts"].shape[0] == mock_dataset.n_cell_types
 
-        # Cells: [n_cell_types, max_cells, n_genes] - ALL 31 cell types
+        # Cells: [n_cell_types, actual_max_cells, n_genes] - ALL 31 cell types
+        # H7: actual_max_cells is per-subject (1 <= actual_max <= max_cells_per_type)
         assert sample["cells"].ndim == 3
         assert sample["cells"].shape[0] == mock_dataset.n_cell_types
-        assert sample["cells"].shape[1] == mock_dataset.max_cells_per_type
+        assert 1 <= sample["cells"].shape[1] <= mock_dataset.max_cells_per_type
         assert sample["cells"].shape[2] == mock_dataset.n_genes
 
-        # Cell mask: [n_cell_types, max_cells] - ALL 31 cell types
+        # Cell mask: [n_cell_types, actual_max_cells] - ALL 31 cell types
         assert sample["cell_mask"].ndim == 2
         assert sample["cell_mask"].shape[0] == mock_dataset.n_cell_types
-        assert sample["cell_mask"].shape[1] == mock_dataset.max_cells_per_type
+        assert sample["cell_mask"].shape[1] == sample["cells"].shape[1]
 
         # Pathology: [n_pathology]
         assert sample["pathology"].ndim == 1

@@ -410,35 +410,38 @@ class HGTConvWithEdgeAttr(nn.Module):
         device = scores.device
         dtype = scores.dtype
 
+        # Promote to float32 for numerical stability under AMP
+        scores_f32 = scores.float()
+
         # Compute max per target node for numerical stability
         max_scores = torch.full(
-            (num_nodes, n_heads), float('-inf'), device=device, dtype=dtype
+            (num_nodes, n_heads), float('-inf'), device=device, dtype=torch.float32
         )
-        # scatter_reduce_ requires PyTorch >= 2.1 (checked at module import)
         max_scores.scatter_reduce_(
             0,
             target_idx.unsqueeze(-1).expand(-1, n_heads),
-            scores,
+            scores_f32,
             reduce='amax',
             include_self=True,
         )
 
         # Handle nodes with no incoming edges (keep as -inf, will become 0 after exp)
-        scores_normalized = scores - max_scores[target_idx]
+        scores_normalized = scores_f32 - max_scores[target_idx]
 
         # Compute exp
         exp_scores = torch.exp(scores_normalized)
 
         # Sum per target node
-        sum_exp = torch.zeros(num_nodes, n_heads, device=device, dtype=dtype)
+        sum_exp = torch.zeros(num_nodes, n_heads, device=device, dtype=torch.float32)
         sum_exp.scatter_add_(
             0,
             target_idx.unsqueeze(-1).expand(-1, n_heads),
             exp_scores,
         )
 
-        # Normalize (add small epsilon to avoid division by zero)
-        return exp_scores / (sum_exp[target_idx] + EPSILON_SOFTMAX)
+        # Normalize and cast back to input dtype
+        result = exp_scores / (sum_exp[target_idx] + EPSILON_SOFTMAX)
+        return result.to(dtype)
 
     def extra_repr(self) -> str:
         return (

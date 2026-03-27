@@ -1344,3 +1344,38 @@ class TestFromLightningModuleGuide:
 
         predictor = Predictor.from_lightning_module(module, device="cpu")
         assert predictor.guide is None
+
+
+class TestHGTAttentionCPUTransfer:
+    """C3: HGT attention must be moved to CPU in predict_batch to prevent GPU OOM."""
+
+    def test_hgt_attention_on_cpu_deterministic(self, mock_model, mock_config):
+        """Deterministic path moves HGT attention tensors to CPU."""
+        hgt_attn = [
+            {("TypeA", "rel", "TypeB"): torch.randn(4, 2)}
+        ]
+
+        def forward_with_hgt(**kwargs):
+            batch_size = 2
+            if "region_pseudobulk" in kwargs and kwargs["region_pseudobulk"] is not None:
+                batch_size = kwargs["region_pseudobulk"].shape[0]
+            return {
+                "mean": torch.randn(batch_size, 1),
+                "std": torch.abs(torch.randn(batch_size, 1)) + 0.1,
+                "attention_weights": torch.randn(batch_size, 4, 31),
+                "hgt_attention": hgt_attn,
+            }
+
+        mock_model.side_effect = forward_with_hgt
+        mock_model.__call__ = MagicMock(side_effect=forward_with_hgt)
+        predictor = Predictor(mock_model, mock_config, device="cpu")
+        batch = {
+            "region_pseudobulk": torch.randn(2, 6, 31, 10),
+            "region_mask": torch.ones(2, 6, dtype=torch.bool),
+        }
+        result = predictor.predict_batch(batch, extract_hgt_attention=True)
+        assert "hgt_attention" in result
+        for layer_dict in result["hgt_attention"]:
+            for edge_type, tensor in layer_dict.items():
+                assert isinstance(tensor, torch.Tensor), f"Expected Tensor, got {type(tensor)}"
+                assert tensor.device == torch.device("cpu"), f"Expected CPU, got {tensor.device}"

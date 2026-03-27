@@ -474,6 +474,32 @@ class TestExtraRepr:
         assert f"n_cell_types={N_CELL_TYPES}" in str_repr
 
 
+class TestAMPSoftmaxPromotion:
+    """H1: Manual softmax must promote to float32 under AMP for numerical stability."""
+
+    def test_softmax_stable_with_large_float16_scores(self):
+        """Attention weights should remain valid even with large-magnitude float16 inputs."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        module = PathologyStratifiedAttention(
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=31
+        )
+        module = module.half()
+
+        cell_emb = torch.randn(2, 31, 64, dtype=torch.float16)
+        path_emb = torch.randn(2, 32, dtype=torch.float16)
+
+        # Large-magnitude inputs that would cause softmax saturation in float16
+        cell_emb_large = cell_emb * 100.0
+        _, attn_weights = module(cell_emb_large, path_emb)
+
+        # Attention should sum to ~1 per head, not degenerate
+        attn_sums = attn_weights.sum(dim=-1)
+        assert torch.allclose(attn_sums, torch.ones_like(attn_sums), atol=0.05), \
+            f"Attention sums should be ~1.0, got {attn_sums}"
+        assert not torch.isnan(attn_weights).any(), "Attention weights contain NaN"
+
+
 class TestCellTypeMasking:
     """PA-G1/G2/G3: Tests for cell_type_mask masking behavior."""
 

@@ -310,16 +310,14 @@ def benjamini_hochberg(
     sorted_idx = np.argsort(pvalues)
     sorted_pvals = pvalues[sorted_idx]
 
-    # Compute adjusted p-values
-    adjusted = np.zeros(n)
-    for i in range(n - 1, -1, -1):
-        if i == n - 1:
-            adjusted[sorted_idx[i]] = sorted_pvals[i]
-        else:
-            adjusted[sorted_idx[i]] = min(
-                sorted_pvals[i] * n / (i + 1),
-                adjusted[sorted_idx[i + 1]]
-            )
+    # Vectorized BH: adjust = p * n / rank, then enforce monotonicity from right
+    ranks = np.arange(1, n + 1)
+    adjusted_sorted = sorted_pvals * n / ranks
+    # Enforce monotonicity: adjusted[i] <= adjusted[i+1] (step-up)
+    adjusted_sorted = np.minimum.accumulate(adjusted_sorted[::-1])[::-1]
+    # Map back to original order
+    adjusted = np.empty(n)
+    adjusted[sorted_idx] = adjusted_sorted
 
     # Clip to [0, 1]
     adjusted = np.clip(adjusted, 0, 1)

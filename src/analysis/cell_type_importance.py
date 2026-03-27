@@ -213,10 +213,11 @@ class CellTypeImportanceAnalyzer:
         )
         tertile_labels = ["low", "medium", "high"][:n_tertiles]
 
-        # Assign tertiles
-        tertile_assignments = np.digitize(self.pathology_scores, tertile_edges[1:-1])
         # Exclude NaN pathology subjects from analysis
         nan_mask = np.isnan(self.pathology_scores)
+        # Guard np.digitize against NaN — NaN produces arbitrary bin assignments
+        safe_scores = np.where(nan_mask, -np.inf, self.pathology_scores)
+        tertile_assignments = np.digitize(safe_scores, tertile_edges[1:-1])
 
         # Average attention across heads: [n_subjects, n_cell_types]
         attention_per_subject = self.attention.mean(axis=1)

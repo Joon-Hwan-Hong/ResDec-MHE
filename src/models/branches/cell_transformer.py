@@ -198,7 +198,7 @@ class CellTransformer(nn.Module):
             weights = selection_weights.view(1, -1, 1)
             embeddings = embeddings * weights
 
-        return embeddings, selection_weights, attention_list
+        return embeddings, selection_weights.detach(), attention_list
 
     def get_selection_weights(self) -> torch.Tensor:
         """

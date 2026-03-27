@@ -41,7 +41,11 @@ from src.utils.statistics import (
     gini_coefficient,
     cohens_d,
     cohens_d_with_ci,
+    cohens_d_vectorized,
+    cohens_d_ci_vectorized,
     benjamini_hochberg,
+    attention_entropy,
+    derive_resilience_groups,
 )
 
 __all__ = [
@@ -80,5 +84,9 @@ __all__ = [
     "gini_coefficient",
     "cohens_d",
     "cohens_d_with_ci",
+    "cohens_d_vectorized",
+    "cohens_d_ci_vectorized",
     "benjamini_hochberg",
+    "attention_entropy",
+    "derive_resilience_groups",
 ]

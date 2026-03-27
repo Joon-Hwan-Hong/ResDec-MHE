@@ -37,6 +37,21 @@ from src.utils.io import save_attention_weights as _io_save_attention_weights
 logger = logging.getLogger(__name__)
 
 
+def _hgt_attention_to_cpu(hgt_attention: list[dict]) -> list[dict]:
+    """Move HGT attention tensors to CPU.
+
+    HGT attention is list[dict[tuple, Tensor]] (per-layer, per-edge-type).
+    Moves to CPU to prevent GPU OOM during batch accumulation.
+    """
+    return [
+        {
+            edge_type: attn.cpu() if isinstance(attn, torch.Tensor) else attn
+            for edge_type, attn in layer_dict.items()
+        }
+        for layer_dict in hgt_attention
+    ]
+
+
 @dataclass
 class PredictionResult:
     """
@@ -361,9 +376,11 @@ class Predictor:
         for _ in range(num_samples):
             guide_trace = pyro.poutine.trace(self.guide).get_trace(**model_kwargs)
             conditioned_sample = pyro.poutine.replay(self.model, trace=guide_trace)
-            out = conditioned_sample(**model_kwargs)
-            means.append(out["mean"].detach())
-            del out  # Free GPU memory for intermediates (attention, embeddings, etc.)
+            with torch.no_grad():
+                out = conditioned_sample(**model_kwargs)
+            means.append(out["mean"].detach().clone())
+            # Free Pyro trace objects and model output to prevent GPU memory accumulation
+            del out, guide_trace, conditioned_sample
 
         means_stacked = torch.stack(means, dim=0)  # [num_samples, B, 1]
         epistemic_std = means_stacked.std(dim=0)    # [B, 1]
@@ -389,7 +406,7 @@ class Predictor:
 
         # Extract optional outputs from median prediction (same logic as predict_batch)
         if return_hgt_attention and "hgt_attention" in output_median:
-            result["hgt_attention"] = output_median["hgt_attention"]
+            result["hgt_attention"] = _hgt_attention_to_cpu(output_median["hgt_attention"])
 
         if return_pma_attention and "pma_attention" in output_median:
             result["pma_attention"] = [
@@ -478,7 +495,7 @@ class Predictor:
             result["std"] = output["std"].cpu().numpy()
 
         if extract_hgt_attention and "hgt_attention" in output:
-            result["hgt_attention"] = output["hgt_attention"]
+            result["hgt_attention"] = _hgt_attention_to_cpu(output["hgt_attention"])
 
         if extract_pma_attention and "pma_attention" in output:
             # Convert list of tensors to list of numpy arrays

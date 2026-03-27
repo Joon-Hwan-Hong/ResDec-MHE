@@ -636,6 +636,6 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         dropout=model_cfg.get("dropout", 0.1),
         n_pathology_features=model_cfg.pathology_attention.get("n_pathology_features", 3),
         n_pma_seeds=model_cfg.set_transformer.get("n_pma_seeds", 1),
-        mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") else None,
+        mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") is not None else None,
         use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
     )
