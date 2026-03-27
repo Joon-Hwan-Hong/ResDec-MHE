@@ -1,0 +1,182 @@
+analysis:
+  output:
+    save_attention_weights: true
+    save_cell_level_attention: true
+    top_n_genes: 100
+    top_n_interactions: 100
+  resilience:
+    alpha: 0.05
+    apply_fdr_correction: true
+    fdr_method: benjamini_hochberg
+    n_permutations: 1000
+    run_ablation_study: false
+data:
+  adata_path: data/snRNAseq/adata_ROSMAP_merged.h5ad
+  cell_sampling:
+    max_cells_per_type: 1000
+    min_cells_threshold: 50
+    sampling_strategy: random
+  cell_type_column: supercluster_name
+  cellchatdb_path: data/database/CellChatDB_human_interaction.csv
+  dataloader:
+    batch_size: 16
+    num_workers: 12
+    pin_memory: true
+    prefetch_factor: 2
+  liana_cache_dir: data/liana_cache/
+  max_missing_subject_fraction: 0.1
+  metadata_path: data/metadata_ROSMAP/
+  pathology_columns:
+  - gpath
+  - amylsqrt
+  - tangsqrt
+  precomputed_dir: data/precomputed/
+  preprocessing:
+    min_cells_per_gene: 10
+    n_hvg: 4000
+    target_sum: 10000.0
+  splits:
+    n_folds: 5
+    stratify_by:
+    - gpath
+    - cogn_global
+    test_frac: 0.1
+  subject_column: ROSMAP_IndividualID
+  target_column: cogn_global
+error_handling:
+  analysis:
+    insufficient_data: skip
+  inference:
+    missing_field: skip
+  preprocessing:
+    corrupt_file: fail
+    insufficient_cells: skip
+    missing_metadata: warn
+  training:
+    max_nan_skip_fraction: 0.1
+    nan_batch: skip
+    nan_loss: fail
+experiment:
+  device: auto
+  name: cognitive_resilience_5fold
+  run_name: ablation_pseudobulk_only
+  seed: 42
+inference:
+  attention_output_path: outputs/attention/
+  batch_size: 32
+  extract_attention: true
+  num_posterior_samples: 100
+model:
+  cell_type_selector:
+    selection_temperature: 0.6053188005935484
+  d_embed: 64
+  d_fused: 64
+  dropout: 0.06539944248637121
+  gene_gate:
+    initial_temperature: 1.8453857566656047
+  head:
+    d_hidden: 64
+    target_mean: null
+    type: bayesian
+  hgt:
+    edge_types:
+    - Secreted_Signaling
+    - ECM_Receptor
+    - Cell_Cell_Contact
+    - Non_protein_Signaling
+    - Novel_Uncharacterized
+    n_heads: 4
+    n_layers: 4
+  n_cell_types: 31
+  n_genes: 4797
+  pathology_attention:
+    d_cond: 64
+    n_heads: 4
+    n_pathology_features: 3
+  pseudobulk:
+    mlp_hidden:
+    - 512
+    - 256
+    use_layer_norm: true
+  set_transformer:
+    condition_on_cell_type: true
+    n_heads: 4
+    n_inducing_points: 64
+    n_isab_layers: 2
+    n_pma_seeds: 1
+  use_cell_transformer: false
+  use_gradient_checkpointing: true
+  use_hgt_encoder: false
+  use_pseudobulk_encoder: true
+  use_torch_compile: false
+paths:
+  attention_dir: outputs/attention/
+  checkpoint_dir: outputs/checkpoints/
+  figures_dir: outputs/figures/
+  logs_dir: outputs/logs/
+  output_dir: outputs/
+  predictions_dir: outputs/predictions/
+reproducibility:
+  benchmark: false
+  deterministic: true
+training:
+  checkpoint:
+    mode: min
+    monitor: val_nll
+    save_last: true
+    save_top_k: 3
+  devices: 1
+  early_stopping:
+    min_delta: 0.0001
+    min_epochs: 16
+    mode: min
+    monitor: val_nll
+    patience: 15
+  gradient_clip_val: 1.0
+  gradient_modulation:
+    alpha: 1.0
+    enabled: false
+    ge_enabled: true
+    log_modulation: false
+    method: ogm_ge
+  kl_annealing:
+    alpha_min: 0.01
+    enabled: true
+    schedule: linear
+    temperature: 1.0
+    warmup_epochs: 5
+  logging:
+    log_every_n_steps: 10
+    val_check_interval: 1.0
+  loss:
+    beta: 0.10230530158066485
+    type: beta_nll
+  lr_scaling: true
+  max_epochs: 150
+  optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    guide_lr: 0.004571969422052327
+    lr: 0.0027928227911089903
+    lrd: 0.9999
+    type: adamw
+    weight_decay: 2.637382811142924e-05
+  precision: bf16-mixed
+  regularization:
+    gene_gate_l1: 0.0
+  scheduler:
+    T_max: 95
+    eta_min: 1.0e-06
+    type: cosine
+    warmup_epochs: 5
+  strategy: auto
+  temperature_annealing:
+    anneal_epochs: 15
+    schedule: exponential
+    tau_max: 2.0
+    tau_min: 1.5291965629261504
+    warmup_epochs: 5
+visualization:
+  dpi: 600
+  format: png
