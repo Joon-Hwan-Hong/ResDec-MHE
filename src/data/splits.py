@@ -427,5 +427,18 @@ def validate_no_leakage(splits: dict) -> bool:
             logger.warning(f"Fold {fold_idx} has test subjects")
             return False
 
+    # Verify all train_val subjects appear across folds (completeness check)
+    all_fold_subjects = set()
+    for fold in splits["folds"]:
+        all_fold_subjects.update(fold["train"])
+        all_fold_subjects.update(fold["val"])
+    if all_fold_subjects != train_val_set:
+        missing = train_val_set - all_fold_subjects
+        logger.warning(
+            f"{len(missing)} train_val subjects not in any fold: "
+            f"{list(missing)[:5]}"
+        )
+        return False
+
     logger.info("No data leakage detected")
     return True

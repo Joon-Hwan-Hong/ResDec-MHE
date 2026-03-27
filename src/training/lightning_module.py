@@ -347,9 +347,6 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         # Under DDP, each rank caches its own last batch. train_loss_nll is
         # logged with sync_dist=True, averaging each rank's NLL estimate.
         if self._use_bayesian_svi:
-            # Keep GPU reference to last batch — no CPU copy.
-            # on_train_epoch_end runs immediately after the last training_step,
-            # before DataLoader fetches next epoch's data, so reference is valid.
             self._last_train_batch_ref = batch
 
         return loss

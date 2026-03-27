@@ -237,6 +237,7 @@ def setup_trainer(
         strategy=strategy,
         precision=train_cfg.get("precision", "32-true"),
         gradient_clip_val=train_cfg.get("gradient_clip_val", None),
+        gradient_clip_algorithm="norm",
         callbacks=callbacks,
         logger=tb_logger,
         log_every_n_steps=train_cfg.get("logging", {}).get("log_every_n_steps", 10),
@@ -444,8 +445,7 @@ def main() -> None:
         default_callbacks = setup_callbacks(config)
         final_callbacks = [
             cb for cb in default_callbacks
-            if not isinstance(cb, (MinEpochEarlyStopping, ModelCheckpoint,
-                                   ResilienceModelCheckpoint))
+            if not isinstance(cb, (MinEpochEarlyStopping, ModelCheckpoint))
         ]
 
         # Add last-epoch-only checkpoint (no metric selection)
@@ -458,9 +458,6 @@ def main() -> None:
                 auto_insert_metric_name=False,
             )
         )
-
-        # Re-add ResilienceModelCheckpoint for custom metadata
-        final_callbacks.append(ResilienceModelCheckpoint())
 
         # Override trainer with final-mode callbacks
         trainer = setup_trainer(config, callbacks=final_callbacks)

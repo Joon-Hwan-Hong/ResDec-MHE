@@ -729,6 +729,7 @@ class TestModelOutputKeysAndShapes:
         collated = collate_fn(batch)
         model_input = convert_collated_batch_to_model_input(collated, n_genes)
 
+        model.eval()
         output = model(**model_input)
 
         n_heads = model_config["n_attention_heads"]
@@ -743,6 +744,7 @@ class TestModelOutputKeysAndShapes:
         collated = collate_fn(batch)
         model_input = convert_collated_batch_to_model_input(collated, n_genes)
 
+        model.eval()
         output = model(**model_input)
         attention = output["attention_weights"]
 

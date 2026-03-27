@@ -497,6 +497,7 @@ class TestCellTypeMaskPropagation:
             dropout=0.0,
             use_bayesian_head=False,
         )
+        model.eval()
 
         B = 2
         cell_type_mask = torch.ones(B, N_CELL_TYPES, dtype=torch.bool)

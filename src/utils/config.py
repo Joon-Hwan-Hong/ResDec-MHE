@@ -7,7 +7,13 @@ from typing import Any
 
 import yaml
 from omegaconf import OmegaConf, DictConfig
-from omegaconf.errors import ConfigKeyError, ConfigAttributeError
+from omegaconf.errors import (
+    ConfigKeyError,
+    ConfigAttributeError,
+    MissingMandatoryValue,
+    InterpolationKeyError,
+    InterpolationResolutionError,
+)
 
 
 def load_config(
@@ -156,7 +162,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         try:
             for k in keys:
                 value = value[k]
-        except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+        except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
+            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
             continue  # Field not present — only required_keys are mandatory
 
         # OmegaConf returns int for YAML integers, but check robustly
@@ -177,7 +184,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
             errors.append(
                 f"Temperature annealing: tau_min ({tau_min}) must be < tau_max ({tau_max})"
             )
-    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
+            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
         pass
 
     # 2. LR > eta_min
@@ -188,7 +196,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
             errors.append(
                 f"Scheduler eta_min ({eta_min}) must be < optimizer lr ({lr})"
             )
-    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
+            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
         pass
 
     # 3. Bayesian SVI uses Adam + ExponentialLR (Pyro convention).
@@ -227,7 +236,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
                     "Set weight_decay=0 to silence this warning.",
                     wd,
                 )
-    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
+            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
         pass
 
     # 4. n_pathology_features must match len(pathology_columns)
@@ -240,7 +250,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
                 f"model.pathology_attention.n_pathology_features={n_path_model}. "
                 f"These must match."
             )
-    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
+            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
         pass
 
     # 5. n_regions must match dataset constant if specified
@@ -252,7 +263,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
                 f"model.n_regions={cfg_n_regions} but data constant N_REGIONS={N_REGIONS}. "
                 f"Region count is fixed by dataset schema — remove n_regions from config."
             )
-    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
+            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
         pass  # n_regions not in config — correct behavior
 
     # 6. DDP strategy must use find_unused_parameters=True for HGT edge-specific params
@@ -267,7 +279,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
                 "Use 'ddp_find_unused_parameters_true' instead.",
                 strategy,
             )
-    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
+            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
         pass
 
     # 7. n_cell_types must match dataset constant if specified
@@ -279,7 +292,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
                 f"model.n_cell_types={cfg_n_ct} but data constant N_CELL_TYPES={N_CELL_TYPES}. "
                 f"Cell type count is fixed by dataset schema."
             )
-    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
+            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
         pass
 
     if errors:

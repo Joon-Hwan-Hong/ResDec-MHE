@@ -557,7 +557,13 @@ def load_dataframe(
             try:
                 return pd.read_parquet(path)
             except (ValueError, OSError):
-                return pd.read_csv(path)
+                try:
+                    return pd.read_csv(path)
+                except Exception:
+                    raise ValueError(
+                        f"Could not read {path} as parquet or CSV. "
+                        f"Provide an explicit fmt= parameter."
+                    )
 
     # Try adding extensions
     parquet_path = path.with_suffix(".parquet")

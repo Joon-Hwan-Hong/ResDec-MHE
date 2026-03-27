@@ -344,7 +344,7 @@ class HGTConvWithEdgeAttr(nn.Module):
             # (lightning_module.py:274) handles the actual fail/skip decision.
             if not torch.isfinite(attn_weights.sum()):
                 logger.warning(
-                    "NaN detected in HGT attention weights for edge type %s. "
+                    "Non-finite values (NaN/Inf) detected in HGT attention weights for edge type %s. "
                     "Check edge_lin initialization and edge attribute magnitudes.",
                     edge_type,
                 )

@@ -76,6 +76,7 @@ class TestEndToEndForward:
     def test_deterministic_forward(self, model_kwargs, sample_batch):
         """Full forward pass completes, no NaN for deterministic model."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
 
         output = model(**sample_batch)
 
@@ -96,6 +97,7 @@ class TestEndToEndForward:
     def test_bayesian_forward(self, model_kwargs, sample_batch):
         """Full forward pass completes, std > 0 for Bayesian model."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=True)
+        model.eval()
 
         output = model(**sample_batch)
 
@@ -125,6 +127,7 @@ class TestEndToEndForward:
         # for data-pipeline coverage.
         """
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
 
         # Create mask with only first region available (PFC)
         B = sample_batch['region_pseudobulk'].size(0)
@@ -376,6 +379,7 @@ class TestAttentionInterpretability:
     def test_attention_weights_are_valid(self, model_kwargs, sample_batch):
         """Sum to 1, non-negative attention weights."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
 
         output = model(**sample_batch)
         attention_weights = output['attention_weights']  # [B, n_heads, n_cell_types]
@@ -424,6 +428,7 @@ class TestAttentionInterpretability:
     def test_attention_weights_shape(self, model_kwargs, sample_batch):
         """Attention weights have correct shape."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
 
         output = model(**sample_batch)
         attention_weights = output['attention_weights']
@@ -499,6 +504,7 @@ class TestNumericalStability:
     def test_large_input_values(self, model_kwargs, sample_batch):
         """Model handles large input values without NaN."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
 
         # Scale inputs to large values
         sample_batch['region_pseudobulk'] = sample_batch['region_pseudobulk'] * 100
@@ -514,6 +520,7 @@ class TestNumericalStability:
     def test_small_input_values(self, model_kwargs, sample_batch):
         """Model handles small input values without NaN."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
 
         # Scale inputs to small values
         sample_batch['region_pseudobulk'] = sample_batch['region_pseudobulk'] * 1e-6
@@ -643,6 +650,7 @@ class TestEdgeCases:
     def test_extreme_pathology_values(self, model_kwargs, sample_batch):
         """Model handles extreme pathology values."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
+        model.eval()
 
         # Extreme pathology values
         sample_batch['pathology'] = torch.tensor([

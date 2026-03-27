@@ -54,8 +54,9 @@ def main():
     )
     args = parser.parse_args()
 
-    from src.utils.config import load_config
+    from src.utils.config import load_config, validate_config
     config = load_config(args.config)
+    validate_config(config, required_keys=["data"])
     data_cfg = config.data
 
     from src.data.preprocessing import preprocess_adata
