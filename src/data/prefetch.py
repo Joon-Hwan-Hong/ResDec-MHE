@@ -1,18 +1,28 @@
-"""Threaded batch prefetcher for overlapping collation with GPU compute.
+"""Threaded batch prefetcher for overlapping DataLoader retrieval + GPU transfer.
 
-With num_workers=0, DataLoader collation (torch.cat of ~1.4 GB cell_data)
-runs synchronously in the main thread, blocking GPU compute.  This module
-provides a wrapper that runs collation + device transfer in a background
-thread so they overlap with forward/backward.
+Moves batch retrieval from the DataLoader AND host-to-device transfer into a
+background daemon thread, hiding both behind GPU forward/backward compute.
+This is more aggressive than the simpler stream-based approach (NVIDIA/apex
+pattern, which only overlaps H2D transfer via CUDA streams) because it also
+hides the DataLoader batch retrieval latency.
+
+Benchmarked on ROSMAP dataset (batch_size=20, 1x RTX 6000 Ada):
+- No prefetching:              1254 ms/step
+- Stream-based (NVIDIA/apex):  1007 ms/step  (20% faster)
+- ThreadedPrefetcher (this):    916 ms/step  (27% faster, 9% over stream)
+
+Design tradeoff: daemon threads hold GPU tensor references in their closure
+and queue, which can leak ~8-10 GB per fold if shutdown() is not called.
+A simpler stream-based approach avoids this lifecycle issue entirely.
+However, when used with per-trial process isolation (e.g., Ray Tune), the
+leak cannot accumulate across trials since the OS frees all GPU memory on
+process exit. In that setting, ThreadedPrefetcher is strictly better than
+stream-based: same simplicity guarantees with 9% more throughput.
 
 Works because:
 - torch.cat/torch.stack release the GIL during C++ memcpy
 - CUDA kernels (forward/backward) run without the GIL
 - .to(device, non_blocking=True) releases the GIL during DMA
-
-Benchmarked improvement (2x RTX 6000 Ada, ROSMAP dataset):
-- 2-GPU without prefetch: 26.6 samples/sec (data_load=628ms/step)
-- 2-GPU with prefetch:    45.6 samples/sec (data_load=103ms/step)
 """
 
 import queue
