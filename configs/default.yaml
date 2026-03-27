@@ -124,6 +124,9 @@ model:
     n_heads: 4
     n_pathology_features: 3
 
+  # Gradient checkpointing (trades ~5% compute for 5-8 GB memory savings)
+  use_gradient_checkpointing: true
+
   # Prediction Head
   head:
     type: "bayesian"  # "bayesian", "deterministic"

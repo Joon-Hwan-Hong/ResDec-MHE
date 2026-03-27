@@ -88,22 +88,17 @@ class TestMoveBatchToDevice:
         assert moved["cell_type_order"] is batch["cell_type_order"]
         assert moved["n_nodes_per_graph"] is batch["n_nodes_per_graph"]
 
-    def test_edge_dict_list_with_tuple_keys(self):
+    def test_raw_edge_tensors_moved_to_device(self):
         batch = {
-            "edge_index_dict_list": [
-                {("TypeA", "rel0", "TypeB"): torch.tensor([[0], [0]])},
-                {("TypeA", "rel0", "TypeB"): torch.tensor([[0], [0]])},
-            ],
-            "edge_attr_dict_list": [
-                {("TypeA", "rel0", "TypeB"): torch.tensor([[0.5]])},
-                {("TypeA", "rel0", "TypeB"): torch.tensor([[0.5]])},
-            ],
+            "ccc_edge_index": torch.tensor([[[0], [0]], [[0], [0]]]),
+            "ccc_edge_type": torch.tensor([[0], [0]]),
+            "ccc_edge_attr": torch.tensor([[[0.5]], [[0.5]]]),
+            "ccc_edge_counts": torch.tensor([1, 1]),
         }
         moved = move_batch_to_device(batch, "cpu")
-        for d in moved["edge_index_dict_list"]:
-            for key, val in d.items():
-                assert isinstance(key, tuple)
-                assert isinstance(val, torch.Tensor)
+        for key in ("ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts"):
+            assert isinstance(moved[key], torch.Tensor)
+            assert moved[key].device == torch.device("cpu")
 
     def test_mixed_batch_all_keys_present(self):
         batch = {
@@ -114,8 +109,10 @@ class TestMoveBatchToDevice:
             "pathology": torch.randn(4, 3),
             "region_pseudobulk": torch.randn(4, 6, 31, 50),
             "region_mask": torch.ones(4, 6, dtype=torch.bool),
-            "edge_index_dict_list": [{} for _ in range(4)],
-            "edge_attr_dict_list": [{} for _ in range(4)],
+            "ccc_edge_index": torch.zeros(4, 2, 0, dtype=torch.long),
+            "ccc_edge_type": torch.zeros(4, 0, dtype=torch.long),
+            "ccc_edge_attr": torch.zeros(4, 0, 1),
+            "ccc_edge_counts": torch.zeros(4, dtype=torch.long),
             "subject_ids": [f"subj_{i}" for i in range(4)],
             "batch_size": 4,
             "node_types": ["Type_0"],
@@ -131,10 +128,12 @@ class TestMoveBatchToDevice:
         moved = move_batch_to_device(batch, "cpu")
         assert moved["optional"] is None
 
-    def test_empty_edge_dicts(self):
+    def test_empty_edge_tensors(self):
         batch = {
-            "edge_index_dict_list": [{}, {}, {}],
-            "edge_attr_dict_list": [{}, {}, {}],
+            "ccc_edge_index": torch.zeros(3, 2, 0, dtype=torch.long),
+            "ccc_edge_type": torch.zeros(3, 0, dtype=torch.long),
+            "ccc_edge_attr": torch.zeros(3, 0, 1),
+            "ccc_edge_counts": torch.zeros(3, dtype=torch.long),
         }
         moved = move_batch_to_device(batch, "cpu")
-        assert all(d == {} for d in moved["edge_index_dict_list"])
+        assert (moved["ccc_edge_counts"] == 0).all()

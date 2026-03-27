@@ -184,8 +184,10 @@ def convert_collated_batch_to_model_input(
     The model expects specific keys and shapes that differ slightly from collate output:
     - region_pseudobulk: [B, n_regions, n_cell_types, n_genes]
     - region_mask: [B, n_regions]
-    - edge_index_dict_list: List of {(src, rel, dst): [2, n_edges]} per sample
-    - edge_attr_dict_list: List of {(src, rel, dst): [n_edges, 1]} per sample
+    - ccc_edge_index: [B, 2, max_edges] padded edge indices
+    - ccc_edge_type: [B, max_edges] edge type indices
+    - ccc_edge_attr: [B, max_edges, 1] edge attributes
+    - ccc_edge_counts: [B] number of valid edges per sample
     - cells: [B, n_cell_types, max_cells, n_genes]
     - cell_mask: [B, n_cell_types, max_cells]
     - pathology: [B, 3]
@@ -208,10 +210,13 @@ def convert_collated_batch_to_model_input(
         "cognition": collated["cognition"],
     }
 
-    # Pass through edge dict lists if available (from collate_for_hgt)
-    if "edge_index_dict_list" in collated:
-        result["edge_index_dict_list"] = collated["edge_index_dict_list"]
-        result["edge_attr_dict_list"] = collated["edge_attr_dict_list"]
+    # Pass through raw edge tensors if available (from collate_for_hgt, padded per-sample format)
+    # Only pass when ccc_edge_counts is present — collate_fn produces concatenated format
+    # which is NOT compatible with the model's per-sample padded format.
+    if "ccc_edge_counts" in collated:
+        for key in ("ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts"):
+            if key in collated:
+                result[key] = collated[key]
 
     return result
 
@@ -241,10 +246,13 @@ def convert_multiregion_collated_to_model_input(collated: dict) -> dict:
         "cognition": collated["cognition"],
     }
 
-    # Pass through edge dict lists if available (from collate_for_hgt / collate_for_hgt_multiregion)
-    if "edge_index_dict_list" in collated:
-        result["edge_index_dict_list"] = collated["edge_index_dict_list"]
-        result["edge_attr_dict_list"] = collated["edge_attr_dict_list"]
+    # Pass through raw edge tensors if available (from collate_for_hgt / collate_for_hgt_multiregion)
+    # Only pass when ccc_edge_counts is present — collate_fn produces concatenated format
+    # which is NOT compatible with the model's per-sample padded format.
+    if "ccc_edge_counts" in collated:
+        for key in ("ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts"):
+            if key in collated:
+                result[key] = collated[key]
 
     return result
 

@@ -8,7 +8,7 @@ from src.models.components.set_transformer import (
     SetTransformerEncoder,
 )
 from src.models.components.cell_type_selector import CellTypeSelector
-from src.models.components.hgt_conv import HGTConvWithEdgeAttr
+from src.models.components.hgt_conv_tensor import HGTConvTensor
 from src.models.components.region_handler import RegionHandler
 
 __all__ = [
@@ -18,6 +18,6 @@ __all__ = [
     "PMA",
     "SetTransformerEncoder",
     "CellTypeSelector",
-    "HGTConvWithEdgeAttr",
+    "HGTConvTensor",
     "RegionHandler",
 ]

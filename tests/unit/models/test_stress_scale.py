@@ -130,22 +130,7 @@ def create_sample_inputs(
     device: torch.device = torch.device("cpu"),
 ) -> dict:
     """Create sample inputs for the full model."""
-    from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
-    # Build edge_index_dict_list and edge_attr_dict_list
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(batch_size):
-        edge_index_dict = {}
-        edge_attr_dict = {}
-        for src_ct in CELL_TYPE_ORDER[:3]:
-            for dst_ct in CELL_TYPE_ORDER[:3]:
-                for et in ALL_EDGE_TYPES[:2]:
-                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                    edge_index_dict[key] = torch.zeros(2, n_edges, dtype=torch.long, device=device)
-                    edge_attr_dict[key] = torch.rand(n_edges, 1, device=device)
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
+    from src.data.constants import N_EDGE_TYPES
 
     return {
         'region_pseudobulk': torch.randn(
@@ -154,8 +139,16 @@ def create_sample_inputs(
         'region_mask': torch.ones(
             batch_size, n_regions, dtype=torch.bool, device=device
         ),
-        'edge_index_dict_list': edge_index_dict_list,
-        'edge_attr_dict_list': edge_attr_dict_list,
+        'ccc_edge_index': torch.randint(
+            0, n_cell_types, (batch_size, 2, n_edges), device=device
+        ),
+        'ccc_edge_type': torch.randint(
+            0, N_EDGE_TYPES, (batch_size, n_edges), device=device
+        ),
+        'ccc_edge_attr': torch.rand(batch_size, n_edges, 1, device=device),
+        'ccc_edge_counts': torch.full(
+            (batch_size,), n_edges, dtype=torch.long, device=device
+        ),
         'cells': torch.randn(
             batch_size, n_cell_types, max_cells, n_genes, device=device
         ),
@@ -412,157 +405,100 @@ class TestGeneCountScaling:
 
 
 class TestEdgeIndexScaling:
-    """Test HGT encoder with varying edge densities."""
+    """Test HGTEncoderTensor with varying edge densities."""
 
-    def test_sparse_edge_index(self, mini_node_types, mini_edge_categories, cpu_device):
-        """Very few edges (10) works correctly."""
-        from src.models.branches.hgt_encoder import HGTEncoder
+    def test_sparse_edge_index(self, cpu_device):
+        """Very few edges (2) works correctly."""
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
 
-        d_input = 32
-        encoder = HGTEncoder(
-            d_input=d_input,
-            d_hidden=32,
-            d_output=32,
-            n_heads=2,
-            n_layers=1,
-            dropout=0.0,
-            edge_dim=1,
-            node_types=mini_node_types,
-            edge_categories=mini_edge_categories,
+        d = 32
+        encoder = HGTEncoderTensor(
+            d_input=d, d_hidden=d, d_output=d,
+            n_heads=2, n_layers=1, n_node_types=N_CELL_TYPES,
+            n_edge_types=len(ALL_EDGE_TYPES), dropout=0.0, edge_dim=1,
         ).to(cpu_device)
         encoder.eval()
 
-        # Create very sparse graph - 10 edges
-        x_dict = {nt: torch.randn(1, d_input, device=cpu_device) for nt in mini_node_types}
-
-        # Only 2-3 edge connections
-        edge_index_dict = {
-            (mini_node_types[0], mini_edge_categories[0], mini_node_types[1]):
-                torch.tensor([[0], [0]], device=cpu_device),
-            (mini_node_types[1], mini_edge_categories[0], mini_node_types[2]):
-                torch.tensor([[0], [0]], device=cpu_device),
-        }
-        edge_attr_dict = {
-            (mini_node_types[0], mini_edge_categories[0], mini_node_types[1]):
-                torch.rand(1, 1, device=cpu_device),
-            (mini_node_types[1], mini_edge_categories[0], mini_node_types[2]):
-                torch.rand(1, 1, device=cpu_device),
-        }
+        B = 1
+        n_edges = 2
+        x = torch.randn(B, N_CELL_TYPES, d, device=cpu_device)
+        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, n_edges), device=cpu_device)
+        edge_type = torch.randint(0, len(ALL_EDGE_TYPES), (B, n_edges), device=cpu_device)
+        edge_attr = torch.rand(B, n_edges, 1, device=cpu_device)
+        edge_counts = torch.full((B,), n_edges, dtype=torch.long, device=cpu_device)
 
         with torch.no_grad():
-            output_dict, _ = encoder(x_dict, edge_index_dict, edge_attr_dict)
+            out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
 
-        for nt in mini_node_types:
-            assert nt in output_dict
-            assert not torch.isnan(output_dict[nt]).any()
+        assert out.shape == (B, N_CELL_TYPES, d)
+        assert not torch.isnan(out).any()
 
-    def test_dense_edge_index(self, mini_node_types, mini_edge_categories, cpu_device):
-        """Many edges (1000+) works correctly."""
-        from src.models.branches.hgt_encoder import HGTEncoder
+    def test_dense_edge_index(self, cpu_device):
+        """Many edges (500+) works correctly."""
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
 
-        d_input = 32
-        n_nodes_per_type = 10
-
-        encoder = HGTEncoder(
-            d_input=d_input,
-            d_hidden=32,
-            d_output=32,
-            n_heads=2,
-            n_layers=1,
-            dropout=0.0,
-            edge_dim=1,
-            node_types=mini_node_types,
-            edge_categories=mini_edge_categories,
+        d = 32
+        encoder = HGTEncoderTensor(
+            d_input=d, d_hidden=d, d_output=d,
+            n_heads=2, n_layers=1, n_node_types=N_CELL_TYPES,
+            n_edge_types=len(ALL_EDGE_TYPES), dropout=0.0, edge_dim=1,
         ).to(cpu_device)
         encoder.eval()
 
-        # Create dense graph - many nodes, many edges
-        x_dict = {
-            nt: torch.randn(n_nodes_per_type, d_input, device=cpu_device)
-            for nt in mini_node_types
-        }
-
-        # Create many edges between types
-        edge_index_dict = {}
-        edge_attr_dict = {}
-
-        for src_type in mini_node_types:
-            for dst_type in mini_node_types:
-                for edge_cat in mini_edge_categories:
-                    n_edges = 50  # 50 edges per type pair
-                    edge_key = (src_type, edge_cat, dst_type)
-
-                    src_idx = torch.randint(0, n_nodes_per_type, (n_edges,), device=cpu_device)
-                    dst_idx = torch.randint(0, n_nodes_per_type, (n_edges,), device=cpu_device)
-
-                    edge_index_dict[edge_key] = torch.stack([src_idx, dst_idx], dim=0)
-                    edge_attr_dict[edge_key] = torch.rand(n_edges, 1, device=cpu_device)
+        B = 2
+        n_edges = 500
+        x = torch.randn(B, N_CELL_TYPES, d, device=cpu_device)
+        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, n_edges), device=cpu_device)
+        edge_type = torch.randint(0, len(ALL_EDGE_TYPES), (B, n_edges), device=cpu_device)
+        edge_attr = torch.rand(B, n_edges, 1, device=cpu_device)
+        edge_counts = torch.full((B,), n_edges, dtype=torch.long, device=cpu_device)
 
         with torch.no_grad():
-            output_dict, _ = encoder(x_dict, edge_index_dict, edge_attr_dict)
+            out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
 
-        for nt in mini_node_types:
-            assert nt in output_dict
-            assert output_dict[nt].shape == (n_nodes_per_type, 32)
-            assert not torch.isnan(output_dict[nt]).any()
+        assert out.shape == (B, N_CELL_TYPES, d)
+        assert not torch.isnan(out).any()
 
-    def test_fully_connected_edges(self, mini_node_types, mini_edge_categories, cpu_device):
+    def test_fully_connected_edges(self, cpu_device):
         """All possible edges (fully connected) works correctly."""
-        from src.models.branches.hgt_encoder import HGTEncoder
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
 
-        d_input = 32
-        n_nodes_per_type = 5
-
-        encoder = HGTEncoder(
-            d_input=d_input,
-            d_hidden=32,
-            d_output=32,
-            n_heads=2,
-            n_layers=1,
-            dropout=0.0,
-            edge_dim=1,
-            node_types=mini_node_types,
-            edge_categories=mini_edge_categories,
+        d = 32
+        encoder = HGTEncoderTensor(
+            d_input=d, d_hidden=d, d_output=d,
+            n_heads=2, n_layers=1, n_node_types=N_CELL_TYPES,
+            n_edge_types=len(ALL_EDGE_TYPES), dropout=0.0, edge_dim=1,
         ).to(cpu_device)
         encoder.eval()
 
-        # Create fully connected graph
-        x_dict = {
-            nt: torch.randn(n_nodes_per_type, d_input, device=cpu_device)
-            for nt in mini_node_types
-        }
+        B = 1
+        # All-to-all edges among first 5 cell types, all edge types
+        n_ct_subset = 5
+        n_et = len(ALL_EDGE_TYPES)
+        n_edges = n_ct_subset * n_ct_subset * n_et
 
-        edge_index_dict = {}
-        edge_attr_dict = {}
+        src = []
+        dst = []
+        et_list = []
+        for s in range(n_ct_subset):
+            for d_idx in range(n_ct_subset):
+                for e in range(n_et):
+                    src.append(s)
+                    dst.append(d_idx)
+                    et_list.append(e)
 
-        for src_type in mini_node_types:
-            for dst_type in mini_node_types:
-                for edge_cat in mini_edge_categories:
-                    edge_key = (src_type, edge_cat, dst_type)
-
-                    # All-to-all edges
-                    src_idx = []
-                    dst_idx = []
-                    for i in range(n_nodes_per_type):
-                        for j in range(n_nodes_per_type):
-                            src_idx.append(i)
-                            dst_idx.append(j)
-
-                    edge_index_dict[edge_key] = torch.tensor(
-                        [src_idx, dst_idx], device=cpu_device
-                    )
-                    n_edges = len(src_idx)
-                    edge_attr_dict[edge_key] = torch.rand(n_edges, 1, device=cpu_device)
+        x = torch.randn(B, N_CELL_TYPES, d, device=cpu_device)
+        edge_index = torch.tensor([[src, dst]], device=cpu_device)  # [1, 2, n_edges]
+        edge_type = torch.tensor([et_list], device=cpu_device)     # [1, n_edges]
+        edge_attr = torch.rand(B, n_edges, 1, device=cpu_device)
+        edge_counts = torch.full((B,), n_edges, dtype=torch.long, device=cpu_device)
 
         with torch.no_grad():
-            output_dict, attn = encoder(
-                x_dict, edge_index_dict, edge_attr_dict, return_attention=True
-            )
+            out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
 
-        for nt in mini_node_types:
-            assert nt in output_dict
-            assert not torch.isnan(output_dict[nt]).any()
-            assert not torch.isinf(output_dict[nt]).any()
+        assert out.shape == (B, N_CELL_TYPES, d)
+        assert not torch.isnan(out).any()
+        assert not torch.isinf(out).any()
 
 
 # ============================================================================

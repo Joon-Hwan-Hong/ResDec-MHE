@@ -211,8 +211,8 @@ class TestAttention:
         )
 
         assert attention is not None
-        # Attention for ALL cell types now
-        assert len(attention) == small_config["n_cell_types"]
+        # Attention tensor: [B, n_cell_types, n_heads, n_seeds, max_cells]
+        assert attention.shape[1] == small_config["n_cell_types"]
 
     def test_no_attention_by_default(self, small_transformer, sample_data):
         """Test attention is None when not requested."""
@@ -234,18 +234,13 @@ class TestAttention:
         )
 
         assert attention is not None
-        assert len(attention) == small_config["n_cell_types"]
-
-        # Each attention tensor should be 4D: [batch, n_heads, n_pma_seeds, max_cells]
-        for ct_idx, attn in enumerate(attention):
-            assert attn.dim() == 4, f"Cell type {ct_idx} attention should be 4D"
-            assert attn.shape[0] == batch_size
-            # n_heads from the set encoder
-            assert attn.shape[1] == small_config["n_heads"]
-            # n_pma_seeds
-            assert attn.shape[2] == small_config["n_pma_seeds"]
-            # max_cells dimension
-            assert attn.shape[3] == cells.size(2)
+        # attention is now a single tensor: [B, n_cell_types, n_heads, n_pma_seeds, max_cells]
+        assert attention.dim() == 5
+        assert attention.shape[0] == batch_size
+        assert attention.shape[1] == small_config["n_cell_types"]
+        assert attention.shape[2] == small_config["n_heads"]
+        assert attention.shape[3] == small_config["n_pma_seeds"]
+        assert attention.shape[4] == cells.size(2)
 
 
 # ============================================================================

@@ -90,8 +90,8 @@ class TestCollateOutputSchema:
             "cells", "cell_mask",
             "pathology", "cognition",
             "region_mask",
-            # HGT dict lists (x_dict_list built separately via build_x_dict_list_from_embeddings)
-            "edge_index_dict_list", "edge_attr_dict_list",
+            # HGT raw edge tensors
+            "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts",
             "subject_ids", "batch_size",
             "node_types", "edge_types",
         }
@@ -113,9 +113,11 @@ class TestCollateOutputSchema:
         # cells: [batch, n_cell_types, max_cells, n_genes]
         assert batch["cells"].shape[0] == batch_size
         assert batch["cells"].shape[1] == N_CELL_TYPES
-        # HGT dict lists should have length == batch_size
-        assert len(batch["edge_index_dict_list"]) == batch_size
-        assert len(batch["edge_attr_dict_list"]) == batch_size
+        # HGT raw edge tensors should have batch dimension == batch_size
+        assert batch["ccc_edge_index"].shape[0] == batch_size
+        assert batch["ccc_edge_type"].shape[0] == batch_size
+        assert batch["ccc_edge_attr"].shape[0] == batch_size
+        assert batch["ccc_edge_counts"].shape == (batch_size,)
 
 
 def create_mock_sample(
@@ -240,19 +242,21 @@ class TestCollateFn:
 
 
 class TestCollateForHgt:
-    """Tests for collate_for_hgt() - dict format for HGTEncoderBatched."""
+    """Tests for collate_for_hgt() - tensor format for HGTEncoderTensor."""
 
-    def test_creates_dict_lists(self):
-        """Creates dict lists for HGTEncoderBatched."""
+    def test_creates_raw_edge_tensors(self):
+        """Creates raw padded edge tensors for HGTEncoderTensor."""
         from src.data.collate import collate_for_hgt
 
         batch = [create_mock_sample() for _ in range(3)]
         result = collate_for_hgt(batch)
 
-        assert "edge_index_dict_list" in result
-        assert "edge_attr_dict_list" in result
+        assert "ccc_edge_index" in result
+        assert "ccc_edge_type" in result
+        assert "ccc_edge_attr" in result
+        assert "ccc_edge_counts" in result
         assert result["batch_size"] == 3
-        assert len(result["edge_index_dict_list"]) == 3
+        assert result["ccc_edge_index"].shape[0] == 3
 
     def test_includes_node_and_edge_types(self):
         """Result includes metadata about node/edge types."""
@@ -287,37 +291,10 @@ class TestCollateForHgt:
 
         assert result["batch_size"] == 1
         assert result["pseudobulk"].shape[0] == 1
-        assert len(result["edge_index_dict_list"]) == 1
+        assert result["ccc_edge_index"].shape[0] == 1
 
-    def test_x_dict_structure_via_build_helper(self):
-        """build_x_dict_list_from_embeddings should produce x_dicts with all cell types."""
-        from src.data.collate import collate_for_hgt, build_x_dict_list_from_embeddings
-
-        batch = [create_mock_sample() for _ in range(2)]
-        result = collate_for_hgt(batch)
-
-        # Build x_dict_list from raw pseudobulk (as standalone HGT tests would)
-        x_dict_list = build_x_dict_list_from_embeddings(
-            result["pseudobulk"], result["node_types"]
-        )
-
-        assert len(x_dict_list) == 2
-        for x_dict in x_dict_list:
-            # Should have 31 cell types
-            assert len(x_dict) == N_CELL_TYPES
-            # Each value should be (1, n_genes)
-            for ct_name, tensor in x_dict.items():
-                assert tensor.shape[0] == 1  # Single node per type per subject
-
-        # Verify values match source pseudobulk
-        for b in range(2):  # batch size
-            for ct_idx, ct_name in enumerate(result["node_types"]):
-                expected = result["pseudobulk"][b, ct_idx]
-                actual = x_dict_list[b][ct_name].squeeze(0)
-                assert torch.allclose(expected, actual), f"Mismatch for batch {b}, type {ct_name}"
-
-    def test_edge_dict_triplet_keys(self):
-        """Edge dicts should have (src, rel, dst) triplet keys."""
+    def test_raw_edge_tensors_from_sample_with_edges(self):
+        """Collate should produce valid raw edge tensors from samples with edges."""
         from src.data.collate import collate_for_hgt
 
         # Create sample with edges
@@ -328,19 +305,15 @@ class TestCollateForHgt:
 
         result = collate_for_hgt([sample])
 
-        edge_index_dict = result["edge_index_dict_list"][0]
-        edge_attr_dict = result["edge_attr_dict_list"][0]
-
-        # Should have edges
-        assert len(edge_index_dict) > 0
-        # Keys should be triplets
-        for key in edge_index_dict.keys():
-            assert isinstance(key, tuple)
-            assert len(key) == 3  # (src_type, relation, dst_type)
+        # Should have 2 edges
+        assert result["ccc_edge_counts"][0].item() == 2
+        assert result["ccc_edge_index"].shape == (1, 2, 2)
+        assert result["ccc_edge_type"].shape == (1, 2)
+        assert result["ccc_edge_attr"].shape == (1, 2, 1)
 
     def test_uses_custom_cell_type_order(self):
         """Should use cell_type_order from sample, not global constant."""
-        from src.data.collate import collate_for_hgt, build_x_dict_list_from_embeddings
+        from src.data.collate import collate_for_hgt
 
         # Create sample with custom cell type order
         custom_order = ["TypeA", "TypeB", "TypeC"]
@@ -357,13 +330,6 @@ class TestCollateForHgt:
 
         # Node types should match custom order (sanitized)
         assert result["node_types"] == ["TypeA", "TypeB", "TypeC"]
-
-        # Build x_dict_list from pseudobulk and verify custom type names as keys
-        x_dict_list = build_x_dict_list_from_embeddings(
-            result["pseudobulk"], result["node_types"]
-        )
-        x_dict = x_dict_list[0]
-        assert set(x_dict.keys()) == {"TypeA", "TypeB", "TypeC"}
 
         # Raw cell_type_order should be preserved
         assert result["cell_type_order"] == custom_order
@@ -410,84 +376,6 @@ class TestCollateForHgt:
                 os.environ.pop("RESILIENCE_DEBUG", None)
             else:
                 os.environ["RESILIENCE_DEBUG"] = old
-
-
-class TestBuildXDictListFromEmbeddings:
-    """Tests for build_x_dict_list_from_embeddings() helper."""
-
-    def test_creates_correct_structure(self):
-        """Should create list of dicts with correct structure."""
-        from src.data.collate import build_x_dict_list_from_embeddings
-
-        batch_size = 3
-        n_cell_types = N_CELL_TYPES
-        d_embed = 128
-        node_types = [f"CellType_{i}" for i in range(n_cell_types)]
-
-        embeddings = torch.randn(batch_size, n_cell_types, d_embed)
-        x_dict_list = build_x_dict_list_from_embeddings(embeddings, node_types)
-
-        assert len(x_dict_list) == batch_size
-        for x_dict in x_dict_list:
-            assert len(x_dict) == n_cell_types
-            for ct_name, tensor in x_dict.items():
-                assert tensor.shape == (1, d_embed)
-
-    def test_preserves_tensor_values(self):
-        """Output tensors should contain the correct values."""
-        from src.data.collate import build_x_dict_list_from_embeddings
-
-        embeddings = torch.tensor([
-            [[1.0, 2.0], [3.0, 4.0]],  # Sample 0: 2 cell types, 2 features
-            [[5.0, 6.0], [7.0, 8.0]],  # Sample 1
-        ])
-        node_types = ["Type_A", "Type_B"]
-
-        x_dict_list = build_x_dict_list_from_embeddings(embeddings, node_types)
-
-        # Sample 0, Type_A should be [1.0, 2.0]
-        assert torch.allclose(x_dict_list[0]["Type_A"], torch.tensor([[1.0, 2.0]]))
-        # Sample 1, Type_B should be [7.0, 8.0]
-        assert torch.allclose(x_dict_list[1]["Type_B"], torch.tensor([[7.0, 8.0]]))
-
-    def test_output_compatible_with_hgt_encoder_batched(self):
-        """Output should be directly usable with HGTEncoderBatched."""
-        from src.data.collate import build_x_dict_list_from_embeddings
-        from src.models.branches.hgt_encoder import HGTEncoderBatched
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES
-
-        # Setup
-        batch_size = 2
-        d_embed = 64  # Matches HGT d_input
-        node_types = [ct.replace(" ", "_").replace("/", "_").replace("-", "_")
-                      for ct in CELL_TYPE_ORDER]
-
-        # Create encoded embeddings
-        embeddings = torch.randn(batch_size, len(node_types), d_embed)
-        x_dict_list = build_x_dict_list_from_embeddings(embeddings, node_types)
-
-        # Create empty edge dicts (no communication)
-        edge_index_dict_list = [{} for _ in range(batch_size)]
-        edge_attr_dict_list = [{} for _ in range(batch_size)]
-
-        # HGT encoder should accept this
-        encoder = HGTEncoderBatched(
-            d_input=d_embed,
-            d_hidden=64,
-            d_output=64,
-            n_heads=4,
-            n_layers=2,
-        )
-
-        out, _ = encoder(
-            x_dict_list, edge_index_dict_list, edge_attr_dict_list
-        )
-
-        # Output is a dict of {cell_type: (batch, 1, d_output)}
-        assert isinstance(out, dict)
-        assert len(out) == len(node_types)
-        for ct_name, tensor in out.items():
-            assert tensor.shape == (batch_size, 1, 64)
 
 
 class TestCreateDataloader:
@@ -543,9 +431,11 @@ class TestCollateForHgtMultiregion:
         sample = create_mock_sample()
         result = collate_for_hgt_multiregion([sample])
 
-        # HGT keys should be present
-        assert "edge_index_dict_list" in result
-        assert "edge_attr_dict_list" in result
+        # HGT raw edge tensor keys should be present
+        assert "ccc_edge_index" in result
+        assert "ccc_edge_type" in result
+        assert "ccc_edge_attr" in result
+        assert "ccc_edge_counts" in result
         assert "node_types" in result
         assert "edge_types" in result
 
@@ -586,8 +476,8 @@ class TestCollateForHgtMultiregion:
 
         result = collate_for_hgt_multiregion([sample])
 
-        # HGT keys should still be present
-        assert "edge_index_dict_list" in result
+        # HGT raw edge tensor keys should still be present
+        assert "ccc_edge_index" in result
 
         # No region data expected
         assert "region_pseudobulk" not in result or result.get("region_pseudobulk") is None
@@ -644,30 +534,21 @@ class TestMoveBatchToDevice:
         # Metadata should be unchanged
         assert moved["node_types"] == ["TypeA", "TypeB"]
 
-    def test_moves_edge_dict_lists(self):
-        """Should move tensors in edge_index_dict_list and edge_attr_dict_list."""
+    def test_moves_raw_edge_tensors(self):
+        """Should move raw edge tensors (ccc_edge_*) to device."""
         from src.utils.device import move_batch_to_device
 
         batch = {
-            "edge_index_dict_list": [
-                {("TypeA", "rel", "TypeB"): torch.tensor([[0], [0]])},
-            ],
-            "edge_attr_dict_list": [
-                {("TypeA", "rel", "TypeB"): torch.tensor([[0.5]])},
-            ],
+            "ccc_edge_index": torch.tensor([[[0], [0]]]),
+            "ccc_edge_type": torch.tensor([[0]]),
+            "ccc_edge_attr": torch.tensor([[[0.5]]]),
+            "ccc_edge_counts": torch.tensor([1]),
         }
 
         moved = move_batch_to_device(batch, "cpu")
 
-        # Check edge_index_dict_list
-        for edge_dict in moved["edge_index_dict_list"]:
-            for triplet, tensor in edge_dict.items():
-                assert tensor.device == torch.device("cpu")
-
-        # Check edge_attr_dict_list
-        for edge_dict in moved["edge_attr_dict_list"]:
-            for triplet, tensor in edge_dict.items():
-                assert tensor.device == torch.device("cpu")
+        for key in ("ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts"):
+            assert moved[key].device == torch.device("cpu")
 
     def test_preserves_metadata_keys(self):
         """Should keep metadata keys on CPU."""
@@ -848,25 +729,24 @@ class TestAssembleRegionTensors:
 
 
 class TestCompositeKeyOverflow:
-    """Tests for composite key overflow detection in collate_for_hgt."""
+    """Composite key overflow was relevant for old dict-building code.
 
-    def test_overflow_raises_value_error(self, monkeypatch):
-        """Should raise ValueError when composite key would overflow int64."""
-        import src.data.collate as collate_mod
+    With raw edge tensors, edge types are passed as integer indices
+    and no composite key is computed. This test class is kept as a
+    placeholder to document that the overflow check is no longer needed.
+    """
 
-        huge_n = 2_200_000
-        fake_ct = [f"c{i}" for i in range(huge_n)]
-        fake_et = [f"e{i}" for i in range(huge_n)]
-        monkeypatch.setattr(collate_mod, "ALL_EDGE_TYPES", fake_et)
-        monkeypatch.setattr(collate_mod, "SANITIZED_EDGE_TYPES", fake_et)
-        monkeypatch.setattr(collate_mod, "sanitize_key", lambda x: x)
-        n_ct_small = 4
+    def test_large_edge_type_indices_accepted(self, monkeypatch):
+        """Raw tensor format should handle large edge type indices without error."""
+        from src.data.collate import collate_for_hgt
+
+        n_ct = 4
         sample = {
-            "pseudobulk": torch.randn(n_ct_small, 10),
-            "cell_type_mask": torch.ones(n_ct_small, dtype=torch.bool),
-            "cell_counts": torch.ones(n_ct_small, dtype=torch.long),
-            "cells": torch.randn(n_ct_small, 5, 10),
-            "cell_mask": torch.ones(n_ct_small, 5, dtype=torch.bool),
+            "pseudobulk": torch.randn(n_ct, 10),
+            "cell_type_mask": torch.ones(n_ct, dtype=torch.bool),
+            "cell_counts": torch.ones(n_ct, dtype=torch.long),
+            "cells": torch.randn(n_ct, 5, 10),
+            "cell_mask": torch.ones(n_ct, 5, dtype=torch.bool),
             "ccc_edge_index": torch.tensor([[0, 1], [1, 0]]),
             "ccc_edge_type": torch.tensor([0, 0]),
             "ccc_edge_attr": torch.randn(2, 1),
@@ -874,11 +754,10 @@ class TestCompositeKeyOverflow:
             "cognition": torch.randn(1),
             "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
             "subject_id": "test_subj",
-            "cell_type_order": fake_ct,
+            "cell_type_order": [f"c{i}" for i in range(n_ct)],
         }
-        from src.data.collate import collate_for_hgt
-        with pytest.raises(ValueError, match="Composite key overflow"):
-            collate_for_hgt([sample])
+        result = collate_for_hgt([sample])
+        assert result["ccc_edge_counts"][0].item() == 2
 
 
 class TestMultiregionAvailableRegionsDerivation:

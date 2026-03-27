@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.data.constants import N_CELL_TYPES, N_EDGE_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+from src.data.constants import N_CELL_TYPES, N_EDGE_TYPES, N_REGIONS
 from src.models.full_model import CognitiveResilienceModel
 from src.models.components.region_handler import RegionHandler
 from src.models.fusion import PathologyStratifiedAttention
@@ -26,6 +26,16 @@ MAX_CELLS = 20
 D_EMBED = 32
 D_FUSED = 32
 D_COND = 16
+
+
+def _make_edge_inputs(B, n_edges=5):
+    """Create edge tensor inputs for testing."""
+    return {
+        'ccc_edge_index': torch.randint(0, N_CELL_TYPES, (B, 2, n_edges)),
+        'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges)),
+        'ccc_edge_attr': torch.rand(B, n_edges, 1),
+        'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long),
+    }
 
 
 # =============================================================================
@@ -141,21 +151,10 @@ class TestFullModelGradientFlow:
         """
         B = 2
 
-        # Build edge dicts for HGT
-        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
-        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-        for _ in range(B):
-            edge_key = (sanitized_types[0], sanitized_edges[0], sanitized_types[1])
-            edge_index_dict_list.append({edge_key: torch.tensor([[0], [0]])})
-            edge_attr_dict_list.append({edge_key: torch.rand(1, 1)})
-
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            **_make_edge_inputs(B),
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -191,21 +190,10 @@ class TestFullModelGradientFlow:
         """Gradients should flow through pseudobulk, HGT, and cell transformer branches."""
         B = 2
 
-        # Build edge dicts so HGT branch actually processes edges
-        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
-        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-        for _ in range(B):
-            edge_key = (sanitized_types[0], sanitized_edges[0], sanitized_types[1])
-            edge_index_dict_list.append({edge_key: torch.tensor([[0], [0]])})
-            edge_attr_dict_list.append({edge_key: torch.rand(1, 1)})
-
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            **_make_edge_inputs(B),
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -235,26 +223,13 @@ class TestFullModelGradientFlow:
         )
         assert hgt_has_grad, "No HGT encoder parameters received non-zero gradients"
 
-    def test_gradient_flow_with_edge_dicts(self, model):
-        """Gradients should flow correctly when using edge_index_dict_list."""
+    def test_gradient_flow_with_edge_tensors(self, model):
+        """Gradients should flow correctly when using ccc_edge_* tensors."""
         B = 2
-
-        # Create edge dicts
-        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
-        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
-
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-
-        for _ in range(B):
-            edge_key = (sanitized_types[0], sanitized_edges[0], sanitized_types[1])
-            edge_index_dict_list.append({edge_key: torch.tensor([[0], [0]])})
-            edge_attr_dict_list.append({edge_key: torch.rand(1, 1)})
 
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            **_make_edge_inputs(B),
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -265,7 +240,6 @@ class TestFullModelGradientFlow:
         loss.backward()
 
         # HGT encoder should receive gradients
-        # Check HGT layer scale parameters exist and receive gradients
         for name, param in model.hgt_encoder.named_parameters():
             if param.requires_grad and param.grad is not None:
                 break
@@ -301,19 +275,11 @@ class TestBayesianKLGradientFlow:
         )
 
         B = 2
-        edge_index_dict_list, edge_attr_dict_list = [], []
-        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
-        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
-        for _ in range(B):
-            edge_key = (sanitized_types[0], sanitized_edges[0], sanitized_types[1])
-            edge_index_dict_list.append({edge_key: torch.tensor([[0], [0]])})
-            edge_attr_dict_list.append({edge_key: torch.rand(1, 1)})
 
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            **_make_edge_inputs(B),
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),

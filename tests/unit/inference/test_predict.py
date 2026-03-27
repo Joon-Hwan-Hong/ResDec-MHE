@@ -1351,7 +1351,7 @@ class TestHGTAttentionCPUTransfer:
 
     def test_hgt_attention_on_cpu_deterministic(self, mock_model, mock_config):
         """Deterministic path moves HGT attention tensors to CPU."""
-        # HGT attention from HGTEncoderBatched is list[list[dict]]:
+        # HGT attention from HGTEncoderTensor is list[list[dict]]:
         # outer = per-sample, inner = per-layer, dict = edge_type -> tensor
         hgt_attn = [
             [{("TypeA", "rel", "TypeB"): torch.randn(4, 2)}],  # sample 0, 1 layer

@@ -33,7 +33,7 @@ from src.data.constants import N_CELL_TYPES, N_REGIONS
 
 
 @pytest.fixture
-def sample_inputs(make_edge_dicts):
+def sample_inputs(make_edge_tensors):
     """Create sample inputs for forward pass testing."""
     B = 2
     n_regions = N_REGIONS
@@ -41,13 +41,15 @@ def sample_inputs(make_edge_dicts):
     n_genes = 50
     max_cells = 10
 
-    edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
         'region_mask': torch.ones(B, n_regions, dtype=torch.bool),
-        'edge_index_dict_list': edge_index_dict_list,
-        'edge_attr_dict_list': edge_attr_dict_list,
+        'ccc_edge_index': ccc_edge_index,
+        'ccc_edge_type': ccc_edge_type,
+        'ccc_edge_attr': ccc_edge_attr,
+        'ccc_edge_counts': ccc_edge_counts,
         'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
         'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
         'pathology': torch.randn(B, 3),
@@ -475,45 +477,44 @@ class TestCellTransformerSerialization:
         assert torch.allclose(out1, out2)
 
 
-class TestHGTEncoderSerialization:
-    """Test HGTEncoder state_dict serialization and output preservation."""
+class TestHGTEncoderTensorSerialization:
+    """Test HGTEncoderTensor state_dict serialization and output preservation."""
 
     def test_save_and_load_preserves_output(self):
-        """HGTEncoder save/load preserves output."""
-        from src.models.branches.hgt_encoder import HGTEncoder
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+        """HGTEncoderTensor save/load preserves output."""
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
+        from src.data.constants import N_EDGE_TYPES
 
-        node_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
-        edge_categories = [sanitize_key(et) for et in ALL_EDGE_TYPES]
-        hgt = HGTEncoder(d_input=32, d_hidden=32, d_output=32, n_heads=4, n_layers=1, dropout=0.0, edge_dim=1, node_types=node_types, edge_categories=edge_categories)
+        d = 32
+        n_ct = N_CELL_TYPES
+        hgt = HGTEncoderTensor(d_input=d, d_hidden=d, d_output=d, n_heads=4, n_layers=1, n_node_types=N_CELL_TYPES, n_edge_types=N_EDGE_TYPES, dropout=0.0, edge_dim=1)
         hgt.eval()
 
         # Create inputs
-        x_dict = {nt: torch.randn(3, 32) for nt in node_types[:3]}
-        edge_index_dict = {
-            (node_types[0], edge_categories[0], node_types[1]): torch.tensor([[0, 1], [1, 2]]),
-            (node_types[1], edge_categories[0], node_types[2]): torch.tensor([[0], [0]]),
-        }
-        edge_attr_dict = {
-            (node_types[0], edge_categories[0], node_types[1]): torch.rand(2, 1),
-            (node_types[1], edge_categories[0], node_types[2]): torch.rand(1, 1),
-        }
+        B = 2
+        n_edges = 5
+        x = torch.randn(B, n_ct, d)
+        edge_index = torch.randint(0, n_ct, (B, 2, n_edges))
+        edge_type = torch.randint(0, N_EDGE_TYPES, (B, n_edges))
+        edge_attr = torch.rand(B, n_edges, 1)
+        edge_counts = torch.full((B,), n_edges, dtype=torch.long)
 
         # Forward pass
-        out1, _ = hgt(x_dict, edge_index_dict, edge_attr_dict)
+        with torch.no_grad():
+            out1 = hgt(x, edge_index, edge_type, edge_attr, edge_counts)
 
         # Save and reload
         state = hgt.state_dict()
-        hgt2 = HGTEncoder(d_input=32, d_hidden=32, d_output=32, n_heads=4, n_layers=1, dropout=0.0, edge_dim=1, node_types=node_types, edge_categories=edge_categories)
+        hgt2 = HGTEncoderTensor(d_input=d, d_hidden=d, d_output=d, n_heads=4, n_layers=1, n_node_types=N_CELL_TYPES, n_edge_types=N_EDGE_TYPES, dropout=0.0, edge_dim=1)
         hgt2.load_state_dict(state)
         hgt2.eval()
 
         # Forward pass with reloaded model
-        out2, _ = hgt2(x_dict, edge_index_dict, edge_attr_dict)
+        with torch.no_grad():
+            out2 = hgt2(x, edge_index, edge_type, edge_attr, edge_counts)
 
         # Verify outputs match
-        for nt in out1.keys():
-            assert torch.allclose(out1[nt], out2[nt])
+        assert torch.allclose(out1, out2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

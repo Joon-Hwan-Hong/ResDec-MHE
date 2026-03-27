@@ -180,8 +180,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             region_pseudobulk=batch.get("region_pseudobulk"),
             region_mask=batch.get("region_mask"),
             pseudobulk=batch.get("pseudobulk"),
-            edge_index_dict_list=batch.get("edge_index_dict_list"),
-            edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+            ccc_edge_index=batch.get("ccc_edge_index"),
+            ccc_edge_type=batch.get("ccc_edge_type"),
+            ccc_edge_attr=batch.get("ccc_edge_attr"),
+            ccc_edge_counts=batch.get("ccc_edge_counts"),
             cells=batch.get("cells"),
             cell_mask=batch.get("cell_mask"),
             cell_type_mask=batch.get("cell_type_mask"),
@@ -210,8 +212,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 region_pseudobulk=batch.get("region_pseudobulk"),
                 region_mask=batch.get("region_mask"),
                 pseudobulk=batch.get("pseudobulk"),
-                edge_index_dict_list=batch.get("edge_index_dict_list"),
-                edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+                ccc_edge_index=batch.get("ccc_edge_index"),
+                ccc_edge_type=batch.get("ccc_edge_type"),
+                ccc_edge_attr=batch.get("ccc_edge_attr"),
+                ccc_edge_counts=batch.get("ccc_edge_counts"),
                 cells=batch.get("cells"),
                 cell_mask=batch.get("cell_mask"),
                 cell_type_mask=batch.get("cell_type_mask"),
@@ -246,8 +250,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             region_pseudobulk=batch.get("region_pseudobulk"),
             region_mask=batch.get("region_mask"),
             pseudobulk=batch.get("pseudobulk"),
-            edge_index_dict_list=batch.get("edge_index_dict_list"),
-            edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+            ccc_edge_index=batch.get("ccc_edge_index"),
+            ccc_edge_type=batch.get("ccc_edge_type"),
+            ccc_edge_attr=batch.get("ccc_edge_attr"),
+            ccc_edge_counts=batch.get("ccc_edge_counts"),
             cells=batch.get("cells"),
             cell_mask=batch.get("cell_mask"),
             cell_type_mask=batch.get("cell_type_mask"),
@@ -264,22 +270,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         validated at dataset construction time.
         """
         # Keys that are boolean masks (not data) — always 0/1, no NaN possible.
-        # Note: edge_index_dict_list and edge_attr_dict_list are Python lists
-        # (not tensors), so isinstance(value, torch.Tensor) already skips them.
-        _skip_keys = {"cell_mask", "cell_type_mask", "region_mask"}
+        # ccc_edge_index and ccc_edge_type are integer tensors, no NaN possible.
+        _skip_keys = {"cell_mask", "cell_type_mask", "region_mask",
+                       "ccc_edge_index", "ccc_edge_type", "ccc_edge_counts"}
         for key, value in batch.items():
             if key in _skip_keys:
                 continue
             if isinstance(value, torch.Tensor) and value.is_floating_point() and not torch.isfinite(value.sum()):
                 return True
-        # Also check nested edge attribute structures
-        edge_attr_list = batch.get("edge_attr_dict_list")
-        if edge_attr_list is not None:
-            for edge_dict in edge_attr_list:
-                if isinstance(edge_dict, dict):
-                    for v in edge_dict.values():
-                        if isinstance(v, torch.Tensor) and v.is_floating_point() and not torch.isfinite(v.sum()):
-                            return True
         return False
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor | None:
@@ -612,8 +610,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
                 device=device,
             ),
-            "edge_index_dict_list": [{}],
-            "edge_attr_dict_list": [{}],
+            "ccc_edge_index": torch.zeros(1, 2, 0, dtype=torch.long, device=device),
+            "ccc_edge_type": torch.zeros(1, 0, dtype=torch.long, device=device),
+            "ccc_edge_attr": torch.zeros(1, 0, 1, device=device),
+            "ccc_edge_counts": torch.zeros(1, dtype=torch.long, device=device),
             "cognition": torch.zeros(1, 1, device=device),
         }
         with torch.no_grad():

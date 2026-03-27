@@ -114,7 +114,7 @@ class CellTransformer(nn.Module):
         cell_mask: Optional[torch.Tensor] = None,
         return_attention: bool = False,
         apply_selection_weights: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[list[torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Encode cell-level data for ALL cell types with soft selection weighting.
 
@@ -134,7 +134,7 @@ class CellTransformer(nn.Module):
         Returns:
             embeddings: (batch, n_cell_types, d_model) weighted embeddings for ALL types
             selection_weights: (n_cell_types,) soft attention weights (sum to 1)
-            attention: List of attention weights per cell type (if requested)
+            attention: Attention weights [B, n_cell_types, n_heads, n_seeds, max_cells] (if requested)
 
         Note:
             Selection weights are differentiable - gradients flow back to
@@ -184,14 +184,11 @@ class CellTransformer(nn.Module):
         embeddings = embeddings_flat.view(batch_size, self.n_cell_types, self.d_model)
 
         # Handle attention weights for interpretability
-        attention_list = None
+        attention_out = None
         if return_attention and attention_flat is not None:
-            # Reshape attention: [B * n_cell_types, ...] -> list of [B, ...] per cell type
-            # attention_flat shape: [B * n_cell_types, n_heads, n_seeds, max_cells]
-            attn_shape = attention_flat.shape[1:]  # (n_heads, n_seeds, max_cells) or similar
-            attention_reshaped = attention_flat.view(batch_size, self.n_cell_types, *attn_shape)
-            # Convert to list per cell type for backward compatibility
-            attention_list = [attention_reshaped[:, ct_idx] for ct_idx in range(self.n_cell_types)]
+            # Reshape: [B * n_cell_types, n_heads, n_seeds, max_cells] -> [B, n_cell_types, ...]
+            attn_shape = attention_flat.shape[1:]
+            attention_out = attention_flat.view(batch_size, self.n_cell_types, *attn_shape)
 
         # Apply selection weights (differentiable scaling)
         if apply_selection_weights:
@@ -200,7 +197,7 @@ class CellTransformer(nn.Module):
             weights = selection_weights.view(1, -1, 1)
             embeddings = embeddings * weights
 
-        return embeddings, selection_weights.detach(), attention_list
+        return embeddings, selection_weights.detach(), attention_out
 
     def get_selection_weights(self) -> torch.Tensor:
         """

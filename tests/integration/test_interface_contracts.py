@@ -7,15 +7,15 @@ These tests verify that:
 3. Changes to one module don't silently break another module's assumptions
 
 The key interfaces being tested:
-- Data pipeline (collate_for_hgt_multiregion) produces per-sample dicts
-- Model (full_model.py) expects edge_index_dict_list, edge_attr_dict_list
+- Data pipeline (collate_for_hgt_multiregion) produces raw padded edge tensors
+- Model (full_model.py) accepts raw ccc_edge_* tensors
 """
 
 import pytest
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from src.data.constants import N_CELL_TYPES, N_EDGE_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+from src.data.constants import N_CELL_TYPES, N_EDGE_TYPES, N_REGIONS, ALL_EDGE_TYPES
 from src.data.collate import collate_fn, collate_for_hgt, collate_for_hgt_multiregion
 from src.models.full_model import CognitiveResilienceModel
 
@@ -80,62 +80,47 @@ def create_mock_multiregion_sample(n_edges: int = 15, n_available_regions: int =
 
 
 class TestCollateForHgtFormat:
-    """Test that collate_for_hgt produces correct format for HGTEncoderBatched."""
+    """Test that collate_for_hgt produces correct format for HGTEncoderTensor."""
 
-    def test_collate_for_hgt_returns_dict_lists(self):
-        """collate_for_hgt should return edge_index_dict_list, edge_attr_dict_list."""
+    def test_collate_for_hgt_returns_raw_edge_tensors(self):
+        """collate_for_hgt should return padded ccc_edge_* tensors."""
         batch = [create_mock_sample(n_edges=10) for _ in range(4)]
         collated = collate_for_hgt(batch)
 
-        assert "edge_index_dict_list" in collated
-        assert "edge_attr_dict_list" in collated
+        assert "ccc_edge_index" in collated
+        assert "ccc_edge_type" in collated
+        assert "ccc_edge_attr" in collated
+        assert "ccc_edge_counts" in collated
 
-        assert isinstance(collated["edge_index_dict_list"], list)
-        assert isinstance(collated["edge_attr_dict_list"], list)
+        B = 4
+        assert collated["ccc_edge_index"].shape[0] == B
+        assert collated["ccc_edge_index"].shape[1] == 2
+        assert collated["ccc_edge_type"].shape[0] == B
+        assert collated["ccc_edge_attr"].shape[0] == B
+        assert collated["ccc_edge_counts"].shape == (B,)
 
-        assert len(collated["edge_index_dict_list"]) == 4
-        assert len(collated["edge_attr_dict_list"]) == 4
-
-    def test_x_dict_list_has_all_cell_types(self):
-        """build_x_dict_list_from_embeddings should produce x_dicts with all cell types."""
-        from src.data.collate import build_x_dict_list_from_embeddings
-
-        batch = [create_mock_sample(n_edges=10) for _ in range(2)]
-        collated = collate_for_hgt(batch)
-
-        # Build x_dict_list from pseudobulk for standalone HGT testing
-        x_dict_list = build_x_dict_list_from_embeddings(
-            collated["pseudobulk"], collated["node_types"]
-        )
-
-        for x_dict in x_dict_list:
-            assert len(x_dict) == N_CELL_TYPES
-            for key, tensor in x_dict.items():
-                assert tensor.shape == (1, N_GENES)
-
-    def test_edge_index_dict_has_triplet_keys(self):
-        """Edge dicts should use (src_type, rel, dst_type) triplet keys."""
+    def test_edge_type_indices_valid(self):
+        """Edge type indices should be within [0, N_EDGE_TYPES)."""
         batch = [create_mock_sample(n_edges=20) for _ in range(2)]
         collated = collate_for_hgt(batch)
 
-        for edge_index_dict in collated["edge_index_dict_list"]:
-            for key in edge_index_dict:
-                assert isinstance(key, tuple)
-                assert len(key) == 3
-                src, rel, dst = key
-                assert isinstance(src, str)
-                assert isinstance(rel, str)
-                assert isinstance(dst, str)
+        edge_type = collated["ccc_edge_type"]
+        counts = collated["ccc_edge_counts"]
+        for b in range(2):
+            n = counts[b].item()
+            valid_types = edge_type[b, :n]
+            assert (valid_types >= 0).all()
+            assert (valid_types < N_EDGE_TYPES).all()
 
     def test_edge_attr_has_correct_shape(self):
-        """Edge attributes should be [n_edges, 1] for LIANA magnitude."""
+        """Edge attributes should have shape [B, max_edges, 1] for LIANA magnitude."""
         batch = [create_mock_sample(n_edges=15) for _ in range(2)]
         collated = collate_for_hgt(batch)
 
-        for edge_attr_dict in collated["edge_attr_dict_list"]:
-            for key, attr in edge_attr_dict.items():
-                assert attr.dim() == 2
-                assert attr.shape[1] == 1  # LIANA magnitude dimension
+        edge_attr = collated["ccc_edge_attr"]
+        assert edge_attr.dim() == 3
+        assert edge_attr.shape[0] == 2  # batch size
+        assert edge_attr.shape[2] == 1  # LIANA magnitude dimension
 
 
 class TestCollateForHgtMultiregion:
@@ -216,26 +201,17 @@ class TestModelInputContract:
         assert 'mean' in output
         assert output['mean'].shape == (B, 1)
 
-    def test_model_accepts_edge_dict_lists(self, model):
-        """Model should accept edge_index_dict_list and edge_attr_dict_list."""
+    def test_model_accepts_edge_tensors(self, model):
+        """Model should accept ccc_edge_* tensor format."""
         B = 2
-
-        # Create edge dicts
-        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
-        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
-
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-
-        for _ in range(B):
-            edge_key = (sanitized_types[0], sanitized_edges[0], sanitized_types[1])
-            edge_index_dict_list.append({edge_key: torch.tensor([[0], [0]])})
-            edge_attr_dict_list.append({edge_key: torch.rand(1, 1)})
+        n_edges = 5
 
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            'ccc_edge_index': torch.randint(0, N_CELL_TYPES, (B, 2, n_edges)),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges)),
+            'ccc_edge_attr': torch.rand(B, n_edges, 1),
+            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long),
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -295,8 +271,10 @@ class TestCollateToModelIntegration:
         # Build model inputs from collated data
         model_input = {
             "pseudobulk": collated["pseudobulk"],
-            "edge_index_dict_list": collated["edge_index_dict_list"],
-            "edge_attr_dict_list": collated["edge_attr_dict_list"],
+            "ccc_edge_index": collated["ccc_edge_index"],
+            "ccc_edge_type": collated["ccc_edge_type"],
+            "ccc_edge_attr": collated["ccc_edge_attr"],
+            "ccc_edge_counts": collated["ccc_edge_counts"],
             "cells": collated["cells"],
             "cell_mask": collated["cell_mask"],
             "pathology": collated["pathology"],
@@ -313,8 +291,10 @@ class TestCollateToModelIntegration:
         model_input = {
             "region_pseudobulk": collated["region_pseudobulk"],
             "region_mask": collated["region_mask"],
-            "edge_index_dict_list": collated["edge_index_dict_list"],
-            "edge_attr_dict_list": collated["edge_attr_dict_list"],
+            "ccc_edge_index": collated["ccc_edge_index"],
+            "ccc_edge_type": collated["ccc_edge_type"],
+            "ccc_edge_attr": collated["ccc_edge_attr"],
+            "ccc_edge_counts": collated["ccc_edge_counts"],
             "cells": collated["cells"],
             "cell_mask": collated["cell_mask"],
             "pathology": collated["pathology"],
@@ -353,12 +333,14 @@ class TestEmptyEdgeContract:
         )
 
     def test_model_handles_no_edges(self, model):
-        """Model should handle samples with no edges (empty edge dicts)."""
+        """Model should handle samples with no edges (zero edge counts)."""
         B = 2
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
-            'edge_index_dict_list': [{}, {}],  # Empty dicts
-            'edge_attr_dict_list': [{}, {}],
+            'ccc_edge_index': torch.zeros(B, 2, 0, dtype=torch.long),
+            'ccc_edge_type': torch.zeros(B, 0, dtype=torch.long),
+            'ccc_edge_attr': torch.zeros(B, 0, 1),
+            'ccc_edge_counts': torch.zeros(B, dtype=torch.long),
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -399,32 +381,20 @@ class TestEdgeTypeCategories:
     def test_all_edge_types_can_be_processed(self, model):
         """Model should handle all 5 edge type categories."""
         B = 2
+        n_edge_types = N_EDGE_TYPES
 
-        # Create edge dicts with all 5 edge types
-        sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
-        sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
-
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-
-        for _ in range(B):
-            edge_index = {}
-            edge_attr = {}
-
-            for i, edge_type in enumerate(sanitized_edges):
-                src_idx = i % len(sanitized_types)
-                dst_idx = (i + 1) % len(sanitized_types)
-                key = (sanitized_types[src_idx], edge_type, sanitized_types[dst_idx])
-                edge_index[key] = torch.tensor([[0], [0]])
-                edge_attr[key] = torch.rand(1, 1)
-
-            edge_index_dict_list.append(edge_index)
-            edge_attr_dict_list.append(edge_attr)
+        # Create edges with one of each edge type
+        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, n_edge_types))
+        edge_type = torch.arange(n_edge_types).unsqueeze(0).expand(B, -1)
+        edge_attr = torch.rand(B, n_edge_types, 1)
+        edge_counts = torch.full((B,), n_edge_types, dtype=torch.long)
 
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            'ccc_edge_index': edge_index,
+            'ccc_edge_type': edge_type,
+            'ccc_edge_attr': edge_attr,
+            'ccc_edge_counts': edge_counts,
             'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
             'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -445,3 +415,116 @@ class TestEdgeTypeCategories:
 
         assert len(model.edge_categories) == len(ALL_EDGE_TYPES)
         assert set(model.edge_categories) == set(ALL_EDGE_TYPES)
+
+
+# =============================================================================
+# Raw Edge Tensor Collate Tests
+# =============================================================================
+
+
+class TestCollateRawEdgeTensors:
+    """Verify collate_for_hgt returns raw edge tensors instead of dicts."""
+
+    def test_collate_returns_raw_edge_tensors(self):
+        """collate_for_hgt should return padded ccc_edge_* tensors, not dict lists."""
+        batch = [create_mock_sample(n_edges=15) for _ in range(4)]
+        collated = collate_for_hgt(batch)
+
+        # New raw tensor format
+        assert "ccc_edge_index" in collated, "Missing ccc_edge_index"
+        assert "ccc_edge_type" in collated, "Missing ccc_edge_type"
+        assert "ccc_edge_attr" in collated, "Missing ccc_edge_attr"
+        assert "ccc_edge_counts" in collated, "Missing ccc_edge_counts"
+
+        B = 4
+        assert collated["ccc_edge_index"].shape[0] == B
+        assert collated["ccc_edge_index"].shape[1] == 2  # [B, 2, max_edges]
+        assert collated["ccc_edge_type"].shape[0] == B
+        assert collated["ccc_edge_attr"].shape[0] == B
+        assert collated["ccc_edge_counts"].shape == (B,)
+
+        # Old dict format should NOT be present
+        assert "edge_index_dict_list" not in collated
+        assert "edge_attr_dict_list" not in collated
+
+    def test_collate_edge_padding_correct(self):
+        """Padded edges beyond ccc_edge_counts should be zero."""
+        batch = [create_mock_sample(n_edges=10), create_mock_sample(n_edges=5)]
+        collated = collate_for_hgt(batch)
+
+        counts = collated["ccc_edge_counts"]
+        edge_attr = collated["ccc_edge_attr"]
+
+        for b in range(2):
+            n = counts[b].item()
+            max_edges = edge_attr.shape[1]
+            if n < max_edges:
+                assert (edge_attr[b, n:] == 0).all(), f"Non-zero padding in sample {b}"
+
+    def test_collate_preserves_node_and_edge_types(self):
+        """collate_for_hgt should still return node_types and edge_types."""
+        batch = [create_mock_sample(n_edges=10) for _ in range(2)]
+        collated = collate_for_hgt(batch)
+        assert "node_types" in collated
+        assert "edge_types" in collated
+
+
+# =============================================================================
+# Full Model Raw Edge Tensor Tests
+# =============================================================================
+
+
+class TestFullModelRawEdgeTensors:
+    """Test that full model accepts raw edge tensors."""
+
+    @pytest.fixture
+    def model(self):
+        return CognitiveResilienceModel(
+            n_genes=N_GENES,
+            n_cell_types=N_CELL_TYPES,
+            d_embed=32,
+            d_fused=32,
+            d_cond=16,
+            n_regions=N_REGIONS,
+            n_hgt_layers=1,
+            n_hgt_heads=2,
+            n_isab_layers=1,
+            n_inducing_points=8,
+            n_attention_heads=2,
+            d_head_hidden=16,
+            dropout=0.0,
+            use_bayesian_head=False,
+        )
+
+    def test_model_accepts_raw_edge_tensors(self, model):
+        """Full model forward should work with raw ccc_edge_* tensors."""
+        B = 2
+        max_edges = 30
+
+        ccc_edge_index = torch.zeros(B, 2, max_edges, dtype=torch.long)
+        ccc_edge_type = torch.zeros(B, max_edges, dtype=torch.long)
+        ccc_edge_attr = torch.zeros(B, max_edges, 1)
+        ccc_edge_counts = torch.tensor([max_edges, max_edges], dtype=torch.long)
+
+        for b in range(B):
+            n = ccc_edge_counts[b].item()
+            ccc_edge_index[b, 0, :n] = torch.randint(0, N_CELL_TYPES, (n,))
+            ccc_edge_index[b, 1, :n] = torch.randint(0, N_CELL_TYPES, (n,))
+            ccc_edge_type[b, :n] = torch.randint(0, 5, (n,))
+            ccc_edge_attr[b, :n] = torch.rand(n, 1)
+
+        with torch.no_grad():
+            out = model(
+                pseudobulk=torch.randn(B, N_CELL_TYPES, N_GENES),
+                ccc_edge_index=ccc_edge_index,
+                ccc_edge_type=ccc_edge_type,
+                ccc_edge_attr=ccc_edge_attr,
+                ccc_edge_counts=ccc_edge_counts,
+                cells=torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
+                cell_mask=torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+                pathology=torch.randn(B, 3),
+            )
+
+        assert "mean" in out
+        assert out["mean"].shape == (B, 1)
+        assert torch.isfinite(out["mean"]).all()

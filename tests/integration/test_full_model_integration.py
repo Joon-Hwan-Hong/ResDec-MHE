@@ -23,7 +23,7 @@ from src.data.constants import N_CELL_TYPES, N_REGIONS
 
 
 @pytest.fixture
-def sample_batch(make_edge_dicts):
+def sample_batch(make_edge_tensors):
     """Create a sample batch for testing.
 
     Returns a dict with all required inputs for CognitiveResilienceModel.forward().
@@ -35,13 +35,15 @@ def sample_batch(make_edge_dicts):
     max_cells = 10
     n_regions = N_REGIONS
 
-    edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
         'region_mask': torch.ones(B, n_regions, dtype=torch.bool),
-        'edge_index_dict_list': edge_index_dict_list,
-        'edge_attr_dict_list': edge_attr_dict_list,
+        'ccc_edge_index': ccc_edge_index,
+        'ccc_edge_type': ccc_edge_type,
+        'ccc_edge_attr': ccc_edge_attr,
+        'ccc_edge_counts': ccc_edge_counts,
         'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
         'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
         'pathology': torch.randn(B, 3),
@@ -210,17 +212,19 @@ class TestEndToEndForward:
         assert 'mean' in output
         assert torch.isfinite(output['mean']).all()
 
-    def test_varying_batch_sizes(self, model_kwargs, make_edge_dicts):
+    def test_varying_batch_sizes(self, model_kwargs, make_edge_tensors):
         """Forward pass handles different batch sizes correctly."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
         for batch_size in [1, 4, 8]:
-            edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(batch_size)
+            ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(batch_size)
             batch = {
                 'region_pseudobulk': torch.randn(batch_size, N_REGIONS, N_CELL_TYPES, model_kwargs['n_genes']),
                 'region_mask': torch.ones(batch_size, N_REGIONS, dtype=torch.bool),
-                'edge_index_dict_list': edge_index_dict_list,
-                'edge_attr_dict_list': edge_attr_dict_list,
+                'ccc_edge_index': ccc_edge_index,
+                'ccc_edge_type': ccc_edge_type,
+                'ccc_edge_attr': ccc_edge_attr,
+                'ccc_edge_counts': ccc_edge_counts,
                 'cells': torch.randn(batch_size, N_CELL_TYPES, 10, model_kwargs['n_genes']),
                 'cell_mask': torch.ones(batch_size, N_CELL_TYPES, 10, dtype=torch.bool),
                 'pathology': torch.randn(batch_size, 3),
@@ -260,13 +264,13 @@ class TestGradientFlow:
                 break
         assert pb_has_grad, "No gradients reached PseudobulkEncoder"
 
-        # Check gradients reach HGTEncoder
+        # Check gradients reach HGTEncoderTensor
         hgt_has_grad = False
         for param in model.hgt_encoder.parameters():
             if param.grad is not None and not torch.all(param.grad == 0):
                 hgt_has_grad = True
                 break
-        assert hgt_has_grad, "No gradients reached HGTEncoder"
+        assert hgt_has_grad, "No gradients reached HGTEncoderTensor"
 
         # Check gradients reach CellTransformer
         cell_has_grad = False
@@ -440,7 +444,7 @@ class TestAttentionInterpretability:
         assert attention_weights.shape == expected_shape, \
             f"Expected attention shape {expected_shape}, got {attention_weights.shape}"
 
-    def test_attention_weights_vary_across_batch(self, model_kwargs, make_edge_dicts):
+    def test_attention_weights_vary_across_batch(self, model_kwargs, make_edge_tensors):
         """Attention weights vary across batch items with different inputs."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
         model.eval()
@@ -448,14 +452,16 @@ class TestAttentionInterpretability:
         B = 4
         n_genes = model_kwargs['n_genes']
 
-        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B)
+        ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B)
 
         # Create batch with deliberately different pathology per sample
         batch = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, n_genes),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            'ccc_edge_index': ccc_edge_index,
+            'ccc_edge_type': ccc_edge_type,
+            'ccc_edge_attr': ccc_edge_attr,
+            'ccc_edge_counts': ccc_edge_counts,
             'cells': torch.randn(B, N_CELL_TYPES, 10, n_genes),
             'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.tensor([
@@ -673,21 +679,23 @@ class TestEdgeCases:
 class TestBayesianSpecific:
     """Tests specific to Bayesian model behavior."""
 
-    def test_bayesian_uncertainty_increases_with_input_variation(self, model_kwargs, make_edge_dicts):
+    def test_bayesian_uncertainty_increases_with_input_variation(self, model_kwargs, make_edge_tensors):
         """Bayesian model uncertainty reflects input diversity."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=True)
         model.eval()
 
         n_genes = model_kwargs['n_genes']
 
-        edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(4)
+        ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(4)
 
         # Batch with similar inputs
         uniform_batch = {
             'region_pseudobulk': torch.randn(4, N_REGIONS, N_CELL_TYPES, n_genes) * 0.1,
             'region_mask': torch.ones(4, N_REGIONS, dtype=torch.bool),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            'ccc_edge_index': ccc_edge_index,
+            'ccc_edge_type': ccc_edge_type,
+            'ccc_edge_attr': ccc_edge_attr,
+            'ccc_edge_counts': ccc_edge_counts,
             'cells': torch.randn(4, N_CELL_TYPES, 10, n_genes) * 0.1,
             'cell_mask': torch.ones(4, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.zeros(4, 3),

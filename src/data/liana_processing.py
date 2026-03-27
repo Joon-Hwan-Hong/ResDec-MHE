@@ -475,7 +475,7 @@ def build_subject_ccc_features(
         edge_attr is inverted from LIANA+'s magnitude_rank convention:
         - LIANA+: lower magnitude_rank = stronger interaction (0 = strongest)
         - edge_attr: higher value = stronger interaction (1 = strongest)
-        This matches HGTConvWithEdgeAttr's expectation that higher edge values
+        This matches HGTConvTensor's expectation that higher edge values
         should increase attention and message strength.
     """
     if edge_types is None:

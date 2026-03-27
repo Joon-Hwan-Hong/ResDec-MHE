@@ -121,7 +121,7 @@ def sanitize_key(name: str) -> str:
     and region names with underscores.
 
     This is the single canonical implementation — all modules that need
-    sanitized keys (HGTConvWithEdgeAttr, HGTEncoder, collate_for_hgt,
+    sanitized keys (HGTConvTensor, HGTEncoderTensor, collate_for_hgt,
     CognitiveResilienceModel) must import and use this function.
 
     Args:

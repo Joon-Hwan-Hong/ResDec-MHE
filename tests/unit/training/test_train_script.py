@@ -386,21 +386,12 @@ def _make_synthetic_batch(batch_size=2, n_genes=50, n_cell_types=N_CELL_TYPES,
     region_mask = torch.zeros(batch_size, n_regions, dtype=torch.bool)
     region_mask[:, 0] = True  # PFC only
 
-    sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
-    sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
-
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(batch_size):
-        ei_dict = {}
-        ea_dict = {}
-        for src in sanitized_types[:2]:
-            for dst in sanitized_types[:2]:
-                key = (src, sanitized_edges[0], dst)
-                ei_dict[key] = torch.tensor([[0], [0]], dtype=torch.long)
-                ea_dict[key] = torch.rand(1, 1)
-        edge_index_dict_list.append(ei_dict)
-        edge_attr_dict_list.append(ea_dict)
+    # HGT raw edge tensors — 4 edges per sample
+    n_edges = 4
+    ccc_edge_index = torch.zeros(batch_size, 2, n_edges, dtype=torch.long)
+    ccc_edge_type = torch.zeros(batch_size, n_edges, dtype=torch.long)
+    ccc_edge_attr = torch.rand(batch_size, n_edges, 1)
+    ccc_edge_counts = torch.full((batch_size,), n_edges, dtype=torch.long)
 
     cells = torch.randn(batch_size, n_cell_types, max_cells, n_genes)
     cell_mask = torch.ones(batch_size, n_cell_types, max_cells, dtype=torch.bool)
@@ -411,8 +402,10 @@ def _make_synthetic_batch(batch_size=2, n_genes=50, n_cell_types=N_CELL_TYPES,
     return {
         "region_pseudobulk": region_pseudobulk,
         "region_mask": region_mask,
-        "edge_index_dict_list": edge_index_dict_list,
-        "edge_attr_dict_list": edge_attr_dict_list,
+        "ccc_edge_index": ccc_edge_index,
+        "ccc_edge_type": ccc_edge_type,
+        "ccc_edge_attr": ccc_edge_attr,
+        "ccc_edge_counts": ccc_edge_counts,
         "cells": cells,
         "cell_mask": cell_mask,
         "cell_type_mask": cell_type_mask,

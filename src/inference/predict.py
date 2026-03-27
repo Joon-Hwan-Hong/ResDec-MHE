@@ -42,7 +42,7 @@ def _hgt_attention_to_cpu(
 ) -> list[list[dict]]:
     """Move HGT attention tensors to CPU.
 
-    HGT attention from HGTEncoderBatched is list[list[dict[tuple, Tensor]]]
+    HGT attention from HGTEncoderTensor is list[list[dict[tuple, Tensor]]]
     (per-sample, per-layer, per-edge-type). Moves to CPU to prevent GPU OOM
     during batch accumulation.
     """
@@ -384,8 +384,10 @@ class Predictor:
             region_pseudobulk=batch.get("region_pseudobulk"),
             region_mask=batch.get("region_mask"),
             pseudobulk=batch.get("pseudobulk"),
-            edge_index_dict_list=batch.get("edge_index_dict_list"),
-            edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+            ccc_edge_index=batch.get("ccc_edge_index"),
+            ccc_edge_type=batch.get("ccc_edge_type"),
+            ccc_edge_attr=batch.get("ccc_edge_attr"),
+            ccc_edge_counts=batch.get("ccc_edge_counts"),
             cells=batch.get("cells"),
             cell_mask=batch.get("cell_mask"),
             cell_type_mask=batch.get("cell_type_mask"),
@@ -569,8 +571,10 @@ class Predictor:
             region_pseudobulk=batch.get("region_pseudobulk"),
             region_mask=batch.get("region_mask"),
             pseudobulk=batch.get("pseudobulk"),
-            edge_index_dict_list=batch.get("edge_index_dict_list"),
-            edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+            ccc_edge_index=batch.get("ccc_edge_index"),
+            ccc_edge_type=batch.get("ccc_edge_type"),
+            ccc_edge_attr=batch.get("ccc_edge_attr"),
+            ccc_edge_counts=batch.get("ccc_edge_counts"),
             cells=batch.get("cells"),
             cell_mask=batch.get("cell_mask"),
             cell_type_mask=batch.get("cell_type_mask"),
@@ -593,9 +597,10 @@ class Predictor:
             result["hgt_attention"] = _hgt_attention_to_cpu(output["hgt_attention"])
 
         if extract_pma_attention and "pma_attention" in output:
-            # Convert list of tensors to list of numpy arrays
+            # Split [B, n_cell_types, ...] tensor into per-cell-type list for PredictionResult
+            pma = output["pma_attention"]
             result["pma_attention"] = [
-                attn.cpu().numpy() for attn in output["pma_attention"]
+                pma[:, ct_idx].cpu().numpy() for ct_idx in range(pma.shape[1])
             ]
 
         if extract_region_attention and "region_attention" in output:

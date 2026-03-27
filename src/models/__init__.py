@@ -11,8 +11,7 @@ from src.models.components import (
 )
 from src.models.branches import (
     PseudobulkEncoder,
-    HGTEncoder,
-    HGTEncoderBatched,
+    HGTEncoderTensor,
     CellTransformer,
 )
 from src.models.fusion import (
@@ -37,8 +36,7 @@ __all__ = [
     "RegionHandler",
     # Branches
     "PseudobulkEncoder",
-    "HGTEncoder",
-    "HGTEncoderBatched",
+    "HGTEncoderTensor",
     "CellTransformer",
     # Fusion
     "FusionLayer",

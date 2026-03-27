@@ -326,10 +326,11 @@ class TestRealCollateInference:
         samples = [self._make_hgt_sample(i) for i in range(BATCH_SIZE)]
         batch = collate_for_hgt_multiregion(samples)
 
-        # Verify collate output has expected HGT keys
-        assert "edge_index_dict_list" in batch
-        assert "edge_attr_dict_list" in batch
-        assert isinstance(batch["edge_index_dict_list"], list)
+        # Verify collate output has expected raw edge tensor keys
+        assert "ccc_edge_index" in batch
+        assert "ccc_edge_type" in batch
+        assert "ccc_edge_attr" in batch
+        assert "ccc_edge_counts" in batch
 
         # Run through model (unpack batch like lightning module's _forward_batch)
         with torch.no_grad():
@@ -341,8 +342,10 @@ class TestRealCollateInference:
                 cells=batch.get("cells"),
                 cell_mask=batch.get("cell_mask"),
                 pathology=batch.get("pathology"),
-                edge_index_dict_list=batch.get("edge_index_dict_list"),
-                edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+                ccc_edge_index=batch.get("ccc_edge_index"),
+                ccc_edge_type=batch.get("ccc_edge_type"),
+                ccc_edge_attr=batch.get("ccc_edge_attr"),
+                ccc_edge_counts=batch.get("ccc_edge_counts"),
             )
 
         assert "mean" in output
@@ -435,7 +438,7 @@ class TestDataModulePrecomputed:
 
         assert "pseudobulk" in batch
         assert "cognition" in batch
-        assert "edge_index_dict_list" in batch
+        assert "ccc_edge_index" in batch
         assert batch["pseudobulk"].shape == (BATCH_SIZE, N_CELL_TYPES, N_GENES)
         assert batch["cognition"].shape == (BATCH_SIZE, 1)
 

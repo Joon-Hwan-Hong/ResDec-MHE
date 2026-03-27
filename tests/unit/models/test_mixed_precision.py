@@ -62,7 +62,7 @@ def small_model_config():
 
 
 @pytest.fixture
-def sample_inputs(cuda_device, make_edge_dicts):
+def sample_inputs(cuda_device, make_edge_tensors):
     """Create sample inputs on CUDA device."""
     B = 2
     n_regions = N_REGIONS
@@ -70,13 +70,15 @@ def sample_inputs(cuda_device, make_edge_dicts):
     n_genes = 50
     max_cells = 10
 
-    edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B, device=cuda_device)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B, device=cuda_device)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
         'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-        'edge_index_dict_list': edge_index_dict_list,
-        'edge_attr_dict_list': edge_attr_dict_list,
+        'ccc_edge_index': ccc_edge_index,
+        'ccc_edge_type': ccc_edge_type,
+        'ccc_edge_attr': ccc_edge_attr,
+        'ccc_edge_counts': ccc_edge_counts,
         'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
         'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
         'pathology': torch.randn(B, 3, device=cuda_device),
@@ -494,9 +496,10 @@ class TestDtypeConversion:
 class TestAMPTrainingLoop:
     """Test AMP training loop behavior over multiple batches."""
 
-    def test_amp_training_loop_multiple_batches(self, small_model_config, cuda_device, make_edge_dicts):
+    def test_amp_training_loop_multiple_batches(self, small_model_config, cuda_device, make_edge_tensors):
         """Test multiple training batches with AMP."""
         from src.models.full_model import CognitiveResilienceModel
+        from src.data.constants import N_EDGE_TYPES
 
         model = CognitiveResilienceModel(**small_model_config, use_bayesian_head=False)
         model = model.to(cuda_device)
@@ -511,16 +514,19 @@ class TestAMPTrainingLoop:
         n_cell_types = N_CELL_TYPES
         max_cells = 10
         n_regions = N_REGIONS
+        n_edges = 5
 
         losses = []
         for batch_idx in range(n_batches):
             # Create new batch
-            eidl, eadl = make_edge_dicts(B, device=cuda_device)
+            ccc_ei, ccc_et, ccc_ea, ccc_ec = make_edge_tensors(B, device=cuda_device)
             inputs = {
                 'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
                 'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-                'edge_index_dict_list': eidl,
-                'edge_attr_dict_list': eadl,
+                'ccc_edge_index': ccc_ei,
+                'ccc_edge_type': ccc_et,
+                'ccc_edge_attr': ccc_ea,
+                'ccc_edge_counts': ccc_ec,
                 'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
                 'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
                 'pathology': torch.randn(B, 3, device=cuda_device),
@@ -550,6 +556,7 @@ class TestAMPTrainingLoop:
     def test_amp_training_loss_decreases(self, small_model_config, cuda_device):
         """Test that loss decreases during AMP training on fixed data."""
         from src.models.full_model import CognitiveResilienceModel
+        from src.data.constants import N_EDGE_TYPES
 
         torch.manual_seed(42)
 
@@ -560,33 +567,21 @@ class TestAMPTrainingLoop:
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         scaler = torch.amp.GradScaler('cuda')
 
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
         # Fixed inputs for overfitting test
         B = 4
         n_genes = 50
         n_cell_types = N_CELL_TYPES
         max_cells = 10
         n_regions = N_REGIONS
-
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-        for _ in range(B):
-            eid, ead = {}, {}
-            for src_ct in CELL_TYPE_ORDER[:3]:
-                for dst_ct in CELL_TYPE_ORDER[:3]:
-                    for et in ALL_EDGE_TYPES[:2]:
-                        key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                        eid[key] = torch.zeros(2, 5, dtype=torch.long, device=cuda_device)
-                        ead[key] = torch.rand(5, 1, device=cuda_device)
-            edge_index_dict_list.append(eid)
-            edge_attr_dict_list.append(ead)
+        n_edges = 10
 
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
+            'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device),
+            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device),
@@ -729,7 +724,7 @@ class TestNumericalStability:
     def test_large_input_values_stable(self, small_model_config, cuda_device):
         """Test stability with large input values in mixed precision."""
         from src.models.full_model import CognitiveResilienceModel
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+        from src.data.constants import N_EDGE_TYPES
 
         model = CognitiveResilienceModel(**small_model_config, use_bayesian_head=False)
         model = model.to(cuda_device)
@@ -740,26 +735,16 @@ class TestNumericalStability:
         n_cell_types = N_CELL_TYPES
         max_cells = 10
         n_regions = N_REGIONS
-
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-        for _ in range(B):
-            eid, ead = {}, {}
-            for src_ct in CELL_TYPE_ORDER[:3]:
-                for dst_ct in CELL_TYPE_ORDER[:3]:
-                    for et in ALL_EDGE_TYPES[:2]:
-                        key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                        eid[key] = torch.zeros(2, 5, dtype=torch.long, device=cuda_device)
-                        ead[key] = torch.rand(5, 1, device=cuda_device)
-            edge_index_dict_list.append(eid)
-            edge_attr_dict_list.append(ead)
+        n_edges = 10
 
         # Create inputs with larger values (but not extreme to avoid overflow)
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device) * 10,
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
+            'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device),
+            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device) * 10,
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device) * 5,
@@ -775,7 +760,7 @@ class TestNumericalStability:
     def test_small_input_values_stable(self, small_model_config, cuda_device):
         """Test stability with small input values in mixed precision."""
         from src.models.full_model import CognitiveResilienceModel
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+        from src.data.constants import N_EDGE_TYPES
 
         model = CognitiveResilienceModel(**small_model_config, use_bayesian_head=False)
         model = model.to(cuda_device)
@@ -786,26 +771,16 @@ class TestNumericalStability:
         n_cell_types = N_CELL_TYPES
         max_cells = 10
         n_regions = N_REGIONS
-
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-        for _ in range(B):
-            eid, ead = {}, {}
-            for src_ct in CELL_TYPE_ORDER[:3]:
-                for dst_ct in CELL_TYPE_ORDER[:3]:
-                    for et in ALL_EDGE_TYPES[:2]:
-                        key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                        eid[key] = torch.zeros(2, 5, dtype=torch.long, device=cuda_device)
-                        ead[key] = torch.rand(5, 1, device=cuda_device) * 0.1
-            edge_index_dict_list.append(eid)
-            edge_attr_dict_list.append(ead)
+        n_edges = 10
 
         # Create inputs with small values
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device) * 0.01,
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
+            'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device) * 0.1,
+            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device) * 0.01,
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device) * 0.1,

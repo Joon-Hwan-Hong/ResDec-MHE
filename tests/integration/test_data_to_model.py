@@ -75,9 +75,10 @@ class TestDatasetToCollate:
         result = collate_for_hgt(batch)
 
         assert result["batch_size"] == 4
-        assert "edge_index_dict_list" in result
-        assert "edge_attr_dict_list" in result
-        assert len(result["edge_index_dict_list"]) == 4
+        assert "ccc_edge_index" in result
+        assert "ccc_edge_type" in result
+        assert "ccc_edge_attr" in result
+        assert "ccc_edge_counts" in result
 
 
 class TestCollateToCellTransformer:
@@ -179,7 +180,7 @@ class TestEndToEndPipeline:
         assert torch.isfinite(embeddings).all()
         assert torch.isfinite(selection_weights).all()
         assert attention is not None
-        assert len(attention) == N_CELL_TYPES
+        assert attention.shape[1] == N_CELL_TYPES
 
     def test_pipeline_with_sparse_data(self):
         """Pipeline should handle sparse cell data correctly."""
@@ -252,13 +253,13 @@ class TestEndToEndPipeline:
 # =============================================================================
 
 
-class TestCollateToHGTEncoder:
-    """Test that collate_for_hgt output works with HGTEncoder and HGTEncoderBatched."""
+class TestCollateToHGTEncoderTensor:
+    """Test that collate_for_hgt output works with HGTEncoderTensor."""
 
-    def test_collate_for_hgt_produces_valid_format(self):
-        """collate_for_hgt should produce dict lists compatible with HGTEncoderBatched."""
-        from src.data.collate import collate_for_hgt, build_x_dict_list_from_embeddings
-        from src.models.branches.hgt_encoder import HGTEncoder
+    def test_collate_for_hgt_produces_valid_tensor_format(self):
+        """collate_for_hgt should produce padded tensors compatible with HGTEncoderTensor."""
+        from src.data.collate import collate_for_hgt
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
 
         d_input = 100
         d_hidden = 64
@@ -266,229 +267,68 @@ class TestCollateToHGTEncoder:
         batch = [create_mock_dataset_sample(n_genes=d_input, n_edges=30) for _ in range(4)]
         collated = collate_for_hgt(batch)
 
-        # Verify dict list structure
-        assert "edge_index_dict_list" in collated
-        assert "edge_attr_dict_list" in collated
-        assert len(collated["edge_index_dict_list"]) == 4
-        assert len(collated["edge_attr_dict_list"]) == 4
-
-        # Build x_dict_list from pseudobulk for standalone HGT testing
-        x_dict_list = build_x_dict_list_from_embeddings(
-            collated["pseudobulk"], collated["node_types"]
-        )
-
-        # Verify each sample's x_dict has all cell types
-        assert len(x_dict_list) == 4
-        for x_dict in x_dict_list:
-            assert len(x_dict) == N_CELL_TYPES
-            for node_type, x in x_dict.items():
-                assert x.shape == (1, d_input)
+        # Verify raw edge tensor structure
+        assert "ccc_edge_index" in collated
+        assert "ccc_edge_type" in collated
+        assert "ccc_edge_attr" in collated
+        assert "ccc_edge_counts" in collated
+        assert collated["ccc_edge_index"].shape[0] == 4
+        assert collated["ccc_edge_counts"].shape == (4,)
 
         # Verify encoder can be created with correct structure
-        encoder = HGTEncoder(
+        encoder = HGTEncoderTensor(
             d_input=d_input,
             d_hidden=d_hidden,
             d_output=d_hidden,
             n_heads=4,
             n_layers=2,
-        )
-        assert encoder.n_node_types == N_CELL_TYPES
-        assert encoder.n_edge_types == len(ALL_EDGE_TYPES)
-
-    def test_hgt_encoder_batched_with_collate_for_hgt(self):
-        """End-to-end: collate_for_hgt output should run through HGTEncoderBatched."""
-        from src.data.collate import collate_for_hgt, build_x_dict_list_from_embeddings
-        from src.models.branches.hgt_encoder import HGTEncoderBatched
-
-        d_input = 100
-        d_hidden = 64
-        d_output = 64
-
-        # Create batch and collate
-        batch = [create_mock_dataset_sample(n_genes=d_input, n_edges=30) for _ in range(4)]
-        collated = collate_for_hgt(batch)
-
-        # Build x_dict_list from pseudobulk (as the full model would after encoding)
-        x_dict_list = build_x_dict_list_from_embeddings(
-            collated["pseudobulk"], collated["node_types"]
+            n_node_types=N_CELL_TYPES,
+            n_edge_types=len(ALL_EDGE_TYPES),
+            edge_dim=1,
         )
 
-        # Create encoder with sanitized node types from collate
-        encoder = HGTEncoderBatched(
-            d_input=d_input,
-            d_hidden=d_hidden,
-            d_output=d_output,
-            n_heads=4,
-            n_layers=2,
-            node_types=collated["node_types"],
-            edge_categories=collated["edge_types"],
+        # Forward pass with collated tensors
+        x = collated["pseudobulk"]  # [4, N_CELL_TYPES, d_input]
+        out = encoder(
+            x,
+            collated["ccc_edge_index"],
+            collated["ccc_edge_type"],
+            collated["ccc_edge_attr"],
+            collated["ccc_edge_counts"],
         )
+        assert out.shape == (4, N_CELL_TYPES, d_hidden)
+        assert torch.isfinite(out).all()
 
-        # Forward pass using built x_dict_list and collate edge dicts
-        output_dict, attention = encoder(
-            x_dict_list,
-            collated["edge_index_dict_list"],
-            collated["edge_attr_dict_list"],
-            return_attention=True,
-        )
+    def test_hgt_encoder_tensor_gradient_flow(self):
+        """Gradients should flow correctly through HGTEncoderTensor."""
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
 
-        # Verify outputs
-        assert len(output_dict) == N_CELL_TYPES
-        for node_type, out in output_dict.items():
-            assert out.shape == (4, 1, d_output)  # (batch, n_nodes, d_output)
-            assert torch.isfinite(out).all()
-
-        assert attention is not None
-        assert len(attention) == 4  # One per batch sample
-
-    def test_hgt_encoder_forward_with_manual_dict_format(self):
-        """Test HGT forward pass with manually constructed dict format."""
-        from src.models.branches.hgt_encoder import HGTEncoder
-
+        B = 2
         d_input = 64
-        d_hidden = 32
         d_output = 32
 
-        encoder = HGTEncoder(
+        encoder = HGTEncoderTensor(
             d_input=d_input,
-            d_hidden=d_hidden,
+            d_hidden=32,
             d_output=d_output,
             n_heads=4,
             n_layers=2,
+            n_node_types=N_CELL_TYPES,
+            n_edge_types=len(ALL_EDGE_TYPES),
+            edge_dim=1,
         )
 
-        # Create x_dict with one node per cell type
-        x_dict = {
-            ct: torch.randn(1, d_input) for ct in CELL_TYPE_ORDER
-        }
+        x = torch.randn(B, N_CELL_TYPES, d_input, requires_grad=True)
+        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, 5))
+        edge_type = torch.randint(0, len(ALL_EDGE_TYPES), (B, 5))
+        edge_attr = torch.rand(B, 5, 1)
+        edge_counts = torch.full((B,), 5, dtype=torch.long)
 
-        # Create some edges
-        edge_index_dict = {}
-        edge_attr_dict = {}
-
-        # Add edges between first few cell types
-        src_ct = CELL_TYPE_ORDER[0]
-        dst_ct = CELL_TYPE_ORDER[1]
-        relation = ALL_EDGE_TYPES[0]
-        triplet = (src_ct, relation, dst_ct)
-
-        edge_index_dict[triplet] = torch.tensor([[0], [0]], dtype=torch.long)
-        edge_attr_dict[triplet] = torch.rand(1, 1)
-
-        # Forward pass
-        output_dict, attention = encoder(x_dict, edge_index_dict, edge_attr_dict)
-
-        # Verify outputs
-        assert len(output_dict) == N_CELL_TYPES
-        for ct, out in output_dict.items():
-            assert out.shape == (1, d_output)
-            assert torch.isfinite(out).all()
-
-    def test_hgt_encoder_with_sanitized_node_names(self):
-        """HGTEncoder should handle sanitized node names from collate_for_hgt.
-
-        This tests the fix for the bug where HGT residual update iterated over
-        unsanitized self.node_types but h_dict had sanitized keys, causing most
-        cell types to be silently skipped.
-        """
-        from src.models.branches.hgt_encoder import HGTEncoder
-
-        d_input = 64
-        d_hidden = 32
-        d_output = 32
-
-        encoder = HGTEncoder(
-            d_input=d_input,
-            d_hidden=d_hidden,
-            d_output=d_output,
-            n_heads=4,
-            n_layers=2,
-        )
-
-        # Sanitize function matching collate_for_hgt
-        def sanitize_name(name: str) -> str:
-            return name.replace(" ", "_").replace("/", "_").replace("-", "_")
-
-        # Create x_dict with SANITIZED keys (as collate_for_hgt does)
-        sanitized_cell_types = [sanitize_name(ct) for ct in CELL_TYPE_ORDER]
-        x_dict = {
-            sanitized_ct: torch.randn(1, d_input)
-            for sanitized_ct in sanitized_cell_types
-        }
-
-        # Create edges with sanitized triplets
-        edge_index_dict = {}
-        edge_attr_dict = {}
-
-        src_ct = sanitize_name(CELL_TYPE_ORDER[0])  # e.g., "Astrocyte"
-        dst_ct = sanitize_name(CELL_TYPE_ORDER[1])  # e.g., "Oligodendrocyte"
-        relation = ALL_EDGE_TYPES[0]  # Already uses underscores
-        triplet = (src_ct, relation, dst_ct)
-
-        edge_index_dict[triplet] = torch.tensor([[0], [0]], dtype=torch.long)
-        edge_attr_dict[triplet] = torch.rand(1, 1)
-
-        # Forward pass with sanitized keys
-        output_dict, attention = encoder(x_dict, edge_index_dict, edge_attr_dict)
-
-        # CRITICAL: Verify ALL cell types were processed (not silently skipped)
-        assert len(output_dict) == N_CELL_TYPES, (
-            f"Expected {N_CELL_TYPES} outputs but got {len(output_dict)}. "
-            "This indicates sanitized node names are not being handled correctly."
-        )
-
-        # Verify output keys match input keys (sanitized)
-        for sanitized_ct in sanitized_cell_types:
-            assert sanitized_ct in output_dict, f"Missing output for {sanitized_ct}"
-            assert output_dict[sanitized_ct].shape == (1, d_output)
-            assert torch.isfinite(output_dict[sanitized_ct]).all()
-
-    def test_hgt_encoder_gradient_flow_with_sanitized_names(self):
-        """Gradients should flow correctly with sanitized node names."""
-        from src.models.branches.hgt_encoder import HGTEncoder
-
-        d_input = 64
-        d_hidden = 32
-        d_output = 32
-
-        encoder = HGTEncoder(
-            d_input=d_input,
-            d_hidden=d_hidden,
-            d_output=d_output,
-            n_heads=4,
-            n_layers=2,
-        )
-
-        def sanitize_name(name: str) -> str:
-            return name.replace(" ", "_").replace("/", "_").replace("-", "_")
-
-        # Create x_dict with sanitized keys and gradient tracking
-        sanitized_cell_types = [sanitize_name(ct) for ct in CELL_TYPE_ORDER]
-        x_dict = {
-            sanitized_ct: torch.randn(1, d_input, requires_grad=True)
-            for sanitized_ct in sanitized_cell_types
-        }
-
-        # Create edges
-        src_ct = sanitized_cell_types[0]
-        dst_ct = sanitized_cell_types[1]
-        triplet = (src_ct, ALL_EDGE_TYPES[0], dst_ct)
-
-        edge_index_dict = {triplet: torch.tensor([[0], [0]], dtype=torch.long)}
-        edge_attr_dict = {triplet: torch.rand(1, 1)}
-
-        # Forward pass
-        output_dict, _ = encoder(x_dict, edge_index_dict, edge_attr_dict)
-
-        # Compute loss and backward
-        loss = sum(out.sum() for out in output_dict.values())
+        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        loss = out.sum()
         loss.backward()
 
-        # Verify gradients flow to ALL input cell types
-        for sanitized_ct in sanitized_cell_types:
-            assert x_dict[sanitized_ct].grad is not None, (
-                f"No gradient for {sanitized_ct}"
-            )
+        assert x.grad is not None
 
 
 # =============================================================================
@@ -560,7 +400,7 @@ class TestCrossBranchConsistency:
         from src.data.collate import collate_fn
         from src.models.branches.cell_transformer import CellTransformer
         from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
-        from src.models.branches.hgt_encoder import HGTEncoder
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
 
         n_genes = 100
         d_embed = 64  # Same for all branches
@@ -588,12 +428,14 @@ class TestCrossBranchConsistency:
         cell_out, _, _ = cell_transformer(collated["cells"], collated["cell_mask"])
 
         # Branch 2: HGT (verify output dimension matches)
-        hgt_encoder = HGTEncoder(
+        hgt_encoder = HGTEncoderTensor(
             d_input=d_embed,  # Takes embeddings as input
             d_hidden=d_embed,
             d_output=d_embed,
             n_heads=4,
             n_layers=2,
+            n_node_types=N_CELL_TYPES,
+            n_edge_types=len(ALL_EDGE_TYPES),
         )
 
         # Verify dimensions match for fusion
@@ -724,29 +566,33 @@ class TestGradientFlowAudit:
 
     def test_gradients_reach_hgt_layer_scales(self):
         """Gradients should reach HGT LayerScale parameters."""
-        from src.models.branches.hgt_encoder import HGTEncoder
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
+        from src.data.constants import N_EDGE_TYPES
 
         d_input = 64
-        encoder = HGTEncoder(
+        encoder = HGTEncoderTensor(
             d_input=d_input,
             d_hidden=64,
             d_output=64,
             n_heads=4,
             n_layers=2,
+            n_node_types=N_CELL_TYPES,
+            n_edge_types=N_EDGE_TYPES,
         )
 
-        # Create minimal input
-        x_dict = {ct: torch.randn(1, d_input, requires_grad=True) for ct in CELL_TYPE_ORDER}
+        # Create minimal batched input
+        B = 1
+        n_edges = 3
+        x = torch.randn(B, N_CELL_TYPES, d_input, requires_grad=True)
+        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, n_edges))
+        edge_type = torch.randint(0, N_EDGE_TYPES, (B, n_edges))
+        edge_attr = torch.rand(B, n_edges, 1)
+        edge_counts = torch.full((B,), n_edges, dtype=torch.long)
 
-        # Create one edge
-        triplet = (CELL_TYPE_ORDER[0], ALL_EDGE_TYPES[0], CELL_TYPE_ORDER[1])
-        edge_index_dict = {triplet: torch.tensor([[0], [0]], dtype=torch.long)}
-        edge_attr_dict = {triplet: torch.rand(1, 1)}
-
-        output_dict, _ = encoder(x_dict, edge_index_dict, edge_attr_dict)
+        output = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
 
         # Compute loss and backprop
-        loss = sum(out.sum() for out in output_dict.values())
+        loss = output.sum()
         loss.backward()
 
         # LayerScale parameters should have gradients
@@ -950,5 +796,4 @@ class TestNumericalStabilityEndToEnd:
         assert not torch.isnan(pb_out).any()
         assert not torch.isnan(cell_out).any()
         assert not torch.isnan(weights).any()
-        for attn in attention:
-            assert not torch.isnan(attn).any()
+        assert not torch.isnan(attention).any()

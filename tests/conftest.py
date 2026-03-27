@@ -59,34 +59,27 @@ from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key, N_
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _make_edge_dicts(batch_size, n_edges=5, device=None):
-    """Create edge_index_dict_list and edge_attr_dict_list for testing.
+N_EDGE_TYPES = len(ALL_EDGE_TYPES)
 
-    Uses a subset of production cell types (first 3) and edge types (first 2)
-    for speed. Real CCC graphs have variable connectivity; this factory creates
-    dense connections between the subset. Edge indices are all zeros (self-loops
-    on node 0) — sufficient for shape/dtype testing but not for message-passing
-    correctness. Update if HGT edge dict schema changes.
+
+def _make_edge_tensors(batch_size, n_edges=5, n_cell_types=N_CELL_TYPES,
+                       n_edge_types=N_EDGE_TYPES, device=None):
+    """Create batched edge tensors for testing.
+
+    Returns (ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts)
+    in the padded tensor format expected by HGTEncoderTensor and
+    CognitiveResilienceModel.
     """
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
-    for _ in range(batch_size):
-        edge_index_dict = {}
-        edge_attr_dict = {}
-        for src_ct in CELL_TYPE_ORDER[:3]:
-            for dst_ct in CELL_TYPE_ORDER[:3]:
-                for et in ALL_EDGE_TYPES[:2]:
-                    key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                    idx = torch.zeros(2, n_edges, dtype=torch.long)
-                    attr = torch.rand(n_edges, 1)
-                    if device is not None:
-                        idx = idx.to(device)
-                        attr = attr.to(device)
-                    edge_index_dict[key] = idx
-                    edge_attr_dict[key] = attr
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
-    return edge_index_dict_list, edge_attr_dict_list
+    edge_index = torch.randint(0, n_cell_types, (batch_size, 2, n_edges))
+    edge_type = torch.randint(0, n_edge_types, (batch_size, n_edges))
+    edge_attr = torch.rand(batch_size, n_edges, 1)
+    edge_counts = torch.full((batch_size,), n_edges, dtype=torch.long)
+    if device is not None:
+        edge_index = edge_index.to(device)
+        edge_type = edge_type.to(device)
+        edge_attr = edge_attr.to(device)
+        edge_counts = edge_counts.to(device)
+    return edge_index, edge_type, edge_attr, edge_counts
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -95,9 +88,9 @@ def _make_edge_dicts(batch_size, n_edges=5, device=None):
 
 
 @pytest.fixture
-def make_edge_dicts():
-    """Factory fixture: returns _make_edge_dicts callable."""
-    return _make_edge_dicts
+def make_edge_tensors():
+    """Factory fixture: returns _make_edge_tensors callable."""
+    return _make_edge_tensors
 
 
 @pytest.fixture

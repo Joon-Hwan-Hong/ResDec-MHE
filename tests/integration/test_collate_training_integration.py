@@ -217,31 +217,24 @@ class TestCollateToTrainingStep:
         assert loss is not None
         assert torch.isfinite(loss), f"Loss is not finite: {loss.item()}"
 
-    def test_collate_edge_dicts_have_tuple_keys(self):
-        """Edge dicts should have (src, rel, dst) tuple keys."""
+    def test_collate_returns_raw_edge_tensors(self):
+        """Collate should return raw padded edge tensors."""
         samples = [_make_sample(f"subj_{i}", n_edges=10) for i in range(4)]
         batch = collate_for_hgt_multiregion(samples)
 
-        edge_index_dict_list = batch["edge_index_dict_list"]
-        edge_attr_dict_list = batch["edge_attr_dict_list"]
+        assert "ccc_edge_index" in batch
+        assert "ccc_edge_type" in batch
+        assert "ccc_edge_attr" in batch
+        assert "ccc_edge_counts" in batch
 
-        assert isinstance(edge_index_dict_list, list)
-        assert len(edge_index_dict_list) == 4
+        assert batch["ccc_edge_index"].shape[0] == 4
+        assert batch["ccc_edge_index"].shape[1] == 2
+        assert batch["ccc_edge_type"].shape[0] == 4
+        assert batch["ccc_edge_attr"].shape[0] == 4
+        assert batch["ccc_edge_counts"].shape == (4,)
 
-        # At least one sample should have edges (all have n_edges=10)
-        has_edges = False
-        for edge_index_dict in edge_index_dict_list:
-            assert isinstance(edge_index_dict, dict)
-            for key in edge_index_dict:
-                assert isinstance(key, tuple), f"Key should be tuple, got {type(key)}"
-                assert len(key) == 3, f"Tuple key should have 3 elements, got {len(key)}"
-                src, rel, dst = key
-                assert isinstance(src, str)
-                assert isinstance(rel, str)
-                assert isinstance(dst, str)
-                has_edges = True
-
-        assert has_edges, "Expected at least one edge dict to have edges"
+        # All samples have edges (n_edges=10), so counts should be > 0
+        assert (batch["ccc_edge_counts"] > 0).all()
 
     def test_collate_region_pseudobulk_assembled(self):
         """Region pseudobulk assembled for available_regions=[0,2,4]."""
@@ -305,9 +298,8 @@ class TestCollateToTrainingStep:
         samples = [_make_sample(f"subj_{i}", n_edges=0) for i in range(4)]
         batch = collate_for_hgt_multiregion(samples)
 
-        # Verify collate produces empty edge dicts
-        for edge_dict in batch["edge_index_dict_list"]:
-            assert len(edge_dict) == 0, "Expected empty edge dict for n_edges=0"
+        # Verify collate produces zero-edge counts
+        assert (batch["ccc_edge_counts"] == 0).all(), "Expected zero edge counts for n_edges=0"
 
         loss = module.training_step(batch, batch_idx=0)
 

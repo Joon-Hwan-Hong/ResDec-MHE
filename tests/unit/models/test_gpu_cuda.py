@@ -26,7 +26,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.data.constants import N_CELL_TYPES, N_REGIONS
+from src.data.constants import N_CELL_TYPES, N_EDGE_TYPES, N_REGIONS
 
 # Skip entire module if CUDA is not available
 pytestmark = pytest.mark.cuda
@@ -54,7 +54,7 @@ def second_cuda_device():
 
 
 @pytest.fixture
-def sample_inputs(cuda_device, make_edge_dicts):
+def sample_inputs(cuda_device, make_edge_tensors):
     """Create sample inputs on CUDA device."""
     B = 2
     n_regions = N_REGIONS
@@ -62,13 +62,15 @@ def sample_inputs(cuda_device, make_edge_dicts):
     n_genes = 50
     max_cells = 10
 
-    edge_index_dict_list, edge_attr_dict_list = make_edge_dicts(B, device=cuda_device)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B, device=cuda_device)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
         'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-        'edge_index_dict_list': edge_index_dict_list,
-        'edge_attr_dict_list': edge_attr_dict_list,
+        'ccc_edge_index': ccc_edge_index,
+        'ccc_edge_type': ccc_edge_type,
+        'ccc_edge_attr': ccc_edge_attr,
+        'ccc_edge_counts': ccc_edge_counts,
         'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
         'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
         'pathology': torch.randn(B, 3, device=cuda_device),
@@ -463,33 +465,21 @@ class TestMultiGPU:
     def test_model_on_different_gpus(self, small_model_config):
         """Model works on GPU:0 and GPU:1."""
         from src.models.full_model import CognitiveResilienceModel
+        from src.data.constants import N_EDGE_TYPES
 
         B = 2
         n_genes = 50
         n_cell_types = N_CELL_TYPES
+        n_edges = 10
 
         def create_inputs(device):
-            from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
-            edge_index_dict_list = []
-            edge_attr_dict_list = []
-            for _ in range(B):
-                eid = {}
-                ead = {}
-                for src_ct in CELL_TYPE_ORDER[:3]:
-                    for dst_ct in CELL_TYPE_ORDER[:3]:
-                        for et in ALL_EDGE_TYPES[:2]:
-                            key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                            eid[key] = torch.zeros(2, 5, dtype=torch.long, device=device)
-                            ead[key] = torch.rand(5, 1, device=device)
-                edge_index_dict_list.append(eid)
-                edge_attr_dict_list.append(ead)
-
             return {
                 'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=device),
                 'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=device),
-                'edge_index_dict_list': edge_index_dict_list,
-                'edge_attr_dict_list': edge_attr_dict_list,
+                'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=device),
+                'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=device),
+                'ccc_edge_attr': torch.rand(B, n_edges, 1, device=device),
+                'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=device),
                 'cells': torch.randn(B, n_cell_types, 10, n_genes, device=device),
                 'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=device),
                 'pathology': torch.randn(B, 3, device=device),
@@ -555,6 +545,7 @@ class TestCUDAMemory:
     def test_cuda_memory_cleared_after_forward(self, small_model_config, cuda_device):
         """Memory is properly freed after forward pass."""
         from src.models.full_model import CognitiveResilienceModel
+        from src.data.constants import N_EDGE_TYPES
 
         clear_cuda_memory()
         initial_memory = torch.cuda.memory_allocated(cuda_device)
@@ -565,28 +556,15 @@ class TestCUDAMemory:
         B = 2
         n_genes = 50
         n_cell_types = N_CELL_TYPES
-
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
-        for _ in range(B):
-            eid = {}
-            ead = {}
-            for src_ct in CELL_TYPE_ORDER[:3]:
-                for dst_ct in CELL_TYPE_ORDER[:3]:
-                    for et in ALL_EDGE_TYPES[:2]:
-                        key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                        eid[key] = torch.zeros(2, 5, dtype=torch.long, device=cuda_device)
-                        ead[key] = torch.rand(5, 1, device=cuda_device)
-            edge_index_dict_list.append(eid)
-            edge_attr_dict_list.append(ead)
+        n_edges = 10
 
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=cuda_device),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=cuda_device),
-            'edge_index_dict_list': edge_index_dict_list,
-            'edge_attr_dict_list': edge_attr_dict_list,
+            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
+            'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device),
+            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
             'cells': torch.randn(B, n_cell_types, 10, n_genes, device=cuda_device),
             'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device),
@@ -610,6 +588,7 @@ class TestCUDAMemory:
     def test_no_memory_leak_over_multiple_batches(self, small_model_config, cuda_device):
         """No memory leak pattern over multiple forward passes."""
         from src.models.full_model import CognitiveResilienceModel
+        from src.data.constants import N_EDGE_TYPES
 
         clear_cuda_memory()
 
@@ -620,29 +599,16 @@ class TestCUDAMemory:
         B = 2
         n_genes = 50
         n_cell_types = N_CELL_TYPES
-
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
+        n_edges = 10
 
         def create_batch():
-            edge_index_dict_list = []
-            edge_attr_dict_list = []
-            for _ in range(B):
-                eid = {}
-                ead = {}
-                for src_ct in CELL_TYPE_ORDER[:3]:
-                    for dst_ct in CELL_TYPE_ORDER[:3]:
-                        for et in ALL_EDGE_TYPES[:2]:
-                            key = (sanitize_key(src_ct), sanitize_key(et), sanitize_key(dst_ct))
-                            eid[key] = torch.zeros(2, 5, dtype=torch.long, device=cuda_device)
-                            ead[key] = torch.rand(5, 1, device=cuda_device)
-                edge_index_dict_list.append(eid)
-                edge_attr_dict_list.append(ead)
-
             return {
                 'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=cuda_device),
                 'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=cuda_device),
-                'edge_index_dict_list': edge_index_dict_list,
-                'edge_attr_dict_list': edge_attr_dict_list,
+                'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
+                'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
+                'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device),
+                'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
                 'cells': torch.randn(B, n_cell_types, 10, n_genes, device=cuda_device),
                 'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=cuda_device),
                 'pathology': torch.randn(B, 3, device=cuda_device),
@@ -913,101 +879,62 @@ class TestMixedPrecisionBasic:
         assert not torch.isnan(output).any()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HGT Encoder GPU Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
+@pytest.mark.gpu
+class TestHGTEncoderTensorCUDA:
+    """Test HGTEncoderTensor on GPU — scatter/gather ops are GPU-sensitive."""
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestHGTEncoderCUDA:
-    """Test HGT Encoder on GPU."""
-
-    def test_hgt_encoder_cuda(self, cuda_device):
-        """HGTEncoder forward on GPU."""
-        from src.models.branches.hgt_encoder import HGTEncoder
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES
-
-        node_types = list(CELL_TYPE_ORDER)[:5]  # Use subset for speed
-        edge_categories = list(ALL_EDGE_TYPES)
-
-        encoder = HGTEncoder(
-            d_input=64,
-            d_hidden=64,
-            d_output=64,
-            n_heads=4,
-            n_layers=1,
-            dropout=0.0,
-            edge_dim=1,
-            node_types=node_types,
-            edge_categories=edge_categories,
+    @pytest.fixture
+    def encoder(self, cuda_device):
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
+        return HGTEncoderTensor(
+            d_input=32, d_hidden=32, d_output=32,
+            n_heads=4, n_layers=2,
+            n_node_types=N_CELL_TYPES, n_edge_types=N_EDGE_TYPES,
+            edge_dim=1, dropout=0.0,
         ).to(cuda_device)
 
-        # Create input dictionaries
-        x_dict = {nt: torch.randn(1, 64, device=cuda_device) for nt in node_types}
+    def test_forward_shape(self, encoder, cuda_device):
+        """HGTEncoderTensor forward on GPU produces correct shape."""
+        B, E = 4, 20
+        x = torch.randn(B, N_CELL_TYPES, 32, device=cuda_device)
+        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, E), device=cuda_device)
+        edge_type = torch.randint(0, N_EDGE_TYPES, (B, E), device=cuda_device)
+        edge_attr = torch.rand(B, E, 1, device=cuda_device)
+        edge_counts = torch.randint(5, E + 1, (B,), device=cuda_device)
 
-        # Create simple edge structure
-        edge_key = (node_types[0], edge_categories[0], node_types[1])
-        edge_index_dict = {edge_key: torch.tensor([[0], [0]], device=cuda_device)}
-        edge_attr_dict = {edge_key: torch.randn(1, 1, device=cuda_device)}
+        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        assert out.shape == (B, N_CELL_TYPES, 32)
+        assert torch.isfinite(out).all()
 
-        out_dict, _ = encoder(x_dict, edge_index_dict, edge_attr_dict)
-
-        # Verify outputs on CUDA
-        for nt, out in out_dict.items():
-            assert out.device.type == "cuda", f"Output for {nt} not on CUDA"
-            assert out.shape == (1, 64)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-class TestHGTEncoderBatchedCUDA:
-    """Test HGTEncoderBatched on GPU."""
-
-    def test_hgt_encoder_batched_cuda(self, cuda_device):
-        """HGTEncoderBatched forward on GPU with batched inputs."""
-        from src.models.branches.hgt_encoder import HGTEncoderBatched
-        from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key
-
-        node_types = list(CELL_TYPE_ORDER)[:5]  # Use subset for speed
-        edge_categories = list(ALL_EDGE_TYPES)
-
-        encoder = HGTEncoderBatched(
-            d_input=64,
-            d_hidden=64,
-            d_output=64,
-            n_heads=4,
-            n_layers=1,
-            dropout=0.0,
-            edge_dim=1,
-            node_types=node_types,
-            edge_categories=edge_categories,
-        ).to(cuda_device)
-
-        # Build batched inputs (list of per-sample dicts)
+    def test_zero_edges_gpu(self, encoder, cuda_device):
+        """Zero edges should produce finite output on GPU."""
         B = 2
-        x_dict_list = []
-        edge_index_dict_list = []
-        edge_attr_dict_list = []
+        x = torch.randn(B, N_CELL_TYPES, 32, device=cuda_device)
+        edge_index = torch.zeros(B, 2, 0, dtype=torch.long, device=cuda_device)
+        edge_type = torch.zeros(B, 0, dtype=torch.long, device=cuda_device)
+        edge_attr = torch.zeros(B, 0, 1, device=cuda_device)
+        edge_counts = torch.zeros(B, dtype=torch.long, device=cuda_device)
 
-        for _ in range(B):
-            x_dict = {nt: torch.randn(1, 64, device=cuda_device) for nt in node_types}
-            x_dict_list.append(x_dict)
+        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        assert out.shape == (B, N_CELL_TYPES, 32)
+        assert torch.isfinite(out).all()
 
-            edge_key = (
-                sanitize_key(node_types[0]),
-                sanitize_key(edge_categories[0]),
-                sanitize_key(node_types[1]),
-            )
-            edge_index_dict = {edge_key: torch.tensor([[0], [0]], device=cuda_device)}
-            edge_attr_dict = {edge_key: torch.randn(1, 1, device=cuda_device)}
+    def test_padding_ignored_gpu(self, encoder, cuda_device):
+        """Padding edges beyond edge_counts should not affect output on GPU."""
+        B, E = 1, 10
+        x = torch.randn(B, N_CELL_TYPES, 32, device=cuda_device)
+        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, E), device=cuda_device)
+        edge_type = torch.randint(0, N_EDGE_TYPES, (B, E), device=cuda_device)
+        edge_attr = torch.rand(B, E, 1, device=cuda_device)
+        edge_counts = torch.tensor([5], device=cuda_device)
 
-            edge_index_dict_list.append(edge_index_dict)
-            edge_attr_dict_list.append(edge_attr_dict)
+        out_padded = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
 
-        out_dict, _ = encoder(x_dict_list, edge_index_dict_list, edge_attr_dict_list)
+        # Trim to only valid edges
+        out_trimmed = encoder(
+            x, edge_index[:, :, :5], edge_type[:, :5],
+            edge_attr[:, :5, :], edge_counts,
+        )
 
-        # Verify outputs are on CUDA, finite, and have correct batch dimension
-        for nt, out in out_dict.items():
-            assert out.device.type == "cuda", f"Output for {nt} not on CUDA"
-            assert torch.isfinite(out).all(), f"Output for {nt} contains non-finite values"
-            assert out.shape[0] == B, f"Expected batch dim {B}, got {out.shape[0]}"
-            assert out.shape[-1] == 64, f"Expected output dim 64, got {out.shape[-1]}"
+        assert torch.allclose(out_padded, out_trimmed, atol=1e-5)

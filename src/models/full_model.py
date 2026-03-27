@@ -1,15 +1,15 @@
 """
 Cognitive Resilience Model - Full end-to-end architecture.
 
-Combines all branches (PseudobulkEncoder, HGTEncoderBatched, CellTransformer) with
+Combines all branches (PseudobulkEncoder, HGTEncoderTensor, CellTransformer) with
 RegionHandler, FusionLayer, PathologyEncoder, PathologyStratifiedAttention,
 and prediction heads to predict cognitive resilience from multi-modal inputs.
 
 Data flow:
     region_pseudobulk [B, n_regions, 31, G] -> PseudobulkEncoder (per region)
         -> RegionHandler -> pooled [B, 31, d] + region_context [B, d]
-    ccc_graph (edge_index_dict_list, edge_attr_dict_list) -> HGTEncoderBatched
-        -> hgt_emb [B, 31, d]
+    ccc_edge_index [B, 2, E], ccc_edge_type [B, E], ccc_edge_attr [B, E, 1],
+        ccc_edge_counts [B] -> HGTEncoderTensor -> hgt_emb [B, 31, d]
     cells [B, 31, max_cells, G] -> CellTransformer -> cell_emb [B, 31, d]
 
     [pooled, hgt_emb, cell_emb] -> FusionLayer -> fused [B, 31, d_fused]
@@ -21,8 +21,10 @@ Expected Input Format:
     This model expects data from collate_for_hgt_multiregion() which provides:
     - region_pseudobulk: [B, n_regions, n_cell_types, n_genes]
     - region_mask: [B, n_regions]
-    - edge_index_dict_list: List[Dict[(src, rel, dst): Tensor[2, n_edges]]]
-    - edge_attr_dict_list: List[Dict[(src, rel, dst): Tensor[n_edges, 1]]]
+    - ccc_edge_index: [B, 2, max_edges] padded edge indices
+    - ccc_edge_type: [B, max_edges] edge type indices
+    - ccc_edge_attr: [B, max_edges, 1] edge attributes
+    - ccc_edge_counts: [B] number of valid edges per sample
     - cells, cell_mask, pathology, etc.
 
     For single-region data, use pseudobulk [B, n_cell_types, n_genes] which will
@@ -37,10 +39,9 @@ import logging
 import torch.nn as nn
 from pyro.nn import PyroModule
 
-from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX, sanitize_key
-from src.data.collate import build_x_dict_list_from_embeddings
+from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX
 from src.models.branches import PseudobulkEncoder, CellTransformer
-from src.models.branches.hgt_encoder import HGTEncoderBatched
+from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
 from src.models.components import RegionHandler
 from src.models.fusion import FusionLayer, PathologyEncoder, PathologyStratifiedAttention
 from src.models.heads import BayesianPredictionHead, DeterministicPredictionHead
@@ -54,7 +55,7 @@ class CognitiveResilienceModel(PyroModule):
 
     Integrates three encoding branches:
     - PseudobulkEncoder: Gene expression -> cell-type embeddings
-    - HGTEncoderBatched: Cell-cell communication graph -> CCC embeddings (per-sample)
+    - HGTEncoderTensor: Cell-cell communication graph -> CCC embeddings (batched tensors)
     - CellTransformer: Cell-level data -> heterogeneity embeddings
 
     These are fused and processed through pathology-conditioned attention
@@ -89,8 +90,10 @@ class CognitiveResilienceModel(PyroModule):
         region_pseudobulk: [B, n_regions, n_cell_types, n_genes] OR
         pseudobulk: [B, n_cell_types, n_genes] (single-region, auto-expanded)
         region_mask: [B, n_regions]
-        edge_index_dict_list: List of {(src, rel, dst): Tensor[2, n_edges]} per sample
-        edge_attr_dict_list: List of {(src, rel, dst): Tensor[n_edges, 1]} per sample
+        ccc_edge_index: [B, 2, max_edges] padded edge indices
+        ccc_edge_type: [B, max_edges] edge type indices
+        ccc_edge_attr: [B, max_edges, 1] edge attributes
+        ccc_edge_counts: [B] number of valid edges per sample
         cells: [B, n_cell_types, max_cells, n_genes]
         cell_mask: [B, n_cell_types, max_cells]
         cell_type_mask: [B, n_cell_types] (optional, for masking missing cell types)
@@ -161,19 +164,6 @@ class CognitiveResilienceModel(PyroModule):
         self.node_types = node_types if node_types is not None else list(CELL_TYPE_ORDER)
         self.edge_categories = edge_categories if edge_categories is not None else list(ALL_EDGE_TYPES)
 
-        # Sanitized node types for HGT dict lookups
-        self._sanitized_node_types = [sanitize_key(nt) for nt in self.node_types]
-        self._node_type_to_idx = {nt: idx for idx, nt in enumerate(self.node_types)}
-        self._sanitized_to_idx = {sanitize_key(nt): idx for idx, nt in enumerate(self.node_types)}
-
-        # Pre-compute HGT output index mapping (avoids creating index tensor every forward)
-        _hgt_indices = [self._sanitized_to_idx[sanitize_key(nt)] for nt in self.node_types]
-        self.register_buffer(
-            "_hgt_idx_tensor",
-            torch.tensor(_hgt_indices, dtype=torch.long),
-            persistent=False,
-        )
-
         # Branch 1: Pseudobulk Encoder (applied per region)
         self.pseudobulk_encoder = PseudobulkEncoder(
             n_cell_types=n_cell_types,
@@ -191,19 +181,19 @@ class CognitiveResilienceModel(PyroModule):
             n_regions=n_regions,
         )
 
-        # Branch 2: HGT Encoder (cell-cell communication) - BATCHED version
+        # Branch 2: HGT Encoder (cell-cell communication) - tensor-native version
         # HGT takes encoded pseudobulk embeddings as node features
-        # Uses HGTEncoderBatched to process per-sample graphs correctly
-        self.hgt_encoder = HGTEncoderBatched(
+        # Uses HGTEncoderTensor for batched tensor operations (no dict round-trip)
+        self.hgt_encoder = HGTEncoderTensor(
             d_input=d_embed,  # Takes encoded embeddings, not raw genes
             d_hidden=d_embed,
             d_output=d_embed,
             n_heads=n_hgt_heads,
             n_layers=n_hgt_layers,
-            dropout=dropout,
+            n_node_types=n_cell_types,
+            n_edge_types=len(self.edge_categories),
             edge_dim=1,  # LIANA magnitude scores
-            node_types=self.node_types,
-            edge_categories=self.edge_categories,
+            dropout=dropout,
             use_gradient_checkpointing=use_gradient_checkpointing,
         )
 
@@ -312,86 +302,6 @@ class CognitiveResilienceModel(PyroModule):
         encoded = self.pseudobulk_encoder(flat)  # [B * R, C, d_embed]
         return encoded.view(B, R, C, self.d_embed)
 
-    def _convert_hgt_batched_output_to_tensor(
-        self,
-        hgt_out_dict: dict[str, torch.Tensor],  # {cell_type: [B, 1, d_embed]}
-        batch_size: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """
-        Convert HGTEncoderBatched output to tensor [B, n_cell_types, d_embed].
-
-        HGTEncoderBatched returns {cell_type: [B, 1, d_embed]} after stacking.
-
-        Args:
-            hgt_out_dict: Dict mapping cell type to batched embeddings
-            batch_size: Expected batch size
-            device: Device for output tensor
-
-        Returns:
-            [B, n_cell_types, d_embed] tensor with embeddings for all cell types
-        """
-        # Initialize output tensor, inferring dtype from HGT output for AMP
-        # compatibility. Under torch.autocast, HGT layers may produce float16
-        # intermediates; using the same dtype here avoids an implicit cast that
-        # would break the autocast graph.
-        if not hgt_out_dict:
-            return torch.zeros(
-                batch_size, self.n_cell_types, self.d_embed, device=device,
-            )
-        sample_tensor = next(iter(hgt_out_dict.values()))
-
-        # Fast path: when all sanitized node types are present (common case),
-        # use pre-computed index buffer to avoid per-forward tensor creation.
-        sanitized_keys = set(self._sanitized_to_idx.keys())
-        if set(hgt_out_dict.keys()) == sanitized_keys:
-            # Stack in canonical order matching _hgt_idx_tensor
-            stacked = torch.stack(
-                [hgt_out_dict[snt].squeeze(1) for snt in self._sanitized_to_idx],
-                dim=1,
-            )  # [B, n_cell_types, d_embed]
-            output = torch.zeros(
-                batch_size, self.n_cell_types, self.d_embed,
-                device=device, dtype=sample_tensor.dtype,
-            )
-            idx_tensor = self._hgt_idx_tensor.view(1, -1, 1).expand(
-                batch_size, -1, self.d_embed
-            )
-            output.scatter_(1, idx_tensor, stacked)
-            return output
-
-        # Slow path: dynamic index building for partial node sets
-        indices = []
-        tensors = []
-        for node_type, emb in hgt_out_dict.items():
-            if node_type in self._node_type_to_idx:
-                ct_idx = self._node_type_to_idx[node_type]
-            elif node_type in self._sanitized_to_idx:
-                ct_idx = self._sanitized_to_idx[node_type]
-            else:
-                logger.warning("Skipping unknown HGT output key: %s", node_type)
-                continue
-            indices.append(ct_idx)
-            tensors.append(emb.squeeze(1))  # [B, d_embed]
-
-        if not tensors:
-            return torch.zeros(
-                batch_size, self.n_cell_types, self.d_embed,
-                device=device, dtype=sample_tensor.dtype,
-            )
-
-        # Stack and scatter in batched operations
-        stacked = torch.stack(tensors, dim=1)  # [B, n_found, d_embed]
-        output = torch.zeros(
-            batch_size, self.n_cell_types, self.d_embed,
-            device=device, dtype=sample_tensor.dtype,
-        )
-        idx_tensor = torch.tensor(indices, device=device).view(1, -1, 1).expand(
-            batch_size, -1, self.d_embed
-        )
-        output.scatter_(1, idx_tensor, stacked)
-        return output
-
     def forward(
         self,
         # Multi-region format (from collate_for_hgt_multiregion)
@@ -399,9 +309,11 @@ class CognitiveResilienceModel(PyroModule):
         region_mask: Optional[torch.Tensor] = None,        # [B, n_regions]
         # Single-region fallback
         pseudobulk: Optional[torch.Tensor] = None,         # [B, n_cell_types, n_genes]
-        # HGT graph inputs (per-sample dicts from collate_for_hgt)
-        edge_index_dict_list: Optional[list[dict]] = None,
-        edge_attr_dict_list: Optional[list[dict]] = None,
+        # CCC edge tensors (from collate)
+        ccc_edge_index: Optional[torch.Tensor] = None,     # [B, 2, max_edges]
+        ccc_edge_type: Optional[torch.Tensor] = None,      # [B, max_edges]
+        ccc_edge_attr: Optional[torch.Tensor] = None,      # [B, max_edges, edge_dim]
+        ccc_edge_counts: Optional[torch.Tensor] = None,    # [B]
         # Cell-level inputs
         cells: Optional[torch.Tensor] = None,              # [B, n_cell_types, max_cells, n_genes]
         cell_mask: Optional[torch.Tensor] = None,          # [B, n_cell_types, max_cells]
@@ -422,15 +334,16 @@ class CognitiveResilienceModel(PyroModule):
         1. Multi-region (preferred): region_pseudobulk [B, R, C, G] + region_mask
         2. Single-region (fallback): pseudobulk [B, C, G] (auto-expanded to region format)
 
-        For HGT, uses per-sample dict format (edge_index_dict_list, edge_attr_dict_list)
-        from collate_for_hgt.
+        HGT receives batched edge tensors from the collate function.
 
         Args:
             region_pseudobulk: [B, n_regions, n_cell_types, n_genes] regional pseudobulk
             region_mask: [B, n_regions] bool mask for available regions
             pseudobulk: [B, n_cell_types, n_genes] single-region fallback
-            edge_index_dict_list: List of {(src, rel, dst): [2, n_edges]} per sample
-            edge_attr_dict_list: List of {(src, rel, dst): [n_edges, 1]} per sample
+            ccc_edge_index: [B, 2, max_edges] padded edge indices
+            ccc_edge_type: [B, max_edges] edge type indices
+            ccc_edge_attr: [B, max_edges, 1] edge attributes
+            ccc_edge_counts: [B] number of valid edges per sample
             cells: [B, n_cell_types, max_cells, n_genes] cell-level expression
             cell_mask: [B, n_cell_types, max_cells] bool mask for valid cells
             cell_type_mask: [B, n_cell_types] optional mask for missing cell types.
@@ -452,7 +365,7 @@ class CognitiveResilienceModel(PyroModule):
                 - 'std': [B, 1] uncertainty (only if use_bayesian_head)
                 - 'attention_weights': [B, n_heads, n_cell_types] pathology attention
                 - 'hgt_attention': List of attention dicts per layer (if return_hgt_attention)
-                - 'pma_attention': List of [B, n_heads, n_seeds, max_cells] per cell type (if return_pma_attention)
+                - 'pma_attention': [B, n_cell_types, n_heads, n_seeds, max_cells] tensor (if return_pma_attention)
                 - 'region_attention': [B, n_regions] normalized region weights (if return_region_attention)
                 - 'embeddings': dict of branch/fused/attended embeddings (if return_embeddings)
         """
@@ -512,39 +425,29 @@ class CognitiveResilienceModel(PyroModule):
         pseudobulk_emb, region_context, region_attn = self.region_handler(region_encoded, region_mask)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Branch 2: HGT encoding (cell-cell communication) - Per-sample graphs
+        # Branch 2: HGT encoding (cell-cell communication) - Batched tensors
         # Design decision: HGT receives region-pooled (not region-specific) features
         # because CCC edges represent communication patterns across the subject's
         # cell types, while RegionHandler's learned attention weights naturally
         # prioritize the region with strongest signal (typically PFC, which is also
         # where LIANA CCC edges originate). See architecture doc Part 1, §3.2.
         # ─────────────────────────────────────────────────────────────────────
-        # Build x_dict_list from pooled pseudobulk embeddings
-        x_dict_list = build_x_dict_list_from_embeddings(
-            pseudobulk_emb, self._sanitized_node_types
-        )
+        # Handle no-edges case
+        if ccc_edge_index is None:
+            ccc_edge_index = torch.zeros(B, 2, 0, dtype=torch.long, device=device)
+            ccc_edge_type = torch.zeros(B, 0, dtype=torch.long, device=device)
+            ccc_edge_attr = torch.zeros(B, 0, 1, device=device)
+            ccc_edge_counts = torch.zeros(B, dtype=torch.long, device=device)
 
-        # Handle edge dicts — pass through as-is; HGTConv handles empty dicts
-        # correctly (isolated nodes get zero communication via received_messages mask).
-        # Do NOT inject synthetic edges — that would encode phantom communication.
-        if edge_index_dict_list is not None and edge_attr_dict_list is not None:
-            # Use provided edge dicts (may contain empty dicts for edgeless samples)
-            pass
+        hgt_result = self.hgt_encoder(
+            pseudobulk_emb, ccc_edge_index, ccc_edge_type, ccc_edge_attr,
+            ccc_edge_counts, return_attention=return_hgt_attention,
+        )
+        if return_hgt_attention:
+            hgt_emb, hgt_attention = hgt_result
         else:
-            # No edges provided at all — create empty dicts for each sample
-            edge_index_dict_list = [{} for _ in range(B)]
-            edge_attr_dict_list = [{} for _ in range(B)]
-
-        # Run HGTEncoderBatched - processes each sample's graph separately
-        hgt_out_dict, hgt_attention = self.hgt_encoder(
-            x_dict_list,
-            edge_index_dict_list,
-            edge_attr_dict_list,
-            return_attention=return_hgt_attention,
-        )
-
-        # Convert HGT output to tensor: [B, n_cell_types, d_embed]
-        hgt_emb = self._convert_hgt_batched_output_to_tensor(hgt_out_dict, B, device)
+            hgt_emb = hgt_result
+            hgt_attention = None
 
         # ─────────────────────────────────────────────────────────────────────
         # Branch 3: Cell transformer (cell-level heterogeneity)
@@ -613,8 +516,10 @@ class CognitiveResilienceModel(PyroModule):
         region_pseudobulk=None,
         region_mask=None,
         pseudobulk=None,
-        edge_index_dict_list=None,
-        edge_attr_dict_list=None,
+        ccc_edge_index=None,
+        ccc_edge_type=None,
+        ccc_edge_attr=None,
+        ccc_edge_counts=None,
         cells=None,
         cell_mask=None,
         cell_type_mask=None,
@@ -665,13 +570,15 @@ class CognitiveResilienceModel(PyroModule):
         pseudobulk_emb, region_context, _ = self.region_handler(region_encoded, region_mask)
 
         # Branch 2: HGT
-        x_dict_list = build_x_dict_list_from_embeddings(pseudobulk_emb, self._sanitized_node_types)
-        if edge_index_dict_list is None:
-            edge_index_dict_list = [{} for _ in range(B)]
-        if edge_attr_dict_list is None:
-            edge_attr_dict_list = [{} for _ in range(B)]
-        hgt_out_dict, _ = self.hgt_encoder(x_dict_list, edge_index_dict_list, edge_attr_dict_list)
-        hgt_emb = self._convert_hgt_batched_output_to_tensor(hgt_out_dict, B, device)
+        if ccc_edge_index is None:
+            ccc_edge_index = torch.zeros(B, 2, 0, dtype=torch.long, device=device)
+            ccc_edge_type = torch.zeros(B, 0, dtype=torch.long, device=device)
+            ccc_edge_attr = torch.zeros(B, 0, 1, device=device)
+            ccc_edge_counts = torch.zeros(B, dtype=torch.long, device=device)
+
+        hgt_emb = self.hgt_encoder(
+            pseudobulk_emb, ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts,
+        )
 
         # Branch 3: Cell transformer
         cell_emb, _, _ = self.cell_transformer(
@@ -715,9 +622,18 @@ class CognitiveResilienceModel(PyroModule):
         Get HGT LayerScale values for interpretability.
 
         Returns:
-            Dict with scales per cell type across layers
+            Dict with 'scales' [n_layers, n_node_types], 'cell_types' list,
+            and 'per_cell_type' {name: [n_layers]} mapping.
         """
-        return self.hgt_encoder.get_layer_scales()
+        result = self.hgt_encoder.get_layer_scales()
+        # Add cell type names for interpretability
+        result['cell_types'] = list(self.node_types)
+        scales = result['scales']
+        result['per_cell_type'] = {
+            ct: scales[:, idx].clone()
+            for idx, ct in enumerate(self.node_types)
+        }
+        return result
 
     def num_parameters(self, trainable_only: bool = True) -> dict[str, int]:
         """
@@ -817,5 +733,6 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         n_pma_seeds=_cfg_get(model_cfg.set_transformer, "n_pma_seeds", 1, "model.set_transformer"),
         mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") is not None else None,
         use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
+        use_gradient_checkpointing=model_cfg.get("use_gradient_checkpointing", False),
         use_torch_compile=use_torch_compile,
     )

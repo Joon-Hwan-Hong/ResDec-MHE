@@ -7,12 +7,13 @@ Handles batching of:
 - Multi-region data (optional)
 
 Collate Format:
-    This module uses **dict lists** format for HGT graph data, NOT PyG HeteroData.
-    The dict format is directly compatible with HGTEncoderBatched and avoids
-    runtime conversion overhead. Key functions:
+    This module outputs **padded raw tensors** for HGT graph data:
+    ccc_edge_index [B, 2, max_edges], ccc_edge_type [B, max_edges],
+    ccc_edge_attr [B, max_edges, 1], ccc_edge_counts [B].
+    These are directly compatible with HGTEncoderTensor. Key functions:
     - collate_for_hgt_multiregion: Primary collate for training (recommended)
     - collate_for_hgt: Single-region variant
-    - collate_fn: Basic collate without HGT dict format
+    - collate_fn: Basic collate without HGT padded format
 
 Note on Multi-GPU:
     Device allocation is handled by PyTorch Lightning's Trainer, NOT by manual
@@ -40,24 +41,6 @@ from src.data.constants import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Cache for edge dict grouping — PrecomputedDataset produces identical
-# edge tensors per subject every epoch, so caching avoids repeated argsort +
-# boundary detection. Keyed by (subject_id, n_edges).
-# Note: this is module-level (global) state. With persistent_workers=True,
-# each worker retains its cache across epochs. Call clear_edge_dict_cache()
-# between dataset switches or in test teardown.
-_edge_dict_cache: dict[tuple[str, int], tuple[dict, dict]] = {}
-_EDGE_DICT_CACHE_MAX = 1024  # Limit memory usage
-
-
-def clear_edge_dict_cache() -> None:
-    """Clear the module-level edge dict cache.
-
-    Call between test cases, dataset switches, or when edge data changes
-    for the same subject IDs.
-    """
-    _edge_dict_cache.clear()
 
 
 def _derive_available_regions_from_keys(sample: dict[str, Any]) -> list[int]:
@@ -312,7 +295,7 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     # ─────────────────────────────────────────────────────────────────────────
     subject_ids = [s["subject_id"] for s in batch]
 
-    return {
+    result = {
         "pseudobulk": pseudobulk,
         "cell_type_mask": cell_type_mask,
         "cell_counts": cell_counts,
@@ -332,37 +315,37 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "region_mask": region_mask,
         # Metadata
         "subject_ids": subject_ids,
-        "cell_barcodes": [s.get("cell_barcodes") for s in batch],
         "batch_size": batch_size,
     }
+
+    barcodes = [s.get("cell_barcodes") for s in batch]
+    if any(b is not None for b in barcodes):
+        result["cell_barcodes"] = barcodes
+
+    return result
 
 
 def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    Collate function returning dict format for HGTEncoderBatched.
+    Collate function returning padded tensor format for HGTEncoderTensor.
 
     This is the RECOMMENDED collate function for our model because:
     - We have 31 distinct node types (cell types)
     - We have 5 distinct edge/relation types (CellChatDB categories)
-    - HGTEncoderBatched expects lists of dicts (one per sample)
+    - HGTEncoderTensor expects padded batched tensors
 
-    Returns dicts directly compatible with HGTEncoderBatched, avoiding the need
-    for HeteroData → dict conversion at runtime.
-
-    Note:
-        This collate does NOT produce x_dict_list for HGT node features.
-        The full model builds its own x_dict_list from encoded embeddings via
-        build_x_dict_list_from_embeddings(). For standalone HGT testing,
-        use build_x_dict_list_from_embeddings() with raw pseudobulk or
-        dummy embeddings.
+    Returns padded edge tensors directly compatible with HGTEncoderTensor,
+    avoiding per-sample dict overhead.
 
     Returns:
         Batched dictionary with:
         - pseudobulk: [batch, n_cell_types, n_genes] (for PseudobulkEncoder)
         - cell_type_mask: [batch, n_cell_types] bool mask for available cell types
         - cell_counts: [batch, n_cell_types] number of cells per type
-        - edge_index_dict_list: List of {(src, rel, dst): (2, n_edges)} per sample
-        - edge_attr_dict_list: List of {(src, rel, dst): (n_edges, 1)} per sample
+        - ccc_edge_index: [batch, 2, max_edges] padded edge indices (node type indices)
+        - ccc_edge_type: [batch, max_edges] padded edge type indices
+        - ccc_edge_attr: [batch, max_edges, edge_dim] padded edge attributes
+        - ccc_edge_counts: [batch] number of valid edges per sample
         - pathology: [batch, n_pathology]
         - cognition: [batch, 1]
         - cells: [batch, n_cell_types, max_cells, n_genes]
@@ -386,7 +369,7 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Build dict lists for HGTEncoderBatched
+    # Build padded edge tensors for HGTEncoderTensor
     # ─────────────────────────────────────────────────────────────────────────
     # Use cell_type_order from dataset, with fallback to global constant for
     # backward compatibility with samples that don't include it
@@ -415,110 +398,44 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     else:
         sanitized_edge_types = [sanitize_key(et) for et in edge_type_names]
 
-    edge_index_dict_list = []
-    edge_attr_dict_list = []
+    # ── Raw edge tensors (padded to max_edges in batch) ────────────────
+    # Pass raw CCC tensors padded to max_edges for HGTEncoderTensor.
+    edge_indices = [s["ccc_edge_index"] for s in batch]    # List of [2, n_edges_i]
+    edge_types_raw = [s["ccc_edge_type"] for s in batch]   # List of [n_edges_i]
+    edge_attrs = [s["ccc_edge_attr"] for s in batch]       # List of [n_edges_i, 1]
+    edge_counts = torch.tensor(
+        [ei.shape[1] if ei.numel() > 0 else 0 for ei in edge_indices],
+        dtype=torch.long,
+    )
 
-    for s in batch:
-        subject_id = s.get("subject_id")
-        edge_index = s["ccc_edge_index"]
-        n_edges = edge_index.shape[1] if edge_index.numel() > 0 else 0
+    max_edges = edge_counts.max().item() if edge_counts.numel() > 0 else 0
 
-        # Check cache for precomputed edge dicts (valid for PrecomputedDataset
-        # where edge tensors are identical across epochs for each subject).
-        # Key includes n_edges to avoid stale hits when the same subject_id
-        # appears with different edge counts (e.g., across test scenarios).
-        cache_key = (subject_id, n_edges) if subject_id is not None else None
-        if cache_key is not None and cache_key in _edge_dict_cache:
-            cached_ei, cached_ea = _edge_dict_cache[cache_key]
-            edge_index_dict_list.append(cached_ei)
-            edge_attr_dict_list.append(cached_ea)
-            continue
+    # Pad to max_edges
+    ccc_edge_index = torch.zeros(batch_size, 2, max_edges, dtype=torch.long)
+    ccc_edge_type = torch.zeros(batch_size, max_edges, dtype=torch.long)
+    edge_dim = edge_attrs[0].shape[1] if edge_attrs[0].numel() > 0 else 1
+    ccc_edge_attr = torch.zeros(batch_size, max_edges, edge_dim)
 
-        # Build edge dicts: {(src, rel, dst): tensor}
-        edge_index_dict: dict[tuple[str, str, str], torch.Tensor] = {}
-        edge_attr_dict: dict[tuple[str, str, str], torch.Tensor] = {}
-
-        edge_type_indices = s["ccc_edge_type"]
-        edge_attr = s["ccc_edge_attr"]
-
-        if n_edges > 0:
-            # Vectorized grouping: compute a composite key per edge encoding
-            # (src_type, edge_type, dst_type) as a single integer, then use
-            # torch.unique to find distinct triplets in one pass.
-            n_ct = len(sanitized_cell_types)
-            n_et = len(sanitized_edge_types)
-
-            src_indices = edge_index[0]       # [n_edges]
-            dst_indices = edge_index[1]       # [n_edges]
-
-            # Guard against silent integer overflow in composite key arithmetic.
-            # With int64 this is safe for current constants (31 cell types, 5 edge types)
-            # but would fail loudly if constants ever grow beyond safe limits.
-            max_key = (n_ct - 1) * n_ct * n_et + (n_ct - 1) * n_et + (n_et - 1)
-            if max_key >= torch.iinfo(torch.int64).max:
-                raise ValueError(
-                    f"Composite key overflow: max_key={max_key} exceeds int64 max "
-                    f"({torch.iinfo(torch.int64).max}). n_cell_types={n_ct}, n_edge_types={n_et}"
-                )
-
-            # Composite key: src * (n_ct * n_et) + dst * n_et + edge_type
-            composite = src_indices * (n_ct * n_et) + dst_indices * n_et + edge_type_indices
-
-            sorted_order = torch.argsort(composite)
-            sorted_composite = composite[sorted_order]
-
-            # Find group boundaries in single pass (pre-allocated, no sentinel tensors)
-            changes = torch.empty(len(sorted_composite) + 1, dtype=torch.bool,
-                                  device=sorted_composite.device)
-            changes[0] = True
-            changes[1:-1] = sorted_composite[1:] != sorted_composite[:-1]
-            changes[-1] = True
-            boundaries = torch.where(changes)[0]
-
-            for g in range(len(boundaries) - 1):
-                start, end = boundaries[g].item(), boundaries[g + 1].item()
-                k = sorted_composite[start].item()
-                src_idx = k // (n_ct * n_et)
-                remaining = k % (n_ct * n_et)
-                dst_idx = remaining // n_et
-                et_idx = remaining % n_et
-
-                triplet = (
-                    sanitized_cell_types[src_idx],
-                    sanitized_edge_types[et_idx],
-                    sanitized_cell_types[dst_idx],
-                )
-                n_triplet_edges = end - start
-
-                # All edges are node 0 → node 0 because each cell type has
-                # exactly 1 node per subject (the pseudobulk embedding).
-                # This invariant is set by build_x_dict_list_from_embeddings
-                # (unsqueeze(0) → 1 node per type). If multi-node-per-type
-                # is ever added, edge indices must be updated.
-                edge_index_dict[triplet] = torch.zeros(
-                    2, n_triplet_edges, dtype=torch.long
-                )
-                # Contiguous slice from sorted order instead of boolean mask
-                edge_attr_dict[triplet] = edge_attr[sorted_order[start:end]]
-
-        # Cache result for this subject
-        if cache_key is not None and len(_edge_dict_cache) < _EDGE_DICT_CACHE_MAX:
-            _edge_dict_cache[cache_key] = (edge_index_dict, edge_attr_dict)
-
-        edge_index_dict_list.append(edge_index_dict)
-        edge_attr_dict_list.append(edge_attr_dict)
+    for i, n in enumerate(edge_counts):
+        n = n.item()
+        if n > 0:
+            ccc_edge_index[i, :, :n] = edge_indices[i]
+            ccc_edge_type[i, :n] = edge_types_raw[i]
+            ccc_edge_attr[i, :n] = edge_attrs[i]
 
     subject_ids = [s["subject_id"] for s in batch]
 
-    return {
+    result = {
         "pseudobulk": pseudobulk,
         "cell_type_mask": cell_type_mask,
         "cell_counts": cell_counts,
         "pathology": pathology,
         "cognition": cognition,
-        # HGT inputs (dict lists for HGTEncoderBatched)
-        "edge_index_dict_list": edge_index_dict_list,
-        "edge_attr_dict_list": edge_attr_dict_list,
+        # HGT inputs (raw padded tensors for HGTEncoderTensor)
+        "ccc_edge_index": ccc_edge_index,
+        "ccc_edge_type": ccc_edge_type,
+        "ccc_edge_attr": ccc_edge_attr,
+        "ccc_edge_counts": edge_counts,
         # Cell-level data (all 31 cell types)
         "cells": cells,
         "cell_mask": cell_mask,
@@ -526,7 +443,6 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "region_mask": region_mask,
         # Metadata
         "subject_ids": subject_ids,
-        "cell_barcodes": [s.get("cell_barcodes") for s in batch],
         "batch_size": batch_size,
         # Include metadata for model
         "node_types": sanitized_cell_types,
@@ -535,52 +451,11 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "cell_type_order": cell_type_names,
     }
 
+    barcodes = [s.get("cell_barcodes") for s in batch]
+    if any(b is not None for b in barcodes):
+        result["cell_barcodes"] = barcodes
 
-def build_x_dict_list_from_embeddings(
-    pseudobulk_embeddings: torch.Tensor,
-    node_types: list[str],
-) -> list[dict[str, torch.Tensor]]:
-    """
-    Build x_dict_list from encoded pseudobulk embeddings for HGTEncoderBatched.
-
-    This is the RECOMMENDED way to prepare HGT node features in the full model.
-    Call this in model.forward() after running PseudobulkEncoder:
-
-        pseudobulk_emb = self.pseudobulk_encoder(batch["pseudobulk"])
-        x_dict_list = build_x_dict_list_from_embeddings(
-            pseudobulk_emb, batch["node_types"]
-        )
-        hgt_out, _ = self.hgt_encoder(
-            x_dict_list,
-            batch["edge_index_dict_list"],
-            batch["edge_attr_dict_list"],
-        )
-
-    Args:
-        pseudobulk_embeddings: [batch, n_cell_types, d_embed] encoded features
-            from PseudobulkEncoder
-        node_types: List of sanitized cell type names (from batch["node_types"])
-
-    Returns:
-        List of {cell_type: (1, d_embed)} dicts, one per sample in batch.
-        Ready to pass to HGTEncoderBatched.
-    """
-    batch_size = pseudobulk_embeddings.size(0)
-    # n_cell_types is always 31 (Allen Brain Cell Atlas mapping invariant from snRNAseq data)
-    n_cell_types = pseudobulk_embeddings.size(1)
-
-    # Pre-split along cell type dim in one C++ call, then use slice views
-    ct_slices = pseudobulk_embeddings.unbind(dim=1)  # tuple of [B, d_embed]
-
-    x_dict_list = []
-    for b in range(batch_size):
-        x_dict = {
-            node_types[ct_idx]: ct_slices[ct_idx][b:b+1]  # [1, d_embed] slice view
-            for ct_idx in range(n_cell_types)
-        }
-        x_dict_list.append(x_dict)
-
-    return x_dict_list
+    return result
 
 
 def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -638,10 +513,10 @@ def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
 
 def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    Collate function combining HGT format with multi-region support.
+    Collate function combining HGT tensor format with multi-region support.
 
     This combines:
-    - Dict lists for HGTEncoderBatched (from collate_for_hgt)
+    - Padded edge tensors for HGTEncoderTensor (from collate_for_hgt)
     - Region-specific pseudobulk tensors (from collate_multiregion)
 
     Use this when you need both HGT graph structure AND multi-region data.
@@ -737,7 +612,7 @@ def create_dataloader(
     pin_memory: bool = True,
     drop_last: bool = False,
     multiregion: bool = False,
-    use_hgt_format: bool = True,  # Default True - dict format for HGTEncoderBatched
+    use_hgt_format: bool = True,  # Default True - tensor format for HGTEncoderTensor
     prefetch_factor: int | None = 2,
     worker_init_fn=None,
 ) -> torch.utils.data.DataLoader:
@@ -764,8 +639,8 @@ def create_dataloader(
         pin_memory: Pin memory for faster GPU transfer
         drop_last: Drop incomplete last batch
         multiregion: Use multi-region collate function
-        use_hgt_format: Use collate_for_hgt which returns dict lists compatible
-                        with HGTEncoderBatched (default: True, recommended)
+        use_hgt_format: Use collate_for_hgt which returns padded edge tensors
+                        compatible with HGTEncoderTensor (default: True, recommended)
         prefetch_factor: Number of batches to prefetch per worker (None when num_workers=0)
         worker_init_fn: Optional custom worker init function. When provided,
             overrides the default _worker_init_fn. Used by CognitiveResilienceDataModule

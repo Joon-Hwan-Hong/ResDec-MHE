@@ -62,13 +62,13 @@ class TestEmptyCCCEdgesNoSyntheticInjection:
 
     def test_empty_ccc_edges_no_synthetic_injection(self, small_model):
         """
-        Round 13, C1: Forward with empty edge_index_dict_list=[{}] should
-        produce finite output without any edges being fabricated.
+        Round 13, C1: Forward with zero CCC edges should produce finite
+        output without any edges being fabricated.
 
         The bug was that the model injected dummy self-loop edges when CCC
         edges were empty, encoding phantom cell-cell communication. The fix
-        passes empty dicts through to HGTConv which handles isolated nodes
-        via its received_messages mask.
+        passes empty edge tensors through to HGTConvTensor which handles
+        isolated nodes via its received_messages mask.
         """
         B = 2
         model = small_model
@@ -79,15 +79,14 @@ class TestEmptyCCCEdgesNoSyntheticInjection:
         cell_mask = torch.ones(B, N_CELL_TYPES, 4, dtype=torch.bool)
         pathology = torch.randn(B, 3)
 
-        # Empty edge dicts -- no CCC edges
-        edge_index_dict_list = [{} for _ in range(B)]
-        edge_attr_dict_list = [{} for _ in range(B)]
-
+        # Empty CCC edges -- zero edges per sample
         with torch.no_grad():
             output = model(
                 pseudobulk=pseudobulk,
-                edge_index_dict_list=edge_index_dict_list,
-                edge_attr_dict_list=edge_attr_dict_list,
+                ccc_edge_index=torch.zeros(B, 2, 0, dtype=torch.long),
+                ccc_edge_type=torch.zeros(B, 0, dtype=torch.long),
+                ccc_edge_attr=torch.zeros(B, 0, 1),
+                ccc_edge_counts=torch.zeros(B, dtype=torch.long),
                 cells=cells,
                 cell_mask=cell_mask,
                 pathology=pathology,
@@ -97,13 +96,6 @@ class TestEmptyCCCEdgesNoSyntheticInjection:
         assert torch.isfinite(output["mean"]).all(), (
             "Empty CCC edges produced non-finite output"
         )
-
-        # Edge dicts should remain empty -- model must not inject edges
-        for i, eid in enumerate(edge_index_dict_list):
-            assert len(eid) == 0, (
-                f"Sample {i}: edge_index_dict was mutated from empty to "
-                f"{len(eid)} entries -- synthetic edges were injected"
-            )
 
 
 # ---------------------------------------------------------------------------
