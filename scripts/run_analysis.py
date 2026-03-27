@@ -22,6 +22,7 @@ Outputs saved to: {experiment_dir}/analysis/ or --output-dir
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -149,6 +150,42 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip within-cell-type heterogeneity analysis (PMA attention)",
     )
+    analysis_group.add_argument(
+        "--skip-fusion",
+        action="store_true",
+        help="Skip fusion weight analysis",
+    )
+    analysis_group.add_argument(
+        "--skip-branch-agreement",
+        action="store_true",
+        help="Skip branch agreement analysis",
+    )
+    analysis_group.add_argument(
+        "--skip-residual",
+        action="store_true",
+        help="Skip residual analysis",
+    )
+    analysis_group.add_argument(
+        "--skip-bootstrap",
+        action="store_true",
+        default=True,
+        help="Skip bootstrap CI (expensive, off by default)",
+    )
+    analysis_group.add_argument(
+        "--run-bootstrap",
+        action="store_true",
+        help="Enable bootstrap CI computation",
+    )
+    analysis_group.add_argument(
+        "--skip-enrichment",
+        action="store_true",
+        help="Skip gene enrichment analysis",
+    )
+    analysis_group.add_argument(
+        "--skip-subgroup-uncertainty",
+        action="store_true",
+        help="Skip subgroup uncertainty analysis",
+    )
 
     # Parameters
     param_group = parser.add_argument_group("Parameters")
@@ -196,6 +233,18 @@ def parse_args() -> argparse.Namespace:
     param_group.add_argument(
         "--gate-threshold", type=float, default=0.01,
         help="Minimum gene gate weight to include in differential expression (default: 0.01)",
+    )
+    param_group.add_argument(
+        "--n-bootstrap",
+        type=int,
+        default=1000,
+        help="Number of bootstrap samples (default: 1000)",
+    )
+    param_group.add_argument(
+        "--d-embed",
+        type=int,
+        default=64,
+        help="Model d_embed for fusion weight split (default: 64)",
     )
     param_group.add_argument(
         "--run-ablation",
@@ -536,6 +585,186 @@ def run_embedding_analysis(
     if output_dir:
         analyzer.save(result, output_dir, formats=formats)
         logger.info(f"  Saved embedding analysis to {output_dir}")
+
+
+def run_fusion_weight_analysis(
+    fusion_proj_weight: np.ndarray,  # [d_fused, d_embed + d_cell_emb]
+    d_embed: int,
+    output_dir: Path,
+    formats: list[str] | None = None,
+) -> None:
+    """Analyze fusion layer branch contributions."""
+    logger.info("Running fusion weight analysis...")
+
+    hgt_weight = fusion_proj_weight[:, :d_embed]
+    ct_weight = fusion_proj_weight[:, d_embed:]
+
+    hgt_contrib = np.abs(hgt_weight).sum()
+    ct_contrib = np.abs(ct_weight).sum()
+    total = hgt_contrib + ct_contrib
+
+    result = {
+        "hgt_contribution_pct": float(hgt_contrib / total * 100),
+        "ct_contribution_pct": float(ct_contrib / total * 100),
+        "hgt_l2_norm": float(np.linalg.norm(hgt_weight)),
+        "ct_l2_norm": float(np.linalg.norm(ct_weight)),
+        "proj_weight_shape": list(fusion_proj_weight.shape),
+    }
+    # Save
+    with open(output_dir / "fusion_weights.json", "w") as f:
+        json.dump(result, f, indent=2)
+    np.savez(output_dir / "fusion_proj_weight.npz", weight=fusion_proj_weight)
+    logger.info(
+        f"  Fusion: HGT {result['hgt_contribution_pct']:.1f}% / "
+        f"CT {result['ct_contribution_pct']:.1f}% → {output_dir}"
+    )
+
+
+def run_branch_agreement(
+    embeddings: dict[str, np.ndarray],
+    subject_ids: list[str],
+    output_dir: Path,
+    formats: list[str] | None = None,
+) -> None:
+    """Analyze agreement between HGT and CellTransformer branch embeddings."""
+    logger.info("Running branch agreement analysis...")
+
+    from sklearn.metrics.pairwise import paired_cosine_distances
+
+    hgt_emb = embeddings.get("hgt_branch")
+    ct_emb = embeddings.get("ct_branch")
+    if hgt_emb is None or ct_emb is None:
+        logger.warning("Branch embeddings not available — skipping branch agreement")
+        return
+
+    cos_sim = 1.0 - paired_cosine_distances(hgt_emb, ct_emb)
+    result_df = pd.DataFrame({
+        "subject_id": subject_ids,
+        "branch_cosine_similarity": cos_sim,
+    })
+    result_df.to_csv(output_dir / "branch_agreement.csv", index=False)
+
+    summary = {
+        "mean_cosine_similarity": float(cos_sim.mean()),
+        "std_cosine_similarity": float(cos_sim.std()),
+        "min_cosine_similarity": float(cos_sim.min()),
+        "max_cosine_similarity": float(cos_sim.max()),
+    }
+    with open(output_dir / "branch_agreement.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    logger.info(f"  Branch agreement: mean cosine={summary['mean_cosine_similarity']:.3f} → {output_dir}")
+
+
+def run_residual_analysis(
+    predictions_df: pd.DataFrame,
+    subject_ids: list[str],
+    output_dir: Path,
+    formats: list[str] | None = None,
+) -> None:
+    """Analyze prediction residuals."""
+    logger.info("Running residual analysis...")
+
+    if "actual" not in predictions_df.columns or "predicted_mean" not in predictions_df.columns:
+        logger.warning("Missing actual/predicted_mean columns — skipping residual analysis")
+        return
+
+    residuals = predictions_df["actual"].values - predictions_df["predicted_mean"].values
+    df = pd.DataFrame({
+        "subject_id": subject_ids[:len(residuals)],
+        "actual": predictions_df["actual"].values,
+        "predicted": predictions_df["predicted_mean"].values,
+        "residual": residuals,
+        "abs_residual": np.abs(residuals),
+    })
+    if "predicted_std" in predictions_df.columns:
+        std = predictions_df["predicted_std"].values
+        df["predicted_std"] = std
+        df["z_score"] = residuals / (std + 1e-8)
+
+    df.to_csv(output_dir / "residual_analysis.csv", index=False)
+    logger.info(f"  Residuals: mean={residuals.mean():.4f}, std={residuals.std():.4f} → {output_dir}")
+
+
+def run_bootstrap_ci(
+    predictions_df: pd.DataFrame,
+    output_dir: Path,
+    n_bootstrap: int = 1000,
+    seed: int = 42,
+) -> None:
+    """Compute bootstrap 95% confidence intervals on metrics."""
+    logger.info("Running bootstrap CI analysis (n=%d)...", n_bootstrap)
+
+    from src.training.metrics import ResilienceMetrics
+    import torch
+
+    if "actual" not in predictions_df.columns:
+        return
+
+    metrics = ResilienceMetrics()
+    mean_t = torch.tensor(predictions_df["predicted_mean"].values.reshape(-1, 1))
+    target_t = torch.tensor(predictions_df["actual"].values.reshape(-1, 1))
+
+    ci = metrics.bootstrap_ci(mean=mean_t, target=target_t, n_bootstrap=n_bootstrap)
+
+    with open(output_dir / "bootstrap_ci.json", "w") as f:
+        json.dump(ci, f, indent=2, default=str)
+    logger.info(f"  Bootstrap CIs saved to {output_dir}/bootstrap_ci.json")
+
+
+def run_gene_enrichment(
+    gene_gate_weights: np.ndarray,
+    gene_names: list[str],
+    cell_type_names: list[str],
+    top_k_ora: int = 100,
+    output_dir: Path = None,
+    formats: list[str] | None = None,
+) -> None:
+    """Run gene enrichment analysis (decoupler + gseapy)."""
+    logger.info("Running gene enrichment analysis...")
+
+    from src.analysis.gene_enrichment import GeneEnrichmentAnalyzer
+
+    analyzer = GeneEnrichmentAnalyzer(
+        gene_gate_weights=gene_gate_weights,
+        gene_names=gene_names,
+        cell_type_names=cell_type_names,
+    )
+    result = analyzer.analyze(top_k_ora=top_k_ora)
+    if output_dir:
+        analyzer.save(result, output_dir, formats=formats)
+        logger.info(f"  Saved gene enrichment to {output_dir}")
+
+
+def run_subgroup_uncertainty(
+    predicted_mean: np.ndarray,
+    predicted_std: np.ndarray,
+    actual: np.ndarray | None,
+    subject_ids: list[str],
+    metadata_df: pd.DataFrame,
+    metadata_subject_column: str,
+    epistemic_std: np.ndarray | None = None,
+    aleatoric_std: np.ndarray | None = None,
+    output_dir: Path = None,
+    formats: list[str] | None = None,
+) -> None:
+    """Run uncertainty analysis stratified by subgroups."""
+    logger.info("Running subgroup uncertainty analysis...")
+
+    from src.analysis.subgroup_uncertainty import SubgroupUncertaintyAnalyzer
+
+    analyzer = SubgroupUncertaintyAnalyzer(
+        predicted_mean=predicted_mean,
+        predicted_std=predicted_std,
+        actual=actual,
+        subject_metadata=metadata_df,
+        subject_ids=subject_ids,
+        epistemic_std=epistemic_std,
+        aleatoric_std=aleatoric_std,
+    )
+    result = analyzer.analyze()
+    if output_dir:
+        analyzer.save(result, output_dir, formats=formats)
+        logger.info(f"  Saved subgroup uncertainty to {output_dir}")
 
 
 def main():
@@ -1128,6 +1357,86 @@ def main():
         except (ValueError, RuntimeError) as e:
             if insufficient_data_policy == "skip":
                 logger.warning("Skipping embedding analysis: %s", e)
+            else:
+                raise
+
+    # Fusion weight analysis
+    if not args.skip_fusion:
+        fusion_proj_weight = attention_weights.get("fusion_proj_weight")
+        if fusion_proj_weight is not None:
+            try:
+                run_fusion_weight_analysis(fusion_proj_weight, args.d_embed, output_dir, args.formats)
+                analyses_run += 1
+            except (ValueError, RuntimeError) as e:
+                if insufficient_data_policy == "skip":
+                    logger.warning("Skipping fusion analysis: %s", e)
+                else:
+                    raise
+
+    # Branch agreement
+    if not args.skip_branch_agreement and embeddings is not None and isinstance(embeddings, dict):
+        try:
+            run_branch_agreement(embeddings, subject_ids, output_dir, args.formats)
+            analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping branch agreement analysis: %s", e)
+            else:
+                raise
+
+    # Residual analysis
+    if not args.skip_residual and predictions_df is not None:
+        try:
+            run_residual_analysis(predictions_df, subject_ids or [], output_dir, args.formats)
+            analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping residual analysis: %s", e)
+            else:
+                raise
+
+    # Bootstrap CIs
+    if args.run_bootstrap and predictions_df is not None:
+        try:
+            run_bootstrap_ci(predictions_df, output_dir, n_bootstrap=args.n_bootstrap)
+            analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping bootstrap CI analysis: %s", e)
+            else:
+                raise
+
+    # Gene enrichment
+    if not args.skip_enrichment and gene_gate is not None and gene_names is not None:
+        try:
+            run_gene_enrichment(gene_gate, gene_names, cell_type_names, output_dir=output_dir, formats=args.formats)
+            analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping gene enrichment analysis: %s", e)
+            else:
+                raise
+
+    # Subgroup uncertainty
+    if not args.skip_subgroup_uncertainty and predictions_df is not None and metadata_df is not None:
+        try:
+            predicted_mean = predictions_df["predicted_mean"].values if "predicted_mean" in predictions_df.columns else None
+            predicted_std = predictions_df["predicted_std"].values if "predicted_std" in predictions_df.columns else None
+            actual = predictions_df["actual"].values if "actual" in predictions_df.columns else None
+            if predicted_mean is not None and predicted_std is not None:
+                # Get epistemic/aleatoric from attention_weights if available
+                epistemic_std = attention_weights.get("epistemic_std")
+                aleatoric_std = attention_weights.get("aleatoric_std")
+                run_subgroup_uncertainty(
+                    predicted_mean, predicted_std, actual, subject_ids or [],
+                    metadata_df, metadata_subject_column,
+                    epistemic_std=epistemic_std, aleatoric_std=aleatoric_std,
+                    output_dir=output_dir, formats=args.formats,
+                )
+                analyses_run += 1
+        except (ValueError, RuntimeError) as e:
+            if insufficient_data_policy == "skip":
+                logger.warning("Skipping subgroup uncertainty analysis: %s", e)
             else:
                 raise
 

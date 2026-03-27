@@ -45,6 +45,15 @@ from src.analysis.embedding_analysis import (
     EmbeddingAnalysisResult,
     analyze_embeddings,
 )
+from src.analysis.gene_enrichment import (
+    GeneEnrichmentAnalyzer,
+    GeneEnrichmentResult,
+    compute_gene_enrichment,
+)
+from src.analysis.subgroup_uncertainty import (
+    SubgroupUncertaintyAnalyzer,
+    SubgroupUncertaintyResult,
+)
 __all__ = [
     # Cell type importance
     "CellTypeImportanceAnalyzer",
@@ -83,4 +92,11 @@ __all__ = [
     "EmbeddingAnalyzer",
     "EmbeddingAnalysisResult",
     "analyze_embeddings",
+    # Gene enrichment
+    "GeneEnrichmentAnalyzer",
+    "GeneEnrichmentResult",
+    "compute_gene_enrichment",
+    # Subgroup uncertainty
+    "SubgroupUncertaintyAnalyzer",
+    "SubgroupUncertaintyResult",
 ]
