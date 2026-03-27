@@ -30,6 +30,8 @@ data/mapmycells/
 data/database/
 *.h5ad
 *.h5
+*.npz
+*.npy
 
 # Outputs
 outputs/

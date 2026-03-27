@@ -59,6 +59,11 @@ def main():
         help="Path to splits JSON — only precompute subjects in splits (optional, default: all subjects)",
     )
     parser.add_argument(
+        "--adata", type=str, default=None,
+        help="Path to AnnData .h5ad file (overrides config adata_path). "
+             "Use this to point to a preprocessed AnnData.",
+    )
+    parser.add_argument(
         "--overwrite", action="store_true",
         help="Overwrite existing .npz files (default: skip existing)",
     )
@@ -80,7 +85,7 @@ def main():
 
     # Load AnnData
     import scanpy as sc
-    adata_path = data_cfg.adata_path
+    adata_path = args.adata or data_cfg.adata_path
     logger.info("Loading AnnData from %s (this may take several minutes)...", adata_path)
     t0 = time.time()
     adata = sc.read_h5ad(adata_path)
@@ -128,26 +133,26 @@ def main():
     else:
         logger.info("No LIANA directory provided — CCC edges will be empty")
 
+    # Seed all RNGs for reproducible precomputation
+    from src.utils.reproducibility import set_seed
+    seed = config.experiment.get("seed", 42)
+    set_seed(seed, deterministic=False, benchmark=False)
+
     # Create dataset
     from src.data.datasets import CognitiveResilienceDataset, save_precomputed_features
-    from src.data.cell_sampling import CellSampler
-
-    sampler = CellSampler(
-        max_cells_per_type=data_cfg.cell_sampling.max_cells_per_type,
-        min_cells_threshold=data_cfg.cell_sampling.min_cells_threshold,
-        strategy=data_cfg.cell_sampling.sampling_strategy,
-    )
 
     dataset = CognitiveResilienceDataset(
         adata=adata,
         metadata=metadata,
         subject_ids=subject_ids,
-        sampler=sampler,
-        n_genes=config.model.n_genes,
         subject_column=subject_col,
         cell_type_column=data_cfg.get("cell_type_column", "supercluster_name"),
         target_column=data_cfg.get("target_column", "cogn_global"),
         pathology_columns=list(data_cfg.get("pathology_columns", [])),
+        max_cells_per_type=data_cfg.cell_sampling.max_cells_per_type,
+        min_cells_threshold=data_cfg.cell_sampling.min_cells_threshold,
+        sampling_strategy=data_cfg.cell_sampling.sampling_strategy,
+        sampling_seed=seed,
         liana_results=liana_results if liana_results else None,
     )
 
@@ -155,20 +160,20 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    skip_existing = set()
     if not args.overwrite:
         existing = set(p.stem for p in output_dir.glob("*.npz"))
-        n_existing = len(existing & set(subject_ids))
-        if n_existing > 0:
+        skip_existing = existing & set(subject_ids)
+        if skip_existing:
             logger.info(
-                "%d subjects already precomputed (use --overwrite to redo). "
-                "Skipping existing.",
-                n_existing,
+                "%d subjects already precomputed — skipping (use --overwrite to redo).",
+                len(skip_existing),
             )
 
     # Precompute
     logger.info("Starting precomputation to %s...", output_dir)
     t0 = time.time()
-    save_precomputed_features(dataset, output_dir, verbose=True)
+    save_precomputed_features(dataset, output_dir, verbose=True, skip_subjects=skip_existing)
     elapsed = time.time() - t0
     logger.info(
         "Done! Precomputed %d subjects in %.1fs (%.2fs/subject)",

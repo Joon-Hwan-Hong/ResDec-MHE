@@ -90,6 +90,11 @@ def mse_loss(mean: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """
     Simple MSE loss for deterministic prediction head.
 
+    Explicitly promotes to float32 for consistency with BetaNLLLoss and
+    OrdinalRegressionLoss which also upcast. PyTorch autocast promotes
+    mse_loss automatically, but explicit is clearer and matches the
+    convention used by all other losses in this module.
+
     Args:
         mean: [B, 1] predicted values
         target: [B, 1] ground truth
@@ -97,4 +102,4 @@ def mse_loss(mean: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     Returns:
         Scalar MSE loss
     """
-    return F.mse_loss(mean, target)
+    return F.mse_loss(mean.float(), target.float())

@@ -261,7 +261,7 @@ class TestValidationStep:
         assert len(metric_keys) > 0
 
     def test_bayesian_validation_step(self, bayesian_config):
-        """Bayesian head validation_step runs without error."""
+        """Bayesian head validation_step logs val_loss (ELBO) and val_nll."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(bayesian_config)
         module.eval()
@@ -272,7 +272,10 @@ class TestValidationStep:
         batch = _make_batch(n_genes=50)
         module.validation_step(batch, batch_idx=0)
 
+        # val_loss = ELBO for Bayesian head (includes KL term)
         assert "val_loss" in logged
+        # val_nll = Beta-NLL at posterior median (predictive quality diagnostic)
+        assert "val_nll" in logged
 
 
 class TestTestStep:

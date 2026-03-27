@@ -1,5 +1,14 @@
 """
 Reproducibility utilities for deterministic experiments.
+
+Reproducibility guarantee levels:
+- CPU: bit-reproducible given same seed, config, and data order.
+- CUDA: statistically reproducible (same convergence, not bit-for-bit).
+  scatter_add in HGT message passing uses non-deterministic atomicAdd.
+  warn_only=True permits this — see set_seed() for details.
+- Checkpoint resume: converges to same quality but exact gradient trajectory
+  differs from uninterrupted run. See ResilienceModelCheckpoint.on_load_checkpoint()
+  for limitations (DataLoader position, CellSampler per-worker RNG).
 """
 
 import random
@@ -32,7 +41,17 @@ def set_seed(seed: int, deterministic: bool = True, benchmark: bool = False) -> 
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-    # Deterministic operations
+    # Pyro (Bayesian inference) — separate RNG from PyTorch
+    try:
+        import pyro
+        pyro.set_rng_seed(seed)
+    except ImportError:
+        pass
+
+    # Deterministic operations.
+    # warn_only=True because scatter_add (used in HGT message passing) has no
+    # deterministic CUDA implementation. Setting warn_only=False would error on
+    # every HGT forward pass. On CPU, scatter ops are deterministic.
     if deterministic:
         torch.use_deterministic_algorithms(True, warn_only=True)
         # Required for some operations

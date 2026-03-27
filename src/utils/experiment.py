@@ -80,17 +80,17 @@ class ExperimentManager:
         exp_hash = generate_experiment_hash(config)
         exp_dir = self.base_dir / exp_hash
 
-        # Create subdirectories (plot dirs match generate_plots.py categories)
+        # Create subdirectories (figure dirs match generate_plots.py categories)
         subdirs = [
             "checkpoints",
             "model",
             "analysis",
-            "plots/training",
-            "plots/attention",
-            "plots/importance",
-            "plots/prediction",
-            "plots/embedding",
-            "plots/resilience",
+            "figures/training",
+            "figures/attention",
+            "figures/importance",
+            "figures/prediction",
+            "figures/embedding",
+            "figures/resilience",
             "preprocessing",
             "logs/tensorboard",
         ]

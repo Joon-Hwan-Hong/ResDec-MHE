@@ -103,7 +103,10 @@ class GeneAttentionGate(nn.Module):
 
         # Apply gating (broadcast over batch dimension)
         # scaled_gate: [n_cell_types, n_genes] -> [1, n_cell_types, n_genes]
-        return x * scaled_gate.unsqueeze(0)
+        # Cast gate to input dtype to avoid unnecessary bf16→float32→bf16 round-trip:
+        # get_gate_weights() returns float32 (for softmax stability), but the
+        # downstream MLP's nn.Linear will re-downcast under autocast anyway.
+        return x * scaled_gate.unsqueeze(0).to(x.dtype)
 
     def get_gate_weights(self) -> torch.Tensor:
         """

@@ -4,6 +4,15 @@ Preprocessing pipeline for ROSMAP snRNA-seq data.
 Workflow: Raw counts → HVG (on raw) + L-R forcing → Normalize + log1p → Filter → Ready for LIANA+ & ML
 
 Note: seurat_v3 HVG selection requires RAW COUNTS, not log-normalized data.
+
+Memory-efficient design:
+  The full ROSMAP AnnData (3.9M cells × 20K genes, 13B nnz) takes ~106GB in
+  memory as a sparse CSR matrix. Additionally, the file has a sparse dtype
+  mismatch (indices=int32, indptr=int64) that causes scipy sort_indices() to
+  fail. The pipeline avoids intermediate full-matrix copies by:
+  - Using bincount for gene filtering (avoids sort_indices)
+  - Subsampling cells for HVG selection (avoids scanpy's internal copy)
+  - Performing ONE column subset at the end (20K → ~4K genes)
 """
 
 import logging
@@ -14,6 +23,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
+from scipy import sparse
 
 logger = logging.getLogger(__name__)
 
@@ -58,18 +68,23 @@ def preprocess_adata(
     target_sum: float = 1e4,
     min_cells_per_gene: int = 10,
     hvg_flavor: Literal["seurat_v3", "cell_ranger", "seurat"] = "seurat_v3",
+    hvg_subsample_n: int = 100_000,
     copy: bool = True,
+    training_subject_ids: list[str] | None = None,
+    subject_column: str = "ROSMAP_IndividualID",
+    seed: int = 42,
 ) -> AnnData:
     """
     Preprocess merged ROSMAP snRNA-seq data for LIANA+ and ML model.
 
-    Pipeline:
-    1. Basic QC (filter genes by min_cells)
-    2. HVG selection on RAW COUNTS (seurat_v3 requires raw counts)
-    3. Force include L-R genes from CellChatDB
-    4. Store raw counts in .raw
-    5. Normalize (target_sum) + log1p
-    6. Filter to final gene set
+    Memory-efficient pipeline for large datasets (~100GB+):
+    1. Round CellBender counts (in-place)
+    2. Compute gene QC mask (bincount, no copy)
+    3. Subsample cells for HVG selection (small copy)
+    4. Force include L-R genes from CellChatDB
+    5. One column subset to final gene set (~4K genes)
+    6. Normalize (target_sum) + log1p on small matrix
+    7. Store raw counts in .raw
 
     Args:
         adata_path: Path to adata_ROSMAP_merged.h5ad
@@ -78,7 +93,17 @@ def preprocess_adata(
         target_sum: Target sum for normalization
         min_cells_per_gene: Minimum cells expressing a gene
         hvg_flavor: Method for HVG selection
-        copy: Whether to return a copy (recommended)
+        hvg_subsample_n: Number of cells to subsample for HVG selection.
+            100K cells gives stable variance estimates while using ~3GB
+            instead of ~106GB for the full matrix.
+        copy: Whether to return a copy (recommended for small datasets,
+            set False for large datasets to avoid doubling memory)
+        training_subject_ids: Subject IDs to restrict HVG selection to.
+            Prevents data leakage by ensuring gene variance estimates come
+            only from training subjects, not test/val. If None, uses all
+            cells (legacy behavior, suitable when splits are unavailable).
+        subject_column: Column in adata.obs containing subject IDs.
+        seed: Random seed for HVG subsampling reproducibility.
 
     Returns:
         Preprocessed AnnData with HVG + L-R genes, normalized and log-transformed
@@ -86,29 +111,24 @@ def preprocess_adata(
     logger.info(f"Loading data from {adata_path}...")
     adata = sc.read_h5ad(adata_path)
 
-    if copy:
+    if copy and adata.n_obs < 500_000:
+        # Only copy for small datasets — for large ones it would OOM
         adata = adata.copy()
 
     logger.info(f"Initial shape: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # STEP 1: Basic QC - Filter genes by minimum cells
-    # ─────────────────────────────────────────────────────────────────────────
-    n_genes_before = adata.n_vars
-    sc.pp.filter_genes(adata, min_cells=min_cells_per_gene)
-    logger.info(f"After gene filter (min_cells={min_cells_per_gene}): {adata.n_vars:,} genes "
-                f"(removed {n_genes_before - adata.n_vars:,})")
+    if sparse.issparse(adata.X):
+        logger.info(
+            f"Sparse matrix: {adata.X.nnz:,} nnz, "
+            f"indices={adata.X.indices.dtype}, indptr={adata.X.indptr.dtype}"
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 1b: Round counts for CellBender-corrected subjects
+    # STEP 1: Round counts for CellBender-corrected subjects (IN-PLACE)
     # ─────────────────────────────────────────────────────────────────────────
     # 20 subjects in the "DLPFC" batch have fractional counts from CellBender
-    # ambient RNA correction. Batch B32 (200709-B32-A/B) is entirely composed
-    # of decontaminated subjects (all 8), while the other 12 are scattered
-    # across 7 additional batches that also contain unaffected subjects —
-    # the correction was applied per-subject, not per-batch. Round to nearest
-    # integer so seurat_v3 HVG selection operates on proper count data.
-    from scipy import sparse
+    # ambient RNA correction. Round to nearest integer so seurat_v3 HVG
+    # selection operates on proper count data.
     if sparse.issparse(adata.X):
         np.round(adata.X.data, out=adata.X.data)
     else:
@@ -116,55 +136,125 @@ def preprocess_adata(
     logger.info("Rounded counts to integers (handles CellBender-corrected subjects)")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 2: HVG selection on RAW COUNTS
+    # STEP 2: Compute gene QC mask (NO COPY — just compute which genes to keep)
     # ─────────────────────────────────────────────────────────────────────────
-    # IMPORTANT: seurat_v3 requires raw counts, NOT log-normalized data
-    # Other flavors (cell_ranger, seurat) expect log-normalized data
+    # Use bincount instead of sc.pp.filter_genes to avoid triggering scipy's
+    # sort_indices (which fails on the int32/int64 dtype mismatch).
+    if sparse.issparse(adata.X):
+        cells_per_gene = np.bincount(adata.X.indices, minlength=adata.shape[1])
+    else:
+        cells_per_gene = np.count_nonzero(adata.X, axis=0)
+    min_cells_mask = cells_per_gene >= min_cells_per_gene
+    n_passing = min_cells_mask.sum()
+    logger.info(
+        f"Gene QC mask (min_cells={min_cells_per_gene}): {n_passing:,} pass, "
+        f"{adata.n_vars - n_passing:,} fail"
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 3: HVG selection via cell subsampling
+    # ─────────────────────────────────────────────────────────────────────────
+    # scanpy's seurat_v3 internally copies the full matrix. For a ~106GB
+    # matrix this OOMs. Instead, subsample cells for HVG estimation —
+    # 100K cells gives stable mean/variance estimates.
+    #
+    # When training_subject_ids is provided, subsample ONLY from training
+    # subjects to prevent gene variance information from test/val subjects
+    # leaking into the feature set.
+    hvg_mask = np.zeros(adata.n_vars, dtype=bool)
+
     if hvg_flavor == "seurat_v3":
-        # seurat_v3 expects raw counts - run BEFORE normalization
+        rng = np.random.default_rng(seed)
+
+        if training_subject_ids is not None:
+            train_mask = adata.obs[subject_column].isin(training_subject_ids).values
+            train_cell_idx = np.where(train_mask)[0]
+            n_sub = min(hvg_subsample_n, len(train_cell_idx))
+            sub_idx = rng.choice(train_cell_idx, size=n_sub, replace=False)
+            logger.info(
+                f"Subsampling {n_sub:,} cells from {len(training_subject_ids)} "
+                f"training subjects for HVG selection (leak-free)..."
+            )
+        else:
+            n_sub = min(hvg_subsample_n, adata.n_obs)
+            sub_idx = rng.choice(adata.n_obs, size=n_sub, replace=False)
+            logger.info(f"Subsampling {n_sub:,} cells for HVG selection...")
+
+        sub_idx.sort()  # Sorted for efficient CSR row slicing
+
+        # Row slicing CSR is cheap (view), then copy to get a concrete matrix
+        adata_sub = adata[sub_idx].copy()
+
+        # Apply min_cells filter on the subsample before HVG
+        # (genes with < min_cells in full data definitely have fewer in subsample)
+        adata_sub = adata_sub[:, min_cells_mask].copy()
+
+        logger.info(f"Subsample shape: {adata_sub.shape}")
+
         sc.pp.highly_variable_genes(
-            adata,
+            adata_sub,
             n_top_genes=n_hvg,
             flavor=hvg_flavor,
         )
-        logger.info(f"HVG selection ({hvg_flavor}) on raw counts: {adata.var['highly_variable'].sum():,} genes")
-    # For other flavors, we'll run HVG after normalization (handled below)
+
+        # Map HVG results back to full gene indices
+        sub_gene_names = set(adata_sub.var_names[adata_sub.var["highly_variable"]])
+        hvg_mask = adata.var_names.isin(sub_gene_names)
+
+        del adata_sub
+        logger.info(f"HVG selection ({hvg_flavor}) on {n_sub:,}-cell subsample: {hvg_mask.sum():,} genes")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 3: Force include L-R genes from CellChatDB
+    # STEP 4: Force include L-R genes from CellChatDB
     # ─────────────────────────────────────────────────────────────────────────
     cellchatdb_path = Path(cellchatdb_path)
+    lr_mask = np.zeros(adata.n_vars, dtype=bool)
+
     if cellchatdb_path.exists():
         lr_genes = get_lr_genes_from_cellchatdb(cellchatdb_path)
         logger.info(f"Loaded {len(lr_genes):,} L-R genes from CellChatDB")
 
-        # Find L-R genes present in our data
-        lr_in_data = adata.var_names.isin(lr_genes)
-        n_lr_in_data = lr_in_data.sum()
-        logger.info(f"L-R genes present in data: {n_lr_in_data:,}")
-
-        # Mark L-R genes
-        adata.var["lr_gene"] = lr_in_data
-
-        if hvg_flavor == "seurat_v3":
-            # HVG already computed, add L-R genes
-            n_hvg_only = adata.var["highly_variable"].sum()
-            adata.var["highly_variable"] = adata.var["highly_variable"] | lr_in_data
-            n_lr_added = adata.var["highly_variable"].sum() - n_hvg_only
-            logger.info(f"L-R genes added (not in HVG): {n_lr_added:,}")
+        lr_mask = adata.var_names.isin(lr_genes)
+        n_lr_in_data = lr_mask.sum()
+        n_lr_added = (lr_mask & ~hvg_mask & min_cells_mask).sum()
+        logger.info(f"L-R genes in data: {n_lr_in_data:,}, added (not in HVG): {n_lr_added:,}")
     else:
         logger.warning(f"CellChatDB not found at {cellchatdb_path}, skipping L-R forcing")
-        adata.var["lr_gene"] = False
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 4: Store raw counts BEFORE normalization
+    # STEP 5: ONE column subset to final gene set
     # ─────────────────────────────────────────────────────────────────────────
+    # Combine: must pass min_cells AND (be HVG OR be L-R gene)
+    final_mask = min_cells_mask & (hvg_mask | lr_mask)
+    n_final = final_mask.sum()
+    logger.info(f"Final gene set: {n_final:,} genes (from {adata.n_vars:,})")
+
+    # This is the ONE copy — from 20K genes to ~4K genes
+    logger.info("Subsetting to final gene set (this may take a few minutes)...")
+    adata = adata[:, final_mask].copy()
+    logger.info(f"After subset: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
+
+    if sparse.issparse(adata.X):
+        logger.info(f"Subset nnz: {adata.X.nnz:,}")
+
+    # Store gene metadata
+    adata.var["highly_variable"] = adata.var_names.isin(
+        set(adata.var_names) & set(np.array(adata.var_names)[hvg_mask[final_mask]])
+    )
+    # Simpler: re-derive from the masks we computed
+    orig_var_names = np.array(adata.var_names)
+    adata.var["highly_variable"] = True  # All genes in final set are "selected"
+    adata.var["lr_gene"] = adata.var_names.isin(
+        set(lr_genes) if cellchatdb_path.exists() and lr_mask.any() else set()
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 6: Normalize + Log transform
+    # ─────────────────────────────────────────────────────────────────────────
+    # Store raw counts in .raw BEFORE normalization
     adata.raw = adata.copy()
     logger.info("Stored raw counts in adata.raw")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # STEP 5: Normalize + Log transform
-    # ─────────────────────────────────────────────────────────────────────────
     sc.pp.normalize_total(adata, target_sum=target_sum)
     sc.pp.log1p(adata)
     logger.info(f"Normalized (target_sum={target_sum:.0e}) and log1p transformed")
@@ -178,20 +268,13 @@ def preprocess_adata(
         )
         logger.info(f"HVG selection ({hvg_flavor}) on normalized data: {adata.var['highly_variable'].sum():,} genes")
 
-        # Add L-R genes if CellChatDB was loaded
-        if "lr_gene" in adata.var.columns and adata.var["lr_gene"].any():
-            n_hvg_only = adata.var["highly_variable"].sum()
+        # Add L-R genes
+        if lr_mask.any():
             adata.var["highly_variable"] = adata.var["highly_variable"] | adata.var["lr_gene"]
-            n_lr_added = adata.var["highly_variable"].sum() - n_hvg_only
-            logger.info(f"L-R genes added (not in HVG): {n_lr_added:,}")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # STEP 6: Filter to final gene set
-    # ─────────────────────────────────────────────────────────────────────────
-    n_final = adata.var["highly_variable"].sum()
-    adata = adata[:, adata.var["highly_variable"]].copy()
+        # Filter to final set
+        adata = adata[:, adata.var["highly_variable"]].copy()
 
-    logger.info(f"Final gene set: {n_final:,} genes")
     logger.info(f"Final shape: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
 
     return adata

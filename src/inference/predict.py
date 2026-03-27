@@ -400,24 +400,17 @@ class Predictor:
         attended = output_median["attended"]
 
         # Collect posterior samples — head-only, not full model.
-        # AutoDiagonalNormal guide registers individual parameter sites
-        # (e.g., "prediction_head.fc1.weight") via pyro.sample with Delta dists.
+        # AutoDiagonalNormal samples from its variational parameters (loc, scale)
+        # and emits per-site Delta distributions — it does NOT re-run the encoder
+        # or any model component after initial prototype setup.
         # We extract head-specific sites, strip the prefix, and condition the
         # head directly on sampled weights.
-        # Strip extraction flags from guide kwargs — the guide runs the full model
-        # internally to discover sample sites, but we only need head params.
-        # Keeping flags True wastes memory on discarded attention tensors.
-        guide_kwargs = {**model_kwargs}
-        guide_kwargs.update({
-            "return_hgt_attention": False,
-            "return_pma_attention": False,
-            "return_region_attention": False,
-            "return_embeddings": False,
-        })
 
         means = []
         for _ in range(num_samples):
-            guide_trace = pyro.poutine.trace(self.guide).get_trace(**guide_kwargs)
+            # Guide kwargs are unused after prototype initialization, but must
+            # match the model signature for Pyro's trace mechanism.
+            guide_trace = pyro.poutine.trace(self.guide).get_trace(**model_kwargs)
 
             # Extract head parameter values from guide trace, strip module prefix
             head_data = {}

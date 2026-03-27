@@ -6,6 +6,31 @@ Handles:
 - Optimizer and scheduler configuration
 - Metric logging (training and validation)
 - Optional gene gate L1 regularization
+
+Metric logging strategy (Bayesian head):
+    The Bayesian head trains via SVI, optimizing the ELBO (evidence lower bound).
+    The ELBO decomposes as: ELBO = E[log p(y|x,θ)] - KL(q(θ) || p(θ)), where the
+    KL term regularizes the variational posterior q(θ) toward the prior p(θ).
+
+    For model selection (early stopping + checkpointing), we monitor val_loss which
+    is set to the ELBO on the validation set. This ensures the KL term is visible
+    to model selection, preventing a failure mode where the posterior degenerates
+    (collapses or becomes overconfident) while predictive loss looks fine.
+
+    Literature supporting ELBO monitoring:
+    - Lucas et al. (NeurIPS 2019, "Don't Blame the ELBO!") show that with powerful
+      decoders, posterior collapse occurs without affecting reconstruction loss —
+      predictive-only monitoring would miss this.
+    - Lambert et al. (2020, "Objective Mismatch in MBRL") document that training on
+      metric A while selecting on metric B leads to poor model selection.
+    - Pyro core developers (Jankowiak, Pyro forum) recommend ELBO on validation set
+      for model selection, with more particles for evaluation than training.
+    - Seitzer et al. (ICLR 2022) fix training loss pathology (β-NLL) but evaluate
+      on BOTH RMSE and NLL — they do not recommend dropping NLL for validation.
+
+    The predictive Beta-NLL loss is additionally logged as val_nll for diagnostics.
+
+    For the deterministic head, val_loss is simply MSE — no ambiguity.
 """
 
 import logging
@@ -155,21 +180,30 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         Returns a differentiable loss tensor that flows through Lightning's
         standard backward pass, enabling DDP gradient synchronization.
+
+        Runs in float32 regardless of AMP autocast state: Pyro's log_prob()
+        computes std**2 and log(std) which underflow in bf16 when posterior
+        scales are small (e.g. std=1e-6 → std**2=1e-12, below bf16 min ~1e-8).
         """
-        loss = self.elbo.differentiable_loss(
-            self.model,
-            self.guide,
-            region_pseudobulk=batch.get("region_pseudobulk"),
-            region_mask=batch.get("region_mask"),
-            pseudobulk=batch.get("pseudobulk"),
-            edge_index_dict_list=batch.get("edge_index_dict_list"),
-            edge_attr_dict_list=batch.get("edge_attr_dict_list"),
-            cells=batch.get("cells"),
-            cell_mask=batch.get("cell_mask"),
-            cell_type_mask=batch.get("cell_type_mask"),
-            pathology=batch.get("pathology"),
-            cognition=batch.get("cognition"),
-        )
+        # Disable autocast for ELBO: log-probability arithmetic requires float32
+        # precision. Under bf16, small posterior scales cause std**2 underflow
+        # and corrupt KL divergence terms.
+        device_type = "cuda" if batch.get("cognition", torch.tensor(0)).is_cuda else "cpu"
+        with torch.amp.autocast(device_type, enabled=False):
+            loss = self.elbo.differentiable_loss(
+                self.model,
+                self.guide,
+                region_pseudobulk=batch.get("region_pseudobulk"),
+                region_mask=batch.get("region_mask"),
+                pseudobulk=batch.get("pseudobulk"),
+                edge_index_dict_list=batch.get("edge_index_dict_list"),
+                edge_attr_dict_list=batch.get("edge_attr_dict_list"),
+                cells=batch.get("cells"),
+                cell_mask=batch.get("cell_mask"),
+                cell_type_mask=batch.get("cell_type_mask"),
+                pathology=batch.get("pathology"),
+                cognition=batch.get("cognition"),
+            )
         return loss
 
     def _forward_batch_posterior(self, batch: dict[str, Any]) -> dict[str, Any]:
@@ -254,45 +288,89 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 return None
 
         bs = batch["cognition"].shape[0]
+        # For Bayesian head: train_loss = ELBO (the actual optimization target).
+        # For deterministic head: train_loss = MSE.
         self.log("train_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        # Flag last batch for epoch-end NLL computation (avoids per-step overhead).
-        # Store batch_idx; on_train_epoch_end re-runs forward on the last batch
-        # from the dataloader rather than caching the full batch in GPU memory.
+        # Cache last batch on CPU for epoch-end NLL computation (avoids per-step
+        # overhead). Stored on CPU to avoid holding ~7 GB GPU memory for the
+        # entire epoch (B=16 × 31 cell types × 1000 cells × 4000 genes × 4 bytes).
         if self._use_bayesian_svi:
-            self._last_train_batch = batch
+            self._last_train_batch = {
+                k: v.cpu() if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
 
         return loss
 
     def on_train_epoch_end(self) -> None:
         """Compute NLL on last training batch once per epoch (Bayesian only)."""
         if self._use_bayesian_svi and self._last_train_batch is not None:
+            # Move cached batch back to model device for forward pass
+            device = self.device
+            batch_on_device = {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in self._last_train_batch.items()
+            }
             with torch.no_grad():
-                nll_output = self._forward_batch_posterior(self._last_train_batch)
-                nll_loss = self._compute_loss(nll_output, self._last_train_batch["cognition"])
-            bs = self._last_train_batch["cognition"].shape[0]
+                nll_output = self._forward_batch_posterior(batch_on_device)
+                nll_loss = self._compute_loss(nll_output, batch_on_device["cognition"])
+            bs = batch_on_device["cognition"].shape[0]
             self.log("train_loss_nll", nll_loss, sync_dist=True, batch_size=bs)
             self._last_train_batch = None
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
-        """Validation step — accumulates predictions for epoch-level metrics."""
+        """Validation step — accumulates predictions for epoch-level metrics.
+
+        For Bayesian head: val_loss = ELBO (matches training objective, includes KL
+        term for posterior health monitoring). Beta-NLL logged separately as val_nll.
+        For deterministic head: val_loss = MSE.
+        """
         if self._use_bayesian_svi:
             output = self._forward_batch_posterior(batch)
-            # Accumulate ELBO across all val batches for robust monitoring
+            # ELBO on val set — used as val_loss for early stopping/checkpointing.
+            # See module docstring for rationale.
             with torch.no_grad():
                 val_elbo = self._svi_forward(batch)
             self._val_elbos.append(float(val_elbo))
+            # Beta-NLL (predictive quality at posterior median) logged as val_nll
+            nll_loss = self._compute_loss(output, batch["cognition"])
+            bs = batch["cognition"].shape[0]
+            self.log("val_nll", nll_loss, prog_bar=False, sync_dist=True, batch_size=bs)
+            self.log("val_loss", val_elbo, prog_bar=True, sync_dist=True, batch_size=bs)
         else:
             output = self._forward_batch(batch)
-        loss = self._compute_loss(output, batch["cognition"])
-        bs = batch["cognition"].shape[0]
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
+            loss = self._compute_loss(output, batch["cognition"])
+            bs = batch["cognition"].shape[0]
+            self.log("val_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
         # Accumulate predictions for epoch-level correlation metrics
         self._val_means.append(output["mean"].detach())
         self._val_targets.append(batch["cognition"].detach())
         if output.get("std") is not None:
             self._val_stds.append(output["std"].detach())
+
+    def _get_real_dataset_size(self, prefix: str) -> int | None:
+        """Get actual dataset size (before DistributedSampler padding).
+
+        Returns None if the dataset size cannot be determined (e.g., unit tests
+        without a real trainer/datamodule).
+        """
+        try:
+            if prefix == "val":
+                dl = self.trainer.val_dataloaders
+            elif prefix == "test":
+                dl = self.trainer.test_dataloaders
+            else:
+                return None
+            if dl is None:
+                return None
+            # Lightning may return a single DataLoader or a list
+            if isinstance(dl, (list, tuple)):
+                dl = dl[0]
+            return len(dl.dataset)
+        except (RuntimeError, AttributeError):
+            return None
 
     def _gather_and_compute_metrics(
         self,
@@ -330,6 +408,16 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             if all_stds is not None:
                 all_stds = self.all_gather(all_stds).reshape(-1, all_stds.shape[-1])
 
+            # DistributedSampler pads the dataset to make it evenly divisible
+            # across ranks, duplicating some samples. Truncate to the real dataset
+            # size to prevent biased correlation metrics (Pearson r, Spearman, R²).
+            real_n = self._get_real_dataset_size(prefix)
+            if real_n is not None and real_n < all_means.shape[0]:
+                all_means = all_means[:real_n]
+                all_targets = all_targets[:real_n]
+                if all_stds is not None:
+                    all_stds = all_stds[:real_n]
+
         # Compute on rank 0 only to avoid duplicate logs
         if is_global_zero:
             metrics = self.metrics.compute(all_means, all_stds, all_targets)
@@ -343,9 +431,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             self._val_means, self._val_targets, self._val_stds, "val",
         )
 
-        # Log mean ELBO across all validation batches
+        # Log mean ELBO across all validation batches (diagnostic, separate from
+        # the per-step val_loss which is also ELBO for the Bayesian head)
         if self._val_elbos:
-            mean_elbo = sum(self._val_elbos) / len(self._val_elbos)
+            mean_elbo = math.fsum(self._val_elbos) / len(self._val_elbos)
             self.log("val_elbo", mean_elbo, prog_bar=False, sync_dist=True)
 
         # Clear accumulators
@@ -398,6 +487,51 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         if "attention_weights" in output and output["attention_weights"] is not None:
             result["attention_weights"] = output["attention_weights"]
         return result
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        """Pre-initialize Bayesian guide before load_state_dict.
+
+        AutoDiagonalNormal creates loc/scale_unconstrained lazily during the
+        first forward pass (_setup_prototype). On checkpoint resume,
+        load_state_dict(strict=True) runs BEFORE configure_optimizers, so the
+        guide has no parameters yet → 'unexpected keys' error. We prototype
+        the guide here (this hook runs right before load_state_dict) using the
+        same dummy batch approach as configure_optimizers.
+        """
+        if not self._use_bayesian_svi or self.guide is None:
+            return
+
+        # Check if guide already has parameters (shouldn't on fresh module)
+        if getattr(self.guide, 'prototype_trace', None) is not None:
+            return
+
+        state_dict = checkpoint.get("state_dict", {})
+        has_guide_keys = any(k.startswith("guide.") for k in state_dict)
+        if not has_guide_keys:
+            return
+
+        model_cfg = self.config.model
+        dummy_batch = {
+            "region_pseudobulk": torch.zeros(
+                1, N_REGIONS, model_cfg.n_cell_types, model_cfg.n_genes,
+            ),
+            "region_mask": torch.ones(1, N_REGIONS, dtype=torch.bool),
+            "cells": torch.zeros(1, model_cfg.n_cell_types, 1, model_cfg.n_genes),
+            "cell_mask": torch.ones(1, model_cfg.n_cell_types, 1, dtype=torch.bool),
+            "cell_type_mask": torch.ones(1, model_cfg.n_cell_types, dtype=torch.bool),
+            "pathology": torch.zeros(
+                1,
+                model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
+            ),
+            "edge_index_dict_list": [{}],
+            "edge_attr_dict_list": [{}],
+            "cognition": torch.zeros(1, 1),
+        }
+        with torch.no_grad():
+            self._svi_forward(dummy_batch)
+        logger.info(
+            "Guide prototyped in on_load_checkpoint for checkpoint resume"
+        )
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Configure optimizer and learning rate scheduler."""

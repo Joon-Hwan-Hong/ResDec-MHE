@@ -55,6 +55,34 @@ def _derive_available_regions_from_keys(sample: dict[str, Any]) -> list[int]:
     return sorted(regions)
 
 
+def _trim_cells_to_actual_max(
+    cells: torch.Tensor,
+    cell_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Trim cells and cell_mask to the actual max cell count used in the batch.
+
+    After padding to batch max, many trailing columns may be entirely unused
+    (all-False in mask). This trims them to save memory.
+
+    Args:
+        cells: [B, n_cell_types, max_cells, n_genes]
+        cell_mask: [B, n_cell_types, max_cells]
+
+    Returns:
+        Trimmed (cells, cell_mask) — same tensors if no trim needed.
+    """
+    if not cell_mask.any():
+        return cells, cell_mask
+    # Find highest valid cell index across all samples and cell types
+    max_valid = cell_mask.any(dim=0).any(dim=0).long()  # [max_cells] bool
+    if max_valid.any():
+        actual_max = max_valid.nonzero()[-1].item() + 1
+        if actual_max < cell_mask.shape[2]:
+            cells = cells[:, :, :actual_max, :]
+            cell_mask = cell_mask[:, :, :actual_max]
+    return cells, cell_mask
+
+
 def _assemble_region_tensors(
     batch: list[dict[str, Any]],
     batch_size: int,
@@ -192,6 +220,7 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         mask_list.append(m)
     cells = torch.stack(cells_list, dim=0)
     cell_mask = torch.stack(mask_list, dim=0)
+    cells, cell_mask = _trim_cells_to_actual_max(cells, cell_mask)
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -327,19 +356,7 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
         mask_list.append(m)
     cells = torch.stack(cells_list, dim=0)
     cell_mask = torch.stack(mask_list, dim=0)
-
-    # Dynamic padding: trim cells/cell_mask to actual max cell count in batch.
-    # This avoids wasting memory on padding when no sample in the batch uses
-    # the full max_cells_per_type (e.g., 2000 configured but batch max is 300).
-    if cell_mask.any():
-        # cell_mask shape: [B, n_cell_types, max_cells]
-        # Find the highest valid cell index across all samples and cell types
-        max_valid = cell_mask.any(dim=0).any(dim=0).long()  # [max_cells] bool
-        if max_valid.any():
-            actual_max = max_valid.nonzero()[-1].item() + 1
-            if actual_max < cell_mask.shape[2]:
-                cells = cells[:, :, :actual_max, :]
-                cell_mask = cell_mask[:, :, :actual_max]
+    cells, cell_mask = _trim_cells_to_actual_max(cells, cell_mask)
 
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 

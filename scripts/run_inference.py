@@ -291,6 +291,9 @@ def main():
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
+        # Default assumes standard layout: {exp_dir}/checkpoints/best.ckpt
+        # → output to {exp_dir}/analysis/. If checkpoint is at a non-standard
+        # path, use --output-dir explicitly.
         output_dir = checkpoint_path.parent.parent / "analysis"
 
     output_dir.mkdir(parents=True, exist_ok=True)

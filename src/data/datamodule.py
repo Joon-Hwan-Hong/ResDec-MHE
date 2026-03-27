@@ -205,7 +205,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             multiregion=True,
             use_hgt_format=True,
             prefetch_factor=self._dl_cfg.get("prefetch_factor", 2),
-            worker_init_fn=_deterministic_worker_init_fn,
+            worker_init_fn=self._make_deterministic_worker_init_fn(),
         )
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
@@ -219,7 +219,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             multiregion=True,
             use_hgt_format=True,
             prefetch_factor=self._dl_cfg.get("prefetch_factor", 2),
-            worker_init_fn=_deterministic_worker_init_fn,
+            worker_init_fn=self._make_deterministic_worker_init_fn(),
         )
 
     def _make_worker_init_fn(self):
@@ -231,6 +231,11 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
 
         This factory incorporates global_rank so each rank's workers get
         unique seeds: global_seed + global_rank * max_workers + worker_id.
+
+        With persistent_workers=True, this init runs once at DataLoader creation.
+        CellSampler RNGs advance naturally across epochs, providing different cell
+        samples each epoch (data augmentation). The sampling sequence is reproducible
+        only when num_workers, batch_size, and DDP world_size are held constant.
         """
         global_rank = self.trainer.global_rank if self.trainer is not None else 0
         max_workers = max(self._dl_cfg.get("num_workers", 4), 1)
@@ -250,3 +255,26 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 dataset.sampler.rng = np.random.default_rng(worker_seed)
 
         return _rank_aware_worker_init_fn
+
+    def _make_deterministic_worker_init_fn(self):
+        """Create a deterministic worker init function for val/test DataLoaders.
+
+        Uses experiment seed (not hardcoded 42) for consistency with the rest
+        of the reproducibility pipeline. Val/test workers get the same seed
+        every epoch so evaluation is reproducible within and across runs.
+        """
+        global_seed = self.config.experiment.get("seed", 42)
+
+        def _det_worker_init_fn(worker_id: int) -> None:
+            import random
+
+            seed = global_seed + worker_id
+            np.random.seed(seed)
+            random.seed(seed)
+
+            worker_info = torch.utils.data.get_worker_info()
+            dataset = worker_info.dataset
+            if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
+                dataset.sampler.rng = np.random.default_rng(seed)
+
+        return _det_worker_init_fn

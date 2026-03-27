@@ -384,7 +384,22 @@ class ResilienceModelCheckpoint(pl.Callback):
         pl_module: pl.LightningModule,
         checkpoint: dict,
     ) -> None:
-        """Restore RNG states and Pyro state from checkpoint."""
+        """Restore RNG states and Pyro state from checkpoint.
+
+        Checkpoint resume limitations (not bit-reproducible):
+        - RNG states are restored here but may drift before training resumes
+          due to Lightning's internal operations (device moves, sampler creation).
+        - DataLoader position within the interrupted epoch is not saved —
+          the epoch restarts from the beginning on resume.
+        - CellSampler per-worker RNG states (with persistent_workers=True) are
+          not accessible from the main process and cannot be checkpointed. On
+          resume, workers re-initialize from the fixed seed rather than continuing
+          from their advanced state. This only affects CognitiveResilienceDataset
+          (on-the-fly mode); PrecomputedDataset has no CellSampler.
+
+        Result: resumed training converges to the same quality but the exact
+        gradient trajectory differs from an uninterrupted run.
+        """
         # Restore RNG states (optional — legacy checkpoints may not have them)
         rng_states = checkpoint.get("rng_states")
         if rng_states is None:

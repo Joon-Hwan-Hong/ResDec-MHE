@@ -94,10 +94,12 @@ class RegionHandler(nn.Module):
         raw_weights = self.region_weights.unsqueeze(0).expand(B, -1)  # [B, R]
         masked_logits = raw_weights.masked_fill(~region_mask_bool, float('-inf'))
         # Handle all-masked edge case (shouldn't happen, but guard anyway):
-        # Replace -inf rows with 0 so softmax doesn't produce NaN, then zero out after
+        # Replace -inf rows with -1e9 so softmax produces near-zero uniform weights
+        # instead of NaN, then zero out after. Uses -1e9 (not 0.0) to match the
+        # masking convention in PathologyStratifiedAttention.
         all_masked = ~region_mask_bool.any(dim=1, keepdim=True)  # [B, 1]
         if all_masked.any():
-            masked_logits = masked_logits.masked_fill(all_masked.expand_as(masked_logits), 0.0)
+            masked_logits = masked_logits.masked_fill(all_masked.expand_as(masked_logits), -1e9)
         # AMP note: region_weights is an nn.Parameter (always float32, not
         # autocasted), and masked_logits inherits float32 from it. With only
         # R=4-6 elements, this softmax is numerically safe in float32.

@@ -35,7 +35,7 @@ Usage:
         --n-jobs 4
 
 Requirements:
-    pip install liana  (already installed: v1.7.1)
+    uv pip install liana  (already installed: v1.7.1)
 
 LIANA+ reference:
     Dimitrov et al., Nature Cell Biology (2024)
@@ -156,6 +156,11 @@ def main():
         help="Random seed (default: 42)",
     )
     parser.add_argument(
+        "--adata", type=str, default=None,
+        help="Path to AnnData .h5ad file (overrides config adata_path). "
+             "Use this to point to a preprocessed AnnData.",
+    )
+    parser.add_argument(
         "--overwrite", action="store_true",
         help="Re-run subjects that already have cached results",
     )
@@ -170,7 +175,7 @@ def main():
     cell_type_col = data_cfg.get("cell_type_column", "supercluster_name")
 
     # Load AnnData
-    adata_path = data_cfg.adata_path
+    adata_path = args.adata or data_cfg.adata_path
     logger.info("Loading AnnData from %s ...", adata_path)
     t0 = time.time()
 

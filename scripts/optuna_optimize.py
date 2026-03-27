@@ -325,6 +325,8 @@ def objective(
         )
         trainer.fit(module, datamodule=dm)
 
+        # val_loss = ELBO for Bayesian head, MSE for deterministic head
+        # (see lightning_module.py docstring for rationale)
         val_loss = trainer.callback_metrics.get("val_loss")
         if val_loss is not None:
             fold_val_losses.append(val_loss.item())

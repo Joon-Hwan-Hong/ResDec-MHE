@@ -8,12 +8,15 @@ Implements HGT (Hu et al., 2020) with extensions for:
 - Attention weight extraction (for interpretability)
 """
 
+import logging
 from typing import Optional
 
 import torch
 import torch.nn as nn
 
 from src.data.constants import sanitize_key, EPSILON_SOFTMAX
+
+logger = logging.getLogger(__name__)
 
 # Verify PyTorch version for scatter_reduce_ support
 _torch_version = tuple(int(x) for x in torch.__version__.split('.')[:2])
@@ -327,6 +330,18 @@ class HGTConvWithEdgeAttr(nn.Module):
                 attn_scores, dst_idx, num_nodes=x_dst.size(0)
             )  # [n_edges, heads]
 
+            # Catch upstream corruption early: NaN attention weights silently
+            # poison all downstream message passing and accumulation.
+            # Uses logger.warning (not raise) because NaN inputs legitimately
+            # produce NaN attention — the training loop's NaN loss detection
+            # (lightning_module.py:274) handles the actual fail/skip decision.
+            if torch.isnan(attn_weights).any():
+                logger.warning(
+                    "NaN detected in HGT attention weights for edge type %s. "
+                    "Check edge_lin initialization and edge attribute magnitudes.",
+                    edge_type,
+                )
+
             attn_weights = self.dropout(attn_weights)
 
             if return_attention:
@@ -364,6 +379,12 @@ class HGTConvWithEdgeAttr(nn.Module):
             # this matches the standard HGT formulation (Hu et al., 2020) where
             # well-connected nodes receive proportionally larger aggregates.
             # LayerScale + residual connections regulate magnitude across layers.
+            #
+            # Note: scatter_add uses atomicAdd on CUDA, which is non-deterministic
+            # (floating-point addition order depends on hardware scheduling).
+            # This means two identical GPU runs may differ by ~O(1e-6) per step.
+            # On CPU, scatter ops are deterministic. See reproducibility.py for
+            # the warn_only=True setting that permits this.
             out_dict[dst_type] = out_dict[dst_type].scatter_add(
                 0,
                 dst_idx.unsqueeze(-1).expand(-1, self.out_channels),

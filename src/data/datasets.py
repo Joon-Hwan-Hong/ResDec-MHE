@@ -187,6 +187,18 @@ class CognitiveResilienceDataset(Dataset):
             sid: np.array(idxs, dtype=np.int64) for sid, idxs in indices_by_subject.items()
         }
 
+        # Warn if using on-the-fly dataset with large AnnData — PrecomputedDataset
+        # is the recommended path for training at scale.
+        if adata.n_obs > 1_000_000:
+            warnings.warn(
+                f"CognitiveResilienceDataset initialized with {adata.n_obs:,} cells. "
+                f"With num_workers > 0, each DataLoader worker forks the full AnnData "
+                f"object (~{adata.n_obs * adata.n_vars * 4 / 1e9:.1f} GB if dense). "
+                f"Use PrecomputedDataset with precomputed .npz files for training at scale.",
+                UserWarning,
+                stacklevel=2,
+            )
+
     def _validate_subjects(self):
         """Validate that all subject IDs exist in data and have valid targets/pathology."""
         adata_subjects = set(self.adata.obs[self.subject_column].unique())
@@ -762,14 +774,21 @@ def save_precomputed_features(
     dataset: CognitiveResilienceDataset,
     output_dir: str | Path,
     verbose: bool = True,
+    skip_subjects: set[str] | None = None,
 ) -> None:
     """
     Save precomputed features to disk for faster loading.
+
+    Note: pathology and cognition values are NOT saved in .npz files — they
+    are read from metadata at training time by PrecomputedDataset. This allows
+    updating targets (e.g., different cognition measures) without re-precomputing
+    the expensive cell-level features.
 
     Args:
         dataset: CognitiveResilienceDataset to precompute
         output_dir: Directory to save .npz files
         verbose: Print progress
+        skip_subjects: Subject IDs to skip (already precomputed)
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -779,9 +798,14 @@ def save_precomputed_features(
     if gene_names is not None:
         np.save(output_dir / "gene_names.npy", np.array(gene_names, dtype=object))
 
+    n_skipped = 0
     for i in range(len(dataset)):
         sample = dataset[i]
         subject_id = sample["subject_id"]
+
+        if skip_subjects and subject_id in skip_subjects:
+            n_skipped += 1
+            continue
 
         output_file = output_dir / f"{subject_id}.npz"
 
@@ -813,8 +837,10 @@ def save_precomputed_features(
 
         np.savez_compressed(output_file, **save_data)
 
-        if verbose and (i + 1) % 50 == 0:
-            print(f"Saved {i + 1}/{len(dataset)} subjects")
+        if verbose and (i + 1 - n_skipped) % 50 == 0:
+            print(f"Saved {i + 1 - n_skipped}/{len(dataset) - n_skipped} subjects")
 
+    n_saved = len(dataset) - n_skipped
     if verbose:
-        print(f"Saved all {len(dataset)} subjects to {output_dir}")
+        print(f"Saved {n_saved} subjects to {output_dir}" +
+              (f" (skipped {n_skipped} existing)" if n_skipped else ""))

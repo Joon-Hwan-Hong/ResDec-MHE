@@ -88,7 +88,7 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
     Create training callbacks from config.
 
     Returns list of:
-    - ModelCheckpoint: save best model by val_loss
+    - ModelCheckpoint: save best model by val_loss (ELBO for Bayesian, MSE for deterministic)
     - EarlyStopping: stop unpromising runs
     - LearningRateMonitor: log LR to TensorBoard
     - TemperatureAnnealing: anneal gene gate temperature
@@ -289,7 +289,9 @@ def main() -> None:
         type=str,
         default=None,
         help="Path to checkpoint to resume training from (e.g., outputs/.../last.ckpt). "
-             "Restores model weights, optimizer state, epoch, and scheduler state.",
+             "Restores model weights, optimizer state, epoch, scheduler state, and "
+             "global RNG states. Note: not bit-reproducible vs uninterrupted run "
+             "(DataLoader position and per-worker CellSampler RNG not restored).",
     )
     parser.add_argument(
         "overrides",
