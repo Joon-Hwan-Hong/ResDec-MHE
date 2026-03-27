@@ -29,6 +29,7 @@ def save_attention_weights(
     gene_names: list[str] | None = None,
     region_names: list[str] | None = None,
     embeddings: dict[str, np.ndarray] | None = None,
+    fusion_proj_weight: np.ndarray | None = None,
     metadata: dict | None = None,
     compression: str = "gzip",
     compression_opts: int = 4,
@@ -54,6 +55,7 @@ def save_attention_weights(
                        [n_subjects][n_cell_types][barcodes]
         cell_counts: Cell counts per cell type [n_subjects, n_cell_types]
         embeddings: Dict of embeddings {name: array} (e.g., pseudobulk, hgt, cell, fused, attended)
+        fusion_proj_weight: Fusion layer projection weight [d_fused, d_embed + d_cell_emb]
         subject_ids: Subject identifier strings
         cell_type_names: Cell type name strings
         gene_names: Gene name strings
@@ -258,6 +260,12 @@ def save_attention_weights(
                     ds.attrs["shape"] = "[n_subjects, n_cell_types, d_embed]"
                 elif emb_array.ndim == 2:
                     ds.attrs["shape"] = "[n_subjects, d_embed]"
+
+        # --- Fusion projection weight ---
+        if fusion_proj_weight is not None:
+            ds = f.create_dataset("fusion_proj_weight", data=fusion_proj_weight,
+                                  compression=compression, compression_opts=compression_opts)
+            ds.attrs["shape"] = "[d_fused, d_embed + d_cell_emb]"
 
         # --- File-level metadata attributes ---
         if metadata:

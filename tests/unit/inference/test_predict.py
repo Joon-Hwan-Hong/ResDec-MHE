@@ -98,7 +98,6 @@ def mock_model():
         if kwargs.get("return_embeddings"):
             d_embed = 128
             output["embeddings"] = {
-                "pseudobulk": torch.randn(batch_size, N_CELL_TYPES, d_embed),
                 "hgt": torch.randn(batch_size, N_CELL_TYPES, d_embed),
                 "cell": torch.randn(batch_size, N_CELL_TYPES, d_embed),
                 "fused": torch.randn(batch_size, N_CELL_TYPES, d_embed),
@@ -111,11 +110,9 @@ def mock_model():
     model.eval.return_value = model
     model.to.return_value = model
 
-    # Mock gene gate weights
-    model.pseudobulk_encoder.gene_gate.get_gate_weights.return_value = torch.rand(N_CELL_TYPES, 100)
-
-    # Mock cell type selection weights
-    model.cell_transformer.get_selection_weights.return_value = torch.rand(N_CELL_TYPES)
+    # Mock gene gate weights (2-branch architecture: HGT gate + CT gate)
+    model.hgt_gene_gate.get_gate_weights.return_value = torch.rand(N_CELL_TYPES, 100)
+    model.cell_transformer.gene_gate.get_gate_weights.return_value = torch.rand(N_CELL_TYPES, 100)
 
     return model
 
@@ -161,7 +158,8 @@ class TestPredictionResultDataclass:
         """All expected fields are present in PredictionResult."""
         expected_fields = {
             "subject_ids", "mean", "std", "actual", "pathology",
-            "attention_weights", "gene_gate_weights", "cell_type_selection",
+            "attention_weights", "gene_gate_weights",
+            "hgt_gene_gate_weights", "ct_gene_gate_weights",
             "hgt_attention", "pma_attention", "region_weights",
             "region_pseudobulk_mean", "per_subject_pseudobulk",
             "region_attention", "cell_barcodes",
@@ -336,7 +334,6 @@ class TestPredictor:
             n_inducing_points=model_cfg.set_transformer.n_inducing_points,
             n_attention_heads=model_cfg.pathology_attention.n_heads,
             gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
-            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
             use_bayesian_head=(model_cfg.head.type == "bayesian"),
             d_head_hidden=model_cfg.head.d_hidden,
             dropout=model_cfg.get("dropout", 0.1),
@@ -380,7 +377,6 @@ class TestFromCheckpointConfigRecovery:
             n_inducing_points=model_cfg.set_transformer.n_inducing_points,
             n_attention_heads=model_cfg.pathology_attention.n_heads,
             gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
-            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
             use_bayesian_head=(model_cfg.head.type == "bayesian"),
             d_head_hidden=model_cfg.head.d_hidden,
             dropout=model_cfg.get("dropout", 0.1),
@@ -426,7 +422,6 @@ class TestFromCheckpointConfigRecovery:
             n_inducing_points=model_cfg.set_transformer.n_inducing_points,
             n_attention_heads=model_cfg.pathology_attention.n_heads,
             gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
-            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
             use_bayesian_head=(model_cfg.head.type == "bayesian"),
             d_head_hidden=model_cfg.head.d_hidden,
             dropout=model_cfg.get("dropout", 0.1),
@@ -477,7 +472,6 @@ class TestFromCheckpointBayesianDeviceMigration:
             n_inducing_points=model_cfg.set_transformer.n_inducing_points,
             n_attention_heads=model_cfg.pathology_attention.n_heads,
             gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
-            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
             use_bayesian_head=(model_cfg.head.type == "bayesian"),
             d_head_hidden=model_cfg.head.d_hidden,
             dropout=model_cfg.get("dropout", 0.1),
@@ -495,8 +489,8 @@ class TestFromCheckpointBayesianDeviceMigration:
         dummy_kwargs = {
             "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
             "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
-            "cells": torch.zeros(1, n_ct, 1, n_genes),
-            "cell_mask": torch.ones(1, n_ct, 1, dtype=torch.bool),
+            "cell_data": torch.zeros(0, n_genes),
+            "cell_offsets": torch.zeros(1, n_ct + 1, dtype=torch.long),
             "pathology": torch.zeros(1, 3),
             "cognition": torch.zeros(1, 1),
         }
@@ -574,7 +568,6 @@ class TestFromCheckpointBayesianDeviceMigration:
             n_attention_heads=model_cfg.pathology_attention.n_heads,
             n_pathology_features=model_cfg.pathology_attention.n_pathology_features,
             gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
-            selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
             use_bayesian_head=True,
             d_head_hidden=model_cfg.head.d_hidden,
             dropout=model_cfg.get("dropout", 0.1),
@@ -591,8 +584,8 @@ class TestFromCheckpointBayesianDeviceMigration:
         dummy_kwargs = {
             "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
             "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
-            "cells": torch.zeros(1, n_ct, 1, n_genes),
-            "cell_mask": torch.ones(1, n_ct, 1, dtype=torch.bool),
+            "cell_data": torch.zeros(0, n_genes),
+            "cell_offsets": torch.zeros(1, n_ct + 1, dtype=torch.long),
             "pathology": torch.zeros(1, 5),  # 5 pathology features
             "cognition": torch.zeros(1, 1),
         }
@@ -924,9 +917,9 @@ class TestEmbeddingPipeline:
 
         result = predictor.predict_batch(batch, extract_embeddings=True)
         assert "embeddings" in result
-        assert set(result["embeddings"].keys()) == {"pseudobulk", "hgt", "cell", "fused", "attended"}
+        assert set(result["embeddings"].keys()) == {"hgt", "cell", "fused", "attended"}
         # 3D branch embeddings
-        assert result["embeddings"]["pseudobulk"].shape == (3, N_CELL_TYPES, 128)
+        assert result["embeddings"]["hgt"].shape == (3, N_CELL_TYPES, 128)
         # 2D attended embedding
         assert result["embeddings"]["attended"].shape == (3, 128)
 
@@ -961,7 +954,7 @@ class TestEmbeddingPipeline:
             [batch1, batch2], extract_embeddings=True, show_progress=False,
         )
         assert result.embeddings is not None
-        assert result.embeddings["pseudobulk"].shape[0] == 5  # 2 + 3
+        assert result.embeddings["hgt"].shape[0] == 5  # 2 + 3
         assert result.embeddings["attended"].shape[0] == 5
 
     def test_predict_embeddings_none_by_default(self, mock_model, mock_config):
@@ -986,7 +979,6 @@ class TestEmbeddingsHDF5Roundtrip:
         from src.utils.io import save_attention_weights, load_attention_weights
 
         embeddings = {
-            "pseudobulk": np.random.rand(10, N_CELL_TYPES, 128).astype(np.float32),
             "hgt": np.random.rand(10, N_CELL_TYPES, 128).astype(np.float32),
             "cell": np.random.rand(10, N_CELL_TYPES, 128).astype(np.float32),
             "fused": np.random.rand(10, N_CELL_TYPES, 128).astype(np.float32),
@@ -999,7 +991,7 @@ class TestEmbeddingsHDF5Roundtrip:
             loaded = load_attention_weights(path)
 
         assert "embeddings" in loaded
-        for name in ["pseudobulk", "hgt", "cell", "fused", "attended"]:
+        for name in ["hgt", "cell", "fused", "attended"]:
             np.testing.assert_array_almost_equal(
                 loaded["embeddings"][name], embeddings[name]
             )
@@ -1027,11 +1019,11 @@ class TestEmbeddingsHDF5Roundtrip:
 # ============================================================================
 
 
-class TestCellTypeSelection:
-    """Tests for cell_type_selection extraction and persistence."""
+class TestDualGeneGates:
+    """Tests for dual gene gate weight extraction (HGT + CellTransformer)."""
 
-    def test_cell_type_selection_in_prediction_result(self, mock_model, mock_config):
-        """predict() populates cell_type_selection with correct shape."""
+    def test_dual_gene_gates_in_prediction_result(self, mock_model, mock_config):
+        """predict() populates both hgt and ct gene gate weights."""
         predictor = Predictor(mock_model, config=mock_config, device="cpu")
 
         batch = {
@@ -1042,24 +1034,12 @@ class TestCellTypeSelection:
         dataloader = [batch]
 
         result = predictor.predict(dataloader, show_progress=False)
-        assert result.cell_type_selection is not None
-        assert result.cell_type_selection.shape == (N_CELL_TYPES,)
-
-    def test_cell_type_selection_persisted_hdf5(self):
-        """cell_type_selection survives HDF5 save/load roundtrip."""
-        from src.utils.io import save_attention_weights, load_attention_weights
-
-        selection = np.random.rand(N_CELL_TYPES).astype(np.float32)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "attn.h5"
-            save_attention_weights(path, cell_type_selection=selection)
-            loaded = load_attention_weights(path)
-
-        assert "cell_type_selection" in loaded
-        np.testing.assert_array_almost_equal(
-            loaded["cell_type_selection"], selection
-        )
+        assert result.hgt_gene_gate_weights is not None
+        assert result.ct_gene_gate_weights is not None
+        assert result.hgt_gene_gate_weights.shape == (N_CELL_TYPES, 100)
+        assert result.ct_gene_gate_weights.shape == (N_CELL_TYPES, 100)
+        # Legacy field should match HGT gate
+        np.testing.assert_array_equal(result.gene_gate_weights, result.hgt_gene_gate_weights)
 
 
 # ============================================================================
@@ -1112,20 +1092,33 @@ class TestCellCounts:
         predictor = Predictor(mock_model, config=mock_config, device="cpu")
 
         # Create batch with cell_mask: [B, n_cell_types, max_cells]
-        max_cells = 50
-        cell_mask = torch.zeros(3, N_CELL_TYPES, max_cells, dtype=torch.bool)
+        # Build cell_offsets for 3 subjects
         # Subject 0: 10 cells in type 0, 5 in type 1
-        cell_mask[0, 0, :10] = True
-        cell_mask[0, 1, :5] = True
         # Subject 1: 20 cells in type 0
-        cell_mask[1, 0, :20] = True
         # Subject 2: all zeros
+        B = 3
+        cell_offsets = torch.zeros(B, N_CELL_TYPES + 1, dtype=torch.long)
+        # Subject 0
+        cell_offsets[0, 1] = 10
+        cell_offsets[0, 2] = 15
+        for ct in range(2, N_CELL_TYPES):
+            cell_offsets[0, ct + 1] = 15
+        # Subject 1 (starts at 15)
+        cell_offsets[1, :] = 15
+        cell_offsets[1, 1] = 35  # 20 cells in type 0
+        for ct in range(1, N_CELL_TYPES):
+            cell_offsets[1, ct + 1] = 35
+        # Subject 2 (starts at 35)
+        cell_offsets[2, :] = 35
+
+        cell_data = torch.randn(35, 100)
 
         batch = {
             "pseudobulk": torch.randn(3, N_CELL_TYPES, 100),
             "subject_ids": ["a", "b", "c"],
             "pathology": torch.rand(3, 3),
-            "cell_mask": cell_mask,
+            "cell_offsets": cell_offsets,
+            "cell_data": cell_data,
         }
 
         result = predictor.predict([batch], show_progress=False)
@@ -1136,8 +1129,8 @@ class TestCellCounts:
         assert result.cell_counts[1, 0] == 20
         assert result.cell_counts[2, 0] == 0
 
-    def test_cell_counts_none_without_cell_mask(self, mock_model, mock_config):
-        """predict() returns cell_counts=None when no cell_mask in batch."""
+    def test_cell_counts_none_without_cell_offsets(self, mock_model, mock_config):
+        """predict() returns cell_counts=None when no cell_offsets in batch."""
         predictor = Predictor(mock_model, config=mock_config, device="cpu")
 
         batch = {
@@ -1170,17 +1163,21 @@ class TestCellCounts:
 
 
 class TestCellCountsFromBatch:
-    """Tests that predict() prefers batch['cell_counts'] over deriving from cell_mask."""
+    """Tests that predict() prefers batch['cell_counts'] over deriving from cell_offsets."""
 
-    def test_prefers_batch_cell_counts_over_cell_mask(self, mock_model, mock_config):
-        """When both cell_counts and cell_mask are present, cell_counts is used."""
+    def test_prefers_batch_cell_counts_over_cell_offsets(self, mock_model, mock_config):
+        """When both cell_counts and cell_offsets are present, cell_counts is used."""
         predictor = Predictor(mock_model, config=mock_config, device="cpu")
 
-        max_cells = 50
-        # cell_mask says 10 cells for type 0 (clipped)
-        cell_mask = torch.zeros(2, N_CELL_TYPES, max_cells, dtype=torch.bool)
-        cell_mask[0, 0, :10] = True
-        cell_mask[1, 0, :10] = True
+        # cell_offsets says 10 cells for type 0 (clipped)
+        cell_offsets = torch.zeros(2, N_CELL_TYPES + 1, dtype=torch.long)
+        cell_offsets[0, 1] = 10
+        for ct in range(1, N_CELL_TYPES):
+            cell_offsets[0, ct + 1] = 10
+        cell_offsets[1, :] = 10
+        cell_offsets[1, 1] = 20
+        for ct in range(1, N_CELL_TYPES):
+            cell_offsets[1, ct + 1] = 20
 
         # But true cell_counts say 200 cells (pre-clipping)
         true_counts = torch.zeros(2, N_CELL_TYPES, dtype=torch.long)
@@ -1191,29 +1188,33 @@ class TestCellCountsFromBatch:
             "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
             "subject_ids": ["a", "b"],
             "pathology": torch.rand(2, 3),
-            "cell_mask": cell_mask,
+            "cell_offsets": cell_offsets,
+            "cell_data": torch.randn(20, 100),
             "cell_counts": true_counts,
         }
 
         result = predictor.predict([batch], show_progress=False)
         assert result.cell_counts is not None
-        # Should use true counts, not clipped cell_mask counts
+        # Should use true counts, not clipped cell_offsets counts
         assert result.cell_counts[0, 0] == 200
         assert result.cell_counts[1, 0] == 150
 
-    def test_falls_back_to_cell_mask_when_no_cell_counts(self, mock_model, mock_config):
-        """When cell_counts is absent but cell_mask is present, derives from mask."""
+    def test_falls_back_to_cell_offsets_when_no_cell_counts(self, mock_model, mock_config):
+        """When cell_counts is absent but cell_offsets is present, derives from offsets."""
         predictor = Predictor(mock_model, config=mock_config, device="cpu")
 
-        max_cells = 50
-        cell_mask = torch.zeros(2, N_CELL_TYPES, max_cells, dtype=torch.bool)
-        cell_mask[0, 0, :10] = True
+        cell_offsets = torch.zeros(2, N_CELL_TYPES + 1, dtype=torch.long)
+        cell_offsets[0, 1] = 10
+        for ct in range(1, N_CELL_TYPES):
+            cell_offsets[0, ct + 1] = 10
+        cell_offsets[1, :] = 10
 
         batch = {
             "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
             "subject_ids": ["a", "b"],
             "pathology": torch.rand(2, 3),
-            "cell_mask": cell_mask,
+            "cell_offsets": cell_offsets,
+            "cell_data": torch.randn(10, 100),
         }
 
         result = predictor.predict([batch], show_progress=False)

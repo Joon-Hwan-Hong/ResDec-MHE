@@ -433,7 +433,6 @@ class TestIntegrationWithFullModel:
 
     def test_region_weights_in_full_model_training(self):
         """Region weights should update during full model training."""
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
         from src.models.components.region_handler import RegionHandler
 
         torch.manual_seed(42)
@@ -444,11 +443,8 @@ class TestIntegrationWithFullModel:
         d_embed = 32
         n_regions = N_REGIONS
 
-        encoder = PseudobulkEncoder(
-            n_cell_types=n_cell_types,
-            n_genes=n_genes,
-            d_embed=d_embed,
-        )
+        # Simple linear projection (replaces former PseudobulkEncoder)
+        encoder = nn.Linear(n_genes, d_embed)
         region_handler = RegionHandler(d_model=d_embed, n_regions=n_regions)
 
         # Combine into module for unified optimizer
@@ -458,9 +454,9 @@ class TestIntegrationWithFullModel:
                 self.encoder = enc
                 self.region_handler = rh
 
-            def forward(self, region_pseudobulk, region_mask):
-                B, R, C, G = region_pseudobulk.shape
-                encoded = self.encoder(region_pseudobulk.view(B * R, C, G))
+            def forward(self, region_input, region_mask):
+                B, R, C, G = region_input.shape
+                encoded = self.encoder(region_input.view(B * R * C, G))
                 encoded = encoded.view(B, R, C, -1)
                 return self.region_handler(encoded, region_mask)
 
@@ -471,9 +467,9 @@ class TestIntegrationWithFullModel:
         initial_weights = region_handler.get_region_weights().detach().clone()
 
         # Training data - different regions have different expression patterns
-        region_pseudobulk = torch.randn(4, n_regions, n_cell_types, n_genes)
+        region_input = torch.randn(4, n_regions, n_cell_types, n_genes)
         # Make region 0 have a distinct pattern
-        region_pseudobulk[:, 0, :, :] = region_pseudobulk[:, 0, :, :].abs() * 2
+        region_input[:, 0, :, :] = region_input[:, 0, :, :].abs() * 2
 
         region_mask = torch.ones(4, n_regions, dtype=torch.bool)
         target = torch.randn(4, n_cell_types, d_embed)
@@ -481,7 +477,7 @@ class TestIntegrationWithFullModel:
         # Train
         for _ in range(20):
             optimizer.zero_grad()
-            pooled, _, _ = model(region_pseudobulk, region_mask)
+            pooled, _, _ = model(region_input, region_mask)
             loss = ((pooled - target) ** 2).mean()
             loss.backward()
             optimizer.step()
@@ -565,26 +561,22 @@ class TestIntegrationWithFullModel:
 
     def test_full_model_gradient_flow_to_region_weights(self):
         """Gradients should flow from final loss through full model to region weights."""
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
         from src.models.components.region_handler import RegionHandler
 
         n_genes = 50
         n_cell_types = N_CELL_TYPES
         d_embed = 32
 
-        encoder = PseudobulkEncoder(
-            n_cell_types=n_cell_types,
-            n_genes=n_genes,
-            d_embed=d_embed,
-        )
+        # Simple linear projection (replaces former PseudobulkEncoder)
+        encoder = nn.Linear(n_genes, d_embed)
         region_handler = RegionHandler(d_model=d_embed, n_regions=N_REGIONS)
 
         # Forward pass
-        region_pseudobulk = torch.randn(2, N_REGIONS, n_cell_types, n_genes)
+        region_input = torch.randn(2, N_REGIONS, n_cell_types, n_genes)
         region_mask = torch.ones(2, N_REGIONS, dtype=torch.bool)
 
-        B, R, C, G = region_pseudobulk.shape
-        encoded = encoder(region_pseudobulk.view(B * R, C, G))
+        B, R, C, G = region_input.shape
+        encoded = encoder(region_input.view(B * R * C, G))
         encoded = encoded.view(B, R, C, -1)
         pooled, region_context, _ = region_handler(encoded, region_mask)
 

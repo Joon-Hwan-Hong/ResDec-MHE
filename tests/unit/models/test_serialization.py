@@ -39,9 +39,16 @@ def sample_inputs(make_edge_tensors):
     n_regions = N_REGIONS
     n_cell_types = N_CELL_TYPES
     n_genes = 50
-    max_cells = 10
+    n_cells_per_type = 10
 
     ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B)
+
+    # Flat cell format
+    cells_per_sample = n_cell_types * n_cells_per_type
+    total_cells = B * cells_per_sample
+    cell_data = torch.randn(total_cells, n_genes)
+    offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+    cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
@@ -49,8 +56,8 @@ def sample_inputs(make_edge_tensors):
         'ccc_edge_index': ccc_edge_index,
         'ccc_edge_type': ccc_edge_type,
         'ccc_edge_attr': ccc_edge_attr,
-        'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-        'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+        'cell_data': cell_data,
+        'cell_offsets': cell_offsets,
         'pathology': torch.randn(B, 3),
         'cognition': torch.randn(B, 1),
     }
@@ -103,7 +110,8 @@ class TestModelStateDictKeys:
 
         # Verify all major components have state
         expected_prefixes = {
-            'pseudobulk_encoder',
+            'hgt_gene_gate',
+            'hgt_input_proj',
             'region_handler',
             'hgt_encoder',
             'cell_transformer',
@@ -136,7 +144,8 @@ class TestModelStateDictKeys:
 
         # All keys should start with known prefixes
         known_prefixes = {
-            'pseudobulk_encoder',
+            'hgt_gene_gate',
+            'hgt_input_proj',
             'region_handler',
             'hgt_encoder',
             'cell_transformer',
@@ -464,15 +473,20 @@ class TestCellTransformerSerialization:
 
         ct = CellTransformer(n_genes=50, n_cell_types=N_CELL_TYPES, d_model=64, n_heads=4, n_isab_layers=1, n_inducing=16, n_pma_seeds=1)
         ct.eval()
-        x = torch.randn(2, N_CELL_TYPES, 10, 50)
-        mask = torch.ones(2, N_CELL_TYPES, 10, dtype=torch.bool)
-        out1 = ct(x, mask)[0]
+        B = 2
+        n_cells_per_type = 10
+        cells_per_sample = N_CELL_TYPES * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, 50)
+        offsets_one = torch.arange(0, (N_CELL_TYPES + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
+        out1 = ct(cell_data, cell_offsets)[0]
         # Save and reload
         state = ct.state_dict()
         ct2 = CellTransformer(n_genes=50, n_cell_types=N_CELL_TYPES, d_model=64, n_heads=4, n_isab_layers=1, n_inducing=16, n_pma_seeds=1)
         ct2.load_state_dict(state)
         ct2.eval()
-        out2 = ct2(x, mask)[0]
+        out2 = ct2(cell_data, cell_offsets)[0]
         assert torch.allclose(out1, out2)
 
 
@@ -979,14 +993,13 @@ class TestLoadedModelSameOutput:
         try:
             torch.save(layer1.state_dict(), temp_path)
 
-            # Create inputs
-            pb = torch.randn(4, N_CELL_TYPES, 64)
+            # Create inputs (2-branch: hgt + cell)
             hgt = torch.randn(4, N_CELL_TYPES, 64)
             cell = torch.randn(4, N_CELL_TYPES, 64)
 
             # Get original output
             with torch.no_grad():
-                output1 = layer1(pb, hgt, cell)
+                output1 = layer1(hgt, cell)
 
             # Load and get output
             layer2 = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
@@ -994,7 +1007,7 @@ class TestLoadedModelSameOutput:
             layer2.eval()
 
             with torch.no_grad():
-                output2 = layer2(pb, hgt, cell)
+                output2 = layer2(hgt, cell)
 
             assert torch.allclose(output1, output2, atol=1e-6), \
                 "Component output mismatch after load"

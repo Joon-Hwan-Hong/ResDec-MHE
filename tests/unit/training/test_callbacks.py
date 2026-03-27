@@ -111,8 +111,8 @@ class TestTemperatureAnnealingSchedule:
                 anneal_epochs=50, schedule="invalid",
             )
 
-    def test_on_train_epoch_start_sets_temperature(self):
-        """Callback sets model gene gate temperature on epoch start."""
+    def test_on_train_epoch_start_sets_temperature_both_gates(self):
+        """Callback sets both HGT and CT gene gate temperatures on epoch start."""
         from src.training.callbacks import TemperatureAnnealing
         callback = TemperatureAnnealing(
             tau_max=2.0, tau_min=0.1, warmup_epochs=0,
@@ -124,27 +124,78 @@ class TestTemperatureAnnealingSchedule:
         trainer.current_epoch = 10
 
         pl_module = MagicMock()
-        gene_gate = MagicMock()
+        hgt_gate = MagicMock()
+        ct_gate = MagicMock()
         # Use PropertyMock to track temperature setter calls
-        temp_prop = PropertyMock()
-        type(gene_gate).temperature = temp_prop
-        pl_module.model.pseudobulk_encoder.gene_gate = gene_gate
+        hgt_temp_prop = PropertyMock()
+        ct_temp_prop = PropertyMock()
+        type(hgt_gate).temperature = hgt_temp_prop
+        type(ct_gate).temperature = ct_temp_prop
+        pl_module.model.hgt_gene_gate = hgt_gate
+        pl_module.model.cell_transformer.gene_gate = ct_gate
 
         callback.on_train_epoch_start(trainer, pl_module)
 
-        # Verify temperature was set to the correct value
+        # Verify temperature was set to the correct value on both gates
         expected_tau = callback.get_temperature(epoch=10)
-        temp_prop.assert_called_with(expected_tau)
+        hgt_temp_prop.assert_called_with(expected_tau)
+        ct_temp_prop.assert_called_with(expected_tau)
+
+    def test_on_train_epoch_start_works_with_only_hgt_gate(self):
+        """Callback works when only HGT gene gate exists."""
+        from src.training.callbacks import TemperatureAnnealing
+        callback = TemperatureAnnealing(
+            tau_max=2.0, tau_min=0.1, warmup_epochs=0,
+            anneal_epochs=50, schedule="exponential",
+        )
+
+        trainer = MagicMock()
+        trainer.current_epoch = 5
+
+        pl_module = MagicMock()
+        hgt_gate = MagicMock()
+        hgt_temp_prop = PropertyMock()
+        type(hgt_gate).temperature = hgt_temp_prop
+        pl_module.model.hgt_gene_gate = hgt_gate
+        # No CT gene gate
+        pl_module.model.cell_transformer.gene_gate = None
+
+        callback.on_train_epoch_start(trainer, pl_module)
+        expected_tau = callback.get_temperature(epoch=5)
+        hgt_temp_prop.assert_called_with(expected_tau)
+
+    def test_on_train_epoch_start_raises_no_gates(self):
+        """Callback raises AttributeError when no gene gates exist."""
+        from src.training.callbacks import TemperatureAnnealing
+        callback = TemperatureAnnealing(
+            tau_max=2.0, tau_min=0.1, warmup_epochs=0,
+            anneal_epochs=50, schedule="exponential",
+        )
+
+        trainer = MagicMock()
+        trainer.current_epoch = 0
+
+        pl_module = MagicMock()
+        pl_module.model.hgt_gene_gate = None
+        pl_module.model.cell_transformer.gene_gate = None
+
+        with pytest.raises(AttributeError, match="at least one gene gate"):
+            callback.on_train_epoch_start(trainer, pl_module)
 
 
 class TestGradientNormLogger:
     """Tests for GradientNormLogger callback."""
 
     def _make_simple_model(self):
-        """Create a simple model with named branches for testing."""
+        """Create a simple model with named branches for testing.
+
+        Includes hgt_gene_gate and hgt_input_proj at the model level (these are
+        logically part of the HGT branch in the 2-branch architecture).
+        """
         model = nn.Module()
-        model.pseudobulk_encoder = nn.Linear(10, 5)
         model.hgt_encoder = nn.Linear(10, 5)
+        model.hgt_gene_gate = nn.Linear(10, 5)
+        model.hgt_input_proj = nn.Linear(10, 5)
         model.cell_transformer = nn.Linear(10, 5)
         return model
 
@@ -157,14 +208,14 @@ class TestGradientNormLogger:
         # Create dummy gradients
         x = torch.randn(2, 10)
         loss = (
-            model.pseudobulk_encoder(x).sum()
-            + model.hgt_encoder(x).sum()
+            model.hgt_encoder(x).sum()
+            + model.hgt_gene_gate(x).sum()
+            + model.hgt_input_proj(x).sum()
             + model.cell_transformer(x).sum()
         )
         loss.backward()
 
         norms = callback.compute_branch_norms(model)
-        assert "pseudobulk_encoder" in norms
         assert "hgt_encoder" in norms
         assert "cell_transformer" in norms
         # All norms should be positive (gradients exist)
@@ -217,6 +268,36 @@ class TestGradientNormLogger:
 
         assert callback.get_severity(2.5) == "normal"
         assert callback.get_severity(1.0) == "normal"
+
+    def test_disabled_branch_excluded_from_ratio(self):
+        """Disabled branches (ablation) are excluded from norm ratio computation."""
+        from src.training.callbacks import GradientNormLogger, _BRANCH_FLAG
+
+        callback = GradientNormLogger(log_every_n_steps=1)
+
+        model = self._make_simple_model()
+        # Simulate ablation: cell_transformer disabled
+        model.use_hgt_encoder = True
+        model.use_cell_transformer = False
+
+        # Create gradients for active branches only
+        x = torch.randn(2, 10)
+        loss = model.hgt_encoder(x).sum() + model.hgt_gene_gate(x).sum()
+        loss.backward()
+
+        norms = callback.compute_branch_norms(model)
+        # cell_transformer has zero gradients (disabled)
+        assert norms["cell_transformer"] == 0.0
+
+        # Filter active branches as the callback does
+        active_norms = {
+            name: norm for name, norm in norms.items()
+            if getattr(model, _BRANCH_FLAG.get(name, ""), True)
+        }
+        assert "cell_transformer" not in active_norms
+        ratio = callback.compute_norm_ratio(active_norms)
+        # Ratio should be based only on hgt (> 0), so finite and reasonable
+        assert ratio < 100.0
 
 
 class TestResilienceModelCheckpoint:
@@ -352,7 +433,7 @@ class TestEarlyStopping:
         assert es.patience == 15
         # Lightning negates min_delta for mode="min", check absolute value
         assert abs(es.min_delta) == pytest.approx(0.0001)
-        assert es.monitor == "val_loss"
+        assert es.monitor == "val_nll"
         assert es.mode == "min"
 
     def test_early_stopping_min_epochs(self):
@@ -807,11 +888,11 @@ class TestModelCheckpoint:
     """Tests for model checkpoint configuration."""
 
     def test_model_checkpoint_saves_best(self):
-        """Checkpoint config monitors val_loss and saves top-k models."""
+        """Checkpoint config monitors val_nll and saves top-k models."""
         from omegaconf import OmegaConf
         cfg = OmegaConf.load(_PROJECT_ROOT / "configs" / "default.yaml")
         ckpt = cfg.training.checkpoint
-        assert ckpt.monitor == "val_loss"
+        assert ckpt.monitor == "val_nll"
         assert ckpt.mode == "min"
         assert ckpt.save_top_k >= 1
         assert ckpt.save_last is True

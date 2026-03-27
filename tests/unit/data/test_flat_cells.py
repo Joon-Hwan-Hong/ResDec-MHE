@@ -83,7 +83,13 @@ class TestFlatCellStorage:
         n_genes = 8
         max_cells = 4
 
-        # Build a minimal mock dataset with one sample
+        # Build flat cell data for mock dataset
+        total_cells = n_cell_types * max_cells
+        cell_data = torch.randn(total_cells, n_genes)
+        cell_offsets = torch.zeros(n_cell_types + 1, dtype=torch.long)
+        for ct in range(n_cell_types):
+            cell_offsets[ct + 1] = cell_offsets[ct] + max_cells
+
         mock_sample = {
             "subject_id": "test_subj_0",
             "pseudobulk": torch.randn(n_cell_types, n_genes),
@@ -92,8 +98,8 @@ class TestFlatCellStorage:
             "region_mask": torch.tensor(
                 [True] + [False] * (len(REGION_ORDER) - 1), dtype=torch.bool
             ),
-            "cells": torch.randn(n_cell_types, max_cells, n_genes),
-            "cell_mask": torch.ones(n_cell_types, max_cells, dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
             "ccc_edge_type": torch.zeros(0, dtype=torch.long),
             "ccc_edge_attr": torch.zeros(0, 1),
@@ -123,26 +129,31 @@ class TestFlatCellStorage:
         assert "cell_mask" not in keys, f"Old 'cell_mask' key should not be present"
 
     def test_flat_round_trip_preserves_data(self, tmp_path):
-        """Padded -> flat -> padded round-trip preserves real cell values."""
+        """Flat data is preserved through save_precomputed_features."""
         from src.data.datasets import save_precomputed_features
 
         n_cell_types = len(CELL_TYPE_ORDER)
         n_genes = 6
-        max_cells = 5
 
         rng = np.random.RandomState(123)
 
-        # Create cells with varying counts per type
-        cells_padded = np.zeros((n_cell_types, max_cells, n_genes), dtype=np.float32)
-        cell_mask = np.zeros((n_cell_types, max_cells), dtype=bool)
+        # Create flat cell data with varying counts per type
         real_counts = []
-
+        flat_parts = []
         for ct in range(n_cell_types):
-            n = rng.randint(0, max_cells + 1)  # 0 to max_cells
+            n = rng.randint(0, 6)  # 0 to 5
             real_counts.append(n)
             if n > 0:
-                cells_padded[ct, :n] = rng.randn(n, n_genes).astype(np.float32)
-                cell_mask[ct, :n] = True
+                flat_parts.append(rng.randn(n, n_genes).astype(np.float32))
+
+        if flat_parts:
+            cell_data_np = np.concatenate(flat_parts, axis=0)
+        else:
+            cell_data_np = np.empty((0, n_genes), dtype=np.float32)
+
+        cell_offsets_np = np.zeros(n_cell_types + 1, dtype=np.int64)
+        for ct in range(n_cell_types):
+            cell_offsets_np[ct + 1] = cell_offsets_np[ct] + real_counts[ct]
 
         mock_sample = {
             "subject_id": "rt_subj",
@@ -154,8 +165,8 @@ class TestFlatCellStorage:
             "region_mask": torch.tensor(
                 [True] + [False] * (len(REGION_ORDER) - 1), dtype=torch.bool
             ),
-            "cells": torch.from_numpy(cells_padded),
-            "cell_mask": torch.from_numpy(cell_mask),
+            "cell_data": torch.from_numpy(cell_data_np),
+            "cell_offsets": torch.from_numpy(cell_offsets_np),
             "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
             "ccc_edge_type": torch.zeros(0, dtype=torch.long),
             "ccc_edge_attr": torch.zeros(0, 1),
@@ -189,7 +200,7 @@ class TestFlatCellStorage:
         assert cell_data.shape[0] == sum(real_counts)
         assert cell_data.shape[1] == n_genes
 
-        # Round-trip: reconstruct padded from flat and compare
+        # Verify data matches original
         for ct in range(n_cell_types):
             start = int(cell_offsets[ct])
             end = int(cell_offsets[ct + 1])
@@ -197,7 +208,7 @@ class TestFlatCellStorage:
             if n > 0:
                 torch.testing.assert_close(
                     cell_data[start:end],
-                    torch.from_numpy(cells_padded[ct, :n]),
+                    torch.from_numpy(cell_data_np[cell_offsets_np[ct]:cell_offsets_np[ct + 1]]),
                     msg=f"Mismatch at cell type {ct}",
                 )
 
@@ -429,7 +440,7 @@ class TestFlatCollation:
         torch.testing.assert_close(batch["cell_data"][:3], cell_data)
 
     def test_collate_flat_outputs_flat_batch_tensors(self):
-        """Collation also outputs cell_data and cell_offsets for forward_flat."""
+        """Collation also outputs cell_data and cell_offsets for forward()."""
         from src.data.collate import collate_for_hgt_multiregion
 
         n_types, n_genes = 31, 10

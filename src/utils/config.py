@@ -176,13 +176,13 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
             errors.append(f"{dotpath}: invalid value {value!r}")
 
     # Cross-field validation
-    # 1. tau_min < tau_max
+    # 1. tau_min <= tau_max (equality allowed: tau_min == tau_max disables annealing)
     try:
         tau_max = config.training.temperature_annealing.tau_max
         tau_min = config.training.temperature_annealing.tau_min
-        if tau_min >= tau_max:
+        if tau_min > tau_max:
             errors.append(
-                f"Temperature annealing: tau_min ({tau_min}) must be < tau_max ({tau_max})"
+                f"Temperature annealing: tau_min ({tau_min}) must be <= tau_max ({tau_max})"
             )
     except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
             MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):

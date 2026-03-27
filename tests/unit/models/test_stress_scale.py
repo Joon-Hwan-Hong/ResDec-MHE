@@ -136,6 +136,14 @@ def create_sample_inputs(
     src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=device) + b * n_cell_types for b in range(batch_size)])
     dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=device) + b * n_cell_types for b in range(batch_size)])
 
+    # Flat cell format
+    n_cells_per_type = max_cells
+    cells_per_sample = n_cell_types * n_cells_per_type
+    total_cells = batch_size * cells_per_sample
+    cell_data = torch.randn(total_cells, n_genes, device=device)
+    offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+    cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(batch_size)]).to(device)
+
     return {
         'region_pseudobulk': torch.randn(
             batch_size, n_regions, n_cell_types, n_genes, device=device
@@ -148,12 +156,8 @@ def create_sample_inputs(
             0, N_EDGE_TYPES, (E,), device=device
         ),
         'ccc_edge_attr': torch.rand(E, 1, device=device),
-        'cells': torch.randn(
-            batch_size, n_cell_types, max_cells, n_genes, device=device
-        ),
-        'cell_mask': torch.ones(
-            batch_size, n_cell_types, max_cells, dtype=torch.bool, device=device
-        ),
+        'cell_data': cell_data,
+        'cell_offsets': cell_offsets,
         'pathology': torch.randn(batch_size, 3, device=device),
         'cognition': torch.randn(batch_size, 1, device=device),
     }
@@ -241,21 +245,20 @@ class TestCellCountScaling:
         ).to(cpu_device)
         transformer.eval()
 
-        max_cells = 100
+        n_cells_per_type = 100
         B = 2
-        cells = torch.randn(
-            B, small_model_config['n_cell_types'], max_cells,
-            small_model_config['n_genes'], device=cpu_device
-        )
-        cell_mask = torch.ones(
-            B, small_model_config['n_cell_types'], max_cells,
-            dtype=torch.bool, device=cpu_device
-        )
+        n_ct = small_model_config['n_cell_types']
+        n_genes = small_model_config['n_genes']
+        cells_per_sample = n_ct * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes, device=cpu_device)
+        offsets_one = torch.arange(0, (n_ct + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cpu_device)
 
         with torch.no_grad():
-            output, selection_weights, _ = transformer(cells, cell_mask)
+            output, _ = transformer(cell_data, cell_offsets)
 
-        assert output.shape == (B, small_model_config['n_cell_types'], small_model_config['d_embed'])
+        assert output.shape == (B, n_ct, small_model_config['d_embed'])
         assert not torch.isnan(output).any()
 
     @pytest.mark.slow
@@ -274,21 +277,20 @@ class TestCellCountScaling:
         ).to(cpu_device)
         transformer.eval()
 
-        max_cells = 500
+        n_cells_per_type = 500
         B = 1  # Small batch due to memory
-        cells = torch.randn(
-            B, small_model_config['n_cell_types'], max_cells,
-            small_model_config['n_genes'], device=cpu_device
-        )
-        cell_mask = torch.ones(
-            B, small_model_config['n_cell_types'], max_cells,
-            dtype=torch.bool, device=cpu_device
-        )
+        n_ct = small_model_config['n_cell_types']
+        n_genes = small_model_config['n_genes']
+        cells_per_sample = n_ct * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes, device=cpu_device)
+        offsets_one = torch.arange(0, (n_ct + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cpu_device)
 
         with torch.no_grad():
-            output, selection_weights, _ = transformer(cells, cell_mask)
+            output, _ = transformer(cell_data, cell_offsets)
 
-        assert output.shape == (B, small_model_config['n_cell_types'], small_model_config['d_embed'])
+        assert output.shape == (B, n_ct, small_model_config['d_embed'])
         assert not torch.isnan(output).any()
 
         clear_memory()
@@ -316,19 +318,17 @@ class TestCellCountScaling:
         ).to(device)
         transformer.eval()
 
-        max_cells = 1000
+        n_cells_per_type = 1000
         B = 1
-        cells = torch.randn(
-            B, n_cell_types, max_cells,
-            small_model_config['n_genes'], device=device
-        )
-        cell_mask = torch.ones(
-            B, n_cell_types, max_cells,
-            dtype=torch.bool, device=device
-        )
+        n_genes = small_model_config['n_genes']
+        cells_per_sample = n_cell_types * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes, device=device)
+        offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(device)
 
         with torch.no_grad():
-            output, selection_weights, _ = transformer(cells, cell_mask)
+            output, _ = transformer(cell_data, cell_offsets)
 
         assert output.shape == (B, n_cell_types, small_model_config['d_embed'])
         assert not torch.isnan(output).any()
@@ -346,25 +346,27 @@ class TestGeneCountScaling:
 
     @pytest.mark.parametrize("n_genes", [1000, 3000])
     def test_n_genes_cpu(self, cpu_device, n_genes):
-        """PseudobulkEncoder works correctly with {n_genes} genes on CPU."""
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        """GeneAttentionGate + Linear projection works correctly with {n_genes} genes on CPU."""
+        from src.models.components.gene_attention_gate import GeneAttentionGate
 
         n_cell_types = N_CELL_TYPES
         d_embed = 64
 
-        encoder = PseudobulkEncoder(
+        gate = GeneAttentionGate(
             n_cell_types=n_cell_types,
             n_genes=n_genes,
-            d_embed=d_embed,
-            dropout=0.0,
+            temperature=2.0,
         ).to(cpu_device)
-        encoder.eval()
+        proj = nn.Linear(n_genes, d_embed).to(cpu_device)
+        gate.eval()
+        proj.eval()
 
         B = 4
         x = torch.randn(B, n_cell_types, n_genes, device=cpu_device)
 
         with torch.no_grad():
-            output = encoder(x)
+            gated = gate(x)
+            output = proj(gated)
 
         assert output.shape == (B, n_cell_types, d_embed)
         assert not torch.isnan(output).any()
@@ -372,25 +374,27 @@ class TestGeneCountScaling:
     @pytest.mark.slow
     def test_n_genes_5000(self, device):
         """5000 genes (stress) works correctly."""
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        from src.models.components.gene_attention_gate import GeneAttentionGate
 
         n_genes = 5000
         n_cell_types = N_CELL_TYPES
         d_embed = 64
 
-        encoder = PseudobulkEncoder(
+        gate = GeneAttentionGate(
             n_cell_types=n_cell_types,
             n_genes=n_genes,
-            d_embed=d_embed,
-            dropout=0.0,
+            temperature=2.0,
         ).to(device)
-        encoder.eval()
+        proj = torch.nn.Linear(n_genes, d_embed).to(device)
+        gate.eval()
+        proj.eval()
 
         B = 4
         x = torch.randn(B, n_cell_types, n_genes, device=device)
 
         with torch.no_grad():
-            output = encoder(x)
+            gated = gate(x)
+            output = proj(gated)
 
         assert output.shape == (B, n_cell_types, d_embed)
         assert not torch.isnan(output).any()
@@ -563,21 +567,19 @@ class TestNumericalStabilityAtScale:
         ).to(device)
         transformer.eval()
 
-        max_cells = 500
+        n_cells_per_type = 500
         B = 2
         n_cell_types = 8
+        n_genes = small_model_config['n_genes']
 
-        cells = torch.randn(
-            B, n_cell_types, max_cells,
-            small_model_config['n_genes'], device=device
-        )
-        cell_mask = torch.ones(
-            B, n_cell_types, max_cells,
-            dtype=torch.bool, device=device
-        )
+        cells_per_sample = n_cell_types * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes, device=device)
+        offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(device)
 
         with torch.no_grad():
-            output, selection_weights, _ = transformer(cells, cell_mask)
+            output, _ = transformer(cell_data, cell_offsets)
 
         assert not torch.isnan(output).any(), "NaN in output"
         assert not torch.isinf(output).any(), "Inf in output"
@@ -622,36 +624,38 @@ class TestNumericalStabilityAtScale:
 
     def test_extreme_input_values_handled(self, small_model_config, cpu_device):
         """Model handles extreme input values gracefully."""
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        encoder = PseudobulkEncoder(
-            n_cell_types=small_model_config['n_cell_types'],
-            n_genes=small_model_config['n_genes'],
-            d_embed=small_model_config['d_embed'],
-            dropout=0.0,
-        ).to(cpu_device)
-        encoder.eval()
-
-        B = 2
         n_cell_types = small_model_config['n_cell_types']
         n_genes = small_model_config['n_genes']
+
+        gate = GeneAttentionGate(
+            n_cell_types=n_cell_types,
+            n_genes=n_genes,
+            temperature=2.0,
+        ).to(cpu_device)
+        proj = nn.Linear(n_genes, small_model_config['d_embed']).to(cpu_device)
+        gate.eval()
+        proj.eval()
+
+        B = 2
 
         # Test with large values
         x_large = torch.randn(B, n_cell_types, n_genes, device=cpu_device) * 100
         with torch.no_grad():
-            out_large = encoder(x_large)
+            out_large = proj(gate(x_large))
         assert not torch.isnan(out_large).any(), "NaN with large inputs"
 
         # Test with small values
         x_small = torch.randn(B, n_cell_types, n_genes, device=cpu_device) * 1e-6
         with torch.no_grad():
-            out_small = encoder(x_small)
+            out_small = proj(gate(x_small))
         assert not torch.isnan(out_small).any(), "NaN with small inputs"
 
         # Test with zeros
         x_zeros = torch.zeros(B, n_cell_types, n_genes, device=cpu_device)
         with torch.no_grad():
-            out_zeros = encoder(x_zeros)
+            out_zeros = proj(gate(x_zeros))
         assert not torch.isnan(out_zeros).any(), "NaN with zero inputs"
 
 
@@ -747,30 +751,28 @@ class TestMemoryEfficiency:
         cell_counts = [100, 200, 400]
         memory_readings = []
 
-        for max_cells in cell_counts:
+        for n_cells_per_type in cell_counts:
             clear_memory()
             torch.cuda.reset_peak_memory_stats(device)
 
             B = 1
             n_cell_types = 4
+            n_genes = small_model_config['n_genes']
 
-            cells = torch.randn(
-                B, n_cell_types, max_cells,
-                small_model_config['n_genes'], device=device
-            )
-            cell_mask = torch.ones(
-                B, n_cell_types, max_cells,
-                dtype=torch.bool, device=device
-            )
+            cells_per_sample = n_cell_types * n_cells_per_type
+            total_cells = B * cells_per_sample
+            cell_data = torch.randn(total_cells, n_genes, device=device)
+            offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+            cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(device)
 
             with torch.no_grad():
-                output, _, _ = transformer(cells, cell_mask)
+                output, _ = transformer(cell_data, cell_offsets)
 
             torch.cuda.synchronize()
             peak_memory = torch.cuda.max_memory_allocated(device)
             memory_readings.append(peak_memory / (1024 * 1024))  # MB
 
-            del cells, cell_mask, output
+            del cell_data, cell_offsets, output
 
         # Memory should increase but not explode
         # ISAB provides O(n*k) complexity where k is inducing points
@@ -789,21 +791,22 @@ class TestMemoryEfficiency:
 
     def test_no_memory_leak_over_iterations(self, small_model_config, cpu_device):
         """No memory leak pattern over multiple forward passes."""
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        from src.models.components.gene_attention_gate import GeneAttentionGate
         import gc
 
-        encoder = PseudobulkEncoder(
+        gate = GeneAttentionGate(
             n_cell_types=small_model_config['n_cell_types'],
             n_genes=small_model_config['n_genes'],
-            d_embed=small_model_config['d_embed'],
-            dropout=0.0,
+            temperature=2.0,
         ).to(cpu_device)
-        encoder.eval()
+        proj = nn.Linear(small_model_config['n_genes'], small_model_config['d_embed']).to(cpu_device)
+        gate.eval()
+        proj.eval()
 
         # Warmup
         x = torch.randn(4, small_model_config['n_cell_types'], small_model_config['n_genes'])
         with torch.no_grad():
-            _ = encoder(x)
+            _ = proj(gate(x))
         del x
         gc.collect()
 
@@ -814,7 +817,7 @@ class TestMemoryEfficiency:
         for _ in range(20):
             x = torch.randn(4, small_model_config['n_cell_types'], small_model_config['n_genes'])
             with torch.no_grad():
-                output = encoder(x)
+                output = proj(gate(x))
             del x, output
 
         gc.collect()
@@ -849,12 +852,11 @@ class TestComponentScale:
         ).to(cpu_device)
         layer.eval()
 
-        pseudobulk = torch.randn(B, n_cell_types, d_embed, device=cpu_device)
         hgt = torch.randn(B, n_cell_types, d_embed, device=cpu_device)
         cell = torch.randn(B, n_cell_types, d_embed, device=cpu_device)
 
         with torch.no_grad():
-            output = layer(pseudobulk, hgt, cell)
+            output = layer(hgt, cell)
 
         assert output.shape == (B, n_cell_types, d_fused)
         assert not torch.isnan(output).any()
@@ -1095,21 +1097,24 @@ class TestScaleEdgeCases:
         transformer.eval()
 
         B = 2
-        max_cells = 50
-        cells = torch.randn(
-            B, small_model_config['n_cell_types'], max_cells,
-            small_model_config['n_genes'], device=cpu_device
-        )
+        n_ct = small_model_config['n_cell_types']
+        n_genes = small_model_config['n_genes']
+        n_cells_per_type = 50
 
-        # Mask out half of the cell types completely
-        cell_mask = torch.ones(
-            B, small_model_config['n_cell_types'], max_cells,
-            dtype=torch.bool, device=cpu_device
-        )
-        cell_mask[:, ::2, :] = False  # Every other cell type fully masked
+        # Every other cell type has 0 cells (masked out)
+        counts_per_type = [0 if ct % 2 == 0 else n_cells_per_type for ct in range(n_ct)]
+        cells_per_sample = sum(counts_per_type)
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes, device=cpu_device)
+
+        # Build offsets per sample
+        offsets_one = torch.zeros(n_ct + 1, dtype=torch.long)
+        for ct in range(n_ct):
+            offsets_one[ct + 1] = offsets_one[ct] + counts_per_type[ct]
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cpu_device)
 
         with torch.no_grad():
-            output, selection_weights, _ = transformer(cells, cell_mask)
+            output, _ = transformer(cell_data, cell_offsets)
 
         # Should still produce valid output
         assert not torch.isnan(output).any()

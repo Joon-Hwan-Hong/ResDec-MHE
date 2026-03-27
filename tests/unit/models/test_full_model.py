@@ -16,6 +16,20 @@ from src.data.constants import N_CELL_TYPES, N_REGIONS
 from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 
 
+def _make_flat_cell_inputs(B, n_cell_types, n_genes, cells_per_type=10):
+    """Create flat cell_data + cell_offsets for model testing."""
+    total_per_sample = n_cell_types * cells_per_type
+    total = B * total_per_sample
+    cell_data = torch.randn(total, n_genes)
+    cell_offsets = torch.zeros(B, n_cell_types + 1, dtype=torch.long)
+    for b in range(B):
+        base = b * total_per_sample
+        for ct in range(n_cell_types):
+            cell_offsets[b, ct + 1] = cell_offsets[b, ct] + cells_per_type
+        cell_offsets[b] += base
+    return cell_data, cell_offsets
+
+
 class TestInitialization:
     """Test model initialization and component creation."""
 
@@ -39,17 +53,19 @@ class TestInitialization:
         }
 
     def test_creates_all_branches(self, model_config):
-        """Test that all three encoder branches are created."""
+        """Test that HGT input pipeline and cell transformer are created."""
         model = CognitiveResilienceModel(**model_config, use_bayesian_head=True)
 
-        # Verify all branches exist
-        assert hasattr(model, 'pseudobulk_encoder')
+        # Verify HGT input pipeline
+        assert hasattr(model, 'hgt_gene_gate')
+        assert hasattr(model, 'hgt_input_proj')
         assert hasattr(model, 'hgt_encoder')
         assert hasattr(model, 'cell_transformer')
 
-        # Verify branch types
-        from src.models.branches import PseudobulkEncoder, HGTEncoderTensor, CellTransformer
-        assert isinstance(model.pseudobulk_encoder, PseudobulkEncoder)
+        # Verify types
+        from src.models.branches import HGTEncoderTensor, CellTransformer
+        from src.models.components import GeneAttentionGate
+        assert isinstance(model.hgt_gene_gate, GeneAttentionGate)
         assert isinstance(model.hgt_encoder, HGTEncoderTensor)
         assert isinstance(model.cell_transformer, CellTransformer)
 
@@ -182,22 +198,22 @@ class TestForwardPass:
     def sample_inputs(self):
         """Create sample inputs for forward pass."""
         B = 2
-        n_regions = N_REGIONS
         n_cell_types = N_CELL_TYPES
         n_genes = 50
-        max_cells = 10
         n_edges = 5
+
+        cell_data, cell_offsets = _make_flat_cell_inputs(B, n_cell_types, n_genes)
 
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         return {
-            'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
-            'region_mask': torch.ones(B, n_regions, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
             'ccc_edge_attr': torch.rand(B * n_edges, 1),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
             'cognition': torch.randn(B, 1),
         }
@@ -314,16 +330,14 @@ class TestInterpretability:
             d_head_hidden=16,
         )
 
-    def test_get_cell_type_importance(self, model):
-        """Test cell type importance extraction."""
-        importance = model.get_cell_type_importance()
+    def test_hgt_gene_gate_weights(self, model):
+        """Test HGT gene gate weight extraction."""
+        weights = model.hgt_gene_gate.get_gate_weights()
 
-        assert isinstance(importance, dict)
-        assert len(importance) == N_CELL_TYPES  # All cell types
-        assert all(isinstance(v, float) for v in importance.values())
-
-        # Weights are independent sigmoid values in (0, 1) per type
-        assert all(0 < v < 1 for v in importance.values())
+        assert weights.shape == (N_CELL_TYPES, 50)  # n_cell_types x n_genes
+        # Weights sum to 1 per cell type (softmax)
+        sums = weights.sum(dim=-1)
+        assert torch.allclose(sums, torch.ones(N_CELL_TYPES), atol=1e-5)
 
     def test_get_hgt_layer_scales(self, model):
         """Test HGT layer scale extraction."""
@@ -363,9 +377,9 @@ class TestInterpretability:
         counts = model.num_parameters()
 
         expected_keys = {
-            'total', 'pseudobulk_encoder', 'region_handler', 'hgt_encoder',
-            'cell_transformer', 'fusion_layer', 'pathology_encoder',
-            'pathology_attention', 'prediction_head',
+            'total', 'hgt_gene_gate', 'hgt_input_proj', 'region_handler',
+            'hgt_encoder', 'cell_transformer', 'fusion_layer',
+            'pathology_encoder', 'pathology_attention', 'prediction_head',
         }
         assert set(counts.keys()) == expected_keys
         assert all(isinstance(v, int) and v > 0 for v in counts.values())
@@ -380,18 +394,27 @@ class TestInterpretability:
         Config: n_genes=50, d_embed=32, d_fused=32, d_cond=16, n_hgt_layers=1,
         n_hgt_heads=4, n_isab_layers=1, n_inducing=4, n_attention_heads=4,
         use_bayesian_head=False, d_head_hidden=16, dropout default.
+
+        Two-branch arch: hgt_gene_gate(31*50) + hgt_input_proj(50*32+32) +
+        region_handler + hgt_encoder + cell_transformer(with gene gate) +
+        fusion(2-branch) + pathology + attention + head.
         """
         counts = model.num_parameters()
 
-        assert counts['pseudobulk_encoder'] == 168_750
+        # hgt_gene_gate: 31*50 = 1550 (gate_logits only, temperature is buffer)
+        assert counts['hgt_gene_gate'] == 1_550
+        # hgt_input_proj: nn.Linear(50, 32) = 50*32 + 32 = 1632
+        assert counts['hgt_input_proj'] == 1_632
         assert counts['region_handler'] == 198
         assert counts['hgt_encoder'] == 136_649
-        assert counts['cell_transformer'] == 41_023
-        assert counts['fusion_layer'] == 3_168
+        # cell_transformer includes its own gene gate (1550 params)
+        assert counts['cell_transformer'] == 42_542
+        # fusion_layer: 2-branch concat (d_embed + n_pma_seeds*d_embed -> d_fused)
+        assert counts['fusion_layer'] == 2_144
         assert counts['pathology_encoder'] == 1_456
         assert counts['pathology_attention'] == 3_908
         assert counts['prediction_head'] == 817
-        assert counts['total'] == 355_969
+        assert counts['total'] == 190_896
 
     def test_num_parameters_trainable_only_false(self, model):
         """num_parameters(trainable_only=False) should include all params."""
@@ -429,7 +452,8 @@ class TestEdgeCases:
         B = 2
         n_cell_types = N_CELL_TYPES
         n_genes = 50
-        max_cells = 10
+
+        cell_data, cell_offsets = _make_flat_cell_inputs(B, n_cell_types, n_genes)
 
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
@@ -437,24 +461,31 @@ class TestEdgeCases:
             'ccc_edge_index': torch.zeros(2, 0, dtype=torch.long),
             'ccc_edge_type': torch.zeros(0, dtype=torch.long),
             'ccc_edge_attr': torch.zeros(0, 1),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
         output = small_model(**inputs)
         assert output['mean'].shape == (B, 1)
 
-    def test_partial_cell_mask(self, small_model):
-        """Test forward pass with some cells masked out."""
+    def test_partial_cell_counts(self, small_model):
+        """Test forward pass with some cell types having zero cells."""
         B = 2
         n_cell_types = N_CELL_TYPES
         n_genes = 50
-        max_cells = 10
 
-        # Mask out half of cells
-        cell_mask = torch.ones(B, n_cell_types, max_cells, dtype=torch.bool)
-        cell_mask[:, :, max_cells//2:] = False
+        # Only first 5 types have cells, rest have 0
+        counts = [10] * 5 + [0] * (n_cell_types - 5)
+        total_per_sample = sum(counts)
+        total = B * total_per_sample
+        cell_data = torch.randn(total, n_genes)
+        cell_offsets = torch.zeros(B, n_cell_types + 1, dtype=torch.long)
+        for b in range(B):
+            base = b * total_per_sample
+            for ct in range(n_cell_types):
+                cell_offsets[b, ct + 1] = cell_offsets[b, ct] + counts[ct]
+            cell_offsets[b] += base
 
         n_edges = 5
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
@@ -465,8 +496,8 @@ class TestEdgeCases:
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
             'ccc_edge_attr': torch.rand(B * n_edges, 1),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': cell_mask,
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -474,31 +505,26 @@ class TestEdgeCases:
         assert output['mean'].shape == (B, 1)
 
     def test_single_region_pseudobulk_only_fallback(self, small_model):
-        """Test forward pass using pseudobulk (not region_pseudobulk) auto-expansion.
-
-        The model should auto-expand [B, C, G] to [B, n_regions, C, G] with only PFC
-        filled, and produce the same output structure as the multi-region path.
-        """
+        """Test forward pass using pseudobulk (not region_pseudobulk) auto-expansion."""
         B = 2
         n_cell_types = N_CELL_TYPES
         n_genes = 50
-        max_cells = 10
+
+        cell_data, cell_offsets = _make_flat_cell_inputs(B, n_cell_types, n_genes)
 
         n_edges = 5
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         inputs = {
             'pseudobulk': torch.randn(B, n_cell_types, n_genes),
-            # NO region_pseudobulk or region_mask
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
             'ccc_edge_attr': torch.rand(B * n_edges, 1),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
-        # Eval mode for attention_weights check (skipped during training)
         small_model.eval()
         output = small_model(**inputs)
         small_model.train()
@@ -513,19 +539,17 @@ class TestEdgeCases:
         B = 2
         n_cell_types = N_CELL_TYPES
         n_genes = 50
-        max_cells = 10
+
+        cell_data, cell_offsets = _make_flat_cell_inputs(B, n_cell_types, n_genes)
 
         # Build a multi-region input with only PFC filled
         region_pb = torch.randn(B, N_REGIONS, n_cell_types, n_genes)
-        # Zero out all regions except PFC
         region_pb[:, :PFC_REGION_IDX, :, :] = 0.0
         if PFC_REGION_IDX + 1 < N_REGIONS:
             region_pb[:, PFC_REGION_IDX + 1:, :, :] = 0.0
 
-        # Single-region: extract PFC
-        pseudobulk = region_pb[:, PFC_REGION_IDX, :, :].clone()  # [B, C, G]
+        pseudobulk = region_pb[:, PFC_REGION_IDX, :, :].clone()
 
-        # Build explicit multi-region with only PFC active
         region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
         region_mask[:, PFC_REGION_IDX] = True
 
@@ -536,8 +560,8 @@ class TestEdgeCases:
             "ccc_edge_index": torch.stack([src, dst]),
             "ccc_edge_type": torch.randint(0, 5, (B * n_edges,)),
             "ccc_edge_attr": torch.rand(B * n_edges, 1),
-            "cells": torch.randn(B, n_cell_types, max_cells, n_genes),
-            "cell_mask": torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             "pathology": torch.randn(B, 3),
         }
 
@@ -557,7 +581,8 @@ class TestEdgeCases:
         B = 1
         n_cell_types = N_CELL_TYPES
         n_genes = 50
-        max_cells = 10
+
+        cell_data, cell_offsets = _make_flat_cell_inputs(B, n_cell_types, n_genes)
 
         n_edges = 5
         src = torch.randint(0, n_cell_types, (n_edges,))
@@ -568,8 +593,8 @@ class TestEdgeCases:
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, 5, (n_edges,)),
             'ccc_edge_attr': torch.rand(n_edges, 1),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -581,7 +606,8 @@ class TestEdgeCases:
         B = 2
         n_cell_types = N_CELL_TYPES
         n_genes = 50
-        max_cells = 10
+
+        cell_data, cell_offsets = _make_flat_cell_inputs(B, n_cell_types, n_genes)
 
         n_edges = 5
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
@@ -592,8 +618,8 @@ class TestEdgeCases:
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
             'ccc_edge_attr': torch.rand(B * n_edges, 1),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
             'cell_type_mask': torch.ones(B, n_cell_types, n_cell_types, dtype=torch.bool),  # Wrong: 3D
         }
@@ -606,7 +632,8 @@ class TestEdgeCases:
         B = 2
         n_cell_types = N_CELL_TYPES
         n_genes = 50
-        max_cells = 10
+
+        cell_data, cell_offsets = _make_flat_cell_inputs(B, n_cell_types, n_genes)
 
         n_edges = 5
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
@@ -616,8 +643,8 @@ class TestEdgeCases:
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
             'ccc_edge_attr': torch.rand(B * n_edges, 1),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -633,8 +660,10 @@ class TestBranchAblation:
         B = 2
         n_genes = 50
         n_cell_types = N_CELL_TYPES
-        max_cells = 10
         n_edges = 5
+
+        cell_data, cell_offsets = _make_flat_cell_inputs(B, n_cell_types, n_genes)
+
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         return {
@@ -643,8 +672,8 @@ class TestBranchAblation:
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
             'ccc_edge_attr': torch.rand(B * n_edges, 1),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
             'cognition': torch.randn(B, 1),
         }
@@ -673,13 +702,6 @@ class TestBranchAblation:
         assert 'mean' in output
         assert output['mean'].shape == (2, 1)
 
-    def test_disable_pseudobulk_encoder(self, sample_inputs):
-        """Model runs with pseudobulk encoder disabled."""
-        model = self._make_model(use_pseudobulk_encoder=False)
-        output = model(**sample_inputs)
-        assert 'mean' in output
-        assert output['mean'].shape == (2, 1)
-
     def test_disabled_branch_produces_zero_embeddings(self, sample_inputs):
         """Disabled branch should contribute zeros to fusion."""
         model = self._make_model(use_cell_transformer=False)
@@ -690,7 +712,6 @@ class TestBranchAblation:
     def test_all_branches_enabled_by_default(self):
         """Default model has all branches enabled."""
         model = self._make_model()
-        assert model.use_pseudobulk_encoder is True
         assert model.use_hgt_encoder is True
         assert model.use_cell_transformer is True
 
@@ -753,4 +774,3 @@ class TestCellTypeConditioningConfig:
             d_head_hidden=16,
         )
         assert model.cell_transformer.condition_on_cell_type is True
-

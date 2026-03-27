@@ -68,9 +68,16 @@ def sample_inputs(cuda_device, make_edge_tensors):
     n_regions = N_REGIONS
     n_cell_types = N_CELL_TYPES
     n_genes = 50
-    max_cells = 10
+    n_cells_per_type = 10
 
     ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B, device=cuda_device)
+
+    # Flat cell format
+    cells_per_sample = n_cell_types * n_cells_per_type
+    total_cells = B * cells_per_sample
+    cell_data = torch.randn(total_cells, n_genes, device=cuda_device)
+    offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+    cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cuda_device)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
@@ -78,8 +85,8 @@ def sample_inputs(cuda_device, make_edge_tensors):
         'ccc_edge_index': ccc_edge_index,
         'ccc_edge_type': ccc_edge_type,
         'ccc_edge_attr': ccc_edge_attr,
-        'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
-        'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
+        'cell_data': cell_data,
+        'cell_offsets': cell_offsets,
         'pathology': torch.randn(B, 3, device=cuda_device),
         'cognition': torch.randn(B, 1, device=cuda_device),
     }
@@ -134,10 +141,9 @@ class TestAutocastForward:
 
         with torch.no_grad():
             with torch.amp.autocast('cuda'):
-                pb = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device)
                 hgt = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device)
                 cell = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device)
-                fusion_out = fusion(pb, hgt, cell)
+                fusion_out = fusion(hgt, cell)
 
         assert fusion_out.shape == (4, N_CELL_TYPES, 128)
         assert not torch.isnan(fusion_out).any()
@@ -187,20 +193,20 @@ class TestAutocastForward:
         assert head_out.shape == (4, 1)
         assert not torch.isnan(head_out).any()
 
-        # Test PseudobulkEncoder
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
-        pb_enc = PseudobulkEncoder(
-            n_cell_types=N_CELL_TYPES, n_genes=50, d_embed=64, dropout=0.0
+        # Test GeneAttentionGate (replaced PseudobulkEncoder in 2-branch architecture)
+        from src.models.components.gene_attention_gate import GeneAttentionGate
+        gate = GeneAttentionGate(
+            n_cell_types=N_CELL_TYPES, n_genes=50, temperature=2.0,
         ).to(cuda_device)
-        pb_enc.eval()
+        gate.eval()
 
         with torch.no_grad():
             with torch.amp.autocast('cuda'):
-                pb_input = torch.randn(4, N_CELL_TYPES, 50, device=cuda_device)
-                pb_out = pb_enc(pb_input)
+                gate_input = torch.randn(4, N_CELL_TYPES, 50, device=cuda_device)
+                gate_out = gate(gate_input)
 
-        assert pb_out.shape == (4, N_CELL_TYPES, 64)
-        assert not torch.isnan(pb_out).any()
+        assert gate_out.shape == (4, N_CELL_TYPES, 50)
+        assert not torch.isnan(gate_out).any()
 
         # Test RegionHandler
         from src.models.components.region_handler import RegionHandler
@@ -398,12 +404,11 @@ class TestDtypeConversion:
         fusion = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES).to(cuda_device).half()
         fusion.eval()
 
-        pb = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device, dtype=torch.float16)
         hgt = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device, dtype=torch.float16)
         cell = torch.randn(4, N_CELL_TYPES, 64, device=cuda_device, dtype=torch.float16)
 
         with torch.no_grad():
-            output = fusion(pb, hgt, cell)
+            output = fusion(hgt, cell)
 
         assert output.dtype == torch.float16
         assert not torch.isnan(output).any()
@@ -511,7 +516,7 @@ class TestAMPTrainingLoop:
         B = 2
         n_genes = 50
         n_cell_types = N_CELL_TYPES
-        max_cells = 10
+        n_cells_per_type = 10
         n_regions = N_REGIONS
         n_edges = 5
 
@@ -519,14 +524,20 @@ class TestAMPTrainingLoop:
         for batch_idx in range(n_batches):
             # Create new batch
             ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, device=cuda_device)
+            # Flat cell format
+            cells_per_sample = n_cell_types * n_cells_per_type
+            total_cells = B * cells_per_sample
+            cell_data = torch.randn(total_cells, n_genes, device=cuda_device)
+            offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+            cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cuda_device)
             inputs = {
                 'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
                 'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
                 'ccc_edge_index': ccc_ei,
                 'ccc_edge_type': ccc_et,
                 'ccc_edge_attr': ccc_ea,
-                'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
-                'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
+                'cell_data': cell_data,
+                'cell_offsets': cell_offsets,
                 'pathology': torch.randn(B, 3, device=cuda_device),
             }
             targets = torch.randn(B, 1, device=cuda_device)
@@ -569,21 +580,27 @@ class TestAMPTrainingLoop:
         B = 4
         n_genes = 50
         n_cell_types = N_CELL_TYPES
-        max_cells = 10
+        n_cells_per_type = 10
         n_regions = N_REGIONS
         n_edges = 10
 
         E = B * n_edges
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
         dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+        # Flat cell format
+        cells_per_sample = n_cell_types * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes, device=cuda_device)
+        offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cuda_device)
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
             'ccc_edge_attr': torch.rand(E, 1, device=cuda_device),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3, device=cuda_device),
         }
         targets = torch.randn(B, 1, device=cuda_device)
@@ -733,7 +750,7 @@ class TestNumericalStability:
         B = 2
         n_genes = 50
         n_cell_types = N_CELL_TYPES
-        max_cells = 10
+        n_cells_per_type = 10
         n_regions = N_REGIONS
         n_edges = 10
 
@@ -741,14 +758,20 @@ class TestNumericalStability:
         E = B * n_edges
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
         dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+        # Flat cell format
+        cells_per_sample = n_cell_types * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes, device=cuda_device) * 10
+        offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cuda_device)
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device) * 10,
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
             'ccc_edge_attr': torch.rand(E, 1, device=cuda_device),
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device) * 10,
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3, device=cuda_device) * 5,
         }
 
@@ -771,7 +794,7 @@ class TestNumericalStability:
         B = 2
         n_genes = 50
         n_cell_types = N_CELL_TYPES
-        max_cells = 10
+        n_cells_per_type = 10
         n_regions = N_REGIONS
         n_edges = 10
 
@@ -779,14 +802,20 @@ class TestNumericalStability:
         E = B * n_edges
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
         dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+        # Flat cell format
+        cells_per_sample = n_cell_types * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes, device=cuda_device) * 0.01
+        offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cuda_device)
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device) * 0.01,
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
             'ccc_edge_attr': torch.rand(E, 1, device=cuda_device) * 0.1,
-            'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device) * 0.01,
-            'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3, device=cuda_device) * 0.1,
         }
 
@@ -814,7 +843,6 @@ class TestComponentHalfPrecision:
             from src.models.fusion.fusion_layer import FusionLayer
             module = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES).to(device).half()
             inputs = [
-                torch.randn(4, N_CELL_TYPES, 64, device=device, dtype=torch.float16, requires_grad=True),
                 torch.randn(4, N_CELL_TYPES, 64, device=device, dtype=torch.float16, requires_grad=True),
                 torch.randn(4, N_CELL_TYPES, 64, device=device, dtype=torch.float16, requires_grad=True),
             ]

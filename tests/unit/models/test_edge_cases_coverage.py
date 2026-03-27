@@ -36,11 +36,22 @@ class TestHGTEmptyGraphHandling:
     @pytest.fixture
     def base_inputs(self):
         B = 2
+        n_genes = 50
+        # Create flat cell data: 10 cells per type per sample
+        total_per_sample = N_CELL_TYPES * 10
+        total = B * total_per_sample
+        cell_data = torch.randn(total, n_genes)
+        cell_offsets = torch.zeros(B, N_CELL_TYPES + 1, dtype=torch.long)
+        for b in range(B):
+            base = b * total_per_sample
+            for ct in range(N_CELL_TYPES):
+                cell_offsets[b, ct + 1] = cell_offsets[b, ct] + 10
+            cell_offsets[b] += base
         return {
-            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, n_genes),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -118,17 +129,31 @@ class TestMixedDtypeInputs:
             use_bayesian_head=False,
         )
 
+    @staticmethod
+    def _make_flat_cells(B, n_genes=50, cells_per_type=10):
+        total_per_sample = N_CELL_TYPES * cells_per_type
+        total = B * total_per_sample
+        cell_data = torch.randn(total, n_genes)
+        cell_offsets = torch.zeros(B, N_CELL_TYPES + 1, dtype=torch.long)
+        for b in range(B):
+            base = b * total_per_sample
+            for ct in range(N_CELL_TYPES):
+                cell_offsets[b, ct + 1] = cell_offsets[b, ct] + cells_per_type
+            cell_offsets[b] += base
+        return cell_data, cell_offsets
+
     def test_float64_pathology_requires_conversion(self, model, make_edge_tensors):
         """Float64 pathology with float32 model requires explicit conversion."""
         B = 2
         ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, n_edges=1)
+        cell_data, cell_offsets = self._make_flat_cells(B)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50, dtype=torch.float32),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
             'ccc_edge_attr': ccc_ea,
-            'cells': torch.randn(B, N_CELL_TYPES, 10, 50, dtype=torch.float32),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3, dtype=torch.float64),  # Different dtype
         }
         # PyTorch doesn't auto-convert dtypes - this will fail
@@ -139,46 +164,31 @@ class TestMixedDtypeInputs:
         """Consistent dtypes should work correctly."""
         B = 2
         ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, n_edges=1)
+        cell_data, cell_offsets = self._make_flat_cells(B)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50, dtype=torch.float32),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
             'ccc_edge_attr': ccc_ea,
-            'cells': torch.randn(B, N_CELL_TYPES, 10, 50, dtype=torch.float32),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3, dtype=torch.float32),  # Same dtype
         }
         output = model(**inputs)
         assert 'mean' in output
 
-    def test_bool_mask_required(self, model, make_edge_tensors):
-        """Cell mask must be bool (for transformer attention)."""
-        B = 2
-        ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, n_edges=1)
-        inputs = {
-            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
-            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
-            'ccc_edge_attr': ccc_ea,
-            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.int32),  # int instead of bool
-            'pathology': torch.randn(B, 3),
-        }
-        # Int masks cause issues with attention mask handling
-        with pytest.raises((RuntimeError, AssertionError)):
-            model(**inputs)
-
     def test_region_mask_float_works(self, model, make_edge_tensors):
         """Region mask can be float (RegionHandler converts to float internally)."""
         B = 2
         ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, n_edges=1)
+        cell_data, cell_offsets = self._make_flat_cells(B)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.float32),  # Float mask
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
             'ccc_edge_attr': ccc_ea,
-            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
         output = model(**inputs)
@@ -303,38 +313,35 @@ class TestAllRegionsMaskedEdgeCase:
 class TestFusionLayerDimensionValidation:
     """Test the new d_embed dimension validation in FusionLayer."""
 
-    def test_mismatched_pseudobulk_d_embed_raises(self):
-        """Mismatched pseudobulk embedding dimension should raise."""
-        layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=N_CELL_TYPES)
-
-        pseudobulk = torch.randn(2, N_CELL_TYPES, 32)  # Wrong: 32 instead of 64
-        hgt = torch.randn(2, N_CELL_TYPES, 64)
-        cell = torch.randn(2, N_CELL_TYPES, 64)
-
-        with pytest.raises(ValueError, match="d_embed=64"):
-            layer(pseudobulk, hgt, cell)
-
     def test_mismatched_hgt_d_embed_raises(self):
         """Mismatched HGT embedding dimension should raise."""
         layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=N_CELL_TYPES)
 
-        pseudobulk = torch.randn(2, N_CELL_TYPES, 64)
         hgt = torch.randn(2, N_CELL_TYPES, 32)  # Wrong: 32 instead of 64
         cell = torch.randn(2, N_CELL_TYPES, 64)
 
-        with pytest.raises(ValueError, match="d_embed=64 for hgt_emb"):
-            layer(pseudobulk, hgt, cell)
+        with pytest.raises(ValueError, match="d_embed=64"):
+            layer(hgt, cell)
 
     def test_mismatched_cell_d_embed_raises(self):
         """Mismatched cell embedding dimension should raise."""
         layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=N_CELL_TYPES)
 
-        pseudobulk = torch.randn(2, N_CELL_TYPES, 64)
         hgt = torch.randn(2, N_CELL_TYPES, 64)
         cell = torch.randn(2, N_CELL_TYPES, 32)  # Wrong: 32 instead of 64
 
-        with pytest.raises(ValueError, match="d_cell_emb=64 for cell_emb"):
-            layer(pseudobulk, hgt, cell)
+        with pytest.raises(ValueError, match="d_cell_emb=64"):
+            layer(hgt, cell)
+
+    def test_mismatched_n_cell_types_raises(self):
+        """Mismatched n_cell_types dimension should raise."""
+        layer = FusionLayer(d_embed=64, d_fused=32, n_cell_types=N_CELL_TYPES)
+
+        hgt = torch.randn(2, 10, 64)  # Wrong: 10 instead of N_CELL_TYPES
+        cell = torch.randn(2, 10, 64)
+
+        with pytest.raises(ValueError, match=f"Expected {N_CELL_TYPES} cell types"):
+            layer(hgt, cell)
 
 
 class TestBayesianHeadTrainingLoopVerification:
@@ -470,13 +477,19 @@ class TestFullModelGradientFlowEndToEnd:
         """All trainable parameters should receive gradients."""
         B = 2
         ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B)
+        n_cells_per_type = 10
+        cells_per_sample = N_CELL_TYPES * n_cells_per_type
+        total_cells = B * cells_per_sample
+        # Each sample has its own offset base into the concatenated cell_data
+        offsets_one = torch.arange(0, (N_CELL_TYPES + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
             'ccc_edge_attr': ccc_ea,
-            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
+            'cell_data': torch.randn(total_cells, 50),
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -486,7 +499,7 @@ class TestFullModelGradientFlowEndToEnd:
 
         # Check key components receive gradients
         components_to_check = [
-            ('pseudobulk_encoder', model.pseudobulk_encoder),
+            ('hgt_gene_gate', model.hgt_gene_gate),
             ('region_handler', model.region_handler),
             ('fusion_layer', model.fusion_layer),
             ('pathology_encoder', model.pathology_encoder),
@@ -505,14 +518,18 @@ class TestFullModelGradientFlowEndToEnd:
     def test_region_weights_receive_gradient_multi_region(self, model, make_edge_tensors):
         """Region weights should receive gradients with multi-region input."""
         B = 2
+        n_cells_per_type = 10
+        cells_per_sample = N_CELL_TYPES * n_cells_per_type
+        total_cells = B * cells_per_sample
+        offsets_one = torch.arange(0, (N_CELL_TYPES + 1) * n_cells_per_type, n_cells_per_type)
         ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
-            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),  # All regions available
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
             'ccc_edge_attr': ccc_ea,
-            'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
+            'cell_data': torch.randn(total_cells, 50),
+            'cell_offsets': torch.stack([offsets_one + i * cells_per_sample for i in range(B)]),
             'pathology': torch.randn(B, 3),
         }
 
@@ -542,39 +559,40 @@ class TestCellTransformerEdgeCases:
             dropout=0.0,
         )
 
-    def test_cell_transformer_all_cells_masked(self, transformer):
-        """CellTransformer with all cells masked should produce finite output."""
+    def test_cell_transformer_all_cells_empty(self, transformer):
+        """CellTransformer with zero cells should produce finite output."""
         B = 2
         n_cell_types = N_CELL_TYPES
-        max_cells = 10
         n_genes = 50
 
-        cells = torch.randn(B, n_cell_types, max_cells, n_genes)
-        # All mask entries False (no valid cells)
-        cell_mask = torch.zeros(B, n_cell_types, max_cells, dtype=torch.bool)
+        # Empty flat cell_data: no cells for any type
+        cell_data = torch.empty(0, n_genes)
+        cell_offsets = torch.zeros(B, n_cell_types + 1, dtype=torch.long)
 
         transformer.eval()
         with torch.no_grad():
-            output, selection_weights, _ = transformer(cells, cell_mask)
+            output, _ = transformer(cell_data, cell_offsets)
 
         # Output should be finite (uses empty_embedding path in SetTransformer)
         assert output.shape == (B, n_cell_types, 32)
         assert torch.isfinite(output).all(), \
-            "CellTransformer output should be finite even with all cells masked"
+            "CellTransformer output should be finite even with zero cells"
 
     def test_cell_transformer_single_cell_per_type(self, transformer):
         """CellTransformer with 1 cell per type should work."""
         B = 2
         n_cell_types = N_CELL_TYPES
-        max_cells = 1  # Only 1 cell per type
         n_genes = 50
 
-        cells = torch.randn(B, n_cell_types, max_cells, n_genes)
-        cell_mask = torch.ones(B, n_cell_types, max_cells, dtype=torch.bool)
+        # 1 cell per type in flat format
+        total_cells = B * n_cell_types
+        cell_data = torch.randn(total_cells, n_genes)
+        offsets_one = torch.arange(0, n_cell_types + 1, dtype=torch.long)
+        cell_offsets = torch.stack([offsets_one + i * n_cell_types for i in range(B)])
 
         transformer.eval()
         with torch.no_grad():
-            output, selection_weights, _ = transformer(cells, cell_mask)
+            output, _ = transformer(cell_data, cell_offsets)
 
         assert output.shape == (B, n_cell_types, 32)
         assert torch.isfinite(output).all(), \

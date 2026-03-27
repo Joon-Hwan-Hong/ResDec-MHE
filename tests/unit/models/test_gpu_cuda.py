@@ -60,9 +60,14 @@ def sample_inputs(cuda_device, make_edge_tensors):
     n_regions = N_REGIONS
     n_cell_types = N_CELL_TYPES
     n_genes = 50
-    max_cells = 10
+    n_cells_per_type = 10
+    cells_per_sample = n_cell_types * n_cells_per_type
+    total_cells = B * cells_per_sample
 
     ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B, device=cuda_device)
+
+    offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+    cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)]).to(cuda_device)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
@@ -70,8 +75,8 @@ def sample_inputs(cuda_device, make_edge_tensors):
         'ccc_edge_index': ccc_edge_index,
         'ccc_edge_type': ccc_edge_type,
         'ccc_edge_attr': ccc_edge_attr,
-        'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
-        'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
+        'cell_data': torch.randn(total_cells, n_genes, device=cuda_device),
+        'cell_offsets': cell_offsets,
         'pathology': torch.randn(B, 3, device=cuda_device),
         'cognition': torch.randn(B, 1, device=cuda_device),
     }
@@ -224,7 +229,6 @@ def _fusion_inputs(device):
     return (
         torch.randn(4, N_CT, 64, device=device, requires_grad=True),
         torch.randn(4, N_CT, 64, device=device, requires_grad=True),
-        torch.randn(4, N_CT, 64, device=device, requires_grad=True),
     )
 
 
@@ -277,15 +281,6 @@ def _deterministic_head_inputs(device):
     )
 
 
-def _make_pseudobulk_encoder():
-    from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
-    return PseudobulkEncoder(n_cell_types=N_CT, n_genes=50, d_embed=64, dropout=0.0)
-
-
-def _pseudobulk_encoder_inputs(device):
-    return (torch.randn(4, N_CT, 50, device=device, requires_grad=True),)
-
-
 def _make_cell_transformer():
     from src.models.branches.cell_transformer import CellTransformer
     return CellTransformer(
@@ -295,9 +290,13 @@ def _make_cell_transformer():
 
 
 def _cell_transformer_inputs(device):
+    B, n_cpt = 4, 10
+    cps = N_CT * n_cpt
+    total = B * cps
+    off1 = torch.arange(0, (N_CT + 1) * n_cpt, n_cpt)
     return (
-        torch.randn(4, N_CT, 10, 50, device=device, requires_grad=True),
-        torch.ones(4, N_CT, 10, dtype=torch.bool, device=device),
+        torch.randn(total, 50, device=device, requires_grad=True),
+        torch.stack([off1 + i * cps for i in range(B)]).to(device),
     )
 
 
@@ -346,7 +345,6 @@ COMPONENT_CUDA_CASES = [
     ("PathologyAttention", _make_pathology_attention, _pathology_attention_inputs),
     ("RegionHandler", _make_region_handler, _region_handler_inputs),
     ("DeterministicHead", _make_deterministic_head, _deterministic_head_inputs),
-    ("PseudobulkEncoder", _make_pseudobulk_encoder, _pseudobulk_encoder_inputs),
     ("CellTransformer", _make_cell_transformer, _cell_transformer_inputs),
     ("SetTransformerEncoder", _make_set_transformer_encoder, _set_transformer_encoder_inputs),
     ("ISAB", _make_isab, _isab_inputs),
@@ -475,14 +473,18 @@ class TestMultiGPU:
             E = B * n_edges
             src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=device) + b * n_cell_types for b in range(B)])
             dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=device) + b * n_cell_types for b in range(B)])
+            n_cpt = 10
+            cps = n_cell_types * n_cpt
+            total = B * cps
+            off1 = torch.arange(0, (n_cell_types + 1) * n_cpt, n_cpt)
             return {
                 'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=device),
                 'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=device),
                 'ccc_edge_index': torch.stack([src, dst]),
                 'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=device),
                 'ccc_edge_attr': torch.rand(E, 1, device=device),
-                'cells': torch.randn(B, n_cell_types, 10, n_genes, device=device),
-                'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=device),
+                'cell_data': torch.randn(total, n_genes, device=device),
+                'cell_offsets': torch.stack([off1 + i * cps for i in range(B)]).to(device),
                 'pathology': torch.randn(B, 3, device=device),
             }
 
@@ -522,12 +524,11 @@ class TestMultiGPU:
 
         # Create inputs with larger batch size for parallelism
         B = 8  # Larger batch to be split across GPUs
-        pseudobulk = torch.randn(B, N_CELL_TYPES, 64).cuda()
         hgt = torch.randn(B, N_CELL_TYPES, 64).cuda()
         cell = torch.randn(B, N_CELL_TYPES, 64).cuda()
 
         with torch.no_grad():
-            output = parallel_layer(pseudobulk, hgt, cell)
+            output = parallel_layer(hgt, cell)
 
         # Output should be on cuda:0 (primary device)
         assert output.device.index == 0
@@ -562,14 +563,18 @@ class TestCUDAMemory:
         E = B * n_edges
         src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
         dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+        n_cpt = 10
+        cps = n_cell_types * n_cpt
+        total = B * cps
+        off1 = torch.arange(0, (n_cell_types + 1) * n_cpt, n_cpt)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=cuda_device),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=cuda_device),
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
             'ccc_edge_attr': torch.rand(E, 1, device=cuda_device),
-            'cells': torch.randn(B, n_cell_types, 10, n_genes, device=cuda_device),
-            'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=cuda_device),
+            'cell_data': torch.randn(total, n_genes, device=cuda_device),
+            'cell_offsets': torch.stack([off1 + i * cps for i in range(B)]).to(cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device),
         }
 
@@ -608,14 +613,18 @@ class TestCUDAMemory:
             E = B * n_edges
             src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
             dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+            n_cpt = 10
+            cps = n_cell_types * n_cpt
+            total = B * cps
+            off1 = torch.arange(0, (n_cell_types + 1) * n_cpt, n_cpt)
             return {
                 'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=cuda_device),
                 'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=cuda_device),
                 'ccc_edge_index': torch.stack([src, dst]),
                 'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
                 'ccc_edge_attr': torch.rand(E, 1, device=cuda_device),
-                'cells': torch.randn(B, n_cell_types, 10, n_genes, device=cuda_device),
-                'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=cuda_device),
+                'cell_data': torch.randn(total, n_genes, device=cuda_device),
+                'cell_offsets': torch.stack([off1 + i * cps for i in range(B)]).to(cuda_device),
                 'pathology': torch.randn(B, 3, device=cuda_device),
             }
 
@@ -778,20 +787,18 @@ class TestCPUGPUConsistency:
 
         # Same inputs
         torch.manual_seed(123)
-        pb = torch.randn(4, N_CELL_TYPES, 64)
         hgt = torch.randn(4, N_CELL_TYPES, 64)
         cell = torch.randn(4, N_CELL_TYPES, 64)
 
         # CPU forward
         layer_cpu.eval()
         with torch.no_grad():
-            output_cpu = layer_cpu(pb, hgt, cell)
+            output_cpu = layer_cpu(hgt, cell)
 
         # GPU forward
         layer_gpu.eval()
         with torch.no_grad():
             output_gpu = layer_gpu(
-                pb.to(cuda_device),
                 hgt.to(cuda_device),
                 cell.to(cuda_device)
             )

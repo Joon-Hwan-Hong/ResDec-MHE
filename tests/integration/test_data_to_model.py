@@ -148,14 +148,13 @@ class TestCollateToCellTransformer:
         )
 
         # Forward pass should work
-        embeddings, selection_weights, _ = transformer(
+        embeddings, _ = transformer(
             collated["cell_data"],
             collated["cell_offsets"],
         )
 
-        # Verify output shapes
+        # Verify output shape
         assert embeddings.shape == (4, N_CELL_TYPES, 64)
-        assert selection_weights.shape == (N_CELL_TYPES,)
 
     def test_cell_transformer_gradient_flow_from_collate(self):
         """Gradients should flow through CellTransformer with collate data."""
@@ -178,7 +177,7 @@ class TestCollateToCellTransformer:
         # Enable gradients for input
         cells = collated["cell_data"].clone().requires_grad_(True)
 
-        embeddings, _, _ = transformer(cells, collated["cell_offsets"])
+        embeddings, _ = transformer(cells, collated["cell_offsets"])
         loss = embeddings.sum()
         loss.backward()
 
@@ -214,7 +213,7 @@ class TestEndToEndPipeline:
             n_inducing=16,
         )
 
-        embeddings, selection_weights, attention = transformer(
+        embeddings, attention = transformer(
             collated["cell_data"],
             collated["cell_offsets"],
             return_attention=True,
@@ -222,7 +221,6 @@ class TestEndToEndPipeline:
 
         # Verify outputs are valid
         assert torch.isfinite(embeddings).all()
-        assert torch.isfinite(selection_weights).all()
         assert attention is not None
         assert attention.shape[1] == N_CELL_TYPES
 
@@ -250,7 +248,7 @@ class TestEndToEndPipeline:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
+        embeddings, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         # Should produce valid outputs despite sparse data
         assert torch.isfinite(embeddings).all()
@@ -280,7 +278,7 @@ class TestEndToEndPipeline:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
+        embeddings, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         # All samples should have valid embeddings
         assert embeddings.shape[0] == 4
@@ -376,62 +374,6 @@ class TestCollateToHGTEncoderTensor:
 
 
 # =============================================================================
-# Pseudobulk Encoder Integration Tests
-# =============================================================================
-
-
-class TestCollateToPseudobulkEncoder:
-    """Test that collate output works with PseudobulkEncoder."""
-
-    def test_pseudobulk_encoder_accepts_collate_output(self):
-        """PseudobulkEncoder should accept pseudobulk from collate."""
-        from src.data.collate import collate_fn
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
-
-        n_genes = 100
-        d_embed = 64
-
-        batch = [create_mock_dataset_sample(n_genes=n_genes) for _ in range(4)]
-        collated = collate_fn(batch)
-
-        encoder = PseudobulkEncoder(
-            n_genes=n_genes,
-            n_cell_types=N_CELL_TYPES,
-            d_embed=d_embed,
-        )
-
-        # Forward pass
-        embeddings = encoder(collated["pseudobulk"])
-
-        # Verify output shape: [batch, n_cell_types, d_embed]
-        assert embeddings.shape == (4, N_CELL_TYPES, d_embed)
-        assert torch.isfinite(embeddings).all()
-
-    def test_pseudobulk_encoder_gradient_flow(self):
-        """Gradients should flow through PseudobulkEncoder."""
-        from src.data.collate import collate_fn
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
-
-        n_genes = 100
-        batch = [create_mock_dataset_sample(n_genes=n_genes) for _ in range(4)]
-        collated = collate_fn(batch)
-
-        encoder = PseudobulkEncoder(
-            n_genes=n_genes,
-            n_cell_types=N_CELL_TYPES,
-            d_embed=64,
-        )
-
-        pseudobulk = collated["pseudobulk"].clone().requires_grad_(True)
-        embeddings = encoder(pseudobulk)
-        loss = embeddings.sum()
-        loss.backward()
-
-        assert pseudobulk.grad is not None
-        assert not torch.all(pseudobulk.grad == 0)
-
-
-# =============================================================================
 # Cross-Branch Consistency Tests
 # =============================================================================
 
@@ -440,10 +382,10 @@ class TestCrossBranchConsistency:
     """Test that all branches produce compatible outputs for fusion."""
 
     def test_all_branches_same_embed_dimension(self):
-        """All branches should output the same embedding dimension."""
+        """Both branches should output the same embedding dimension."""
         from src.data.collate import collate_fn
         from src.models.branches.cell_transformer import CellTransformer
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        from src.models.components.gene_attention_gate import GeneAttentionGate
         from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
 
         n_genes = 100
@@ -452,15 +394,12 @@ class TestCrossBranchConsistency:
         batch = [create_mock_dataset_sample(n_genes=n_genes) for _ in range(4)]
         collated = collate_fn(batch)
 
-        # Branch 1: Pseudobulk
-        pb_encoder = PseudobulkEncoder(
-            n_genes=n_genes,
-            n_cell_types=N_CELL_TYPES,
-            d_embed=d_embed,
-        )
-        pb_out = pb_encoder(collated["pseudobulk"])
+        # HGT input pipeline: GeneAttentionGate + Linear projection
+        gate = GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=n_genes, temperature=2.0)
+        proj = torch.nn.Linear(n_genes, d_embed)
+        hgt_input = proj(gate(collated["pseudobulk"]))
 
-        # Branch 3: CellTransformer
+        # Branch 2: CellTransformer
         cell_transformer = CellTransformer(
             n_genes=n_genes,
             n_cell_types=N_CELL_TYPES,
@@ -469,11 +408,11 @@ class TestCrossBranchConsistency:
             n_isab_layers=2,
             n_inducing=16,
         )
-        cell_out, _, _ = cell_transformer(collated["cell_data"], collated["cell_offsets"])
+        cell_out, _ = cell_transformer(collated["cell_data"], collated["cell_offsets"])
 
-        # Branch 2: HGT (verify output dimension matches)
+        # Branch 1: HGT (verify output dimension matches)
         hgt_encoder = HGTEncoderTensor(
-            d_input=d_embed,  # Takes embeddings as input
+            d_input=d_embed,
             d_hidden=d_embed,
             d_output=d_embed,
             n_heads=4,
@@ -483,28 +422,30 @@ class TestCrossBranchConsistency:
         )
 
         # Verify dimensions match for fusion
-        assert pb_out.shape[-1] == d_embed
+        assert hgt_input.shape[-1] == d_embed
         assert cell_out.shape[-1] == d_embed
         assert hgt_encoder.d_output == d_embed
 
     def test_all_branches_same_cell_type_dimension(self):
-        """All branches should have same n_cell_types dimension."""
+        """Both branches should have same n_cell_types dimension."""
         from src.data.collate import collate_fn
         from src.models.branches.cell_transformer import CellTransformer
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        from src.models.components.gene_attention_gate import GeneAttentionGate
 
         n_genes = 100
+        d_embed = 64
         batch = [create_mock_dataset_sample(n_genes=n_genes) for _ in range(4)]
         collated = collate_fn(batch)
 
-        pb_encoder = PseudobulkEncoder(n_genes=n_genes, n_cell_types=N_CELL_TYPES)
-        cell_transformer = CellTransformer(n_genes=n_genes, n_cell_types=N_CELL_TYPES)
+        gate = GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=n_genes, temperature=2.0)
+        proj = torch.nn.Linear(n_genes, d_embed)
+        cell_transformer = CellTransformer(n_genes=n_genes, n_cell_types=N_CELL_TYPES, d_model=d_embed)
 
-        pb_out = pb_encoder(collated["pseudobulk"])
-        cell_out, _, _ = cell_transformer(collated["cell_data"], collated["cell_offsets"])
+        hgt_input = proj(gate(collated["pseudobulk"]))
+        cell_out, _ = cell_transformer(collated["cell_data"], collated["cell_offsets"])
 
         # Both should have n_cell_types in dimension 1
-        assert pb_out.shape[1] == N_CELL_TYPES
+        assert hgt_input.shape[1] == N_CELL_TYPES
         assert cell_out.shape[1] == N_CELL_TYPES
 
 
@@ -582,8 +523,8 @@ class TestDataLoaderIntegration:
 class TestGradientFlowAudit:
     """Verify gradients flow to all learnable parameters."""
 
-    def test_gradients_reach_cell_type_selector(self):
-        """Gradients should reach CellTypeSelector logits."""
+    def test_gradients_reach_gene_attention_gate(self):
+        """Gradients should reach GeneAttentionGate logits."""
         from src.data.collate import collate_fn
         from src.models.branches.cell_transformer import CellTransformer
 
@@ -600,13 +541,13 @@ class TestGradientFlowAudit:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
+        embeddings, _ = transformer(collated["cell_data"], collated["cell_offsets"])
         loss = embeddings.sum()
         loss.backward()
 
-        # Selector logits should have gradients
-        assert transformer.selector.selection_logits.grad is not None
-        assert not torch.all(transformer.selector.selection_logits.grad == 0)
+        # Gene attention gate logits should have gradients
+        assert transformer.gene_gate.gate_logits.grad is not None
+        assert not torch.all(transformer.gene_gate.gate_logits.grad == 0)
 
     def test_gradients_reach_hgt_layer_scales(self):
         """Gradients should reach HGT LayerScale parameters."""
@@ -665,7 +606,7 @@ class TestGradientFlowAudit:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
+        embeddings, _ = transformer(collated["cell_data"], collated["cell_offsets"])
         loss = embeddings.sum()
         loss.backward()
 
@@ -707,7 +648,7 @@ class TestPipelineEdgeCases:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
+        embeddings, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         # Should produce finite outputs despite empty cell types
         assert torch.isfinite(embeddings).all()
@@ -748,7 +689,7 @@ class TestPipelineEdgeCases:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
+        embeddings, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         assert embeddings.shape[0] == 1
         assert torch.isfinite(embeddings).all()
@@ -786,7 +727,7 @@ class TestNumericalStabilityEndToEnd:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
+        embeddings, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         assert torch.isfinite(embeddings).all()
 
@@ -814,7 +755,7 @@ class TestNumericalStabilityEndToEnd:
             n_inducing=16,
         )
 
-        embeddings, _, _ = transformer(collated["cell_data"], collated["cell_offsets"])
+        embeddings, _ = transformer(collated["cell_data"], collated["cell_offsets"])
 
         assert torch.isfinite(embeddings).all()
 
@@ -822,26 +763,29 @@ class TestNumericalStabilityEndToEnd:
         """No NaN should appear in any output tensor."""
         from src.data.collate import collate_fn
         from src.models.branches.cell_transformer import CellTransformer
-        from src.models.branches.pseudobulk_encoder import PseudobulkEncoder
+        from src.models.components.gene_attention_gate import GeneAttentionGate
 
         n_genes = 100
         batch = [create_mock_dataset_sample(n_genes=n_genes) for _ in range(8)]
         collated = collate_fn(batch)
 
-        # Test all branches
-        pb_encoder = PseudobulkEncoder(n_genes=n_genes, n_cell_types=N_CELL_TYPES)
+        # Test HGT input pipeline (GeneAttentionGate + Linear projection)
+        gate = GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=n_genes, temperature=2.0)
+        proj = torch.nn.Linear(n_genes, 64)
+        gated = gate(collated["pseudobulk"])
+        hgt_input = proj(gated)
+
         cell_transformer = CellTransformer(
             n_genes=n_genes, n_cell_types=N_CELL_TYPES,
             d_model=64, n_heads=4, n_isab_layers=2, n_inducing=16,
         )
 
-        pb_out = pb_encoder(collated["pseudobulk"])
-        cell_out, weights, attention = cell_transformer(
+        cell_out, attention = cell_transformer(
             collated["cell_data"], collated["cell_offsets"], return_attention=True
         )
 
         # Check all outputs
-        assert not torch.isnan(pb_out).any()
+        assert not torch.isnan(hgt_input).any()
         assert not torch.isnan(cell_out).any()
-        assert not torch.isnan(weights).any()
-        assert not torch.isnan(attention).any()
+        if attention is not None:
+            assert not torch.isnan(attention).any()

@@ -46,9 +46,6 @@ def base_config():
                 "n_heads": 4,
                 "n_pma_seeds": 1,
             },
-            "cell_type_selector": {
-                "selection_temperature": 1.0,
-            },
             "pathology_attention": {
                 "d_cond": 16,
                 "n_heads": 4,
@@ -108,8 +105,17 @@ def _make_batch(batch_size=4, n_genes=50, n_cell_types=N_CELL_TYPES,
     ccc_edge_type = torch.zeros(n_edges_total, dtype=torch.long)
     ccc_edge_attr = torch.rand(n_edges_total, 1)
 
-    cells = torch.randn(batch_size, n_cell_types, max_cells, n_genes)
-    cell_mask = torch.ones(batch_size, n_cell_types, max_cells, dtype=torch.bool)
+    # Flat cell format
+    total_per_sample = n_cell_types * max_cells
+    total_cells = batch_size * total_per_sample
+    cell_data = torch.randn(total_cells, n_genes)
+    cell_offsets = torch.zeros(batch_size, n_cell_types + 1, dtype=torch.long)
+    for b in range(batch_size):
+        base = b * total_per_sample
+        for ct in range(n_cell_types):
+            cell_offsets[b, ct + 1] = cell_offsets[b, ct] + max_cells
+        cell_offsets[b] += base
+
     cell_type_mask = torch.ones(batch_size, n_cell_types, dtype=torch.bool)
     cell_type_mask[:, -3:] = False  # Mask out last 3 types
     pathology = torch.rand(batch_size, 3)
@@ -121,8 +127,8 @@ def _make_batch(batch_size=4, n_genes=50, n_cell_types=N_CELL_TYPES,
         "ccc_edge_index": ccc_edge_index,
         "ccc_edge_type": ccc_edge_type,
         "ccc_edge_attr": ccc_edge_attr,
-        "cells": cells,
-        "cell_mask": cell_mask,
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         "cell_type_mask": cell_type_mask,
         "pathology": pathology,
         "cognition": cognition,
@@ -574,24 +580,22 @@ class TestNaNHandling:
         assert module._nan_loss_policy == "fail"
         assert module._nan_batch_policy == "skip"
 
-    def test_check_batch_nan_skips_cells_tensor(self, base_config):
-        """_check_batch_nan skips cells tensor (validated at preprocessing)."""
+    def test_check_batch_nan_skips_cell_data_tensor(self, base_config):
+        """_check_batch_nan skips cell_data tensor (validated at preprocessing)."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         batch = {
-            "cells": torch.tensor([[[float("nan")]]]),  # NaN in cells — excluded from check
-            "cell_mask": torch.ones(1, 1, dtype=torch.bool),
+            "cell_data": torch.tensor([[float("nan")]]),  # NaN in cell_data — excluded from check
             "cognition": torch.tensor([[1.0]]),  # No NaN here
         }
         assert not module._check_batch_nan(batch)
 
     def test_check_batch_nan_skips_mask_tensors(self, base_config):
-        """_check_batch_nan skips boolean mask tensors (cell_mask, cell_type_mask, region_mask)."""
+        """_check_batch_nan skips boolean mask tensors (cell_type_mask, region_mask)."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         batch = {
-            "cells": torch.ones(1, 1, 1),
-            "cell_mask": torch.ones(1, 1, dtype=torch.bool),
+            "cell_data": torch.ones(1, 1),
             "cell_type_mask": torch.ones(1, dtype=torch.bool),
             "region_mask": torch.ones(1, dtype=torch.bool),
             "cognition": torch.tensor([[1.0]]),
@@ -603,7 +607,7 @@ class TestNaNHandling:
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         batch = {
-            "cells": torch.ones(1, 1, 1),
+            "cell_data": torch.ones(1, 1),
             "cognition": torch.tensor([[float("nan")]]),
         }
         assert module._check_batch_nan(batch)
@@ -613,7 +617,7 @@ class TestNaNHandling:
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         batch = {
-            "cells": torch.ones(1, 1, 1),
+            "cell_data": torch.ones(1, 1),
             "cognition": torch.tensor([[1.0]]),
             "ccc_edge_attr": torch.tensor([[[float("nan")], [1.0]]]),
         }
@@ -676,36 +680,16 @@ class TestParameterWiring:
 class TestBatchToModelKwargs:
     """Tests for _batch_to_model_kwargs flat cell format support."""
 
-    def test_flat_keys_preferred_over_padded(self, base_config):
-        """When batch has both flat and padded keys, flat keys are passed to model."""
+    def test_flat_keys_passed_to_model(self, base_config):
+        """Flat cell keys are passed from batch to model kwargs."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
 
         batch = _make_batch(n_genes=50)
-        # Add flat keys (simulating collation that produces both)
-        batch["cell_data"] = torch.randn(100, 50)
-        batch["cell_offsets"] = torch.zeros(2, N_CELL_TYPES + 1, dtype=torch.long)
 
         kwargs = module._batch_to_model_kwargs(batch)
         assert "cell_data" in kwargs, "Flat cell_data missing from model kwargs"
         assert "cell_offsets" in kwargs, "Flat cell_offsets missing from model kwargs"
-        assert "cells" not in kwargs, "Padded cells should not be passed when flat keys present"
-        assert "cell_mask" not in kwargs, "Padded cell_mask should not be passed when flat keys present"
-
-    def test_padded_fallback_when_no_flat_keys(self, base_config):
-        """When batch only has padded keys, padded format is passed to model."""
-        from src.training.lightning_module import CognitiveResilienceLightningModule
-        module = CognitiveResilienceLightningModule(base_config)
-
-        batch = _make_batch(n_genes=50)
-        # No flat keys — standard padded batch
-        assert "cell_data" not in batch
-
-        kwargs = module._batch_to_model_kwargs(batch)
-        assert "cells" in kwargs, "Padded cells missing from model kwargs"
-        assert "cell_mask" in kwargs, "Padded cell_mask missing from model kwargs"
-        assert "cell_data" not in kwargs, "cell_data should not be present for padded-only batch"
-        assert "cell_offsets" not in kwargs, "cell_offsets should not be present for padded-only batch"
 
     def test_flat_kwargs_forward_pass_works(self, base_config):
         """Full forward pass works when _batch_to_model_kwargs passes flat keys."""
@@ -764,6 +748,8 @@ def _identity_collate(batch):
     Flat edge tensors get special handling:
     - ccc_edge_index [2, E] concatenated along dim=1 with node offsets
     - ccc_edge_type [E] and ccc_edge_attr [E, 1] concatenated along dim=0
+    - cell_data [N, G] concatenated along dim=0
+    - cell_offsets [B, n_types+1] stacked with cumulative global offsets
     """
     keys = batch[0].keys()
     result = {}
@@ -772,14 +758,22 @@ def _identity_collate(batch):
         values = [b[key] for b in batch]
         if isinstance(values[0], torch.Tensor):
             if key == "ccc_edge_index":
-                # Flat edge_index: [2, E] — concat along dim=1 with batch offsets
+                # Flat edge_index: [2, E] -- concat along dim=1 with batch offsets
                 offset_parts = []
                 for i, v in enumerate(values):
                     offset_parts.append(v + i * n_cell_types)
                 result[key] = torch.cat(offset_parts, dim=1)
-            elif key in ("ccc_edge_type", "ccc_edge_attr"):
-                # Flat: [E] or [E, 1] — concat along dim=0
+            elif key in ("ccc_edge_type", "ccc_edge_attr", "cell_data"):
+                # Flat: concat along dim=0
                 result[key] = torch.cat(values, dim=0)
+            elif key == "cell_offsets":
+                # cell_offsets need cumulative global offsets
+                cumulative = 0
+                adjusted = []
+                for v in values:
+                    adjusted.append(v + cumulative)
+                    cumulative += int(v[..., -1].max().item())
+                result[key] = torch.cat(adjusted, dim=0)
             else:
                 result[key] = torch.cat(values, dim=0)
         elif isinstance(values[0], list):
@@ -873,8 +867,8 @@ class TestCheckpointRoundTrip:
                 ccc_edge_index=batch["ccc_edge_index"],
                 ccc_edge_type=batch["ccc_edge_type"],
                 ccc_edge_attr=batch["ccc_edge_attr"],
-                cells=batch["cells"],
-                cell_mask=batch["cell_mask"],
+                cell_data=batch["cell_data"],
+                cell_offsets=batch["cell_offsets"],
                 cell_type_mask=batch.get("cell_type_mask"),
                 pathology=batch["pathology"],
             )
@@ -891,8 +885,8 @@ class TestCheckpointRoundTrip:
                 ccc_edge_index=batch["ccc_edge_index"],
                 ccc_edge_type=batch["ccc_edge_type"],
                 ccc_edge_attr=batch["ccc_edge_attr"],
-                cells=batch["cells"],
-                cell_mask=batch["cell_mask"],
+                cell_data=batch["cell_data"],
+                cell_offsets=batch["cell_offsets"],
                 cell_type_mask=batch.get("cell_type_mask"),
                 pathology=batch["pathology"],
             )
@@ -910,6 +904,7 @@ class TestDDPBehavior:
 
         mock_trainer = MagicMock()
         mock_trainer.world_size = 4
+        mock_trainer.datamodule.train_dataset = list(range(100))
         module._trainer = mock_trainer
 
         module.configure_optimizers()
@@ -923,11 +918,98 @@ class TestDDPBehavior:
 
         mock_trainer = MagicMock()
         mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = list(range(100))
         module._trainer = mock_trainer
 
         module.configure_optimizers()
 
         assert module.model.prediction_head._data_scale == 1
+
+    def test_elbo_n_train_set_from_datamodule(self, bayesian_config):
+        """ELBO n_train is set from datamodule.train_dataset length."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = list(range(372))
+        module._trainer = mock_trainer
+
+        module.configure_optimizers()
+
+        assert module.elbo.n_train == 372
+
+    def test_elbo_n_train_fails_if_dataset_missing(self, bayesian_config):
+        """ELBO setup raises RuntimeError if train_dataset is None."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = None
+        module._trainer = mock_trainer
+
+        with pytest.raises(RuntimeError, match="Cannot determine training set size"):
+            module.configure_optimizers()
+
+    def test_separate_guide_lr_param_groups(self, bayesian_config):
+        """Bayesian optimizer has 2 param groups with separate LRs."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        bayesian_config.training.optimizer.guide_lr = 0.005
+        module = CognitiveResilienceLightningModule(bayesian_config)
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = list(range(100))
+        module._trainer = mock_trainer
+
+        result = module.configure_optimizers()
+        optimizer = result["optimizer"]
+
+        assert len(optimizer.param_groups) == 2
+        # Group 0 = model (encoder), Group 1 = guide
+        assert optimizer.param_groups[0]["lr"] == bayesian_config.training.optimizer.lr
+        assert optimizer.param_groups[1]["lr"] == 0.005
+
+    def test_guide_lr_fallback_to_encoder_lr(self, bayesian_config):
+        """When guide_lr is not set, guide uses encoder LR."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        # Remove guide_lr if present
+        if "guide_lr" in bayesian_config.training.optimizer:
+            del bayesian_config.training.optimizer.guide_lr
+        module = CognitiveResilienceLightningModule(bayesian_config)
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = list(range(100))
+        module._trainer = mock_trainer
+
+        result = module.configure_optimizers()
+        optimizer = result["optimizer"]
+
+        assert len(optimizer.param_groups) == 2
+        # Both groups should have the same LR
+        assert optimizer.param_groups[0]["lr"] == optimizer.param_groups[1]["lr"]
+
+    def test_cold_posterior_temperature_passed_to_elbo(self, bayesian_config):
+        """Cold posterior temperature from config is passed to ELBO."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        from omegaconf import OmegaConf
+        bayesian_config.training.kl_annealing = OmegaConf.create({
+            "enabled": True,
+            "alpha_min": 0.01,
+            "warmup_epochs": 5,
+            "schedule": "linear",
+            "temperature": 0.1,
+        })
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        assert module.elbo.temperature == 0.1
+
+    def test_cold_posterior_temperature_default(self, bayesian_config):
+        """Without temperature config, ELBO uses T=1.0."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        assert module.elbo.temperature == 1.0
 
     def test_worker_seed_uniqueness_across_ranks(self):
         """Worker init fn produces unique seeds for different ranks."""
@@ -991,6 +1073,11 @@ class TestBayesianELBOConvergence:
         module = CognitiveResilienceLightningModule(bayesian_config)
         module.log = lambda *args, **kwargs: None
 
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = list(range(100))
+        module._trainer = mock_trainer
+
         # configure_optimizers prototypes the guide and creates optimizer
         opt_config = module.configure_optimizers()
         optimizer = opt_config["optimizer"]
@@ -1019,6 +1106,11 @@ class TestBayesianELBOConvergence:
 
         module = CognitiveResilienceLightningModule(bayesian_config)
         module.log = lambda *args, **kwargs: None
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = list(range(100))
+        module._trainer = mock_trainer
 
         # configure_optimizers prototypes the guide and creates optimizer
         opt_config = module.configure_optimizers()
@@ -1056,6 +1148,12 @@ class TestBayesianSVILrd:
         from src.training.lightning_module import CognitiveResilienceLightningModule
         bayesian_config.training.optimizer.lrd = 0.9999
         module = CognitiveResilienceLightningModule(bayesian_config)
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = list(range(100))
+        module._trainer = mock_trainer
+
         result = module.configure_optimizers()
         scheduler = result["lr_scheduler"]["scheduler"]
         assert isinstance(scheduler, torch.optim.lr_scheduler.ExponentialLR)
@@ -1068,6 +1166,12 @@ class TestBayesianSVILrd:
         if "lrd" in bayesian_config.training.optimizer:
             del bayesian_config.training.optimizer.lrd
         module = CognitiveResilienceLightningModule(bayesian_config)
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        mock_trainer.datamodule.train_dataset = list(range(100))
+        module._trainer = mock_trainer
+
         result = module.configure_optimizers()
         scheduler = result["lr_scheduler"]["scheduler"]
         assert scheduler.gamma == 1.0

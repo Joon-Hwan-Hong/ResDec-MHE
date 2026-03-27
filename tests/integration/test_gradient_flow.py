@@ -23,9 +23,20 @@ from src.models.fusion import PathologyStratifiedAttention
 
 N_GENES = 50
 MAX_CELLS = 20
+N_CELLS_PER_TYPE = MAX_CELLS
 D_EMBED = 32
 D_FUSED = 32
 D_COND = 16
+
+
+def _make_flat_cell_inputs(B, n_cell_types=N_CELL_TYPES, n_cells_per_type=N_CELLS_PER_TYPE, n_genes=N_GENES):
+    """Create flat cell_data and cell_offsets for a batch."""
+    cells_per_sample = n_cell_types * n_cells_per_type
+    total_cells = B * cells_per_sample
+    cell_data = torch.randn(total_cells, n_genes)
+    offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+    cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
+    return {'cell_data': cell_data, 'cell_offsets': cell_offsets}
 
 
 def _make_edge_inputs(B, n_edges=5):
@@ -157,8 +168,7 @@ class TestFullModelGradientFlow:
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             **_make_edge_inputs(B),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            **_make_flat_cell_inputs(B),
             'pathology': torch.randn(B, 3),
         }
 
@@ -168,10 +178,10 @@ class TestFullModelGradientFlow:
 
         # Check key components receive gradients (not per-type parameters)
         key_components = [
-            'pseudobulk_encoder.gene_gate.gate_logits',
-            'pseudobulk_encoder.shared_mlp.0.weight',
+            'hgt_gene_gate.gate_logits',
+            'hgt_input_proj.weight',
             'region_handler.region_weights',
-            'cell_transformer.selector.selection_logits',
+            'cell_transformer.gene_gate.gate_logits',
             'fusion_layer.proj.weight',
             'pathology_encoder.pathology_mlp.0.weight',
             'pathology_attention.query_generator.weight',
@@ -196,8 +206,7 @@ class TestFullModelGradientFlow:
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             **_make_edge_inputs(B),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            **_make_flat_cell_inputs(B),
             'pathology': torch.randn(B, 3),
         }
 
@@ -205,11 +214,11 @@ class TestFullModelGradientFlow:
         loss = output['mean'].sum()
         loss.backward()
 
-        # Check pseudobulk encoder
-        assert model.pseudobulk_encoder.gene_gate.gate_logits.grad is not None
+        # Check HGT gene gate
+        assert model.hgt_gene_gate.gate_logits.grad is not None
 
-        # Check cell transformer
-        assert model.cell_transformer.selector.selection_logits.grad is not None
+        # Check cell transformer gene gate
+        assert model.cell_transformer.gene_gate.gate_logits.grad is not None
 
         # Check fusion layer
         assert model.fusion_layer.proj.weight.grad is not None
@@ -232,8 +241,7 @@ class TestFullModelGradientFlow:
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
             **_make_edge_inputs(B),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            **_make_flat_cell_inputs(B),
             'pathology': torch.randn(B, 3),
         }
 
@@ -282,8 +290,7 @@ class TestBayesianKLGradientFlow:
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             **_make_edge_inputs(B),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            **_make_flat_cell_inputs(B),
             'pathology': torch.randn(B, 3),
             'cognition': torch.randn(B, 1),
         }
@@ -353,8 +360,7 @@ class TestMultiRegionBehavior:
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            **_make_flat_cell_inputs(B),
             'pathology': torch.randn(B, 3),
         }
 
@@ -376,8 +382,7 @@ class TestMultiRegionBehavior:
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': region_mask,
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            **_make_flat_cell_inputs(B),
             'pathology': torch.randn(B, 3),
         }
 
@@ -393,8 +398,7 @@ class TestMultiRegionBehavior:
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            **_make_flat_cell_inputs(B),
             'pathology': torch.randn(B, 3),
         }
         model(**inputs)
@@ -473,8 +477,7 @@ class TestCellTypeMaskPropagation:
 
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            **_make_flat_cell_inputs(B),
             'cell_type_mask': cell_type_mask,
             'pathology': torch.randn(B, 3),
         }

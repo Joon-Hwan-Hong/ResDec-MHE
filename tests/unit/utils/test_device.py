@@ -96,8 +96,8 @@ class TestMoveBatchToDevice:
     def test_mixed_batch_all_keys_present(self):
         batch = {
             "pseudobulk": torch.randn(4, 31, 50),
-            "cells": torch.randn(4, 31, 100, 50),
-            "cell_mask": torch.ones(4, 31, 100, dtype=torch.bool),
+            "cell_data": torch.randn(100, 50),
+            "cell_offsets": torch.zeros(4, 32, dtype=torch.long),
             "cognition": torch.randn(4, 1),
             "pathology": torch.randn(4, 3),
             "region_pseudobulk": torch.randn(4, 6, 31, 50),

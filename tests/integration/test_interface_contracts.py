@@ -33,6 +33,24 @@ MAX_CELLS = 20
 # =============================================================================
 
 
+def _make_flat_cell_tensors_single(n_cell_types: int, n_cells_per_type: int, n_genes: int):
+    """Create flat cell_data and cell_offsets for a single sample (pre-collation)."""
+    total_cells = n_cell_types * n_cells_per_type
+    cell_data = torch.randn(total_cells, n_genes)
+    cell_offsets = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+    return cell_data, cell_offsets
+
+
+def _make_flat_cell_tensors_batch(B: int, n_cell_types: int, n_cells_per_type: int, n_genes: int):
+    """Create flat cell_data and cell_offsets for a batch (post-collation)."""
+    cells_per_sample = n_cell_types * n_cells_per_type
+    total_cells = B * cells_per_sample
+    cell_data = torch.randn(total_cells, n_genes)
+    offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+    cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
+    return cell_data, cell_offsets
+
+
 def create_mock_sample(n_edges: int = 15) -> dict:
     """Create a mock dataset sample matching CognitiveResilienceDataset output.
 
@@ -40,13 +58,14 @@ def create_mock_sample(n_edges: int = 15) -> dict:
     Divergences: random dense tensors (real data is sparse non-negative expression),
     all masks True (real data has masked types/cells). Update if dataset schema changes.
     """
+    cell_data, cell_offsets = _make_flat_cell_tensors_single(N_CELL_TYPES, MAX_CELLS, N_GENES)
     return {
         "subject_id": "TEST_SUBJECT",
         "pseudobulk": torch.randn(N_CELL_TYPES, N_GENES),
         "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
         "cell_counts": torch.randint(10, 100, (N_CELL_TYPES,)),
-        "cells": torch.randn(N_CELL_TYPES, MAX_CELLS, N_GENES),
-        "cell_mask": torch.ones(N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, n_edges)),
         "ccc_edge_type": torch.randint(0, N_EDGE_TYPES, (n_edges,)),  # Integer indices
         "ccc_edge_attr": torch.rand(n_edges, 1),  # LIANA magnitude [n_edges, 1]
@@ -170,10 +189,11 @@ class TestModelInputContract:
     def test_model_accepts_single_region_input(self, model):
         """Model should accept single-region input via pseudobulk parameter."""
         B = 2
+        cell_data, cell_offsets = _make_flat_cell_tensors_batch(B, N_CELL_TYPES, MAX_CELLS, N_GENES)
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -184,11 +204,12 @@ class TestModelInputContract:
     def test_model_accepts_multiregion_input(self, model):
         """Model should accept multi-region input via region_pseudobulk parameter."""
         B = 2
+        cell_data, cell_offsets = _make_flat_cell_tensors_batch(B, N_CELL_TYPES, MAX_CELLS, N_GENES)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, N_GENES),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -204,13 +225,14 @@ class TestModelInputContract:
 
         src = torch.cat([torch.randint(0, N_CELL_TYPES, (n_edges,)) + b * N_CELL_TYPES for b in range(B)])
         dst = torch.cat([torch.randint(0, N_CELL_TYPES, (n_edges,)) + b * N_CELL_TYPES for b in range(B)])
+        cell_data, cell_offsets = _make_flat_cell_tensors_batch(B, N_CELL_TYPES, MAX_CELLS, N_GENES)
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,)),
             'ccc_edge_attr': torch.rand(E, 1),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -220,10 +242,11 @@ class TestModelInputContract:
     def test_model_returns_hgt_attention_when_requested(self, model):
         """Model should return HGT attention weights when return_hgt_attention=True."""
         B = 2
+        cell_data, cell_offsets = _make_flat_cell_tensors_batch(B, N_CELL_TYPES, MAX_CELLS, N_GENES)
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
             'return_hgt_attention': True,
         }
@@ -271,8 +294,8 @@ class TestCollateToModelIntegration:
             "ccc_edge_index": collated["ccc_edge_index"],
             "ccc_edge_type": collated["ccc_edge_type"],
             "ccc_edge_attr": collated["ccc_edge_attr"],
-            "cells": collated["cells"],
-            "cell_mask": collated["cell_mask"],
+            "cell_data": collated["cell_data"],
+            "cell_offsets": collated["cell_offsets"],
             "pathology": collated["pathology"],
         }
 
@@ -290,8 +313,8 @@ class TestCollateToModelIntegration:
             "ccc_edge_index": collated["ccc_edge_index"],
             "ccc_edge_type": collated["ccc_edge_type"],
             "ccc_edge_attr": collated["ccc_edge_attr"],
-            "cells": collated["cells"],
-            "cell_mask": collated["cell_mask"],
+            "cell_data": collated["cell_data"],
+            "cell_offsets": collated["cell_offsets"],
             "pathology": collated["pathology"],
         }
 
@@ -330,13 +353,14 @@ class TestEmptyEdgeContract:
     def test_model_handles_no_edges(self, model):
         """Model should handle samples with no edges."""
         B = 2
+        cell_data, cell_offsets = _make_flat_cell_tensors_batch(B, N_CELL_TYPES, MAX_CELLS, N_GENES)
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
             'ccc_edge_index': torch.zeros(2, 0, dtype=torch.long),
             'ccc_edge_type': torch.zeros(0, dtype=torch.long),
             'ccc_edge_attr': torch.zeros(0, 1),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -383,13 +407,14 @@ class TestEdgeTypeCategories:
         dst = torch.cat([torch.randint(0, N_CELL_TYPES, (n_edge_types,)) + b * N_CELL_TYPES for b in range(B)])
         edge_type = torch.arange(n_edge_types).repeat(B)
 
+        cell_data, cell_offsets = _make_flat_cell_tensors_batch(B, N_CELL_TYPES, MAX_CELLS, N_GENES)
         inputs = {
             'pseudobulk': torch.randn(B, N_CELL_TYPES, N_GENES),
             'ccc_edge_index': torch.stack([src, dst]),
             'ccc_edge_type': edge_type,
             'ccc_edge_attr': torch.rand(E, 1),
-            'cells': torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.randn(B, 3),
         }
 
@@ -494,6 +519,7 @@ class TestFullModelRawEdgeTensors:
 
         src = torch.cat([torch.randint(0, N_CELL_TYPES, (n_edges,)) + b * N_CELL_TYPES for b in range(B)])
         dst = torch.cat([torch.randint(0, N_CELL_TYPES, (n_edges,)) + b * N_CELL_TYPES for b in range(B)])
+        cell_data, cell_offsets = _make_flat_cell_tensors_batch(B, N_CELL_TYPES, MAX_CELLS, N_GENES)
 
         with torch.no_grad():
             out = model(
@@ -501,8 +527,8 @@ class TestFullModelRawEdgeTensors:
                 ccc_edge_index=torch.stack([src, dst]),
                 ccc_edge_type=torch.randint(0, 5, (E,)),
                 ccc_edge_attr=torch.rand(E, 1),
-                cells=torch.randn(B, N_CELL_TYPES, MAX_CELLS, N_GENES),
-                cell_mask=torch.ones(B, N_CELL_TYPES, MAX_CELLS, dtype=torch.bool),
+                cell_data=cell_data,
+                cell_offsets=cell_offsets,
                 pathology=torch.randn(B, 3),
             )
 

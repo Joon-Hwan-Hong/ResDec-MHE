@@ -177,6 +177,39 @@ class TestKLAnnealedELBO:
         assert abs(loss_default.item() - loss_explicit.item()) < 1e-4
 
 
+    def test_temperature_scales_kl(self):
+        """Cold posterior temperature T scales the KL term by T."""
+        from src.training.kl_annealing import KLAnnealedELBO
+
+        model, guide, x, y = self._make_model_guide_data(seed=42)
+
+        elbo_t1 = KLAnnealedELBO(kl_weight=1.0, n_train=1, temperature=1.0)
+        elbo_t01 = KLAnnealedELBO(kl_weight=1.0, n_train=1, temperature=0.1)
+
+        torch.manual_seed(99)
+        nll_t1, kl_t1, _ = elbo_t1.differentiable_loss_with_parts(model, guide, x, y)
+
+        torch.manual_seed(99)
+        nll_t01, kl_t01, _ = elbo_t01.differentiable_loss_with_parts(model, guide, x, y)
+
+        # NLL should be the same
+        assert abs(nll_t1.item() - nll_t01.item()) < 1e-4
+        # KL at T=0.1 should be ~10x smaller than T=1.0
+        assert abs(kl_t01.item() - 0.1 * kl_t1.item()) < 1e-4
+
+    def test_temperature_default_is_one(self):
+        """Default temperature is 1.0 (standard Bayesian)."""
+        from src.training.kl_annealing import KLAnnealedELBO
+        elbo = KLAnnealedELBO()
+        assert elbo.temperature == 1.0
+
+    def test_temperature_in_repr(self):
+        """Temperature appears in repr."""
+        from src.training.kl_annealing import KLAnnealedELBO
+        elbo = KLAnnealedELBO(temperature=0.5)
+        assert "temperature=0.5" in repr(elbo)
+
+
 # ---------------------------------------------------------------------------
 # TestKLAnnealingCallback
 # ---------------------------------------------------------------------------

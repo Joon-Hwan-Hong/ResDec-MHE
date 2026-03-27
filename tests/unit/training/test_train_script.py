@@ -395,8 +395,17 @@ def _make_synthetic_batch(batch_size=2, n_genes=50, n_cell_types=N_CELL_TYPES,
     ccc_edge_type = torch.zeros(n_edges_total, dtype=torch.long)
     ccc_edge_attr = torch.rand(n_edges_total, 1)
 
-    cells = torch.randn(batch_size, n_cell_types, max_cells, n_genes)
-    cell_mask = torch.ones(batch_size, n_cell_types, max_cells, dtype=torch.bool)
+    # Flat cell format
+    total_per_sample = n_cell_types * max_cells
+    total_cells = batch_size * total_per_sample
+    cell_data = torch.randn(total_cells, n_genes)
+    cell_offsets = torch.zeros(batch_size, n_cell_types + 1, dtype=torch.long)
+    for b in range(batch_size):
+        base = b * total_per_sample
+        for ct in range(n_cell_types):
+            cell_offsets[b, ct + 1] = cell_offsets[b, ct] + max_cells
+        cell_offsets[b] += base
+
     cell_type_mask = torch.ones(batch_size, n_cell_types, dtype=torch.bool)
     pathology = torch.rand(batch_size, 3)
     cognition = torch.randn(batch_size, 1)
@@ -407,8 +416,8 @@ def _make_synthetic_batch(batch_size=2, n_genes=50, n_cell_types=N_CELL_TYPES,
         "ccc_edge_index": ccc_edge_index,
         "ccc_edge_type": ccc_edge_type,
         "ccc_edge_attr": ccc_edge_attr,
-        "cells": cells,
-        "cell_mask": cell_mask,
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         "cell_type_mask": cell_type_mask,
         "pathology": pathology,
         "cognition": cognition,
@@ -456,14 +465,14 @@ class TestMainIntegration:
 
         # Custom collate that handles the dict format
         # Edge tensors use flat concatenation with node offsets (not stacking)
-        _EDGE_KEYS = {"ccc_edge_index", "ccc_edge_type", "ccc_edge_attr"}
+        _SPECIAL_KEYS = {"ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "cell_data", "cell_offsets"}
         def synthetic_collate(samples):
             batch = {}
             n_cell_types = samples[0]["region_pseudobulk"].shape[-2]
             for key in samples[0].keys():
                 if not isinstance(samples[0][key], torch.Tensor):
                     batch[key] = [s[key] for s in samples]
-                elif key in _EDGE_KEYS:
+                elif key in _SPECIAL_KEYS:
                     continue  # handle below
                 else:
                     batch[key] = torch.stack([s[key] for s in samples])
@@ -484,6 +493,16 @@ class TestMainIntegration:
                 batch["ccc_edge_index"] = torch.zeros(2, 0, dtype=torch.long)
                 batch["ccc_edge_type"] = torch.zeros(0, dtype=torch.long)
                 batch["ccc_edge_attr"] = torch.zeros(0, 1)
+            # Flat cell_data + cell_offsets with cumulative global offsets
+            all_data = [s["cell_data"] for s in samples if s["cell_data"].shape[0] > 0]
+            n_genes = samples[0]["region_pseudobulk"].shape[-1]
+            batch["cell_data"] = torch.cat(all_data) if all_data else torch.empty(0, n_genes)
+            cumulative = 0
+            adjusted_offsets = []
+            for s in samples:
+                adjusted_offsets.append(s["cell_offsets"].unsqueeze(0) + cumulative)
+                cumulative += int(s["cell_offsets"][-1].item())
+            batch["cell_offsets"] = torch.cat(adjusted_offsets, dim=0)
             return batch
 
         train_loader = torch.utils.data.DataLoader(
@@ -535,14 +554,14 @@ class TestMainIntegration:
         train_ds = SyntheticDataset(n_samples=4, n_genes=train_config.model.n_genes)
         val_ds = SyntheticDataset(n_samples=2, n_genes=train_config.model.n_genes)
 
-        _EDGE_KEYS = {"ccc_edge_index", "ccc_edge_type", "ccc_edge_attr"}
+        _SPECIAL_KEYS2 = {"ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "cell_data", "cell_offsets"}
         def synthetic_collate(samples):
             batch = {}
             n_cell_types = samples[0]["region_pseudobulk"].shape[-2]
             for key in samples[0].keys():
                 if not isinstance(samples[0][key], torch.Tensor):
                     batch[key] = [s[key] for s in samples]
-                elif key in _EDGE_KEYS:
+                elif key in _SPECIAL_KEYS2:
                     continue
                 else:
                     batch[key] = torch.stack([s[key] for s in samples])
@@ -562,6 +581,16 @@ class TestMainIntegration:
                 batch["ccc_edge_index"] = torch.zeros(2, 0, dtype=torch.long)
                 batch["ccc_edge_type"] = torch.zeros(0, dtype=torch.long)
                 batch["ccc_edge_attr"] = torch.zeros(0, 1)
+            # Flat cell_data + cell_offsets with cumulative global offsets
+            all_data = [s["cell_data"] for s in samples if s["cell_data"].shape[0] > 0]
+            n_genes = samples[0]["region_pseudobulk"].shape[-1]
+            batch["cell_data"] = torch.cat(all_data) if all_data else torch.empty(0, n_genes)
+            cumulative = 0
+            adjusted_offsets = []
+            for s in samples:
+                adjusted_offsets.append(s["cell_offsets"].unsqueeze(0) + cumulative)
+                cumulative += int(s["cell_offsets"][-1].item())
+            batch["cell_offsets"] = torch.cat(adjusted_offsets, dim=0)
             return batch
 
         train_loader = torch.utils.data.DataLoader(

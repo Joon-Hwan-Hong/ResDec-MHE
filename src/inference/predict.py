@@ -70,7 +70,9 @@ class PredictionResult:
         actual: Actual cognition values [n_subjects, 1], None if not provided
         pathology: Pathology features [n_subjects, 3], or None if not available
         attention_weights: Pathology attention [n_subjects, n_heads, n_cell_types]
-        gene_gate_weights: Static gene gate weights [n_cell_types, n_genes] (shared)
+        gene_gate_weights: Primary gene gate weights [n_cell_types, n_genes] (HGT branch)
+        hgt_gene_gate_weights: HGT branch gene gate weights [n_cell_types, n_genes]
+        ct_gene_gate_weights: CellTransformer branch gene gate weights [n_cell_types, n_genes]
         hgt_attention: List of per-sample HGT attention dicts, None if not extracted
         pma_attention: List of per-cell-type PMA attention [n_cell_types][n_subjects, n_heads, n_seeds, max_cells]
         per_subject_pseudobulk: Per-subject pseudobulk averaged across regions [n_subjects, n_cell_types, n_genes]
@@ -92,7 +94,8 @@ class PredictionResult:
     cell_barcodes: list[list[list[str]]] | None = None  # [n_subjects][n_cell_types][barcodes]
     cell_counts: np.ndarray | None = None  # [n_subjects, n_cell_types] cell counts per type
     gene_names: list[str] | None = None
-    cell_type_selection: np.ndarray | None = None  # [n_cell_types] selection weights
+    hgt_gene_gate_weights: np.ndarray | None = None  # [n_cell_types, n_genes] HGT branch gate
+    ct_gene_gate_weights: np.ndarray | None = None  # [n_cell_types, n_genes] CellTransformer gate
     epistemic_std: np.ndarray | None = None  # [N, 1] epistemic uncertainty
     aleatoric_std: np.ndarray | None = None  # [N, 1] aleatoric uncertainty
     embeddings: dict[str, np.ndarray] | None = None  # {name: array} branch/fused/attended
@@ -272,8 +275,8 @@ class Predictor:
                 dummy_kwargs = {
                     "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
                     "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
-                    "cells": torch.zeros(1, n_ct, 1, n_genes),
-                    "cell_mask": torch.ones(1, n_ct, 1, dtype=torch.bool),
+                    "cell_data": torch.zeros(0, n_genes),
+                    "cell_offsets": torch.zeros(1, n_ct + 1, dtype=torch.long),
                     "pathology": torch.zeros(1, n_pathology),
                     "cognition": torch.zeros(1, 1),
                 }
@@ -394,13 +397,9 @@ class Predictor:
             return_region_attention=return_region_attention,
             return_embeddings=return_embeddings,
         )
-        # Prefer flat cell format when available
-        if "cell_data" in batch:
-            model_kwargs["cell_data"] = batch["cell_data"]
-            model_kwargs["cell_offsets"] = batch["cell_offsets"]
-        else:
-            model_kwargs["cells"] = batch.get("cells")
-            model_kwargs["cell_mask"] = batch.get("cell_mask")
+        # Flat cell format
+        model_kwargs["cell_data"] = batch.get("cell_data")
+        model_kwargs["cell_offsets"] = batch.get("cell_offsets")
 
         # Point estimate from posterior median (full forward pass — once)
         median = self.guide.median()
@@ -409,7 +408,7 @@ class Predictor:
 
         # Extract the attended vector for head-only posterior sampling.
         # The attended vector [B, d_fused] is the output of the deterministic
-        # path (pseudobulk + HGT + CellTransformer → fusion → pathology attention).
+        # path (HGT + CellTransformer → fusion → pathology attention).
         # Only the Bayesian head has stochastic weights, so we run the expensive
         # encoder branches once and sample only the head for epistemic uncertainty.
         attended = output_median["attended"]
@@ -619,12 +618,9 @@ class Predictor:
             return_region_attention=extract_region_attention,
             return_embeddings=extract_embeddings,
         )
-        if "cell_data" in batch:
-            model_kwargs["cell_data"] = batch["cell_data"]
-            model_kwargs["cell_offsets"] = batch["cell_offsets"]
-        else:
-            model_kwargs["cells"] = batch.get("cells")
-            model_kwargs["cell_mask"] = batch.get("cell_mask")
+        # Flat cell format
+        model_kwargs["cell_data"] = batch.get("cell_data")
+        model_kwargs["cell_offsets"] = batch.get("cell_offsets")
         output = self.model(**model_kwargs)
 
         result = {
@@ -713,7 +709,7 @@ class Predictor:
         all_region_attention = [] if extract_region_attention else None
         all_cell_barcodes = []
         all_cell_counts = []
-        _embedding_names = ['pseudobulk', 'hgt', 'cell', 'fused', 'attended']
+        _embedding_names = ['hgt', 'cell', 'fused', 'attended']
         all_embeddings: dict[str, list[np.ndarray]] | None = None
         if extract_embeddings:
             all_embeddings = {name: [] for name in _embedding_names}
@@ -767,12 +763,12 @@ class Predictor:
                 if isinstance(cc, torch.Tensor):
                     cc = cc.cpu().numpy()
                 all_cell_counts.append(cc)
-            elif "cell_mask" in batch:
-                # Fallback: derive from cell_mask (may undercount clipped types)
-                cm = batch["cell_mask"]
-                if isinstance(cm, torch.Tensor):
-                    cm = cm.cpu()
-                batch_cell_counts = cm.sum(dim=-1).numpy()  # [B, n_cell_types]
+            elif "cell_offsets" in batch:
+                # Fallback: derive from cell_offsets
+                co = batch["cell_offsets"]
+                if isinstance(co, torch.Tensor):
+                    co = co.cpu()
+                batch_cell_counts = (co[:, 1:] - co[:, :-1]).numpy()  # [B, n_cell_types]
                 all_cell_counts.append(batch_cell_counts)
             if extract_embeddings and "embeddings" in result:
                 for name in _embedding_names:
@@ -856,13 +852,21 @@ class Predictor:
         actual = np.concatenate(all_actual, axis=0) if all_actual else None
         pathology = np.concatenate(all_pathology, axis=0) if all_pathology else None
 
-        # Get static gene gate weights
-        gene_gate_weights = self.model.pseudobulk_encoder.gene_gate.get_gate_weights()
-        gene_gate_weights = gene_gate_weights.cpu().numpy()
+        # Fusion projection weights (static, not per-sample)
+        fusion_proj_weight = None
+        if hasattr(self.model, 'fusion') and hasattr(self.model.fusion, 'proj'):
+            fusion_proj_weight = self.model.fusion.proj.weight.detach().cpu().numpy()
 
-        # Get cell type selection weights
-        cell_type_selection = self.model.cell_transformer.get_selection_weights()
-        cell_type_selection = cell_type_selection.cpu().numpy()
+        # Get gene gate weights from both branches
+        # HGT branch gate: model.hgt_gene_gate
+        hgt_gene_gate_weights = self.model.hgt_gene_gate.get_gate_weights()
+        hgt_gene_gate_weights = hgt_gene_gate_weights.cpu().numpy()
+        # CellTransformer gate: model.cell_transformer.gene_gate
+        ct_gene_gate_weights = self.model.cell_transformer.gene_gate.get_gate_weights()
+        ct_gene_gate_weights = ct_gene_gate_weights.cpu().numpy()
+        # Legacy field: use HGT gate as the primary gene_gate_weights
+        # (backward compatible with GeneImportanceAnalyzer and save_attention_weights)
+        gene_gate_weights = hgt_gene_gate_weights
 
         # Get region importance weights
         region_importance = self.model.get_region_importance()
@@ -938,6 +942,7 @@ class Predictor:
             "has_uncertainty": std is not None,
             "extracted_hgt_attention": extract_hgt_attention,
             "extracted_pma_attention": extract_pma_attention,
+            "fusion_proj_weight": fusion_proj_weight,
         }
         if self.config:
             metadata["model_config"] = OmegaConf.to_container(self.config.model, resolve=True)
@@ -958,7 +963,8 @@ class Predictor:
             pathology=pathology,
             attention_weights=attention_weights,
             gene_gate_weights=gene_gate_weights,
-            cell_type_selection=cell_type_selection,
+            hgt_gene_gate_weights=hgt_gene_gate_weights,
+            ct_gene_gate_weights=ct_gene_gate_weights,
             hgt_attention=all_hgt_attention,
             pma_attention=pma_attention,
             region_weights=region_weights,
@@ -1073,7 +1079,6 @@ class Predictor:
         _io_save_attention_weights(
             path=path,
             gene_gate=results.gene_gate_weights,
-            cell_type_selection=results.cell_type_selection,
             pathology_attention=results.attention_weights,
             region_weights=results.region_weights,
             region_attention=results.region_attention,
@@ -1092,6 +1097,7 @@ class Predictor:
                 else None
             ),
             embeddings=results.embeddings,
+            fusion_proj_weight=results.metadata.get("fusion_proj_weight"),
             metadata={
                 "n_subjects": results.n_subjects,
                 "checkpoint_path": results.metadata.get("checkpoint_path", ""),

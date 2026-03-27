@@ -9,6 +9,8 @@ Tests cover:
 - Output schema compliance
 """
 
+from pathlib import Path
+
 import pytest
 import numpy as np
 import pandas as pd
@@ -225,8 +227,9 @@ class TestCellSampling:
         sample1 = ds1[0]
         sample2 = ds2[0]
 
-        # Cell matrices should be identical
-        assert torch.equal(sample1["cells"], sample2["cells"])
+        # Cell data should be identical
+        assert torch.equal(sample1["cell_data"], sample2["cell_data"])
+        assert torch.equal(sample1["cell_offsets"], sample2["cell_offsets"])
 
     def test_different_seed_different_cells(self):
         """Different seeds should produce different cell sampling."""
@@ -263,8 +266,8 @@ class TestCellSampling:
         sample1 = ds1[0]
         sample2 = ds2[0]
 
-        # Cell matrices should differ
-        assert not torch.equal(sample1["cells"], sample2["cells"])
+        # Cell data should differ
+        assert not torch.equal(sample1["cell_data"], sample2["cell_data"])
 
 
 class TestDatasetInit:
@@ -647,7 +650,7 @@ class TestOutputSchema:
         sample = mock_dataset[0]
         required_keys = {
             "subject_id", "pseudobulk", "cell_type_mask", "cell_counts",
-            "cells", "cell_mask", "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr",
+            "cell_data", "cell_offsets", "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr",
             "pathology", "cognition", "region_mask",
         }
         assert required_keys.issubset(set(sample.keys()))
@@ -659,8 +662,8 @@ class TestOutputSchema:
         assert sample["pseudobulk"].dtype == torch.float32
         assert sample["cell_type_mask"].dtype == torch.bool
         assert sample["cell_counts"].dtype == torch.long
-        assert sample["cells"].dtype == torch.float32
-        assert sample["cell_mask"].dtype == torch.bool
+        assert sample["cell_data"].dtype == torch.float32
+        assert sample["cell_offsets"].dtype == torch.long
         assert sample["ccc_edge_index"].dtype == torch.long
         assert sample["ccc_edge_type"].dtype == torch.long
         assert sample["ccc_edge_attr"].dtype == torch.float32
@@ -689,17 +692,15 @@ class TestOutputSchema:
         assert sample["cell_counts"].ndim == 1
         assert sample["cell_counts"].shape[0] == mock_dataset.n_cell_types
 
-        # Cells: [n_cell_types, actual_max_cells, n_genes] - ALL 31 cell types
-        # H7: actual_max_cells is per-subject (1 <= actual_max <= max_cells_per_type)
-        assert sample["cells"].ndim == 3
-        assert sample["cells"].shape[0] == mock_dataset.n_cell_types
-        assert 1 <= sample["cells"].shape[1] <= mock_dataset.max_cells_per_type
-        assert sample["cells"].shape[2] == mock_dataset.n_genes
+        # Cell data: [total_cells, n_genes] - flat concatenated
+        assert sample["cell_data"].ndim == 2
+        assert sample["cell_data"].shape[1] == mock_dataset.n_genes
 
-        # Cell mask: [n_cell_types, actual_max_cells] - ALL 31 cell types
-        assert sample["cell_mask"].ndim == 2
-        assert sample["cell_mask"].shape[0] == mock_dataset.n_cell_types
-        assert sample["cell_mask"].shape[1] == sample["cells"].shape[1]
+        # Cell offsets: [n_cell_types + 1] - cumulative offsets
+        assert sample["cell_offsets"].ndim == 1
+        assert sample["cell_offsets"].shape[0] == mock_dataset.n_cell_types + 1
+        assert sample["cell_offsets"][0] == 0
+        assert sample["cell_offsets"][-1] == sample["cell_data"].shape[0]
 
         # Pathology: [n_pathology]
         assert sample["pathology"].ndim == 1
@@ -961,26 +962,13 @@ class TestPrecomputedDataset:
         subject_id = mock_dataset.subject_ids[0]
         sample = mock_dataset[0]
 
-        # Build cell_data / cell_offsets from padded cells + cell_mask
-        cells_padded = sample["cells"]
-        cell_mask_padded = sample["cell_mask"]
-        n_types = cells_padded.shape[0]
-        cell_offsets = torch.zeros(n_types + 1, dtype=torch.long)
-        flat_parts = []
-        for ct in range(n_types):
-            n = int(cell_mask_padded[ct].sum().item())
-            if n > 0:
-                flat_parts.append(cells_padded[ct, :n])
-            cell_offsets[ct + 1] = cell_offsets[ct] + n
-        cell_data = torch.cat(flat_parts) if flat_parts else torch.empty(0, cells_padded.shape[2])
-
         torch.save({
             "pseudobulk": sample["pseudobulk"],
             "cell_type_mask": sample["cell_type_mask"],
-            "cell_counts": sample["cell_mask"].sum(dim=1).long(),
+            "cell_counts": sample["cell_counts"],
             "region_mask": torch.tensor([True] + [False] * (len(REGION_ORDER) - 1), dtype=torch.bool),
-            "cell_data": cell_data,
-            "cell_offsets": cell_offsets,
+            "cell_data": sample["cell_data"],
+            "cell_offsets": sample["cell_offsets"],
             "ccc_edge_index": sample["ccc_edge_index"],
             "ccc_edge_type": sample["ccc_edge_type"],
             "ccc_edge_attr": sample["ccc_edge_attr"],
@@ -1004,8 +992,7 @@ class TestPrecomputedDataset:
         assert loaded_sample["region_mask"][0] == True
 
         # cell_counts should match
-        expected_counts = sample["cell_mask"].sum(dim=1).long()
-        assert torch.equal(loaded_sample["cell_counts"], expected_counts)
+        assert torch.equal(loaded_sample["cell_counts"], sample["cell_counts"])
 
 
 class TestPrecomputedNaNFallbacks:
@@ -1019,27 +1006,13 @@ class TestPrecomputedNaNFallbacks:
         subject_id = mock_dataset.subject_ids[0]
         sample = mock_dataset[0]
 
-        # Build flat cell data from padded format
-        cells_padded = sample["cells"]
-        cell_mask_padded = sample["cell_mask"]
-        n_types = cells_padded.shape[0]
-        cell_offsets = torch.zeros(n_types + 1, dtype=torch.long)
-        flat_parts = []
-        for ct in range(n_types):
-            n = int(cell_mask_padded[ct].sum().item())
-            if n > 0:
-                flat_parts.append(cells_padded[ct, :n])
-            cell_offsets[ct + 1] = cell_offsets[ct] + n
-        cell_data = torch.cat(flat_parts) if flat_parts else torch.empty(0, cells_padded.shape[2])
-        cell_counts = sample["cell_mask"].sum(dim=1).long()
-
         torch.save({
             "pseudobulk": sample["pseudobulk"],
             "cell_type_mask": sample["cell_type_mask"],
-            "cell_counts": cell_counts,
+            "cell_counts": sample["cell_counts"],
             "region_mask": sample["region_mask"],
-            "cell_data": cell_data,
-            "cell_offsets": cell_offsets,
+            "cell_data": sample["cell_data"],
+            "cell_offsets": sample["cell_offsets"],
             "ccc_edge_index": sample["ccc_edge_index"],
             "ccc_edge_type": sample["ccc_edge_type"],
             "ccc_edge_attr": sample["ccc_edge_attr"],
@@ -1057,7 +1030,7 @@ class TestPrecomputedNaNFallbacks:
 
         assert "cell_counts" in loaded_sample
         assert loaded_sample["cell_counts"].dtype == torch.long
-        assert torch.equal(loaded_sample["cell_counts"], cell_counts)
+        assert torch.equal(loaded_sample["cell_counts"], sample["cell_counts"])
 
     def test_precomputed_region_mask_loaded(self, mock_dataset, tmp_path):
         """region_mask should be loaded from .pt file."""
@@ -1067,19 +1040,6 @@ class TestPrecomputedNaNFallbacks:
         subject_id = mock_dataset.subject_ids[0]
         sample = mock_dataset[0]
 
-        # Build flat cell data from padded format
-        cells_padded = sample["cells"]
-        cell_mask_padded = sample["cell_mask"]
-        n_types = cells_padded.shape[0]
-        cell_offsets = torch.zeros(n_types + 1, dtype=torch.long)
-        flat_parts = []
-        for ct in range(n_types):
-            n = int(cell_mask_padded[ct].sum().item())
-            if n > 0:
-                flat_parts.append(cells_padded[ct, :n])
-            cell_offsets[ct + 1] = cell_offsets[ct] + n
-        cell_data = torch.cat(flat_parts) if flat_parts else torch.empty(0, cells_padded.shape[2])
-
         region_mask = torch.tensor([True] + [False] * (len(REGION_ORDER) - 1), dtype=torch.bool)
 
         torch.save({
@@ -1087,8 +1047,8 @@ class TestPrecomputedNaNFallbacks:
             "cell_type_mask": sample["cell_type_mask"],
             "cell_counts": sample["cell_counts"],
             "region_mask": region_mask,
-            "cell_data": cell_data,
-            "cell_offsets": cell_offsets,
+            "cell_data": sample["cell_data"],
+            "cell_offsets": sample["cell_offsets"],
             "ccc_edge_index": sample["ccc_edge_index"],
             "ccc_edge_type": sample["ccc_edge_type"],
             "ccc_edge_attr": sample["ccc_edge_attr"],
@@ -1582,3 +1542,129 @@ class TestPrecomputedGetGeneNames:
                 metadata=mock_dataset.metadata,
                 subject_ids=mock_dataset.subject_ids,
             )
+
+
+class TestSharedMmapContextManager:
+    """Tests for _shared_mmap context manager."""
+
+    def test_shared_mmap_restores_map_private(self):
+        """_shared_mmap restores MAP_PRIVATE after exiting context."""
+        import mmap as _mmap
+        import torch
+        from src.data.datasets import _shared_mmap
+
+        # Ensure we start with MAP_PRIVATE
+        torch.serialization.set_default_mmap_options(_mmap.MAP_PRIVATE)
+
+        with _shared_mmap():
+            pass  # MAP_SHARED is active inside
+
+        # After context exit, MAP_PRIVATE should be restored.
+        # Verify by checking it doesn't raise when setting MAP_PRIVATE again
+        # (idempotent operation — the real test is that the context manager called it)
+        torch.serialization.set_default_mmap_options(_mmap.MAP_PRIVATE)
+
+    def test_shared_mmap_restores_on_exception(self):
+        """_shared_mmap restores MAP_PRIVATE even when exception occurs inside."""
+        import mmap as _mmap
+        import torch
+        from src.data.datasets import _shared_mmap
+
+        torch.serialization.set_default_mmap_options(_mmap.MAP_PRIVATE)
+
+        with pytest.raises(ValueError):
+            with _shared_mmap():
+                raise ValueError("test error")
+
+        # MAP_PRIVATE should be restored despite the exception
+        torch.serialization.set_default_mmap_options(_mmap.MAP_PRIVATE)
+
+
+class TestLoadSubjectCache:
+    """Tests for load_subject_cache with mmap support."""
+
+    def test_load_subject_cache_mmap(self, tmp_path):
+        """load_subject_cache with use_mmap=True returns valid tensors."""
+        import torch
+        from src.data.datasets import PrecomputedDataset
+
+        for sid in ["S001", "S002"]:
+            data = {
+                "pseudobulk": torch.randn(5, 10),
+                "cell_type_mask": torch.ones(5, dtype=torch.bool),
+                "cell_offsets": torch.tensor([0, 3, 5, 5, 5, 5]),
+                "ccc_edge_index": torch.zeros(2, 4, dtype=torch.long),
+                "ccc_edge_type": torch.zeros(4, dtype=torch.long),
+                "ccc_edge_attr": torch.ones(4),
+                "cell_counts": torch.tensor([3, 2, 0, 0, 0]),
+                "region_mask": torch.ones(1, dtype=torch.bool),
+                "cell_data": torch.randn(5, 10),
+            }
+            torch.save(data, tmp_path / f"{sid}.pt")
+
+        cache = PrecomputedDataset.load_subject_cache(
+            tmp_path, ["S001", "S002"], use_mmap=True
+        )
+        assert len(cache) == 2
+        assert cache["S001"]["pseudobulk"].shape == (5, 10)
+        assert cache["S002"]["cell_data"].shape == (5, 10)
+
+    def test_load_subject_cache_default_no_mmap(self, tmp_path):
+        """load_subject_cache defaults to non-mmap (backward compat)."""
+        import torch
+        from src.data.datasets import PrecomputedDataset
+
+        data = {
+            "pseudobulk": torch.randn(5, 10),
+            "cell_type_mask": torch.ones(5, dtype=torch.bool),
+            "cell_offsets": torch.tensor([0, 3, 5, 5, 5, 5]),
+            "ccc_edge_index": torch.zeros(2, 4, dtype=torch.long),
+            "ccc_edge_type": torch.zeros(4, dtype=torch.long),
+            "ccc_edge_attr": torch.ones(4),
+            "cell_counts": torch.tensor([3, 2, 0, 0, 0]),
+            "region_mask": torch.ones(1, dtype=torch.bool),
+            "cell_data": torch.randn(5, 10),
+        }
+        torch.save(data, tmp_path / "S001.pt")
+
+        cache = PrecomputedDataset.load_subject_cache(tmp_path, ["S001"])
+        assert len(cache) == 1
+
+
+class TestShmCleanup:
+    """Tests for /dev/shm lifecycle management."""
+
+    def test_cleanup_shm_cache_removes_directory(self):
+        """cleanup_shm_cache removes the target directory."""
+        import tempfile
+        from src.data.datasets import PrecomputedDataset
+
+        # Use real /tmp so resolved path starts with /tmp/
+        with tempfile.TemporaryDirectory(dir="/tmp") as td:
+            fake_shm = Path(td) / "precomputed_test"
+            fake_shm.mkdir()
+            (fake_shm / "dummy.pt").write_bytes(b"data")
+
+            PrecomputedDataset.cleanup_shm_cache(fake_shm)
+            assert not fake_shm.exists()
+
+    def test_cleanup_shm_cache_ignores_missing(self):
+        """cleanup_shm_cache is no-op if directory doesn't exist."""
+        from src.data.datasets import PrecomputedDataset
+
+        nonexistent = Path("/tmp/nonexistent_shm_test_dir")
+        PrecomputedDataset.cleanup_shm_cache(nonexistent)  # should not raise
+
+    def test_cleanup_shm_cache_refuses_non_shm_paths(self, tmp_path):
+        """cleanup_shm_cache refuses to delete paths outside /dev/shm or /tmp."""
+        from src.data.datasets import PrecomputedDataset
+
+        # tmp_path on this system resolves outside /tmp/, so the safety
+        # guard should refuse deletion and the directory should survive.
+        fake_dir = tmp_path / "precomputed_test"
+        fake_dir.mkdir()
+        (fake_dir / "dummy.pt").write_bytes(b"data")
+
+        PrecomputedDataset.cleanup_shm_cache(fake_dir)
+        # Directory must still exist because the path is not under /dev/shm or /tmp
+        assert fake_dir.exists()

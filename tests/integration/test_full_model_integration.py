@@ -32,10 +32,17 @@ def sample_batch(make_edge_tensors):
     B = 2
     n_genes = 50
     n_cell_types = N_CELL_TYPES
-    max_cells = 10
+    n_cells_per_type = 10
     n_regions = N_REGIONS
 
     ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B)
+
+    # Flat cell format
+    cells_per_sample = n_cell_types * n_cells_per_type
+    total_cells = B * cells_per_sample
+    cell_data = torch.randn(total_cells, n_genes)
+    offsets_one = torch.arange(0, (n_cell_types + 1) * n_cells_per_type, n_cells_per_type)
+    cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
@@ -43,8 +50,8 @@ def sample_batch(make_edge_tensors):
         'ccc_edge_index': ccc_edge_index,
         'ccc_edge_type': ccc_edge_type,
         'ccc_edge_attr': ccc_edge_attr,
-        'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
-        'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
+        'cell_data': cell_data,
+        'cell_offsets': cell_offsets,
         'pathology': torch.randn(B, 3),
         'cognition': torch.randn(B, 1),
     }
@@ -215,16 +222,24 @@ class TestEndToEndForward:
         """Forward pass handles different batch sizes correctly."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
+        n_cells_per_type = 10
+        n_genes = model_kwargs['n_genes']
+
         for batch_size in [1, 4, 8]:
             ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(batch_size)
+            cells_per_sample = N_CELL_TYPES * n_cells_per_type
+            total_cells = batch_size * cells_per_sample
+            cell_data = torch.randn(total_cells, n_genes)
+            offsets_one = torch.arange(0, (N_CELL_TYPES + 1) * n_cells_per_type, n_cells_per_type)
+            cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(batch_size)])
             batch = {
-                'region_pseudobulk': torch.randn(batch_size, N_REGIONS, N_CELL_TYPES, model_kwargs['n_genes']),
+                'region_pseudobulk': torch.randn(batch_size, N_REGIONS, N_CELL_TYPES, n_genes),
                 'region_mask': torch.ones(batch_size, N_REGIONS, dtype=torch.bool),
                 'ccc_edge_index': ccc_edge_index,
                 'ccc_edge_type': ccc_edge_type,
                 'ccc_edge_attr': ccc_edge_attr,
-                'cells': torch.randn(batch_size, N_CELL_TYPES, 10, model_kwargs['n_genes']),
-                'cell_mask': torch.ones(batch_size, N_CELL_TYPES, 10, dtype=torch.bool),
+                'cell_data': cell_data,
+                'cell_offsets': cell_offsets,
                 'pathology': torch.randn(batch_size, 3),
             }
 
@@ -243,24 +258,24 @@ class TestGradientFlow:
     """Test that gradients flow correctly through all model components."""
 
     def test_gradients_reach_all_encoders(self, model_kwargs, sample_batch):
-        """Gradients flow to pseudobulk, HGT, and cell encoders."""
+        """Gradients flow to HGT gene gate, HGT encoder, and cell transformer."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
         # Enable gradient tracking on inputs
         sample_batch['region_pseudobulk'].requires_grad_(True)
-        sample_batch['cells'].requires_grad_(True)
+        sample_batch['cell_data'].requires_grad_(True)
 
         output = model(**sample_batch)
         loss = output['mean'].sum()
         loss.backward()
 
-        # Check gradients reach PseudobulkEncoder
-        pb_has_grad = False
-        for param in model.pseudobulk_encoder.parameters():
+        # Check gradients reach HGT GeneAttentionGate
+        gate_has_grad = False
+        for param in model.hgt_gene_gate.parameters():
             if param.grad is not None and not torch.all(param.grad == 0):
-                pb_has_grad = True
+                gate_has_grad = True
                 break
-        assert pb_has_grad, "No gradients reached PseudobulkEncoder"
+        assert gate_has_grad, "No gradients reached HGT GeneAttentionGate"
 
         # Check gradients reach HGTEncoderTensor
         hgt_has_grad = False
@@ -281,8 +296,8 @@ class TestGradientFlow:
         # Check gradients flow to inputs
         assert sample_batch['region_pseudobulk'].grad is not None, \
             "No gradients reached region_pseudobulk input"
-        assert sample_batch['cells'].grad is not None, \
-            "No gradients reached cells input"
+        assert sample_batch['cell_data'].grad is not None, \
+            "No gradients reached cell_data input"
 
     def test_gradients_reach_fusion_components(self, model_kwargs, sample_batch):
         """Gradients flow to fusion layer, pathology encoder, and attention."""
@@ -340,20 +355,20 @@ class TestGradientFlow:
                 break
         assert region_has_grad, "No gradients reached RegionHandler"
 
-    def test_gradients_reach_cell_type_selector(self, model_kwargs, sample_batch):
-        """Gradients flow to CellTypeSelector logits."""
+    def test_gradients_reach_gene_attention_gate(self, model_kwargs, sample_batch):
+        """Gradients flow to GeneAttentionGate logits."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
         output = model(**sample_batch)
         loss = output['mean'].sum()
         loss.backward()
 
-        # CellTypeSelector is part of CellTransformer
-        selector = model.cell_transformer.selector
-        assert selector.selection_logits.grad is not None, \
-            "No gradients reached CellTypeSelector logits"
-        assert not torch.all(selector.selection_logits.grad == 0), \
-            "CellTypeSelector logits have zero gradients"
+        # GeneAttentionGate is part of CellTransformer
+        gate = model.cell_transformer.gene_gate
+        assert gate.gate_logits.grad is not None, \
+            "No gradients reached CellTransformer GeneAttentionGate logits"
+        assert not torch.all(gate.gate_logits.grad == 0), \
+            "CellTransformer GeneAttentionGate logits have zero gradients"
 
     def test_no_nan_in_gradients(self, model_kwargs, sample_batch):
         """No NaN values appear in any gradients."""
@@ -449,8 +464,16 @@ class TestAttentionInterpretability:
 
         B = 4
         n_genes = model_kwargs['n_genes']
+        n_cells_per_type = 10
 
         ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B)
+
+        # Flat cell format
+        cells_per_sample = N_CELL_TYPES * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes)
+        offsets_one = torch.arange(0, (N_CELL_TYPES + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
 
         # Create batch with deliberately different pathology per sample
         batch = {
@@ -459,8 +482,8 @@ class TestAttentionInterpretability:
             'ccc_edge_index': ccc_edge_index,
             'ccc_edge_type': ccc_edge_type,
             'ccc_edge_attr': ccc_edge_attr,
-            'cells': torch.randn(B, N_CELL_TYPES, 10, n_genes),
-            'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
             'pathology': torch.tensor([
                 [0.0, 0.0, 0.0],  # Low pathology
                 [1.0, 1.0, 1.0],  # Medium pathology
@@ -511,7 +534,7 @@ class TestNumericalStability:
 
         # Scale inputs to large values
         sample_batch['region_pseudobulk'] = sample_batch['region_pseudobulk'] * 100
-        sample_batch['cells'] = sample_batch['cells'] * 100
+        sample_batch['cell_data'] = sample_batch['cell_data'] * 100
         sample_batch['pathology'] = sample_batch['pathology'] * 10
 
         output = model(**sample_batch)
@@ -527,7 +550,7 @@ class TestNumericalStability:
 
         # Scale inputs to small values
         sample_batch['region_pseudobulk'] = sample_batch['region_pseudobulk'] * 1e-6
-        sample_batch['cells'] = sample_batch['cells'] * 1e-6
+        sample_batch['cell_data'] = sample_batch['cell_data'] * 1e-6
         sample_batch['pathology'] = sample_batch['pathology'] * 1e-3
 
         output = model(**sample_batch)
@@ -536,26 +559,31 @@ class TestNumericalStability:
         assert torch.isfinite(output['attention_weights']).all(), \
             "NaN in attention weights with small inputs"
 
-    def test_sparse_cell_masks(self, model_kwargs, sample_batch):
-        """Model handles sparse cell masks without NaN.
+    def test_sparse_cell_counts(self, model_kwargs, sample_batch):
+        """Model handles sparse cell counts (few cells per type) without NaN.
 
-        # Canonical test for sparse cell masks — see also
+        # Canonical test for sparse cell counts — see also
         # test_data_to_model.py::TestEndToEndPipeline::test_pipeline_with_sparse_data
         # for CellTransformer-only coverage.
         """
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
-        # Make cell mask very sparse (only 2 valid cells per type)
-        B = sample_batch['cells'].size(0)
-        max_cells = sample_batch['cells'].size(2)
-        sparse_mask = torch.zeros(B, N_CELL_TYPES, max_cells, dtype=torch.bool)
-        sparse_mask[:, :, :2] = True  # Only first 2 cells valid
+        # Rebuild cell_data/cell_offsets with only 2 cells per type
+        B = sample_batch['region_pseudobulk'].size(0)
+        n_genes = model_kwargs['n_genes']
+        n_cells_per_type = 2
+        cells_per_sample = N_CELL_TYPES * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes)
+        offsets_one = torch.arange(0, (N_CELL_TYPES + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
 
-        sample_batch['cell_mask'] = sparse_mask
+        sample_batch['cell_data'] = cell_data
+        sample_batch['cell_offsets'] = cell_offsets
 
         output = model(**sample_batch)
 
-        assert torch.isfinite(output['mean']).all(), "NaN with sparse cell masks"
+        assert torch.isfinite(output['mean']).all(), "NaN with sparse cell counts"
 
     def test_partial_region_masks(self, model_kwargs, sample_batch):
         """Model handles partial region masks without NaN."""
@@ -681,20 +709,29 @@ class TestBayesianSpecific:
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=True)
         model.eval()
 
+        B = 4
         n_genes = model_kwargs['n_genes']
+        n_cells_per_type = 10
 
-        ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(4)
+        ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B)
+
+        # Flat cell format
+        cells_per_sample = N_CELL_TYPES * n_cells_per_type
+        total_cells = B * cells_per_sample
+        cell_data = torch.randn(total_cells, n_genes) * 0.1
+        offsets_one = torch.arange(0, (N_CELL_TYPES + 1) * n_cells_per_type, n_cells_per_type)
+        cell_offsets = torch.stack([offsets_one + i * cells_per_sample for i in range(B)])
 
         # Batch with similar inputs
         uniform_batch = {
-            'region_pseudobulk': torch.randn(4, N_REGIONS, N_CELL_TYPES, n_genes) * 0.1,
-            'region_mask': torch.ones(4, N_REGIONS, dtype=torch.bool),
+            'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, n_genes) * 0.1,
+            'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_edge_index,
             'ccc_edge_type': ccc_edge_type,
             'ccc_edge_attr': ccc_edge_attr,
-            'cells': torch.randn(4, N_CELL_TYPES, 10, n_genes) * 0.1,
-            'cell_mask': torch.ones(4, N_CELL_TYPES, 10, dtype=torch.bool),
-            'pathology': torch.zeros(4, 3),
+            'cell_data': cell_data,
+            'cell_offsets': cell_offsets,
+            'pathology': torch.zeros(B, 3),
         }
 
         output = model(**uniform_batch)
@@ -785,7 +822,7 @@ class TestComponentInteraction:
         )
 
     def test_fusion_receives_all_branch_outputs(self, model_kwargs, sample_batch):
-        """FusionLayer receives outputs from all three branches."""
+        """FusionLayer receives outputs from both branches (HGT + CellTransformer)."""
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
         # Hook to capture fusion layer inputs
@@ -802,10 +839,10 @@ class TestComponentInteraction:
             # Should have captured one call
             assert len(fusion_inputs) == 1
 
-            # Should have 3 inputs (pseudobulk_emb, hgt_emb, cell_emb)
-            assert len(fusion_inputs[0]) == 3
+            # Should have 2 inputs (hgt_emb, cell_emb) in 2-branch architecture
+            assert len(fusion_inputs[0]) == 2
 
-            # All should have same shape [B, n_cell_types, d_embed]
+            # Both should have shape [B, n_cell_types, d_embed]
             B = sample_batch['region_pseudobulk'].size(0)
             for i, inp in enumerate(fusion_inputs[0]):
                 assert inp.shape == (B, N_CELL_TYPES, model_kwargs['d_embed']), \

@@ -16,21 +16,30 @@ import pytest
 from src.data.constants import N_CELL_TYPES, N_REGIONS
 
 
+def _make_flat_cell_sample(n_cell_types, n_genes, cells_per_type=20):
+    """Helper: create flat cell_data + cell_offsets for one sample."""
+    total = n_cell_types * cells_per_type
+    cell_data = torch.randn(total, n_genes)
+    cell_offsets = torch.zeros(n_cell_types + 1, dtype=torch.long)
+    for ct in range(n_cell_types):
+        cell_offsets[ct + 1] = cell_offsets[ct] + cells_per_type
+    return cell_data, cell_offsets
+
+
 @pytest.fixture
 def mock_batch():
-    """Create mock batch for collate testing with all required keys."""
+    """Create mock batch for collate testing with all required keys (flat format)."""
     n_genes = 100
-    max_cells = 100
 
     def make_sample(subject_id):
+        cell_data, cell_offsets = _make_flat_cell_sample(N_CELL_TYPES, n_genes)
         return {
             "subject_id": subject_id,
             "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
             "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
             "cell_counts": torch.randint(0, 100, (N_CELL_TYPES,)),
-            # cells now has ALL 31 cell types (not just selected)
-            "cells": torch.randn(N_CELL_TYPES, max_cells, n_genes),
-            "cell_mask": torch.randint(0, 2, (N_CELL_TYPES, max_cells)).bool(),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, 50)),
             "ccc_edge_type": torch.randint(0, 5, (50,)),
             "ccc_edge_attr": torch.rand(50, 1),
@@ -53,7 +62,7 @@ class TestCollateOutputSchema:
 
         required_keys = {
             "pseudobulk", "cell_type_mask", "cell_counts",
-            "cells", "cell_mask",
+            "cell_data", "cell_offsets",
             "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr",
             "pathology", "cognition",
             "region_mask",
@@ -75,9 +84,10 @@ class TestCollateOutputSchema:
         assert batch["cell_counts"].shape == (batch_size, N_CELL_TYPES)
         # region_mask: [batch, n_regions]
         assert batch["region_mask"].shape == (batch_size, N_REGIONS)
-        # cells: [batch, n_cell_types, max_cells, n_genes] (all 31 types now)
-        assert batch["cells"].shape[0] == batch_size
-        assert batch["cells"].shape[1] == N_CELL_TYPES
+        # cell_data: [total_cells, n_genes]
+        assert batch["cell_data"].dim() == 2
+        # cell_offsets: [batch, n_cell_types + 1]
+        assert batch["cell_offsets"].shape == (batch_size, N_CELL_TYPES + 1)
 
     def test_collate_for_hgt_output_keys(self, mock_batch):
         """collate_for_hgt should output all required keys."""
@@ -87,7 +97,7 @@ class TestCollateOutputSchema:
 
         required_keys = {
             "pseudobulk", "cell_type_mask", "cell_counts",
-            "cells", "cell_mask",
+            "cell_data", "cell_offsets",
             "pathology", "cognition",
             "region_mask",
             # HGT flat edge tensors
@@ -109,9 +119,10 @@ class TestCollateOutputSchema:
         assert batch["cell_counts"].shape == (batch_size, N_CELL_TYPES)
         # region_mask: [batch, n_regions]
         assert batch["region_mask"].shape == (batch_size, N_REGIONS)
-        # cells: [batch, n_cell_types, max_cells, n_genes]
-        assert batch["cells"].shape[0] == batch_size
-        assert batch["cells"].shape[1] == N_CELL_TYPES
+        # cell_data: [total_cells, n_genes]
+        assert batch["cell_data"].dim() == 2
+        # cell_offsets: [batch, n_cell_types + 1]
+        assert batch["cell_offsets"].shape == (batch_size, N_CELL_TYPES + 1)
         # HGT flat edge tensors: [2, E_total], [E_total], [E_total, 1]
         assert batch["ccc_edge_index"].dim() == 2
         assert batch["ccc_edge_index"].shape[0] == 2
@@ -123,22 +134,19 @@ class TestCollateOutputSchema:
 def create_mock_sample(
     n_cell_types: int = N_CELL_TYPES,
     n_genes: int = 100,
-    max_cells: int = 50,
+    cells_per_type: int = 20,
     n_edges: int = 20,
     n_regions: int = N_REGIONS,
 ) -> dict:
-    """Create a mock sample dictionary matching Dataset output.
-
-    Note: cells now has ALL n_cell_types (not a selected subset).
-    """
+    """Create a mock sample dictionary matching Dataset output (flat format)."""
+    cell_data, cell_offsets = _make_flat_cell_sample(n_cell_types, n_genes, cells_per_type)
     return {
         "subject_id": "TEST_SUBJECT",
         "pseudobulk": torch.randn(n_cell_types, n_genes),
         "cell_type_mask": torch.ones(n_cell_types, dtype=torch.bool),
         "cell_counts": torch.randint(0, 100, (n_cell_types,)),
-        # cells has ALL cell types now (soft attention weighting instead of hard selection)
-        "cells": torch.randn(n_cell_types, max_cells, n_genes),
-        "cell_mask": torch.ones(n_cell_types, max_cells, dtype=torch.bool),
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         # Graph features (CCC = cell-cell communication)
         "ccc_edge_index": torch.randint(0, n_cell_types, (2, n_edges)),
         "ccc_edge_type": torch.randint(0, 5, (n_edges,)),
@@ -567,8 +575,8 @@ class TestOutputSchemaKeys:
             "pseudobulk",
             "cell_type_mask",
             "cell_counts",
-            "cells",                 # Now all 31 cell types (soft attention)
-            "cell_mask",
+            "cell_data",
+            "cell_offsets",
             "ccc_edge_index",
             "ccc_edge_type",
             "ccc_edge_attr",
@@ -707,12 +715,13 @@ class TestCompositeKeyOverflow:
         from src.data.collate import collate_for_hgt
 
         n_ct = 4
+        cell_data, cell_offsets = _make_flat_cell_sample(n_ct, 10, 5)
         sample = {
             "pseudobulk": torch.randn(n_ct, 10),
             "cell_type_mask": torch.ones(n_ct, dtype=torch.bool),
             "cell_counts": torch.ones(n_ct, dtype=torch.long),
-            "cells": torch.randn(n_ct, 5, 10),
-            "cell_mask": torch.ones(n_ct, 5, dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             "ccc_edge_index": torch.tensor([[0, 1], [1, 0]]),
             "ccc_edge_type": torch.tensor([0, 0]),
             "ccc_edge_attr": torch.randn(2, 1),
@@ -728,15 +737,16 @@ class TestCompositeKeyOverflow:
 class TestMultiregionAvailableRegionsDerivation:
     """Tests for deriving available_regions from region keys."""
 
-    def _make_multiregion_sample(self, n_genes=100, max_cells=50):
+    def _make_multiregion_sample(self, n_genes=100, cells_per_type=20):
         """Create a properly structured sample for multi-region testing."""
+        cell_data, cell_offsets = _make_flat_cell_sample(N_CELL_TYPES, n_genes, cells_per_type)
         return {
             "subject_id": "test_subject",
             "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
             "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
             "cell_counts": torch.randint(1, 100, (N_CELL_TYPES,)),
-            "cells": torch.randn(N_CELL_TYPES, max_cells, n_genes),
-            "cell_mask": torch.ones(N_CELL_TYPES, max_cells, dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, 50)),
             "ccc_edge_type": torch.randint(0, 5, (50,)),
             "ccc_edge_attr": torch.rand(50, 1),
@@ -904,13 +914,14 @@ class TestCollateMultiregionWithSentinel:
         if region_indices is None:
             region_indices = [0, 2]
 
+        cell_data, cell_offsets = _make_flat_cell_sample(N_CELL_TYPES, n_genes, max_cells)
         sample = {
             "subject_id": "multiregion_subj",
             "pseudobulk": torch.randn(N_CELL_TYPES, n_genes),
             "cell_type_mask": torch.ones(N_CELL_TYPES, dtype=torch.bool),
             "cell_counts": torch.randint(1, 100, (N_CELL_TYPES,)),
-            "cells": torch.randn(N_CELL_TYPES, max_cells, n_genes),
-            "cell_mask": torch.ones(N_CELL_TYPES, max_cells, dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             "ccc_edge_index": torch.randint(0, N_CELL_TYPES, (2, n_edges)),
             "ccc_edge_type": torch.randint(0, 5, (n_edges,)),
             "ccc_edge_attr": torch.rand(n_edges, 1),
@@ -1011,7 +1022,7 @@ class TestCollateMultiregionWithSentinel:
 
         base_keys = {
             "pseudobulk", "cell_type_mask", "cell_counts",
-            "cells", "cell_mask",
+            "cell_data", "cell_offsets",
             "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr",
             "pathology", "cognition",
             "graph_batch", "graph_ptr", "n_nodes_per_graph",

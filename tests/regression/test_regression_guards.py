@@ -207,23 +207,23 @@ class TestConfigLoadAcceptsDotlistOverrides:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Optuna fold pruning uses running mean, not last-fold loss
+# Test 4: HPO fold pruning uses running mean, not last-fold loss
 # Bug: Round 14, Task 2
-# Fix: objective() in optuna_optimize.py now computes a running mean of
-#      fold validation losses and reports that to trial.report(), not the
-#      loss from the last fold alone.
+# Fix: train_fn() in scripts/hpo.py (originally optuna_optimize.py) computes
+#      a running mean of fold validation losses and reports that as the final
+#      val_nll, not the loss from the last fold alone.
 # ---------------------------------------------------------------------------
-class TestOptunaFoldPruningUsesRunningMean:
+class TestHPOFoldPruningUsesRunningMean:
     """Verify fold-level pruning reports running mean loss."""
 
-    def test_optuna_fold_pruning_uses_running_mean(self):
+    def test_hpo_fold_pruning_uses_running_mean(self):
         """
-        Round 14, Task 2: When reporting intermediate values for pruning,
-        the objective function should use the running mean of fold losses
+        Round 14, Task 2: When reporting the final val_nll across folds,
+        the training function should use the running mean of fold losses
         (sum/count), not just the last fold's loss.
 
         This test verifies the running mean computation pattern used in
-        scripts/optuna_optimize.py::objective().
+        scripts/hpo.py::train_fn().
         """
         # Simulate the fold loss accumulation pattern from objective()
         fold_val_losses = []
@@ -818,7 +818,8 @@ class TestBayesianModelExportsBackboneNotFullWeights:
 
         module = MagicMock()
         module.model.state_dict.return_value = {
-            "pseudobulk_encoder.weight": torch.randn(10, 10),
+            "hgt_gene_gate.gate_logits": torch.randn(31, 100),
+            "hgt_input_proj.weight": torch.randn(64, 100),
             "hgt_encoder.weight": torch.randn(10, 10),
             "prediction_head.fc1.weight": torch.randn(5, 10),
             "prediction_head.fc2.weight": torch.randn(1, 5),
@@ -832,7 +833,8 @@ class TestBayesianModelExportsBackboneNotFullWeights:
         assert (tmp_path / "backbone_weights.pt").exists()
 
         loaded = torch.load(tmp_path / "backbone_weights.pt", weights_only=True)
-        assert "pseudobulk_encoder.weight" in loaded
+        assert "hgt_gene_gate.gate_logits" in loaded
+        assert "hgt_input_proj.weight" in loaded
         assert "hgt_encoder.weight" in loaded
         assert "prediction_head.fc1.weight" not in loaded
         assert "prediction_head.fc2.weight" not in loaded
@@ -846,7 +848,8 @@ class TestBayesianModelExportsBackboneNotFullWeights:
 
         module = MagicMock()
         full_state = {
-            "pseudobulk_encoder.weight": torch.randn(10, 10),
+            "hgt_gene_gate.gate_logits": torch.randn(31, 100),
+            "hgt_input_proj.weight": torch.randn(64, 100),
             "prediction_head.fc1.weight": torch.randn(5, 10),
         }
         module.model.state_dict.return_value = full_state

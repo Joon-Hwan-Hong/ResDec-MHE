@@ -95,29 +95,27 @@ class TestGradientModulationCallback:
 
     def test_ogm_scales_dominant_branch_gradients(self):
         """
-        Create a simple model with 3 named branch submodules.
+        Create a simple model with 2 named branch submodules (matching 2-branch architecture).
         After forward+backward, verify OGM scales dominant branch gradients
         by k < 1 and leaves lagging branches unchanged.
         """
         from src.training.gradient_modulation import GradientModulationCallback
 
-        # Build a simple model with named branches matching BRANCH_NAMES-style structure.
+        # Build a simple model with named branches matching BRANCH_NAMES = ("hgt_encoder", "cell_transformer").
         # Each branch has different output scale to create gradient imbalance.
         # The "scale" factors simulate branches with different magnitudes
         # (like the real model where cell_transformer has 5 chained softmax ops).
         class SimpleBranchModel(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.pseudobulk_encoder = nn.Linear(4, 2, bias=False)
                 self.hgt_encoder = nn.Linear(4, 2, bias=False)
                 self.cell_transformer = nn.Linear(4, 2, bias=False)
-                self.head = nn.Linear(6, 1, bias=False)
+                self.head = nn.Linear(4, 1, bias=False)
 
             def forward(self, x):
-                b1 = self.pseudobulk_encoder(x) * 10.0  # amplify
-                b2 = self.hgt_encoder(x)
-                b3 = self.cell_transformer(x) * 0.01    # attenuate
-                fused = torch.cat([b1, b2, b3], dim=-1)
+                b1 = self.hgt_encoder(x) * 10.0       # amplify
+                b2 = self.cell_transformer(x) * 0.01   # attenuate
+                fused = torch.cat([b1, b2], dim=-1)
                 return self.head(fused)
 
         torch.manual_seed(42)
@@ -131,7 +129,7 @@ class TestGradientModulationCallback:
 
         # Record pre-OGM gradient norms
         pre_norms = {}
-        for name in ("pseudobulk_encoder", "hgt_encoder", "cell_transformer"):
+        for name in ("hgt_encoder", "cell_transformer"):
             branch = getattr(model, name)
             grad_norm = sum(
                 p.grad.data.norm(2).item() ** 2 for p in branch.parameters() if p.grad is not None
@@ -139,8 +137,8 @@ class TestGradientModulationCallback:
             pre_norms[name] = grad_norm
 
         # Verify we actually have gradient imbalance
-        assert pre_norms["pseudobulk_encoder"] > pre_norms["hgt_encoder"], (
-            "Test setup: pseudobulk should dominate"
+        assert pre_norms["hgt_encoder"] > pre_norms["cell_transformer"], (
+            "Test setup: hgt_encoder should dominate"
         )
 
         # Create callback (GE disabled for this test — just OGM)
@@ -157,7 +155,7 @@ class TestGradientModulationCallback:
 
         # Save pre-scaling gradients for comparison
         pre_grads = {}
-        for name in ("pseudobulk_encoder", "hgt_encoder", "cell_transformer"):
+        for name in ("hgt_encoder", "cell_transformer"):
             branch = getattr(model, name)
             pre_grads[name] = {
                 pname: p.grad.data.clone()
@@ -173,7 +171,7 @@ class TestGradientModulationCallback:
                         p.grad.data.mul_(k_val)
 
         # Verify: dominant branch gradients were scaled down
-        dominant = "pseudobulk_encoder"
+        dominant = "hgt_encoder"
         assert k[dominant] < 1.0, f"Dominant branch should have k < 1, got {k[dominant]}"
         for pname, pre_grad in pre_grads[dominant].items():
             branch = getattr(model, dominant)
@@ -185,16 +183,16 @@ class TestGradientModulationCallback:
                         f"Dominant branch grad should decrease: {post_norm} >= {pre_norm}"
                     )
 
-        # Verify: lagging branches unchanged (k=1)
-        for lagging_name in ("hgt_encoder", "cell_transformer"):
-            if k[lagging_name] == 1.0:
-                for pname, pre_grad in pre_grads[lagging_name].items():
-                    branch = getattr(model, lagging_name)
-                    for n, p in branch.named_parameters():
-                        if n == pname and p.grad is not None:
-                            assert torch.allclose(p.grad.data, pre_grad), (
-                                f"Lagging branch {lagging_name} grad should be unchanged"
-                            )
+        # Verify: lagging branch unchanged (k=1)
+        lagging_name = "cell_transformer"
+        if k[lagging_name] == 1.0:
+            for pname, pre_grad in pre_grads[lagging_name].items():
+                branch = getattr(model, lagging_name)
+                for n, p in branch.named_parameters():
+                    if n == pname and p.grad is not None:
+                        assert torch.allclose(p.grad.data, pre_grad), (
+                            f"Lagging branch {lagging_name} grad should be unchanged"
+                        )
 
     def test_ge_noise_formula(self):
         """GE noise: effective = k * g1 + (g2 - g1) / sqrt(2)."""
