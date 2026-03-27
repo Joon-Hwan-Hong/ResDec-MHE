@@ -577,3 +577,129 @@ class TestSelectionWeightsDetached:
 
         assert selection_weights.grad_fn is None, \
             "Returned selection_weights should be detached (no grad_fn)"
+
+
+# ============================================================================
+# T2: Divergent Cell Masks In Batch
+# ============================================================================
+
+
+class TestDivergentCellMasksInBatch:
+    """T2: Test behavior when samples have divergent cell availability per type."""
+
+    @pytest.fixture
+    def config(self):
+        return {
+            "n_cell_types": 5,
+            "n_genes": 20,
+            "d_embed": 16,
+            "n_heads": 2,
+            "n_isab_layers": 1,
+            "n_inducing": 8,
+        }
+
+    @pytest.fixture
+    def transformer(self, config):
+        return CellTransformer(
+            n_cell_types=config["n_cell_types"],
+            n_genes=config["n_genes"],
+            d_model=config["d_embed"],
+            n_heads=config["n_heads"],
+            n_isab_layers=config["n_isab_layers"],
+            n_inducing=config["n_inducing"],
+        )
+
+    def test_one_sample_all_masked_other_has_cells(self, transformer, config):
+        """Sample 0 has all cells masked for type 0; sample 1 has valid cells.
+        This triggers Tier 2 (mixed batch) in SetTransformerEncoder."""
+        B, C, max_cells, G = 2, config["n_cell_types"], 30, config["n_genes"]
+        cells = torch.randn(B, C, max_cells, G)
+        cell_mask = torch.ones(B, C, max_cells, dtype=torch.bool)
+        cell_mask[0, 0, :] = False  # Sample 0, type 0: no valid cells
+
+        embeddings, _, _ = transformer(cells, cell_mask)
+        assert torch.isfinite(embeddings).all(), "NaN/Inf in embeddings with divergent masks"
+        assert embeddings.shape == (B, C, config["d_embed"])
+
+    def test_entire_sample_all_types_masked(self, transformer, config):
+        """One sample has ALL cell types fully masked (total empty sample)."""
+        B, C, max_cells, G = 2, config["n_cell_types"], 30, config["n_genes"]
+        cells = torch.randn(B, C, max_cells, G)
+        cell_mask = torch.ones(B, C, max_cells, dtype=torch.bool)
+        cell_mask[0, :, :] = False  # Sample 0: everything masked
+
+        embeddings, _, _ = transformer(cells, cell_mask)
+        assert torch.isfinite(embeddings).all(), "NaN/Inf with one fully-empty sample"
+        assert embeddings.shape == (B, C, config["d_embed"])
+
+    def test_gradients_flow_through_mixed_mask_batch(self, transformer, config):
+        """Gradients flow to both samples even when one has empty cell types."""
+        B, C, max_cells, G = 2, config["n_cell_types"], 30, config["n_genes"]
+        cells = torch.randn(B, C, max_cells, G, requires_grad=True)
+        cell_mask = torch.ones(B, C, max_cells, dtype=torch.bool)
+        cell_mask[0, 0, :] = False
+
+        embeddings, _, _ = transformer(cells, cell_mask)
+        loss = embeddings.sum()
+        loss.backward()
+
+        assert cells.grad is not None
+        assert cells.grad[1].abs().sum() > 0  # Sample 1 has gradients
+
+
+# ============================================================================
+# T3: NaN Input Handling
+# ============================================================================
+
+
+class TestNaNInputHandling:
+    """T3: Test NaN in cells tensor input through CellTransformer."""
+
+    @pytest.fixture
+    def config(self):
+        return {
+            "n_cell_types": 5,
+            "n_genes": 20,
+            "d_embed": 16,
+            "n_heads": 2,
+            "n_isab_layers": 1,
+            "n_inducing": 8,
+        }
+
+    @pytest.fixture
+    def transformer(self, config):
+        return CellTransformer(
+            n_cell_types=config["n_cell_types"],
+            n_genes=config["n_genes"],
+            d_model=config["d_embed"],
+            n_heads=config["n_heads"],
+            n_isab_layers=config["n_isab_layers"],
+            n_inducing=config["n_inducing"],
+        )
+
+    @pytest.mark.xfail(
+        reason="NaN in masked positions propagates through input_proj -> ISAB value "
+        "vectors before masking can suppress it. Zeroing masked inputs before "
+        "input_proj would fix this.",
+        strict=True,
+    )
+    def test_nan_in_masked_positions_does_not_propagate(self, transformer, config):
+        """NaN in masked (invalid) cell positions should not affect output."""
+        B, C, max_cells, G = 2, config["n_cell_types"], 30, config["n_genes"]
+        cells = torch.randn(B, C, max_cells, G)
+        cell_mask = torch.ones(B, C, max_cells, dtype=torch.bool)
+        cell_mask[:, :, 20:] = False
+        cells[:, :, 20:, :] = float("nan")
+
+        embeddings, _, _ = transformer(cells, cell_mask)
+        assert torch.isfinite(embeddings).all(), "NaN propagated from masked positions"
+
+    def test_nan_in_valid_positions_propagates(self, transformer, config):
+        """NaN in valid (unmasked) cells SHOULD propagate -- documents expected behavior."""
+        B, C, max_cells, G = 2, config["n_cell_types"], 30, config["n_genes"]
+        cells = torch.randn(B, C, max_cells, G)
+        cell_mask = torch.ones(B, C, max_cells, dtype=torch.bool)
+        cells[0, 0, 0, :] = float("nan")
+
+        embeddings, _, _ = transformer(cells, cell_mask)
+        assert torch.isnan(embeddings).any(), "Expected NaN propagation from valid-position NaN"

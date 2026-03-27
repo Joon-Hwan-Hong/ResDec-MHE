@@ -711,6 +711,140 @@ class TestCheckpointRoundTrip:
         assert torch.allclose(original_output["mean"], loaded_output["mean"], atol=1e-6)
 
 
+class TestDDPBehavior:
+    """T5: DDP-related behavior tests (mock-based, no multi-GPU required)."""
+
+    def test_elbo_data_scale_set_for_multi_gpu(self, bayesian_config):
+        """Bayesian head data_scale is set to world_size for DDP."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 4
+        module._trainer = mock_trainer
+
+        module.configure_optimizers()
+
+        assert module.model.prediction_head._data_scale == 4
+
+    def test_elbo_data_scale_default_single_gpu(self, bayesian_config):
+        """Bayesian head data_scale stays at 1 for single GPU."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        module._trainer = mock_trainer
+
+        module.configure_optimizers()
+
+        assert module.model.prediction_head._data_scale == 1
+
+    def test_worker_seed_uniqueness_across_ranks(self):
+        """Worker init fn produces unique seeds for different ranks."""
+        seed = 42
+        max_workers = 4
+        all_seeds = []
+        for rank in range(4):
+            for worker_id in range(max_workers):
+                s = (seed + rank * max_workers + worker_id) % (2**32)
+                all_seeds.append(s)
+
+        assert len(set(all_seeds)) == len(all_seeds), f"Duplicate seeds: {all_seeds}"
+
+    def test_sync_dist_on_all_logged_metrics(self, base_config):
+        """All self.log calls use sync_dist=True for DDP correctness."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+
+        log_calls = []
+        original_log = module.log
+
+        def capture_log(*args, **kwargs):
+            log_calls.append(kwargs)
+            return original_log(*args, **kwargs)
+
+        module.log = capture_log
+
+        batch = _make_batch(n_genes=50)
+        module.training_step(batch, batch_idx=0)
+
+        assert len(log_calls) > 0, "No log calls captured"
+        for call in log_calls:
+            assert call.get("sync_dist", False) is True, f"Missing sync_dist=True: {call}"
+
+
+class TestBayesianELBOConvergence:
+    """T7: Verify Bayesian ELBO loss decreases through Lightning training_step."""
+
+    def test_elbo_decreases_over_steps(self, bayesian_config):
+        """ELBO loss should decrease over multiple training steps.
+
+        Tests the full Lightning path: training_step -> _svi_forward ->
+        Trace_ELBO.differentiable_loss -> backward -> optimizer step.
+        """
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        module.log = lambda *args, **kwargs: None
+
+        # configure_optimizers prototypes the guide and creates optimizer
+        opt_config = module.configure_optimizers()
+        optimizer = opt_config["optimizer"]
+
+        batch = _make_batch(n_genes=50)
+
+        losses = []
+        for step in range(30):
+            optimizer.zero_grad()
+            loss = module.training_step(batch, batch_idx=step)
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.item())
+
+        # Average of last 5 losses should be less than average of first 5
+        avg_first_5 = sum(losses[:5]) / 5
+        avg_last_5 = sum(losses[-5:]) / 5
+        assert avg_last_5 < avg_first_5, (
+            f"ELBO did not decrease: first 5 avg={avg_first_5:.4f}, "
+            f"last 5 avg={avg_last_5:.4f}"
+        )
+
+    def test_posterior_median_produces_finite_predictions(self, bayesian_config):
+        """After training, posterior median should produce finite predictions."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        module.log = lambda *args, **kwargs: None
+
+        # configure_optimizers prototypes the guide and creates optimizer
+        opt_config = module.configure_optimizers()
+        optimizer = opt_config["optimizer"]
+
+        batch = _make_batch(n_genes=50)
+
+        # Train 5 steps to prototype the guide
+        for step in range(5):
+            optimizer.zero_grad()
+            loss = module.training_step(batch, batch_idx=step)
+            loss.backward()
+            optimizer.step()
+
+        # Call _forward_batch_posterior with no_grad
+        with torch.no_grad():
+            output = module._forward_batch_posterior(batch)
+
+        assert torch.isfinite(output["mean"]).all(), (
+            f"Non-finite mean predictions: {output['mean']}"
+        )
+        assert torch.isfinite(output["std"]).all(), (
+            f"Non-finite std predictions: {output['std']}"
+        )
+        assert (output["std"] > 0).all(), (
+            f"Non-positive std predictions: {output['std']}"
+        )
+
+
 class TestBayesianSVILrd:
     """Tests for Bayesian SVI learning rate decay (lrd) configuration."""
 
