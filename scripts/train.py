@@ -146,6 +146,18 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
         )
     )
 
+    # KL Annealing (Bayesian head only)
+    kl_cfg = train_cfg.get("kl_annealing", {})
+    if kl_cfg.get("enabled", False):
+        from src.training.callbacks import KLAnnealingCallback
+        callbacks.append(
+            KLAnnealingCallback(
+                alpha_min=kl_cfg.get("alpha_min", 0.01),
+                warmup_epochs=kl_cfg.get("warmup_epochs", 5),
+                schedule=kl_cfg.get("schedule", "linear"),
+            )
+        )
+
     # GradientNormLogger
     log_cfg = train_cfg.get("logging", {})
     callbacks.append(
@@ -199,7 +211,15 @@ def setup_trainer(
 
     # Distributed training settings
     devices = train_cfg.get("devices", "auto")
-    strategy = train_cfg.get("strategy", "auto")
+    strategy_str = train_cfg.get("strategy", "auto")
+    if strategy_str == "ddp_find_unused_parameters_true":
+        from lightning.pytorch.strategies import DDPStrategy
+        strategy = DDPStrategy(
+            find_unused_parameters=True,
+            static_graph=True,
+        )
+    else:
+        strategy = strategy_str
 
     # Profiler setup
     profiler = None
@@ -345,10 +365,6 @@ def main() -> None:
     OmegaConf.update(config, "paths.checkpoint_dir", str(experiment.checkpoints_dir))
     OmegaConf.update(config, "paths.logs_dir", str(experiment.tensorboard_dir))
 
-    # Build Lightning module
-    module = CognitiveResilienceLightningModule(config)
-    logger.info("Model built: %s", type(module.model).__name__)
-
     # Data loading
     from src.data.splits import create_stratified_splits, load_splits
     from src.data.datamodule import CognitiveResilienceDataModule
@@ -406,22 +422,16 @@ def main() -> None:
         import scanpy as sc
         adata = sc.read_h5ad(data_cfg.adata_path)
 
-    # Validate n_genes matches AnnData if available. The model was already
-    # constructed above using config.model.n_genes — if it disagrees with
-    # adata.n_vars, rebuild the model with the correct value.
-    # For Bayesian mode, rebuild is safe because __init__ calls
-    # pyro.clear_param_store() and no training has occurred yet.
+    # Validate n_genes matches AnnData if available. Update config before
+    # building the model so the correct value is used on first construction.
     if adata is not None:
         actual_n_genes = adata.n_vars
         if config.model.n_genes != actual_n_genes:
             logger.warning(
-                "Config model.n_genes=%d but AnnData has %d genes. "
-                "Updating config and rebuilding model.",
+                "Config model.n_genes=%d but AnnData has %d genes. Updating config.",
                 config.model.n_genes, actual_n_genes,
             )
             OmegaConf.update(config, "model.n_genes", actual_n_genes)
-            module = CognitiveResilienceLightningModule(config)
-            logger.info("Model rebuilt with n_genes=%d", actual_n_genes)
 
     if args.final:
         # Defensive guard: splits should always be non-None here because
@@ -439,6 +449,17 @@ def main() -> None:
             adata=adata, final_mode=True,
         )
         logger.info("Final mode DataModule created")
+
+        # Auto-compute target_mean from training data for Bayesian prior centering
+        if config.model.head.get("target_mean") is None and config.model.head.type == "bayesian":
+            dm.setup("fit")
+            target_mean = dm.train_target_mean
+            OmegaConf.update(config, "model.head.target_mean", target_mean)
+            logger.info("Auto-computed target_mean=%.4f from training set", target_mean)
+
+        # Build Lightning module (after target_mean is injected into config)
+        module = CognitiveResilienceLightningModule(config)
+        logger.info("Model built: %s", type(module.model).__name__)
 
         # Override callbacks: remove early stopping and val_loss-based checkpointing
         # to prevent any holdout data from influencing training decisions.
@@ -491,6 +512,17 @@ def main() -> None:
             adata=adata,
         )
         logger.info("Fold %d DataModule created", args.fold)
+
+        # Auto-compute target_mean from training data for Bayesian prior centering
+        if config.model.head.get("target_mean") is None and config.model.head.type == "bayesian":
+            dm.setup("fit")
+            target_mean = dm.train_target_mean
+            OmegaConf.update(config, "model.head.target_mean", target_mean)
+            logger.info("Auto-computed target_mean=%.4f from training set", target_mean)
+
+        # Build Lightning module (after target_mean is injected into config)
+        module = CognitiveResilienceLightningModule(config)
+        logger.info("Model built: %s", type(module.model).__name__)
 
         trainer = setup_trainer(config)
         logger.info("Trainer configured: max_epochs=%d", trainer.max_epochs)

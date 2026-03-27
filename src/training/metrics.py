@@ -44,14 +44,15 @@ class ResilienceMetrics:
         """
         if mean.numel() == 0 or target is None or target.numel() == 0:
             return {
-                "r2": float("nan"), "rmse": float("nan"), "mae": float("nan"),
+                "r2": float("nan"), "r2_calibrated": float("nan"),
+                "rmse": float("nan"), "mae": float("nan"),
                 "pearson_r": float("nan"), "spearman_rho": float("nan"),
                 "mean_std": float("nan"), "calibration_error": float("nan"),
                 "crps": float("nan"),
             }
 
-        mean_np = mean.detach().cpu().numpy().flatten()
-        target_np = target.detach().cpu().numpy().flatten()
+        mean_np = mean.detach().cpu().float().numpy().flatten()
+        target_np = target.detach().cpu().float().numpy().flatten()
 
         # Prediction quality metrics
         residuals = target_np - mean_np
@@ -61,6 +62,16 @@ class ResilienceMetrics:
         r2 = 1.0 - ss_res / (ss_tot + EPSILON_DIVISION) if ss_tot > EPSILON_DIVISION else 0.0
         rmse = float(np.sqrt(np.mean(residuals ** 2)))
         mae = float(np.mean(np.abs(residuals)))
+
+        # Calibrated R²: R² achievable with optimal linear recalibration.
+        # Diagnostic only — measures discrimination independent of calibration.
+        if len(mean_np) >= 3 and np.std(mean_np) > EPSILON_POSITIVE_FLOOR:
+            coeffs = np.polyfit(mean_np, target_np, 1)
+            calibrated_pred = coeffs[0] * mean_np + coeffs[1]
+            ss_res_cal = np.sum((target_np - calibrated_pred) ** 2)
+            r2_calibrated = 1.0 - ss_res_cal / (ss_tot + EPSILON_DIVISION) if ss_tot > EPSILON_DIVISION else 0.0
+        else:
+            r2_calibrated = float('nan')
 
         # Correlation
         if len(mean_np) >= 3 and np.std(mean_np) > EPSILON_POSITIVE_FLOOR and np.std(target_np) > EPSILON_POSITIVE_FLOOR:
@@ -72,6 +83,7 @@ class ResilienceMetrics:
 
         result = {
             "r2": float(r2),
+            "r2_calibrated": float(r2_calibrated),
             "rmse": rmse,
             "mae": mae,
             "pearson_r": pearson_r_val,
@@ -80,7 +92,7 @@ class ResilienceMetrics:
 
         # Uncertainty metrics (only if std provided)
         if std is not None:
-            std_np = std.detach().cpu().numpy().flatten()
+            std_np = std.detach().cpu().float().numpy().flatten()
             result["mean_std"] = float(np.mean(std_np))
             result["calibration_error"] = float(
                 self._calibration_error(mean_np, std_np, target_np)
@@ -91,6 +103,62 @@ class ResilienceMetrics:
             result["calibration_error"] = float('nan')
             result["crps"] = float('nan')
 
+        return result
+
+    def bootstrap_ci(
+        self,
+        mean: torch.Tensor,
+        std: torch.Tensor | None = None,
+        target: torch.Tensor = None,
+        metrics: list[str] | None = None,
+        n_bootstrap: int = 1000,
+        ci: float = 0.95,
+        seed: int = 42,
+    ) -> dict[str, tuple[float, float]]:
+        """Compute bootstrap confidence intervals for selected metrics.
+
+        Args:
+            mean: [N, 1] predicted values
+            std: [N, 1] predicted uncertainty (unused, kept for API consistency)
+            target: [N, 1] ground truth values
+            metrics: List of metric names to bootstrap (default: ["r2"])
+            n_bootstrap: Number of bootstrap resamples
+            ci: Confidence level (default: 0.95)
+            seed: Random seed for reproducibility
+
+        Returns:
+            Dict of metric name -> (lower, upper) confidence interval
+        """
+        if metrics is None:
+            metrics = ["r2"]
+
+        mean_np = mean.detach().cpu().float().numpy().flatten()
+        target_np = target.detach().cpu().float().numpy().flatten()
+        n = len(mean_np)
+
+        rng = np.random.RandomState(seed)
+        boot_results: dict[str, list[float]] = {m: [] for m in metrics}
+
+        for _ in range(n_bootstrap):
+            idx = rng.choice(n, n, replace=True)
+            m_boot = mean_np[idx]
+            t_boot = target_np[idx]
+
+            if "r2" in metrics:
+                residuals = t_boot - m_boot
+                ss_res = np.sum(residuals ** 2)
+                ss_tot = np.sum((t_boot - t_boot.mean()) ** 2)
+                r2 = 1.0 - ss_res / (ss_tot + EPSILON_DIVISION) if ss_tot > EPSILON_DIVISION else 0.0
+                boot_results["r2"].append(r2)
+
+        alpha = (1 - ci) / 2
+        result = {}
+        for m in metrics:
+            vals = np.array(boot_results[m])
+            result[m] = (
+                float(np.percentile(vals, 100 * alpha)),
+                float(np.percentile(vals, 100 * (1 - alpha))),
+            )
         return result
 
     # NOTE: This is an evaluation metric (numpy, non-differentiable), NOT a

@@ -42,6 +42,29 @@ def _make_normal_prior(shape: list[int], head_module: "BayesianPredictionHead"):
     return prior_fn
 
 
+def _make_shifted_prior(shape: list[int], loc_value: float, head_module: "BayesianPredictionHead"):
+    """Create a device-aware Normal prior centered at loc_value.
+
+    Same as _make_normal_prior but uses torch.full(shape, loc_value, ...) for loc
+    instead of torch.zeros. Used to center the fc_mean.bias prior at the
+    training-set target mean, reducing KL penalty for shifting predictions
+    toward the true data mean.
+    """
+    _cache: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def prior_fn(module):
+        device = head_module._device_sentinel.device
+        if device not in _cache:
+            _cache.clear()  # Only keep one device's tensors
+            _cache[device] = (
+                torch.full(shape, loc_value, device=device),
+                torch.ones(shape, device=device),
+            )
+        loc, scale = _cache[device]
+        return dist.Normal(loc, scale).to_event(len(shape))
+    return prior_fn
+
+
 class BayesianPredictionHead(PyroModule):
     """
     Bayesian regression head for cognition prediction.
@@ -74,7 +97,7 @@ class BayesianPredictionHead(PyroModule):
         >>> print(mean.shape, std.shape)  # [8, 1], [8, 1]
     """
 
-    def __init__(self, d_input: int, d_hidden: int = 64):
+    def __init__(self, d_input: int, d_hidden: int = 64, target_mean: float = 0.0):
         super().__init__()
 
         # Validate inputs
@@ -85,6 +108,7 @@ class BayesianPredictionHead(PyroModule):
 
         self.d_input = d_input
         self.d_hidden = d_hidden
+        self.target_mean = target_mean
 
         # No LayerNorm by design: the upstream attended features are already
         # normalized (PseudoBulkEncoder uses LayerNorm). Adding LayerNorm here
@@ -114,7 +138,10 @@ class BayesianPredictionHead(PyroModule):
         self.fc2.bias = PyroSample(_make_normal_prior([d_hidden], self))
 
         self.fc_mean.weight = PyroSample(_make_normal_prior([1, d_hidden], self))
-        self.fc_mean.bias = PyroSample(_make_normal_prior([1], self))
+        if target_mean != 0.0:
+            self.fc_mean.bias = PyroSample(_make_shifted_prior([1], target_mean, self))
+        else:
+            self.fc_mean.bias = PyroSample(_make_normal_prior([1], self))
 
     def set_data_scale(self, scale: float) -> None:
         """Set ELBO likelihood scaling factor (world_size for DDP)."""

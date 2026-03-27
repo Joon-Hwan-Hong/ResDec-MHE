@@ -43,7 +43,7 @@ from omegaconf import DictConfig
 
 import pyro
 import pyro.poutine
-from pyro.infer import TraceMeanField_ELBO
+from src.training.kl_annealing import KLAnnealedELBO
 from pyro.infer.autoguide import AutoDiagonalNormal
 
 from src.data.constants import N_REGIONS
@@ -115,7 +115,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             # for the process lifetime. Safe for training (one module per process).
             # Re-enable with pyro.enable_validation(True) for debugging.
             pyro.enable_validation(False)
-            self.elbo = TraceMeanField_ELBO()
+            self.elbo = KLAnnealedELBO(kl_weight=1.0)
             # automatic_optimization stays True (default) —
             # differentiable_loss returns a loss tensor that flows through
             # Lightning's standard backward + optimizer step + DDP gradient sync.
@@ -221,6 +221,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         Returns a differentiable loss tensor that flows through Lightning's
         standard backward pass, enabling DDP gradient synchronization.
 
+        When the ELBO supports differentiable_loss_with_parts (KLAnnealedELBO),
+        also logs decomposed NLL and KL terms for diagnostics.
+
         Runs in float32 regardless of AMP autocast state: Pyro's log_prob()
         computes std**2 and log(std) which underflow in bf16 when posterior
         scales are small (e.g. std=1e-6 → std**2=1e-12, below bf16 min ~1e-8).
@@ -230,10 +233,20 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         # and corrupt KL divergence terms.
         device_type = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         with torch.amp.autocast(device_type, enabled=False):
-            loss = self.elbo.differentiable_loss(
-                self.model, self.guide,
-                **self._batch_to_model_kwargs(batch),
-            )
+            if hasattr(self.elbo, 'differentiable_loss_with_parts'):
+                nll, kl, loss = self.elbo.differentiable_loss_with_parts(
+                    self.model, self.guide,
+                    **self._batch_to_model_kwargs(batch),
+                )
+                if self.training:
+                    bs = batch["cognition"].shape[0]
+                    self.log("train_nll", nll.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
+                    self.log("train_kl", kl.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
+            else:
+                loss = self.elbo.differentiable_loss(
+                    self.model, self.guide,
+                    **self._batch_to_model_kwargs(batch),
+                )
         return loss
 
     def _forward_batch_posterior(self, batch: dict[str, Any]) -> dict[str, Any]:
@@ -480,6 +493,13 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             for name, value in metrics.items():
                 if not (isinstance(value, float) and math.isnan(value)):
                     self.log(f"{prefix}_{name}", value, rank_zero_only=True)
+
+            # Bootstrap CI on R² (validation only, ~50ms for 1000 resamples on N=93)
+            if prefix == "val":
+                ci = self.metrics.bootstrap_ci(all_means, target=all_targets, metrics=["r2"])
+                if "r2" in ci:
+                    self.log("val_r2_ci_lower", ci["r2"][0], rank_zero_only=True)
+                    self.log("val_r2_ci_upper", ci["r2"][1], rank_zero_only=True)
 
     def on_validation_epoch_end(self) -> None:
         """Compute epoch-level metrics from accumulated predictions."""

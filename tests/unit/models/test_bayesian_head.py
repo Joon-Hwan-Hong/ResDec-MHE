@@ -670,3 +670,55 @@ class TestSVITraining:
         # Both runs should produce similar loss trajectories
         for l1, l2 in zip(losses_run1, losses_run2):
             assert abs(l1 - l2) < 1e-3, "Training runs not reproducible"
+
+
+class TestDataDrivenPrior:
+    """Tests for data-driven prior on fc_mean.bias."""
+
+    def test_default_target_mean_is_zero(self):
+        """Default target_mean should be 0.0 (backward compatibility)."""
+        from src.models.heads.bayesian_head import BayesianPredictionHead
+
+        head = BayesianPredictionHead(d_input=64, d_hidden=32)
+
+        assert head.target_mean == 0.0
+
+    def test_custom_target_mean(self):
+        """target_mean=-0.89 should shift the fc_mean.bias prior loc."""
+        import pyro.poutine as poutine
+        from src.models.heads.bayesian_head import BayesianPredictionHead
+
+        head = BayesianPredictionHead(d_input=64, d_hidden=32, target_mean=-0.89)
+
+        assert head.target_mean == -0.89
+
+        # Trace the model to inspect the fc_mean.bias prior distribution
+        x = torch.randn(4, 64)
+        trace = poutine.trace(head).get_trace(x)
+
+        bias_node = trace.nodes["fc_mean.bias"]
+        prior_dist = bias_node["fn"]
+        # The prior loc should be shifted to -0.89
+        assert torch.allclose(prior_dist.base_dist.loc, torch.tensor([-0.89])), \
+            f"Expected prior loc=-0.89, got {prior_dist.base_dist.loc}"
+
+    def test_other_priors_unchanged(self):
+        """fc1, fc2, fc_mean.weight priors should remain N(0,1) even with custom target_mean."""
+        import pyro.poutine as poutine
+        from src.models.heads.bayesian_head import BayesianPredictionHead
+
+        head = BayesianPredictionHead(d_input=64, d_hidden=32, target_mean=-0.89)
+
+        x = torch.randn(4, 64)
+        trace = poutine.trace(head).get_trace(x)
+
+        # Check that fc1, fc2, fc_mean.weight priors are all N(0,1)
+        for site_name in ["fc1.weight", "fc1.bias", "fc2.weight", "fc2.bias", "fc_mean.weight"]:
+            node = trace.nodes[site_name]
+            prior_dist = node["fn"]
+            loc = prior_dist.base_dist.loc
+            scale = prior_dist.base_dist.scale
+            assert torch.all(loc == 0.0), \
+                f"{site_name} prior loc should be 0.0, got {loc}"
+            assert torch.all(scale == 1.0), \
+                f"{site_name} prior scale should be 1.0, got {scale}"

@@ -346,6 +346,73 @@ class GradientNormLogger(pl.Callback):
         )
 
 
+class KLAnnealingCallback(pl.Callback):
+    """
+    Anneal KL divergence weight during Bayesian SVI training.
+
+    Ramps kl_weight from alpha_min to 1.0 over warmup_epochs using a linear
+    schedule. This allows the model to learn the data distribution before
+    prior regularization reaches full strength.
+
+    Schedule:
+    - Epochs [0, warmup_epochs): linear ramp from alpha_min to 1.0
+    - Epochs >= warmup_epochs: kl_weight = 1.0
+
+    Args:
+        alpha_min: Floor KL weight (>0 to maintain minimal regularization)
+        warmup_epochs: Number of epochs to ramp from alpha_min to 1.0
+        schedule: Annealing schedule type (currently only "linear")
+    """
+
+    def __init__(
+        self,
+        alpha_min: float = 0.01,
+        warmup_epochs: int = 5,
+        schedule: str = "linear",
+    ):
+        super().__init__()
+        if alpha_min < 0:
+            raise ValueError(f"alpha_min must be >= 0, got {alpha_min}")
+        self.alpha_min = alpha_min
+        self.warmup_epochs = warmup_epochs
+        self.schedule = schedule
+
+    def get_kl_weight(self, epoch: int) -> float:
+        """Compute KL weight for a given epoch.
+
+        Args:
+            epoch: Current training epoch (0-indexed)
+
+        Returns:
+            KL weight in [alpha_min, 1.0]
+        """
+        if epoch >= self.warmup_epochs:
+            return 1.0
+        if self.warmup_epochs <= 0:
+            return 1.0
+        progress = epoch / self.warmup_epochs
+        # Linear ramp: alpha_min at epoch 0, 1.0 at epoch warmup_epochs
+        return self.alpha_min + progress * (1.0 - self.alpha_min)
+
+    def on_train_epoch_start(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule,
+    ) -> None:
+        """Set KL weight on the ELBO at the start of each epoch."""
+        elbo = getattr(pl_module, "elbo", None)
+        if elbo is None or not hasattr(elbo, "kl_weight"):
+            return
+        kl_weight = self.get_kl_weight(trainer.current_epoch)
+        elbo.kl_weight = kl_weight
+        pl_module.log("kl_weight", kl_weight, rank_zero_only=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"KLAnnealingCallback(alpha_min={self.alpha_min}, "
+            f"warmup_epochs={self.warmup_epochs}, "
+            f"schedule='{self.schedule}')"
+        )
+
+
 CHECKPOINT_VERSION = "1.0"
 
 

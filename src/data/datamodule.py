@@ -13,6 +13,7 @@ from omegaconf import DictConfig
 
 from src.data.collate import create_dataloader
 from src.data.datasets import CognitiveResilienceDataset, PrecomputedDataset
+from src.data.samplers import EdgeCountBucketBatchSampler
 from src.data.splits import get_fold_subjects, get_final_train_subjects
 
 if TYPE_CHECKING:
@@ -133,6 +134,29 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 )
                 self._test_ds = self._make_dataset(test_subjects)
 
+    @property
+    def train_target_mean(self) -> float | None:
+        """Compute mean of training targets for data-driven prior centering.
+
+        Returns None if training dataset has not been created yet (setup not called)
+        or if the dataset is empty.
+        """
+        if self._train_ds is None or len(self._train_ds) == 0:
+            return None
+        targets = []
+        for i in range(len(self._train_ds)):
+            sample = self._train_ds[i]
+            targets.append(sample["cognition"].item())
+        return float(np.mean(targets))
+
+    def on_train_epoch_start(self) -> None:
+        """Update bucket sampler epoch for deterministic batch-order shuffling."""
+        dl = self.trainer.train_dataloader
+        if dl is not None and hasattr(dl, "batch_sampler"):
+            bs = dl.batch_sampler
+            if hasattr(bs, "set_epoch"):
+                bs.set_epoch(self.trainer.current_epoch)
+
     def _make_dataset(self, subject_ids: list[str]):
         """Create a dataset for the given subject IDs."""
         if self.precomputed_dir is not None:
@@ -194,11 +218,20 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
     def train_dataloader(self) -> torch.utils.data.DataLoader:
         """Create training DataLoader.
 
-        Lightning automatically replaces shuffle with DistributedSampler
-        when using strategy="ddp". On resume, Lightning calls
-        DistributedSampler.set_epoch(current_epoch) automatically, so
-        shuffle order is correct for the restarted epoch.
+        When bucket_batching is enabled (default for PrecomputedDataset),
+        uses EdgeCountBucketBatchSampler to group subjects with similar
+        edge counts, reducing padding waste. This replaces both shuffle
+        and DistributedSampler — the bucket sampler handles DDP internally.
+
+        When bucket_batching is disabled, Lightning automatically replaces
+        shuffle with DistributedSampler for DDP.
         """
+        use_bucket = self._dl_cfg.get("bucket_batching", True)
+        has_edge_counts = hasattr(self._train_ds, "get_edge_counts")
+
+        if use_bucket and has_edge_counts:
+            return self._make_bucket_dataloader(self._train_ds, shuffle=True)
+
         return create_dataloader(
             self._train_ds,
             batch_size=self.batch_size,
@@ -315,3 +348,41 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 dataset.sampler.rng = np.random.default_rng(seed)
 
         return _det_worker_init_fn
+
+    def _make_bucket_dataloader(
+        self, dataset, shuffle: bool = True,
+    ) -> torch.utils.data.DataLoader:
+        """Create DataLoader with EdgeCountBucketBatchSampler.
+
+        The batch_sampler handles batching AND DDP distribution, so we pass
+        batch_size=1 and batch_sampler to DataLoader (mutually exclusive with
+        batch_size, shuffle, sampler, and drop_last).
+        """
+        from src.data.collate import collate_for_hgt_multiregion, _worker_init_fn
+
+        global_rank = self.trainer.global_rank if self.trainer is not None else 0
+        world_size = self.trainer.world_size if self.trainer is not None else 1
+        seed = self.config.experiment.get("seed", 42)
+        num_workers = self._dl_cfg.get("num_workers", 4)
+        prefetch = self._dl_cfg.get("prefetch_factor", 2) if num_workers > 0 else None
+
+        batch_sampler = EdgeCountBucketBatchSampler(
+            edge_counts=dataset.get_edge_counts(),
+            batch_size=self.batch_size,
+            drop_last=True,
+            shuffle=shuffle,
+            seed=seed,
+            rank=global_rank,
+            world_size=world_size,
+        )
+
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            pin_memory=self._dl_cfg.get("pin_memory", True),
+            collate_fn=collate_for_hgt_multiregion,
+            persistent_workers=num_workers > 0,
+            worker_init_fn=self._make_worker_init_fn() if num_workers > 0 else None,
+            prefetch_factor=prefetch,
+        )

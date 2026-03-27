@@ -255,7 +255,11 @@ class TestDataloaderConfig:
         )
         dm.setup(stage="fit")
         loader = dm.train_dataloader()
-        assert loader.batch_size == 4
+        # With bucket batching, batch_size is None (batch_sampler controls it)
+        if loader.batch_sampler is not None and hasattr(loader.batch_sampler, 'batch_size'):
+            assert loader.batch_sampler.batch_size == 4
+        else:
+            assert loader.batch_size == 4
 
     def test_val_dataloader_batch_size(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
         dm = CognitiveResilienceDataModule(
@@ -284,6 +288,34 @@ class TestDataloaderConfig:
             fold_idx=0, precomputed_dir=precomputed_dir,
         )
         assert dm.batch_size == 8
+
+
+class TestTrainTargetMean:
+    """Tests for train_target_mean property (data-driven prior centering)."""
+
+    def test_returns_none_before_setup(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
+        """train_target_mean returns None if setup() has not been called."""
+        dm = CognitiveResilienceDataModule(
+            config=minimal_config, metadata=mock_metadata, splits=mock_splits,
+            fold_idx=0, precomputed_dir=precomputed_dir,
+        )
+        assert dm.train_target_mean is None
+
+    def test_returns_correct_mean(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
+        """train_target_mean returns the mean of training set cogn_global values."""
+        dm = CognitiveResilienceDataModule(
+            config=minimal_config, metadata=mock_metadata, splits=mock_splits,
+            fold_idx=0, precomputed_dir=precomputed_dir,
+        )
+        dm.setup(stage="fit")
+        result = dm.train_target_mean
+        assert result is not None
+        # Verify it's close to the mean of train subjects' cogn_global
+        train_subjects = mock_splits["folds"][0]["train"]
+        expected = mock_metadata[
+            mock_metadata["ROSMAP_IndividualID"].isin(train_subjects)
+        ]["cogn_global"].mean()
+        assert abs(result - expected) < 1e-5
 
 
 class TestWorkerInitFn:

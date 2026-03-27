@@ -130,6 +130,7 @@ class CognitiveResilienceModel(PyroModule):
         edge_categories: Optional[list[str]] = None,
         use_gradient_checkpointing: bool = False,
         use_torch_compile: bool = False,
+        target_mean: float = 0.0,
     ):
         super().__init__("cognitive_resilience_model")
 
@@ -239,6 +240,7 @@ class CognitiveResilienceModel(PyroModule):
             self.prediction_head = BayesianPredictionHead(
                 d_input=d_fused,
                 d_hidden=d_head_hidden,
+                target_mean=target_mean,
             )
         else:
             self.prediction_head = DeterministicPredictionHead(
@@ -773,4 +775,5 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
         use_gradient_checkpointing=model_cfg.get("use_gradient_checkpointing", False),
         use_torch_compile=use_torch_compile,
+        target_mean=model_cfg.head.get("target_mean", 0.0) or 0.0,
     )

@@ -5,6 +5,7 @@
 # Experiment metadata
 experiment:
   name: "cognitive_resilience"
+  run_name: "run1"  # Human-readable tag for experiment dirs (e.g., "baseline-5fold", "hgt-ablation")
   seed: 42
   device: "auto"  # "auto", "cuda", "cpu"
 
@@ -146,6 +147,7 @@ model:
   head:
     type: "bayesian"  # "bayesian", "deterministic"
     d_hidden: 64
+    target_mean: null  # Auto-computed from training set if null
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Training Configuration
@@ -186,6 +188,13 @@ training:
     warmup_epochs: 5             # Keep tau_max for this many epochs (independent of scheduler.warmup_epochs above)
     anneal_epochs: 50            # Anneal over this many epochs
     schedule: "exponential"      # Annealing schedule: "exponential", "linear", "cosine"
+
+  # KL annealing (Bayesian head only)
+  kl_annealing:
+    enabled: true
+    alpha_min: 0.01            # Floor >0 to maintain minimal regularization
+    warmup_epochs: 5           # Must be <= temperature_annealing.warmup_epochs
+    schedule: "linear"         # Linear ramp from alpha_min to 1.0
 
   # Gradient clipping (L2 norm). Under bf16-mixed, parameter gradients are
   # float32 (master weights), so this threshold applies to unscaled norms.
