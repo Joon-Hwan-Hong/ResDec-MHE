@@ -38,14 +38,14 @@ _SCPHASE_SRC = str(Path(__file__).resolve().parent / "repo" / "scphase")
 if _SCPHASE_SRC not in sys.path:
     sys.path.insert(0, _SCPHASE_SRC)
 
-from data_loader import AttnMoE_Dataset, load_data, sparse_collate_fn  # noqa: E402
-from model import SCMIL_AttnMoE  # noqa: E402
-from run_cv import (  # noqa: E402
+from data_loader import AttnMoE_Dataset, load_data, sparse_collate_fn
+from model import SCMIL_AttnMoE
+from run_cv import (
     _save_fold_prediction_data,
     _save_predictions_csv,
     train_and_evaluate_fold,
 )
-from train_utils import (  # noqa: E402
+from train_utils import (
     calculate_cell_attention,
     calculate_gene_attributions,
     calculate_sample_gene_attributions,

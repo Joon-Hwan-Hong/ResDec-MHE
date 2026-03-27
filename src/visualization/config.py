@@ -253,7 +253,7 @@ def save_figure(
     fig: plt.Figure,
     path: str,
     dpi: int = FIGURE_DPI,
-    format: str | None = None,  # noqa: A002 — shadows builtin but never needed here
+    format: str | None = None,
     transparent: bool = False,
 ) -> None:
     """

@@ -37,8 +37,8 @@ _REPO_DIR = str(Path(__file__).resolve().parent / "repo")
 if _REPO_DIR not in sys.path:
     sys.path.insert(0, _REPO_DIR)
 
-from mixmil import MixMIL  # noqa: E402
-from mixmil.data import normalize_feats  # noqa: E402
+from mixmil import MixMIL
+from mixmil.data import normalize_feats
 
 
 # ---------------------------------------------------------------------------

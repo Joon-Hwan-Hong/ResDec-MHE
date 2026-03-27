@@ -632,9 +632,7 @@ def create_dataloader(
 # Device utilities (for non-Lightning usage only)
 # ─────────────────────────────────────────────────────────────────────────────
 # Canonical implementations live in src.utils.device.  Re-exported here for
-# backward-compatibility so that existing ``from src.data.collate import
-# move_batch_to_device`` statements continue to work.
-from src.utils.device import move_batch_to_device  # noqa: F401
+from src.utils.device import move_batch_to_device
 
 
 def get_effective_batch_size(batch_size: int, num_gpus: int, strategy: str = "ddp") -> int:

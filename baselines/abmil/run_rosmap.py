@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from mil_utils import load_data, run_5fold  # noqa: E402
+from mil_utils import load_data, run_5fold
 
 
 class ABMIL(nn.Module):
