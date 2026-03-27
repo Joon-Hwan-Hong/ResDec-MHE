@@ -38,7 +38,10 @@ def load_config(
         raise FileNotFoundError(f"Configuration file not found: {path}")
 
     with open(path) as f:
-        config = OmegaConf.create(yaml.safe_load(f))
+        raw = yaml.safe_load(f)
+        if raw is None:
+            raw = {}
+        config = OmegaConf.create(raw)
 
     if overrides:
         if isinstance(overrides, list):
@@ -214,30 +217,3 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         )
 
 
-def flatten_config(config: DictConfig | dict, parent_key: str = "", sep: str = ".") -> dict:
-    """
-    Flatten nested configuration to dot-notation keys.
-
-    Args:
-        config: Configuration to flatten
-        parent_key: Parent key prefix
-        sep: Separator for nested keys
-
-    Returns:
-        Flattened dictionary with dot-notation keys
-
-    Example:
-        {"model": {"d_embed": 128}} -> {"model.d_embed": 128}
-    """
-    items = []
-    if isinstance(config, DictConfig):
-        config = OmegaConf.to_container(config, resolve=True)
-
-    for k, v in config.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
-            items.extend(flatten_config(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-
-    return dict(items)

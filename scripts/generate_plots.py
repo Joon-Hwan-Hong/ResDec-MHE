@@ -18,6 +18,7 @@ import argparse
 import logging
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -56,10 +57,6 @@ from src.visualization import (
 )
 from src.data.constants import CELL_TYPE_ORDER
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -343,6 +340,7 @@ def generate_attention_plots(
                 fig = plot_cell_type_attention_heatmap(heatmap_df)
                 path = output_dir / f"cell_type_attention_heatmap.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -356,6 +354,7 @@ def generate_attention_plots(
                 fig = plot_cell_type_importance_bar(df)
                 path = output_dir / f"cell_type_importance_bar.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -375,6 +374,7 @@ def generate_attention_plots(
                 )
                 path = output_dir / f"attention_distribution.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -391,6 +391,7 @@ def generate_attention_plots(
                 )
                 path = output_dir / f"gene_gate_heatmap.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -421,6 +422,7 @@ def generate_resilience_plots(
                 suffix = f"_{pathology_name}" if pathology_name != "combined" else ""
                 path = output_dir / f"resilience_signature_heatmap{suffix}.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -447,6 +449,7 @@ def generate_importance_plots(
                 fig = plot_top_genes_per_cell_type(df, n_genes=10)
                 path = output_dir / f"top_genes_per_cell_type.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -464,6 +467,7 @@ def generate_importance_plots(
                 fig = plot_gene_importance_volcano(df)
                 path = output_dir / f"differential_expression_volcano.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -479,6 +483,7 @@ def generate_importance_plots(
                 fig = plot_ccc_network_summary(df)
                 path = output_dir / f"ccc_network_summary.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -494,6 +499,7 @@ def generate_importance_plots(
                 fig = plot_top_interactions_heatmap(df, top_k=20)
                 path = output_dir / f"top_interactions_heatmap.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -507,6 +513,7 @@ def generate_importance_plots(
                 fig = plot_regional_gene_importance(df)
                 path = output_dir / f"regional_gene_importance.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -539,6 +546,7 @@ def generate_prediction_plots(
                 )
                 path = output_dir / f"predicted_vs_actual.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -552,6 +560,7 @@ def generate_prediction_plots(
                 fig = plot_calibration_curve(cal_df)
                 path = output_dir / f"calibration_curve.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -567,6 +576,7 @@ def generate_prediction_plots(
                 )
                 path = output_dir / f"residuals.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -583,6 +593,7 @@ def generate_prediction_plots(
                 )
                 path = output_dir / f"uncertainty_vs_error.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -596,6 +607,7 @@ def generate_prediction_plots(
                 fig = plot_uncertainty_correlates(unc_df)
                 path = output_dir / f"uncertainty_correlates.{fmt}"
                 save_figure(fig, str(path), format=fmt, dpi=dpi)
+                plt.close(fig)  # Free memory — figures accumulate during batch generation
                 generated.append(str(path))
                 logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -643,6 +655,7 @@ def generate_embedding_plots(
             fig = plot_umap_scatter(umap_with_cluster, color_by=color_by)
             path = output_dir / f"umap_scatter.{fmt}"
             save_figure(fig, str(path), format=fmt, dpi=dpi)
+            plt.close(fig)  # Free memory — figures accumulate during batch generation
             generated.append(str(path))
             logger.info(f"  Generated: {path.name}")
         except Exception as e:
@@ -656,6 +669,7 @@ def generate_embedding_plots(
                 if fig is not None:
                     path = output_dir / f"cluster_composition.{fmt}"
                     save_figure(fig, str(path), format=fmt, dpi=dpi)
+                    plt.close(fig)  # Free memory — figures accumulate during batch generation
                     generated.append(str(path))
                     logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -669,6 +683,7 @@ def generate_embedding_plots(
                 if fig is not None:
                     path = output_dir / f"linear_probe_results.{fmt}"
                     save_figure(fig, str(path), format=fmt, dpi=dpi)
+                    plt.close(fig)  # Free memory — figures accumulate during batch generation
                     generated.append(str(path))
                     logger.info(f"  Generated: {path.name}")
             except Exception as e:
@@ -684,6 +699,7 @@ def generate_embedding_plots(
             )
             path = output_dir / f"embedding_summary.{fmt}"
             save_figure(fig, str(path), format=fmt, dpi=dpi)
+            plt.close(fig)  # Free memory — figures accumulate during batch generation
             generated.append(str(path))
             logger.info(f"  Generated: {path.name}")
         except Exception as e:
@@ -834,6 +850,9 @@ def main():
                 generated = generate_embedding_plots(emb_data, emb_output, skip_plots, fmt, dpi=dpi)
                 all_generated.extend(generated)
         else:
+            # Legacy fallback: pre-2026-02 data format stored embeddings flat
+            # in the data dict rather than under "embedding_dirs". Kept for
+            # backward compatibility with older saved results.
             generated = generate_embedding_plots(data, embedding_base_dir, skip_plots, fmt, dpi=dpi)
             all_generated.extend(generated)
 
@@ -856,4 +875,8 @@ def main():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
     main()

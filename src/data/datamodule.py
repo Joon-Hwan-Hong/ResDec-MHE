@@ -40,6 +40,8 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         precomputed_dir: If provided, use PrecomputedDataset
         adata: AnnData object (required if precomputed_dir is None)
         final_mode: If True, train on full train_val_pool, test on holdout
+        liana_results: Dict mapping subject_id -> LIANA+ DataFrame for CCC edges
+            (only used with on-the-fly CognitiveResilienceDataset, not PrecomputedDataset)
     """
 
     def __init__(
@@ -51,6 +53,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         precomputed_dir: str | Path | None = None,
         adata: anndata.AnnData | None = None,
         final_mode: bool = False,
+        liana_results: dict[str, pd.DataFrame] | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -60,6 +63,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         self.precomputed_dir = Path(precomputed_dir) if precomputed_dir is not None else None
         self.adata = adata
         self.final_mode = final_mode
+        self.liana_results = liana_results
 
         self._data_cfg = config.data
         self._dl_cfg = self._data_cfg.dataloader
@@ -70,7 +74,13 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         self._test_ds = None
 
     def setup(self, stage: str | None = None) -> None:
-        """Create datasets for the appropriate splits."""
+        """Create datasets for the appropriate splits.
+
+        Note: No idempotency guard (e.g., ``if self._train_ds is not None: return``)
+        because Lightning may call setup() multiple times with different stages,
+        and the CV loop legitimately recreates DataModules with different fold_idx.
+        Recreating datasets is cheap (index-only, no data copy).
+        """
         if self.final_mode:
             train_subjects = get_final_train_subjects(self.splits)
             test_subjects = self.splits["holdout_test"]
@@ -132,6 +142,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 self.adata,
                 self.metadata,
                 subject_ids,
+                liana_results=self.liana_results,
                 cell_type_column=self._data_cfg.get(
                     "cell_type_column", "supercluster_name"
                 ),
@@ -153,6 +164,10 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 sampling_strategy=self._data_cfg.cell_sampling.get(
                     "sampling_strategy", "random"
                 ),
+                sampling_seed=self.config.experiment.get("seed", 42),
+                region_column=self._data_cfg.get(
+                    "region_column", "BrainRegion"
+                ),
             )
 
     def train_dataloader(self) -> torch.utils.data.DataLoader:
@@ -165,6 +180,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             self._train_ds,
             batch_size=self.batch_size,
             shuffle=True,
+            drop_last=True,
             num_workers=self._dl_cfg.get("num_workers", 4),
             pin_memory=self._dl_cfg.get("pin_memory", True),
             multiregion=True,

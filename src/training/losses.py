@@ -8,8 +8,6 @@ improving predictions).
 mse_loss: Simple MSE fallback for deterministic head.
 """
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -70,7 +68,10 @@ class BetaNLLLoss(nn.Module):
         target = target.float()
 
         var = std ** 2
-        var = torch.clamp(var, min=1e-12)  # Floor for log-variance stability
+        # Redundant safety net: BayesianPredictionHead guarantees std >= 1e-6
+        # (softplus + EPSILON_POSITIVE_FLOOR), so var >= 1e-12 structurally.
+        # Kept as defense-in-depth for standalone usage.
+        var = torch.clamp(var, min=1e-12)
 
         # Log-variance term (unchanged by β)
         log_var_term = 0.5 * torch.log(var)

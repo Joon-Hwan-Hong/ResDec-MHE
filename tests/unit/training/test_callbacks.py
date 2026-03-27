@@ -720,6 +720,57 @@ class TestPyroParamStoreResync:
 
         assert getattr(pl_module, '_pyro_resuming_from_checkpoint', False) is True
 
+    def test_on_train_start_resyncs_pyro_params(self):
+        """on_train_start correctly handles PyroParam entries (e.g., scale).
+
+        PyroParams are stored as unconstrained nn.Parameters (name + '_unconstrained')
+        but the Pyro param store key uses the base name without the suffix.
+        """
+        import pyro
+
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+
+        # Create a guide with both regular nn.Parameter and simulated PyroParam
+        guide = nn.Module()
+        guide.auto_loc = nn.Parameter(torch.tensor([1.0, 2.0]))
+        # PyroParam stores unconstrained value as name + '_unconstrained'
+        guide.scale_unconstrained = nn.Parameter(torch.tensor([0.5, 0.5]))
+
+        guide._pyro_name = "AutoDiagonalNormal"
+        # Mark 'scale' as a PyroParam — the resync code uses this to find
+        # the unconstrained parameter and register with the base name
+        guide._pyro_params = {"scale": (None, 0)}  # (constraint, event_dim)
+
+        def _pyro_get_fullname(name):
+            return f"AutoDiagonalNormal.{name}"
+
+        guide._pyro_get_fullname = _pyro_get_fullname
+
+        pl_module.guide = guide
+        pl_module.device = torch.device("cpu")
+
+        # Simulate stale param store with cloned tensors
+        pyro.clear_param_store()
+        store = pyro.get_param_store()
+        store._params["AutoDiagonalNormal.auto_loc"] = guide.auto_loc.data.clone()
+        store._params["AutoDiagonalNormal.scale"] = guide.scale_unconstrained.data.clone()
+        store._param_to_name[store._params["AutoDiagonalNormal.auto_loc"]] = "AutoDiagonalNormal.auto_loc"
+        store._param_to_name[store._params["AutoDiagonalNormal.scale"]] = "AutoDiagonalNormal.scale"
+
+        # Verify mismatch exists
+        assert store._params["AutoDiagonalNormal.auto_loc"] is not guide.auto_loc
+        assert store._params["AutoDiagonalNormal.scale"] is not guide.scale_unconstrained
+
+        pl_module._pyro_resuming_from_checkpoint = True
+        callback.on_train_start(trainer, pl_module)
+
+        # Verify: regular param re-synced via identity
+        store = pyro.get_param_store()
+        assert store._params["AutoDiagonalNormal.auto_loc"] is guide.auto_loc
+
+        # Verify: PyroParam re-synced — unconstrained param stored under base name
+        assert store._params["AutoDiagonalNormal.scale"] is guide.scale_unconstrained
+
     def test_normal_startup_does_not_resync(self):
         """on_train_start without resume flag just migrates device, does not clear store."""
         import pyro

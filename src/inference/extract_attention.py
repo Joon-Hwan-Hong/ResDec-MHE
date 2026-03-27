@@ -99,7 +99,16 @@ def aggregate_hgt_attention(
             break
 
     if n_heads is None:
-        n_heads = 4  # Default
+        # No attention tensors found — all samples had empty attention dicts.
+        # Return empty arrays rather than guessing n_heads.
+        return {
+            "edge_type_names": [f"{et[0]}|{et[1]}|{et[2]}" for et in edge_types],
+            "mean_by_edge_type": np.array([]),
+            "std_by_edge_type": np.array([]),
+            "per_sample": np.array([]) if include_per_sample else None,
+            "n_samples": n_samples,
+            "n_layers": n_layers,
+        }
 
     # Collect per-sample per-layer attention summaries
     # Shape: [n_samples, n_edge_types, n_layers, n_heads]

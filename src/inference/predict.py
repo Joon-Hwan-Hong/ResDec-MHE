@@ -37,18 +37,24 @@ from src.utils.io import save_attention_weights as _io_save_attention_weights
 logger = logging.getLogger(__name__)
 
 
-def _hgt_attention_to_cpu(hgt_attention: list[dict]) -> list[dict]:
+def _hgt_attention_to_cpu(
+    hgt_attention: list[list[dict]],
+) -> list[list[dict]]:
     """Move HGT attention tensors to CPU.
 
-    HGT attention is list[dict[tuple, Tensor]] (per-layer, per-edge-type).
-    Moves to CPU to prevent GPU OOM during batch accumulation.
+    HGT attention from HGTEncoderBatched is list[list[dict[tuple, Tensor]]]
+    (per-sample, per-layer, per-edge-type). Moves to CPU to prevent GPU OOM
+    during batch accumulation.
     """
     return [
-        {
-            edge_type: attn.cpu() if isinstance(attn, torch.Tensor) else attn
-            for edge_type, attn in layer_dict.items()
-        }
-        for layer_dict in hgt_attention
+        [
+            {
+                edge_type: attn.cpu() if isinstance(attn, torch.Tensor) else attn
+                for edge_type, attn in layer_dict.items()
+            }
+            for layer_dict in sample_attn
+        ]
+        for sample_attn in hgt_attention
     ]
 
 
@@ -371,12 +377,16 @@ class Predictor:
         conditioned = pyro.poutine.condition(self.model, data=median)
         output_median = conditioned(**model_kwargs)
 
-        # Collect posterior samples for epistemic uncertainty
+        # Collect posterior samples for epistemic uncertainty.
+        # Safe under @torch.no_grad(): AutoDiagonalNormal.forward() samples
+        # via rsample() which computes values without needing gradients.
+        # Pyro's trace/replay creates fresh Trace objects per call with no
+        # persistent state that would affect subsequent training steps.
         means = []
         for _ in range(num_samples):
             guide_trace = pyro.poutine.trace(self.guide).get_trace(**model_kwargs)
             conditioned_sample = pyro.poutine.replay(self.model, trace=guide_trace)
-            with torch.no_grad():
+            with torch.no_grad():  # Redundant with @torch.no_grad() on method, but harmless and explicit
                 out = conditioned_sample(**model_kwargs)
             means.append(out["mean"].detach().clone())
             # Free Pyro trace objects and model output to prevent GPU memory accumulation

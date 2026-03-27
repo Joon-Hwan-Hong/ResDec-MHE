@@ -29,6 +29,7 @@ Expected Input Format:
     be automatically expanded to region format.
 """
 
+import warnings
 from typing import Optional
 
 import torch
@@ -380,6 +381,8 @@ class CognitiveResilienceModel(PyroModule):
             cognition: [B, 1] target cognition scores (optional, for training)
             return_hgt_attention: Whether to return HGT attention weights (for interpretability)
             return_pma_attention: Whether to return PMA cell-level attention (for interpretability)
+            return_region_attention: Whether to return region-level attention weights
+            return_embeddings: Whether to return intermediate embeddings dict
 
         Returns:
             dict with keys:
@@ -427,6 +430,16 @@ class CognitiveResilienceModel(PyroModule):
                 f"got {list(cell_type_mask.shape)}"
             )
 
+        # Validate required inputs — these should always come from the collate function.
+        # Explicit checks here provide clear error messages if a data pipeline bug
+        # passes None instead of a tensor.
+        if cells is None:
+            raise ValueError("cells tensor is required but got None — check collate function output")
+        if cell_mask is None:
+            raise ValueError("cell_mask tensor is required but got None — check collate function output")
+        if pathology is None:
+            raise ValueError("pathology tensor is required but got None — check collate function output")
+
         # ─────────────────────────────────────────────────────────────────────
         # Branch 1: Pseudobulk encoding + region handling
         # ─────────────────────────────────────────────────────────────────────
@@ -438,6 +451,11 @@ class CognitiveResilienceModel(PyroModule):
 
         # ─────────────────────────────────────────────────────────────────────
         # Branch 2: HGT encoding (cell-cell communication) - Per-sample graphs
+        # Design decision: HGT receives region-pooled (not region-specific) features
+        # because CCC edges represent communication patterns across the subject's
+        # cell types, while RegionHandler's learned attention weights naturally
+        # prioritize the region with strongest signal (typically PFC, which is also
+        # where LIANA CCC edges originate). See architecture doc Part 1, §3.2.
         # ─────────────────────────────────────────────────────────────────────
         # Build x_dict_list from pooled pseudobulk embeddings
         x_dict_list = build_x_dict_list_from_embeddings(
@@ -600,6 +618,19 @@ class CognitiveResilienceModel(PyroModule):
         )
 
 
+def _cfg_get(cfg, key, default, section_name="model"):
+    """Get config value with warning when using default."""
+    val = cfg.get(key)
+    if val is None:
+        warnings.warn(
+            f"Config key '{section_name}.{key}' not found, using default={default}. "
+            f"Check for typos if you expected this to be set.",
+            stacklevel=3,
+        )
+        return default
+    return val
+
+
 def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
     """Build a CognitiveResilienceModel from a config dict/DictConfig.
 
@@ -615,7 +646,8 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
     Returns:
         Configured CognitiveResilienceModel instance.
     """
-    use_bayesian = model_cfg.head.type == "bayesian"
+    head_type = model_cfg.get("head", {}).get("type", "deterministic")
+    use_bayesian = head_type == "bayesian"
     return CognitiveResilienceModel(
         n_genes=model_cfg.n_genes,
         n_cell_types=model_cfg.n_cell_types,
@@ -625,17 +657,17 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         n_regions=N_REGIONS,
         n_hgt_layers=model_cfg.hgt.n_layers,
         n_hgt_heads=model_cfg.hgt.n_heads,
-        n_cell_transformer_heads=model_cfg.set_transformer.get("n_heads", 4),
+        n_cell_transformer_heads=_cfg_get(model_cfg.set_transformer, "n_heads", 4, "model.set_transformer"),
         n_isab_layers=model_cfg.set_transformer.n_isab_layers,
         n_inducing_points=model_cfg.set_transformer.n_inducing_points,
         n_attention_heads=model_cfg.pathology_attention.n_heads,
-        gene_gate_temperature=model_cfg.gene_gate.get("initial_temperature", 2.0),
-        selection_temperature=model_cfg.cell_type_selector.get("selection_temperature", 1.0),
+        gene_gate_temperature=_cfg_get(model_cfg.gene_gate, "initial_temperature", 2.0, "model.gene_gate"),
+        selection_temperature=_cfg_get(model_cfg.cell_type_selector, "selection_temperature", 1.0, "model.cell_type_selector"),
         use_bayesian_head=use_bayesian,
         d_head_hidden=model_cfg.head.d_hidden,
-        dropout=model_cfg.get("dropout", 0.1),
-        n_pathology_features=model_cfg.pathology_attention.get("n_pathology_features", 3),
-        n_pma_seeds=model_cfg.set_transformer.get("n_pma_seeds", 1),
+        dropout=_cfg_get(model_cfg, "dropout", 0.1, "model"),
+        n_pathology_features=_cfg_get(model_cfg.pathology_attention, "n_pathology_features", 3, "model.pathology_attention"),
+        n_pma_seeds=_cfg_get(model_cfg.set_transformer, "n_pma_seeds", 1, "model.set_transformer"),
         mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") is not None else None,
         use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
     )

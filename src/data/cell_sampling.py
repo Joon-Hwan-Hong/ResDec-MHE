@@ -125,7 +125,11 @@ class CellSampler:
             # Fall back to random sampling
             return self._random_sample(indices)
 
-        # Get strata for these cells
+        # Get strata for these cells.
+        # Alignment note: `indices` (from np.where(mask.values)[0]) and
+        # `adata.obs.loc[mask, strata_col].values` iterate True positions
+        # in the same positional order by definition of boolean indexing,
+        # so strata[i] always corresponds to indices[i].
         strata = adata.obs.loc[mask, strata_col].values
 
         # Sample proportionally from each stratum

@@ -98,6 +98,9 @@ class RegionHandler(nn.Module):
         all_masked = ~region_mask_bool.any(dim=1, keepdim=True)  # [B, 1]
         if all_masked.any():
             masked_logits = masked_logits.masked_fill(all_masked.expand_as(masked_logits), 0.0)
+        # AMP note: region_weights is an nn.Parameter (always float32, not
+        # autocasted), and masked_logits inherits float32 from it. With only
+        # R=4-6 elements, this softmax is numerically safe in float32.
         normalized_weights = F.softmax(masked_logits, dim=1)  # [B, R]
         # Zero out weights for all-masked rows so pooled output is zero
         if all_masked.any():

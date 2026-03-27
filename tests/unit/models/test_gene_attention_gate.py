@@ -651,6 +651,20 @@ class TestNumericalStability:
         assert not torch.isnan(weights).any()
         assert not torch.isinf(weights).any()
 
+    def test_gene_gate_softmax_float16_stability(self):
+        """Gene gate softmax should not produce NaN with float16 logits at low temperature."""
+        from src.models.components.gene_attention_gate import GeneAttentionGate
+
+        gate = GeneAttentionGate(n_cell_types=2, n_genes=2000)
+        gate.gate_logits.data = torch.randn(2, 2000) * 0.5  # Typical after training
+        gate._temperature_buf.fill_(0.05)  # Low temperature
+
+        # Simulate AMP: cast logits to float16
+        gate.gate_logits.data = gate.gate_logits.data.half()
+        weights = gate.get_gate_weights()
+        assert torch.isfinite(weights).all(), "NaN/Inf in gate weights"
+        assert weights.dtype == torch.float16, "Should return same dtype as input"
+
 
 # =============================================================================
 # 9. DETERMINISM TESTS

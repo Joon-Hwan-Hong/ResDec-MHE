@@ -19,6 +19,7 @@ Workflow:
 """
 
 import argparse
+import contextlib
 import logging
 import os
 import warnings
@@ -326,6 +327,11 @@ def objective(
         if trial.should_prune():
             raise optuna.TrialPruned()
 
+        # Note: no explicit torch.cuda.empty_cache() between folds.
+        # PyTorch's CUDA allocator reuses cached memory blocks, so calling
+        # empty_cache() would force re-allocation and hurt performance.
+        # Python reference counting deallocates the old module/trainer above.
+
     # Return mean val_loss across folds
     if fold_val_losses:
         return sum(fold_val_losses) / len(fold_val_losses)
@@ -425,6 +431,8 @@ def main() -> None:
     import pandas as pd
     adata = sc.read_h5ad(config.data.adata_path)
     metadata_path = Path(config.data.metadata_path)
+    # metadata can be None if CSV doesn't exist — objective() will raise
+    # RuntimeError on the first trial attempt, providing a clear error message.
     metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
     logger.info("Loaded adata (%d cells) and metadata", adata.n_obs)
 
@@ -455,53 +463,53 @@ def main() -> None:
         trials_per_gpu = (n_trials + n_gpus - 1) // n_gpus
 
         workers = []
-        for i in range(n_gpus):
-            gpu_trials = min(trials_per_gpu, n_trials - i * trials_per_gpu)
-            if gpu_trials <= 0:
-                continue
+        log_dir = Path(config.paths.get("logs_dir", "outputs/logs"))
+        log_dir.mkdir(parents=True, exist_ok=True)
 
-            cmd = [
-                sys.executable, str(Path(__file__)),
-                "--config", args.config,
-                "--n-trials", str(gpu_trials),
-                "--gpu", "0",  # Always GPU 0 since CUDA_VISIBLE_DEVICES limits visibility
-                "--storage", args.storage,
-                "--splits-path", args.splits_path,
-            ]
-            if args.precomputed_dir:
-                cmd.extend(["--precomputed-dir", args.precomputed_dir])
-            if timeout:
-                cmd.extend(["--timeout", str(timeout)])
-            if args.overrides:
-                cmd.extend(args.overrides)
+        with contextlib.ExitStack() as stack:
+            for i in range(n_gpus):
+                gpu_trials = min(trials_per_gpu, n_trials - i * trials_per_gpu)
+                if gpu_trials <= 0:
+                    continue
 
-            # Pin each worker to a single GPU via CUDA_VISIBLE_DEVICES
-            # This prevents each process from initializing all GPU contexts
-            env = os.environ.copy()
-            env["CUDA_VISIBLE_DEVICES"] = str(i)
+                cmd = [
+                    sys.executable, str(Path(__file__)),
+                    "--config", args.config,
+                    "--n-trials", str(gpu_trials),
+                    "--gpu", "0",  # Always GPU 0 since CUDA_VISIBLE_DEVICES limits visibility
+                    "--storage", args.storage,
+                    "--splits-path", args.splits_path,
+                ]
+                if args.precomputed_dir:
+                    cmd.extend(["--precomputed-dir", args.precomputed_dir])
+                if timeout:
+                    cmd.extend(["--timeout", str(timeout)])
+                if args.overrides:
+                    cmd.extend(args.overrides)
 
-            log_dir = Path(config.paths.get("logs_dir", "outputs/logs"))
-            log_dir.mkdir(parents=True, exist_ok=True)
-            stdout_path = log_dir / f"optuna_gpu{i}_stdout.log"
-            stderr_path = log_dir / f"optuna_gpu{i}_stderr.log"
-            logger.info(
-                f"Spawning worker on GPU {i} (CUDA_VISIBLE_DEVICES={i}): "
-                f"{gpu_trials} trials, logs: {stdout_path}"
-            )
-            stdout_f = open(stdout_path, "w")
-            stderr_f = open(stderr_path, "w")
-            proc = subprocess.Popen(cmd, env=env, stdout=stdout_f, stderr=stderr_f)
-            workers.append((i, proc, stdout_f, stderr_f))
+                # Pin each worker to a single GPU via CUDA_VISIBLE_DEVICES
+                # This prevents each process from initializing all GPU contexts
+                env = os.environ.copy()
+                env["CUDA_VISIBLE_DEVICES"] = str(i)
 
-        # Wait for all workers
-        failed = []
-        for gpu_idx, proc, stdout_f, stderr_f in workers:
-            returncode = proc.wait()
-            stdout_f.close()
-            stderr_f.close()
-            if returncode != 0:
-                failed.append(gpu_idx)
-                logger.error(f"Worker on GPU {gpu_idx} failed with code {returncode}")
+                stdout_path = log_dir / f"optuna_gpu{i}_stdout.log"
+                stderr_path = log_dir / f"optuna_gpu{i}_stderr.log"
+                logger.info(
+                    f"Spawning worker on GPU {i} (CUDA_VISIBLE_DEVICES={i}): "
+                    f"{gpu_trials} trials, logs: {stdout_path}"
+                )
+                stdout_f = stack.enter_context(open(stdout_path, "w"))
+                stderr_f = stack.enter_context(open(stderr_path, "w"))
+                proc = subprocess.Popen(cmd, env=env, stdout=stdout_f, stderr=stderr_f)
+                workers.append((i, proc))
+
+            # Wait for all workers
+            failed = []
+            for gpu_idx, proc in workers:
+                returncode = proc.wait()
+                if returncode != 0:
+                    failed.append(gpu_idx)
+                    logger.error(f"Worker on GPU {gpu_idx} failed with code {returncode}")
 
         if failed:
             logger.error(f"Workers failed on GPUs: {failed}")

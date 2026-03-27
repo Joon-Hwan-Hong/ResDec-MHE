@@ -473,10 +473,13 @@ class TestLRScalingWithWorldSize:
                 "set_transformer": {
                     "n_isab_layers": 1,
                     "n_inducing_points": 4,
+                    "n_pma_seeds": 1,
+                    "n_heads": 4,
                 },
                 "pathology_attention": {
                     "d_cond": 16,
                     "n_heads": 4,
+                    "n_pathology_features": 3,
                 },
                 "gene_gate": {"initial_temperature": 2.0},
                 "cell_type_selector": {"selection_temperature": 1.0},
@@ -547,10 +550,13 @@ class TestLRScalingWithWorldSize:
                 "set_transformer": {
                     "n_isab_layers": 1,
                     "n_inducing_points": 4,
+                    "n_pma_seeds": 1,
+                    "n_heads": 4,
                 },
                 "pathology_attention": {
                     "d_cond": 16,
                     "n_heads": 4,
+                    "n_pathology_features": 3,
                 },
                 "gene_gate": {"initial_temperature": 2.0},
                 "cell_type_selector": {"selection_temperature": 1.0},

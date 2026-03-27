@@ -67,8 +67,8 @@ def mock_config():
             "dropout": 0.1,
             "head": {"type": "bayesian", "d_hidden": 64},
             "hgt": {"n_layers": 2, "n_heads": 4},
-            "set_transformer": {"n_heads": 4, "n_isab_layers": 2, "n_inducing_points": 32},
-            "pathology_attention": {"d_cond": 64, "n_heads": 4},
+            "set_transformer": {"n_heads": 4, "n_isab_layers": 2, "n_inducing_points": 32, "n_pma_seeds": 1},
+            "pathology_attention": {"d_cond": 64, "n_heads": 4, "n_pathology_features": 3},
             "gene_gate": {"initial_temperature": 2.0},
             "cell_type_selector": {"selection_temperature": 1.0},
         }
@@ -552,7 +552,7 @@ class TestFromCheckpointBayesianDeviceMigration:
                 "dropout": 0.1,
                 "head": {"type": "bayesian", "d_hidden": 64},
                 "hgt": {"n_layers": 2, "n_heads": 4},
-                "set_transformer": {"n_heads": 4, "n_isab_layers": 2, "n_inducing_points": 32},
+                "set_transformer": {"n_heads": 4, "n_isab_layers": 2, "n_inducing_points": 32, "n_pma_seeds": 1},
                 "pathology_attention": {"d_cond": 64, "n_heads": 4, "n_pathology_features": 5},
                 "gene_gate": {"initial_temperature": 2.0},
                 "cell_type_selector": {"selection_temperature": 1.0},
@@ -1351,8 +1351,11 @@ class TestHGTAttentionCPUTransfer:
 
     def test_hgt_attention_on_cpu_deterministic(self, mock_model, mock_config):
         """Deterministic path moves HGT attention tensors to CPU."""
+        # HGT attention from HGTEncoderBatched is list[list[dict]]:
+        # outer = per-sample, inner = per-layer, dict = edge_type -> tensor
         hgt_attn = [
-            {("TypeA", "rel", "TypeB"): torch.randn(4, 2)}
+            [{("TypeA", "rel", "TypeB"): torch.randn(4, 2)}],  # sample 0, 1 layer
+            [{("TypeA", "rel", "TypeB"): torch.randn(4, 2)}],  # sample 1, 1 layer
         ]
 
         def forward_with_hgt(**kwargs):
@@ -1375,7 +1378,8 @@ class TestHGTAttentionCPUTransfer:
         }
         result = predictor.predict_batch(batch, extract_hgt_attention=True)
         assert "hgt_attention" in result
-        for layer_dict in result["hgt_attention"]:
-            for edge_type, tensor in layer_dict.items():
-                assert isinstance(tensor, torch.Tensor), f"Expected Tensor, got {type(tensor)}"
-                assert tensor.device == torch.device("cpu"), f"Expected CPU, got {tensor.device}"
+        for sample_attn in result["hgt_attention"]:
+            for layer_dict in sample_attn:
+                for edge_type, tensor in layer_dict.items():
+                    assert isinstance(tensor, torch.Tensor), f"Expected Tensor, got {type(tensor)}"
+                    assert tensor.device == torch.device("cpu"), f"Expected CPU, got {tensor.device}"

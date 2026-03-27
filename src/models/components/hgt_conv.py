@@ -355,7 +355,11 @@ class HGTConvWithEdgeAttr(nn.Module):
             # Reshape messages for scatter
             messages_flat = messages.view(-1, self.out_channels)  # [n_edges, out_channels]
 
-            # Scatter-add messages to target nodes (non-in-place for gradient flow)
+            # Scatter-add messages to target nodes (non-in-place for gradient flow).
+            # Messages from multiple edge types are SUMMED without normalization —
+            # this matches the standard HGT formulation (Hu et al., 2020) where
+            # well-connected nodes receive proportionally larger aggregates.
+            # LayerScale + residual connections regulate magnitude across layers.
             out_dict[dst_type] = out_dict[dst_type].scatter_add(
                 0,
                 dst_idx.unsqueeze(-1).expand(-1, self.out_channels),
@@ -363,7 +367,8 @@ class HGTConvWithEdgeAttr(nn.Module):
             )
 
             # Mark target nodes as having received messages
-            received_nodes[dst_type][dst_idx.unique()] = True
+            # scatter_ is more efficient than unique() — avoids sort/alloc on small tensors
+            received_nodes[dst_type].scatter_(0, dst_idx, True)
 
         received_messages = received_nodes
 
@@ -439,9 +444,10 @@ class HGTConvWithEdgeAttr(nn.Module):
             exp_scores,
         )
 
-        # Normalize and cast back to input dtype
+        # Normalize in float32. Stay float32 so attention weights preserve
+        # precision — autocast handles the downstream multiplication with values.
         result = exp_scores / (sum_exp[target_idx] + EPSILON_SOFTMAX)
-        return result.to(dtype)
+        return result
 
     def extra_repr(self) -> str:
         return (

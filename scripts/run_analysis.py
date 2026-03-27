@@ -179,7 +179,7 @@ def parse_args() -> argparse.Namespace:
     param_group.add_argument(
         "--no-fdr",
         action="store_true",
-        help="Disable FDR correction (report uncorrected p-values)",
+        help="Disable FDR correction for all analyses (gene importance and resilience signature)",
     )
     param_group.add_argument(
         "--top-percentile",
@@ -196,10 +196,6 @@ def parse_args() -> argparse.Namespace:
     param_group.add_argument(
         "--gate-threshold", type=float, default=0.01,
         help="Minimum gene gate weight to include in differential expression (default: 0.01)",
-    )
-    param_group.add_argument(
-        "--no-fdr-correction", action="store_true", default=False,
-        help="Disable Benjamini-Hochberg FDR correction for differential expression",
     )
     param_group.add_argument(
         "--run-ablation",
@@ -847,7 +843,7 @@ def main():
                 group_labels=gene_group_labels,
                 subject_expression=per_subject_pb,
                 gate_threshold=args.gate_threshold,
-                apply_fdr=not args.no_fdr_correction,
+                apply_fdr=not args.no_fdr,
             )
             analyses_run += 1
         except (ValueError, RuntimeError) as e:

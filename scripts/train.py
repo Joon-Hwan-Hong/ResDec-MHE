@@ -393,6 +393,9 @@ def main() -> None:
         adata = sc.read_h5ad(data_cfg.adata_path)
 
     if args.final:
+        # Defensive guard: splits should always be non-None here because
+        # --final requires --splits-path (validated above), but kept as
+        # defense-in-depth for future refactors that might reorder validation.
         if splits is None:
             raise ValueError(
                 "Final training mode requires pre-computed splits. "

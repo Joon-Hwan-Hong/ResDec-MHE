@@ -620,6 +620,11 @@ def save_json(data: dict | list, path: str | Path) -> None:
 
 
 def load_json(path: str | Path) -> dict | list:
-    """Load data from JSON file."""
+    """Load data from JSON file.
+
+    Raises FileNotFoundError (via open()) if file doesn't exist.
+    This is intentional fail-fast behavior — callers should handle
+    missing files explicitly rather than receiving a silent None.
+    """
     with open(path) as f:
         return json.load(f)

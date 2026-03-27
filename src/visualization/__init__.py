@@ -5,6 +5,7 @@ from src.visualization.config import (
     FIGURE_FORMAT,
     ACCENT_TEAL,
     ACCENT_CORAL,
+    ACCENT_PEACH,
     get_sequential_cmap,
     get_diverging_cmap,
     get_cell_type_color,

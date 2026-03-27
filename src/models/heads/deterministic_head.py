@@ -58,6 +58,9 @@ class DeterministicPredictionHead(nn.Module):
         self.d_hidden = d_hidden
         self.dropout_rate = dropout
 
+        # No LayerNorm by design: upstream attended features are already
+        # normalized, and the 3-layer MLP with dropout provides sufficient
+        # regularization for ~400 training subjects.
         self.mlp = nn.Sequential(
             nn.Linear(d_input, d_hidden),
             nn.GELU(),

@@ -37,9 +37,10 @@ def optuna_config():
                 "n_isab_layers": 2,
                 "n_inducing_points": 32,
                 "n_heads": 4,
+                "n_pma_seeds": 1,
             },
             "cell_type_selector": {"selection_temperature": 1.0},
-            "pathology_attention": {"d_cond": 64, "n_heads": 4},
+            "pathology_attention": {"d_cond": 64, "n_heads": 4, "n_pathology_features": 3},
             "head": {"type": "bayesian", "d_hidden": 64},
         },
         "training": {

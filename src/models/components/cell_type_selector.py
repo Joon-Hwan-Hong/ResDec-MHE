@@ -84,6 +84,10 @@ class CellTypeSelector(nn.Module):
         Returns:
             Tensor of shape (n_cell_types,) with selection probabilities
         """
+        # AMP note: selection_logits is an nn.Parameter (always float32, not
+        # autocasted), and _temperature_buf is a float32 buffer. The entire
+        # computation stays float32. PyTorch autocast also promotes softmax
+        # to float32 natively, so no explicit .float() promotion is needed.
         return F.softmax(self.selection_logits / self._temperature_buf, dim=0)
 
     def get_selected_types(self, k: int) -> torch.Tensor:

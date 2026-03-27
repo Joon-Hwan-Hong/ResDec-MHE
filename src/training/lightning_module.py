@@ -70,6 +70,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self.guide = None
 
         if self._use_bayesian_svi:
+            # Safe to clear globally: the CV loop creates exactly one module at a
+            # time per fold and does not hold references to previous fold modules
+            # when constructing the next one (see scripts/optuna_optimize.py fold loop).
             pyro.clear_param_store()
             self.guide = AutoDiagonalNormal(self.model)
             self.elbo = Trace_ELBO()
@@ -184,10 +187,30 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         )
 
     def _check_batch_nan(self, batch: dict) -> bool:
-        """Check if batch contains NaN values. Returns True if NaN detected."""
+        """Check if batch contains NaN values. Returns True if NaN detected.
+
+        Uses sum-based check (isfinite on sum) to avoid allocating a boolean
+        tensor the size of the input. Only checks tensors likely to contain NaN
+        from data loading — cells/cell_mask come from preprocessing and are
+        validated at dataset construction time.
+        """
+        # Keys that are validated during dataset construction / preprocessing.
+        # Note: edge_index_dict_list and edge_attr_dict_list are Python lists
+        # (not tensors), so isinstance(value, torch.Tensor) already skips them.
+        _skip_keys = {"cells", "cell_mask", "cell_type_mask", "region_mask"}
         for key, value in batch.items():
-            if isinstance(value, torch.Tensor) and torch.isnan(value).any():
+            if key in _skip_keys:
+                continue
+            if isinstance(value, torch.Tensor) and value.is_floating_point() and not torch.isfinite(value.sum()):
                 return True
+        # Also check nested edge attribute structures
+        edge_attr_list = batch.get("edge_attr_dict_list")
+        if edge_attr_list is not None:
+            for edge_dict in edge_attr_list:
+                if isinstance(edge_dict, dict):
+                    for v in edge_dict.values():
+                        if isinstance(v, torch.Tensor) and v.is_floating_point() and not torch.isfinite(v.sum()):
+                            return True
         return False
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor | None:
@@ -218,8 +241,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         bs = batch["cognition"].shape[0]
         self.log("train_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        # For Bayesian path, also log NLL (comparable scale to val_loss)
-        if self._use_bayesian_svi:
+        # For Bayesian path, periodically log NLL (comparable scale to val_loss).
+        # Only every 50 steps to avoid doubling training time — each NLL computation
+        # requires a full posterior-median forward pass through all three branches.
+        if self._use_bayesian_svi and (batch_idx % 50 == 0):
             with torch.no_grad():
                 nll_output = self._forward_batch_posterior(batch)
                 nll_loss = self._compute_loss(nll_output, batch["cognition"])
@@ -233,10 +258,12 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             output = self._forward_batch_posterior(batch)
             # Log ELBO for monitoring posterior convergence (F2).
             # val_loss (beta-NLL) remains primary metric for model selection.
-            with torch.no_grad():
-                val_elbo = self._svi_forward(batch)
-            bs = batch["cognition"].shape[0]
-            self.log("val_elbo", val_elbo, prog_bar=False, sync_dist=True, batch_size=bs)
+            # Only compute on first val batch to avoid doubling validation time.
+            if batch_idx == 0:
+                with torch.no_grad():
+                    val_elbo = self._svi_forward(batch)
+                bs = batch["cognition"].shape[0]
+                self.log("val_elbo", val_elbo, prog_bar=False, sync_dist=True, batch_size=bs)
         else:
             output = self._forward_batch(batch)
         loss = self._compute_loss(output, batch["cognition"])
@@ -325,13 +352,17 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                     1, N_REGIONS, model_cfg.n_cell_types, model_cfg.n_genes,
                     device=self.device,
                 ),
-                "region_mask": torch.ones(1, N_REGIONS, device=self.device),
+                "region_mask": torch.ones(1, N_REGIONS, dtype=torch.bool, device=self.device),
                 "cells": torch.zeros(
                     1, model_cfg.n_cell_types, 1, model_cfg.n_genes,
                     device=self.device,
                 ),
                 "cell_mask": torch.ones(
                     1, model_cfg.n_cell_types, 1, dtype=torch.bool,
+                    device=self.device,
+                ),
+                "cell_type_mask": torch.ones(
+                    1, model_cfg.n_cell_types, dtype=torch.bool,
                     device=self.device,
                 ),
                 "pathology": torch.zeros(

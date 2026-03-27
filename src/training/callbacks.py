@@ -416,11 +416,14 @@ class ResilienceModelCheckpoint(pl.Callback):
                 # and break the identity link with the optimizer.
                 guide = pl_module.guide
 
-                # Clean out old reverse mappings
-                for old_param in list(store._param_to_name.keys()):
-                    del store._param_to_name[old_param]
+                # Clean slate: remove all old entries before re-registering
+                store._params.clear()
+                store._param_to_name.clear()
 
                 # Re-register regular nn.Parameters (e.g., loc)
+                # Note: .to(target_device) is a no-op when param is already on
+                # target_device (Lightning moves model before on_train_start),
+                # so tensor identity with the optimizer is preserved.
                 for name in list(guide._parameters.keys()):
                     param = guide._parameters[name]
                     if param is None or name.endswith('_unconstrained'):

@@ -44,6 +44,7 @@ def base_config():
                 "n_isab_layers": 1,
                 "n_inducing_points": 4,
                 "n_heads": 4,
+                "n_pma_seeds": 1,
             },
             "cell_type_selector": {
                 "selection_temperature": 1.0,
@@ -51,6 +52,7 @@ def base_config():
             "pathology_attention": {
                 "d_cond": 16,
                 "n_heads": 4,
+                "n_pathology_features": 3,
             },
             "head": {
                 "type": "deterministic",
@@ -206,6 +208,24 @@ class TestTrainingStep:
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(bayesian_config)
         assert module.automatic_optimization is True
+
+    def test_train_loss_nll_logged_periodically(self, bayesian_config):
+        """train_loss_nll should only be logged every 50 steps, not every step."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(bayesian_config)
+        module.log = MagicMock()
+        batch = _make_batch(n_genes=50)
+
+        module.training_step(batch, batch_idx=0)
+        logged_keys_0 = [call.args[0] for call in module.log.call_args_list]
+
+        module.log.reset_mock()
+
+        module.training_step(batch, batch_idx=1)
+        logged_keys_1 = [call.args[0] for call in module.log.call_args_list]
+
+        assert "train_loss_nll" in logged_keys_0, "Should log train_loss_nll at batch_idx=0"
+        assert "train_loss_nll" not in logged_keys_1, "Should NOT log train_loss_nll at batch_idx=1"
 
 
 class TestValidationStep:
@@ -549,6 +569,40 @@ class TestNaNHandling:
         module = CognitiveResilienceLightningModule(base_config)
         assert module._nan_loss_policy == "fail"
         assert module._nan_batch_policy == "skip"
+
+    def test_check_batch_nan_skips_cells_tensor(self, base_config):
+        """_check_batch_nan should skip cells/cell_mask tensors."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        batch = {
+            "cells": torch.tensor([[[float("nan")]]]),  # NaN in cells — should be skipped
+            "cell_mask": torch.ones(1, 1, dtype=torch.bool),
+            "cognition": torch.tensor([[1.0]]),  # No NaN here
+        }
+        assert not module._check_batch_nan(batch)
+
+    def test_check_batch_nan_detects_nan_in_cognition(self, base_config):
+        """_check_batch_nan should detect NaN in non-skipped tensors."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        batch = {
+            "cells": torch.ones(1, 1, 1),
+            "cognition": torch.tensor([[float("nan")]]),
+        }
+        assert module._check_batch_nan(batch)
+
+    def test_check_batch_nan_detects_nan_in_edge_attrs(self, base_config):
+        """_check_batch_nan should detect NaN in nested edge attribute dicts."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        batch = {
+            "cells": torch.ones(1, 1, 1),
+            "cognition": torch.tensor([[1.0]]),
+            "edge_attr_dict_list": [
+                {("A", "rel", "B"): torch.tensor([float("nan"), 1.0])}
+            ],
+        }
+        assert module._check_batch_nan(batch)
 
 
 class TestParameterWiring:

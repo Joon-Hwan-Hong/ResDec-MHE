@@ -487,58 +487,48 @@ def build_subject_ccc_features(
     if "edge_type_name" not in liana_results.columns:
         liana_results = assign_edge_types(liana_results)
 
-    # Build edge lists
-    edge_src = []
-    edge_dst = []
-    edge_type_list = []
-    edge_attr_list = []
+    # Build edge lists — vectorized to avoid iterrows() overhead.
+    # Filter valid edges: known cell types, valid magnitude_rank in [0, 1].
+    #
+    # Why skip edges with NaN/out-of-range magnitude_rank:
+    #   - NaN means LIANA+ couldn't compute reliable statistics (sparse data)
+    #   - Out-of-range values indicate data quality issues
+    #   - Skipping is cleanest: only trust edges with valid LIANA+ scores
+    if len(liana_results) == 0:
+        result = {
+            "edge_index": np.zeros((2, 0), dtype=np.int64),
+            "edge_type": np.zeros((0,), dtype=np.int64),
+            "edge_attr": np.zeros((0, 1), dtype=np.float32),
+            "n_edges": 0,
+        }
+        if compute_adjacency:
+            result["adjacency"] = liana_to_adjacency_matrix(
+                liana_results, cell_types, fill_value=1.0
+            )
+        return result
 
-    for _, row in liana_results.iterrows():
-        src = row.get("source", "")
-        tgt = row.get("target", "")
-        et_name = row.get("edge_type_name", EDGE_TYPE_NOVEL)
+    has_src = liana_results["source"].isin(ct_to_idx)
+    has_tgt = liana_results["target"].isin(ct_to_idx)
+    has_rank = liana_results["magnitude_rank"].notna()
+    in_range = liana_results["magnitude_rank"].between(0.0, 1.0)
+    valid = has_src & has_tgt & has_rank & in_range
+    df_valid = liana_results[valid]
 
-        if src not in ct_to_idx or tgt not in ct_to_idx:
-            continue
+    if len(df_valid) > 0:
+        edge_src_arr = df_valid["source"].map(ct_to_idx).values
+        edge_dst_arr = df_valid["target"].map(ct_to_idx).values
+        if "edge_type_name" in df_valid.columns:
+            edge_type_arr = df_valid["edge_type_name"].map(
+                lambda et: et_to_idx.get(et, et_to_idx[EDGE_TYPE_NOVEL])
+            ).values
+        else:
+            edge_type_arr = np.full(len(df_valid), et_to_idx[EDGE_TYPE_NOVEL], dtype=np.int64)
+        # LIANA+ convention: lower rank = stronger. Invert for HGT (higher = stronger).
+        edge_attr_arr = (1.0 - df_valid["magnitude_rank"].values).astype(np.float32)
 
-        # Validate magnitude_rank before adding edge
-        # Skip edges with invalid scores - only include edges where LIANA+ has
-        # full confidence. This is more conservative than imputing missing values.
-        #
-        # Why skip rather than impute:
-        #   - NaN means LIANA+ couldn't compute reliable statistics (sparse data,
-        #     too few cells, numerical issues)
-        #   - Including with neutral weight (0.5) would treat uncertain edges
-        #     as "average" - inflating low-quality data
-        #   - Including with weak weight (0.0) preserves topology but adds noise
-        #   - Skipping is cleanest: only trust edges with valid LIANA+ scores
-        #
-        # Why skip out-of-range values:
-        #   - magnitude_rank should be in [0, 1] by LIANA+ definition
-        #   - Values outside this range indicate data quality issues
-        #   - Rather than clamp and guess, skip these unreliable edges
-        magnitude_rank = row.get("magnitude_rank")
-        if magnitude_rank is None or pd.isna(magnitude_rank):
-            continue
-        if magnitude_rank < 0.0 or magnitude_rank > 1.0:
-            continue
-
-        edge_src.append(ct_to_idx[src])
-        edge_dst.append(ct_to_idx[tgt])
-        edge_type_list.append(et_to_idx.get(et_name, et_to_idx[EDGE_TYPE_NOVEL]))
-
-        # Transform magnitude_rank to edge attribute
-        # LIANA+ convention: lower magnitude_rank = stronger interaction (0 = strongest)
-        # HGT convention: higher edge_attr = more attention/influence
-        # Solution: invert so that stronger interactions get higher values
-        edge_attr = 1.0 - float(magnitude_rank)  # Now higher = stronger
-        edge_attr_list.append([edge_attr])
-
-    # Convert to arrays
-    if len(edge_src) > 0:
-        edge_index = np.array([edge_src, edge_dst], dtype=np.int64)
-        edge_type = np.array(edge_type_list, dtype=np.int64)
-        edge_attr = np.array(edge_attr_list, dtype=np.float32)
+        edge_index = np.array([edge_src_arr, edge_dst_arr], dtype=np.int64)
+        edge_type = edge_type_arr.astype(np.int64)
+        edge_attr = edge_attr_arr.reshape(-1, 1)
     else:
         edge_index = np.zeros((2, 0), dtype=np.int64)
         edge_type = np.zeros((0,), dtype=np.int64)
@@ -548,7 +538,7 @@ def build_subject_ccc_features(
         "edge_index": edge_index,
         "edge_type": edge_type,
         "edge_attr": edge_attr,
-        "n_edges": len(edge_src),
+        "n_edges": edge_index.shape[1],
     }
 
     if compute_adjacency:

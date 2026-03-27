@@ -79,7 +79,10 @@ class BayesianPredictionHead(PyroModule):
         self.d_input = d_input
         self.d_hidden = d_hidden
 
-        # Layers wrapped as PyroModule for Pyro integration
+        # No LayerNorm by design: the upstream attended features are already
+        # normalized (PseudoBulkEncoder uses LayerNorm). Adding LayerNorm here
+        # would mask the signal scale that fc_log_std needs to learn aleatoric
+        # uncertainty, since LayerNorm collapses variance information.
         self.fc1 = PyroModule[nn.Linear](d_input, d_hidden)
         self.fc2 = PyroModule[nn.Linear](d_hidden, d_hidden)
         self.fc_mean = PyroModule[nn.Linear](d_hidden, 1)

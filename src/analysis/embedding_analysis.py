@@ -216,7 +216,7 @@ class EmbeddingAnalyzer:
         n_neighbors: int = 15,
         min_dist: float = 0.1,
         random_seed: int = 42,
-    ) -> pd.DataFrame:
+    ) -> pd.DataFrame | None:
         """
         Run UMAP dimensionality reduction.
 
@@ -227,7 +227,7 @@ class EmbeddingAnalyzer:
             random_seed: Random seed
 
         Returns:
-            DataFrame with subject_id and UMAP coordinates
+            DataFrame with subject_id and UMAP coordinates, or None if UMAP unavailable
         """
         try:
             import umap
@@ -421,7 +421,7 @@ class EmbeddingAnalyzer:
                         "covariate": col,
                         "task_type": task_type,
                         "metric": "accuracy",
-                        "r2_score": float(scores.mean()),
+                        "r2_score": np.nan,  # Not R² for classification; use score_mean
                         "score_mean": float(scores.mean()),
                         "score_std": float(scores.std()),
                         "n_samples": int(valid_mask.sum()),
@@ -628,6 +628,12 @@ class EmbeddingAnalyzer:
 
         Measures whether local neighborhoods have batch compositions
         similar to the global batch composition.
+
+        Note: kneighbors() with the training set as query includes the
+        query point itself (distance=0). This is standard in Python kBET
+        implementations and introduces a small bias of ~1/k toward the
+        query's own batch. For qualitative assessment (good/moderate/poor
+        categories) this does not affect interpretation.
 
         Returns:
             Score between 0 (no mixing) and 1 (perfect mixing)

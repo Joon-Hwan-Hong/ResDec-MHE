@@ -414,7 +414,11 @@ class ResilienceSignatureAnalyzer:
             attention_per_subject[self.vulnerable_mask].mean(axis=0)
         )
 
-        # Get indices for permutation (only high pathology subjects)
+        # Permute labels only within high-pathology subjects (the analysis pool).
+        # Rationale: resilience is defined as cognitive preservation *despite* high
+        # pathology. Low-pathology subjects are excluded because their cognitive
+        # scores aren't informative about resilience mechanisms. Permuting within
+        # the high-pathology pool preserves this conditioning structure.
         high_path_indices = np.where(self.high_pathology_mask)[0]
         n_high_path = len(high_path_indices)
 
@@ -434,12 +438,14 @@ class ResilienceSignatureAnalyzer:
 
             perm_signatures[i] = perm_resilient_mean - perm_vulnerable_mean
 
-        # Two-tailed p-value
+        # Two-tailed p-value with +1 correction (Phipson & Smyth 2010).
+        # Without correction, p can be exactly 0.0 when the observed statistic
+        # exceeds all permutation values, which is invalid for downstream FDR.
         p_values = np.zeros(len(self.cell_type_names))
         for ct_idx in range(len(self.cell_type_names)):
             obs = np.abs(original_signature[ct_idx])
             null_dist = np.abs(perm_signatures[:, ct_idx])
-            p_values[ct_idx] = (null_dist >= obs).mean()
+            p_values[ct_idx] = (np.sum(null_dist >= obs) + 1) / (n_permutations + 1)
 
         # FDR correction (Benjamini-Hochberg) - optional
         if apply_fdr_correction:

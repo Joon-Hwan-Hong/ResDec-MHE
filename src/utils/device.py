@@ -70,7 +70,7 @@ def move_batch_to_device(
 
     # Keys that should remain on CPU (non-tensor metadata)
     cpu_keys = {"subject_ids", "batch_size", "n_nodes_per_graph", "node_types",
-                "edge_types", "cell_type_order"}
+                "edge_types", "cell_type_order", "cell_barcodes"}
 
     for key, value in batch.items():
         if key in cpu_keys:

@@ -5,7 +5,6 @@ from src.utils.config import (
     save_config,
     merge_configs,
     validate_config,
-    flatten_config,
 )
 from src.utils.hashing import (
     generate_experiment_hash,
@@ -54,7 +53,6 @@ __all__ = [
     "save_config",
     "merge_configs",
     "validate_config",
-    "flatten_config",
     # Hashing
     "generate_experiment_hash",
     "hash_config",

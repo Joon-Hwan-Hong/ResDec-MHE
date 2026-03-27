@@ -46,11 +46,6 @@ class Experiment:
     def tensorboard_dir(self) -> Path:
         return self.logs_dir / "tensorboard"
 
-    @property
-    def plots_dir(self) -> Path:
-        """Get plots directory (outside experiments/ in data/plots/)."""
-        return self.exp_dir.parent.parent / "data" / "plots" / self.exp_hash
-
 
 class ExperimentManager:
     """

@@ -29,7 +29,7 @@ class ResilienceMetrics:
         self,
         mean: torch.Tensor,
         std: torch.Tensor | None = None,
-        target: torch.Tensor | None = None,
+        target: torch.Tensor = None,
     ) -> dict[str, float]:
         """
         Compute all metrics.
@@ -37,7 +37,7 @@ class ResilienceMetrics:
         Args:
             mean: [N, 1] predicted values
             std: [N, 1] predicted uncertainty (optional, for calibration)
-            target: [N, 1] ground truth values
+            target: [N, 1] ground truth values (required)
 
         Returns:
             Dict of metric name -> float value

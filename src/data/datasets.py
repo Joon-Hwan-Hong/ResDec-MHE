@@ -168,6 +168,14 @@ class CognitiveResilienceDataset(Dataset):
         # Validate subjects exist in both adata and metadata
         self._validate_subjects()
 
+        # Pre-compute subject-to-row index mapping to avoid O(n_cells) string
+        # scan in __getitem__. Trades O(n_subjects * n_cells) init cost for O(1)
+        # per-sample lookup.
+        self._subject_indices = {}
+        obs_subjects = self.adata.obs[self.subject_column]
+        for sid in self.subject_ids:
+            self._subject_indices[sid] = np.where(obs_subjects.values == sid)[0]
+
     def _validate_subjects(self):
         """Validate that all subject IDs exist in data and have valid targets/pathology."""
         adata_subjects = set(self.adata.obs[self.subject_column].unique())
@@ -226,9 +234,13 @@ class CognitiveResilienceDataset(Dataset):
         """
         subject_id = self.subject_ids[idx]
 
-        # Get subject's cells
-        subject_mask = self.adata.obs[self.subject_column] == subject_id
-        adata_subject = self.adata[subject_mask]
+        # Get subject's cells using pre-computed index for O(1) lookup
+        if subject_id not in self._subject_indices:
+            # Fallback for subjects added after init (e.g., testing)
+            subject_mask = self.adata.obs[self.subject_column] == subject_id
+            adata_subject = self.adata[subject_mask]
+        else:
+            adata_subject = self.adata[self._subject_indices[subject_id]]
 
         # ─────────────────────────────────────────────────────────────────────
         # Densify expression matrix ONCE (avoids 3x .toarray() calls)
@@ -461,6 +473,9 @@ class CognitiveResilienceDataset(Dataset):
                 np.zeros((0, 1), dtype=np.float32),
             )
 
+        # Lazy import: liana_processing has heavy pandas/scipy dependencies that
+        # are only needed when CCC edges are used. Avoids import-time overhead for
+        # the common case (PrecomputedDataset) where LIANA is not needed.
         from src.data.liana_processing import build_subject_ccc_features
 
         liana_df = self.liana_results[subject_id]
@@ -726,6 +741,11 @@ def save_precomputed_features(
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save gene names sidecar for downstream interpretability
+    gene_names = dataset.get_gene_names()
+    if gene_names is not None:
+        np.save(output_dir / "gene_names.npy", np.array(gene_names, dtype=object))
 
     for i in range(len(dataset)):
         sample = dataset[i]

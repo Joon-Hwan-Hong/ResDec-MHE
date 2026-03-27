@@ -85,6 +85,9 @@ class FusionLayer(nn.Module):
             raise ValueError(f"Expected d_embed={self.d_embed} for cell_emb, got {cell_emb.shape[2]}")
 
         # Concat all 3 branches: [B, 31, 3*d_embed]
+        # AMP safety: torch.cat auto-promotes operands to widest dtype.
+        # All three branches pass through nn.Linear (autocast→float16), so dtypes
+        # should match. Even if they differ, torch.cat handles promotion correctly.
         concat = torch.cat([pseudobulk_emb, hgt_emb, cell_emb], dim=-1)
 
         # Project to fused dimension: [B, 31, d_fused]

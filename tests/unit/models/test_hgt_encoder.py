@@ -565,12 +565,8 @@ class TestBatchedEncoder:
         ]
         edge_index_dict_list = [{}, {}]
 
-        import warnings as _warnings
-        with _warnings.catch_warnings(record=True) as w:
-            _warnings.simplefilter("always")
-            output_dict, _ = batched_encoder(x_dict_list, edge_index_dict_list)
-            # Should have issued a warning about missing node types
-            assert any("missing node types" in str(warning.message) for warning in w)
+        # Missing node types are logged at DEBUG level and zero-filled
+        output_dict, _ = batched_encoder(x_dict_list, edge_index_dict_list)
         # Missing node type should be zero-filled in sample 1
         missing_type = mini_node_types[-1]
         assert missing_type in output_dict

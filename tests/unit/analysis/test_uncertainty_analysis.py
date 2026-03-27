@@ -358,7 +358,7 @@ class TestCorrelates:
         result = analyzer.analyze()
         df = result.correlates
 
-        expected_cols = {"covariate", "correlation", "p_value", "significant", "interpretation"}
+        expected_cols = {"covariate", "correlation", "p_value", "significant", "interpretation", "p_value_fdr", "significant_fdr"}
         assert expected_cols == set(df.columns)
 
     def test_correlates_numeric_only(self, sample_predictions):

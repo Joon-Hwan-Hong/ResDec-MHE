@@ -620,13 +620,13 @@ def _worker_init_fn(worker_id: int) -> None:
     import random
 
     # Use PyTorch's built-in worker seed (set from the global seed + worker_id)
-    worker_seed = torch.utils.data.get_worker_info().seed % (2**32)
+    worker_info = torch.utils.data.get_worker_info()
+    worker_seed = worker_info.seed % (2**32)
 
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
     # Re-seed CellSampler's RNG if the dataset has one
-    worker_info = torch.utils.data.get_worker_info()
     dataset = worker_info.dataset
     if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
         dataset.sampler.rng = np.random.default_rng(worker_seed)

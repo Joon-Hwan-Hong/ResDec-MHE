@@ -9,6 +9,7 @@ Cell type order and edge type definitions are imported from src.data.constants
 to ensure consistency across the codebase.
 """
 
+from pathlib import Path
 from typing import Any
 
 import matplotlib as mpl
@@ -76,30 +77,6 @@ def register_colormaps() -> None:
     except ValueError:
         # Already registered
         pass
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Plotly Colorscales
-# ─────────────────────────────────────────────────────────────────────────────
-
-def get_plotly_sequential_colorscale() -> list[list[float | str]]:
-    """Get sequential colorscale for Plotly."""
-    return [
-        [0.0, WHITE],
-        [0.5, ACCENT_PEACH],
-        [1.0, ACCENT_CORAL],
-    ]
-
-
-def get_plotly_diverging_colorscale() -> list[list[float | str]]:
-    """Get diverging colorscale for Plotly."""
-    return [
-        [0.00, ACCENT_TEAL],
-        [0.25, LIGHT_TEAL],
-        [0.50, WHITE],
-        [0.75, ACCENT_PEACH],
-        [1.00, ACCENT_CORAL],
-    ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -276,7 +253,7 @@ def save_figure(
     fig: plt.Figure,
     path: str,
     dpi: int = FIGURE_DPI,
-    format: str = FIGURE_FORMAT,
+    format: str | None = None,  # noqa: A002 — shadows builtin but never needed here
     transparent: bool = False,
 ) -> None:
     """
@@ -286,9 +263,12 @@ def save_figure(
         fig: Matplotlib figure
         path: Output path
         dpi: Resolution (default: 600)
-        format: Output format (default: "png")
+        format: Output format. If None, inferred from path extension (fallback: "png")
         transparent: Whether background should be transparent
     """
+    if format is None:
+        ext = Path(path).suffix.lstrip(".")
+        format = ext if ext else FIGURE_FORMAT
     fig.savefig(
         path,
         dpi=dpi,
@@ -310,24 +290,6 @@ def get_color_palette(n_colors: int = 10) -> list[str]:
         return sns.color_palette("Set2", n_colors).as_hex()
     else:
         return sns.color_palette("husl", n_colors).as_hex()
-
-
-def truncate_colormap(
-    cmap: LinearSegmentedColormap,
-    minval: float = 0.0,
-    maxval: float = 1.0,
-    n: int = 256,
-) -> LinearSegmentedColormap:
-    """
-    Truncate a colormap to a subset of its range.
-
-    Useful for adjusting color intensity.
-    """
-    new_cmap = LinearSegmentedColormap.from_list(
-        f"trunc({cmap.name},{minval:.2f},{maxval:.2f})",
-        cmap(mpl.colors.Normalize(minval, maxval)(range(n)))
-    )
-    return new_cmap
 
 
 # Initialize on import

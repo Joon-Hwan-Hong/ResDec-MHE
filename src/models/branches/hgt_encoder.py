@@ -22,7 +22,7 @@ Key features:
     - Interpretable: Attention weights and LayerScale values extractable
 """
 
-import warnings
+import logging
 from typing import Optional
 
 import torch
@@ -30,6 +30,8 @@ import torch.nn as nn
 
 from src.data.constants import ALL_EDGE_TYPES, CELL_TYPE_ORDER, sanitize_key
 from src.models.components.hgt_conv import HGTConvWithEdgeAttr
+
+logger = logging.getLogger(__name__)
 
 
 class HGTEncoder(nn.Module):
@@ -393,8 +395,10 @@ class HGTEncoderBatched(nn.Module):
         node_types: Optional[list[str]] = None,
         edge_categories: Optional[list[str]] = None,
         layer_scale_init: float = 1.0,
+        use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
+        self.use_gradient_checkpointing = use_gradient_checkpointing
         self.encoder = HGTEncoder(
             d_input=d_input,
             d_hidden=d_hidden,
@@ -440,18 +444,41 @@ class HGTEncoderBatched(nn.Module):
                 f"must match batch size ({batch_size})"
             )
 
-        # Process each sample
+        # Process each sample independently through HGTEncoder.
+        # Per-sample loop is required because each subject has a different graph
+        # topology (different edge types present, different number of edges).
+        # Heterogeneous graphs with variable topology cannot be batched without
+        # padding to a supergraph, which would waste more compute for sparse graphs
+        # than the sequential approach.
+        # Memory: at B=16, d_embed=128, 31 nodes, 2 layers, per-sample activations
+        # are ~32KB → total ~512KB, negligible on any modern GPU.
+        # For production optimization if scale increases:
+        # (1) torch.compile on self.encoder can fuse small ops and reduce Python overhead
+        # (2) gradient checkpointing per sample can trade compute for memory
+        # (3) if graphs become more uniform, a padded-supergraph approach could batch
         outputs_list = []
         all_attention = [] if return_attention else None
 
         for i in range(batch_size):
             edge_attr = edge_attr_dict_list[i] if edge_attr_dict_list else None
-            out_dict, attn = self.encoder(
-                x_dict_list[i],
-                edge_index_dict_list[i],
-                edge_attr,
-                return_attention=return_attention,
-            )
+            if self.use_gradient_checkpointing and self.training:
+                # Trade compute for memory: recompute activations during backward.
+                # use_reentrant=False is required for dict inputs/outputs.
+                out_dict, attn = torch.utils.checkpoint.checkpoint(
+                    self.encoder,
+                    x_dict_list[i],
+                    edge_index_dict_list[i],
+                    edge_attr,
+                    return_attention,
+                    use_reentrant=False,
+                )
+            else:
+                out_dict, attn = self.encoder(
+                    x_dict_list[i],
+                    edge_index_dict_list[i],
+                    edge_attr,
+                    return_attention=return_attention,
+                )
             outputs_list.append(out_dict)
             if return_attention:
                 all_attention.append(attn)
@@ -466,9 +493,8 @@ class HGTEncoderBatched(nn.Module):
         for i, out_dict in enumerate(outputs_list):
             missing = all_node_types - set(out_dict.keys())
             if missing:
-                warnings.warn(
-                    f"Sample {i} is missing node types {missing}. "
-                    f"Filling with zero embeddings."
+                logger.debug(
+                    "Sample %d missing node types %s, filling with zeros", i, missing
                 )
                 for node_type in missing:
                     # Get embedding dim from any existing output
