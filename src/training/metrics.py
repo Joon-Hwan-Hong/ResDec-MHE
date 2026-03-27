@@ -42,6 +42,14 @@ class ResilienceMetrics:
         Returns:
             Dict of metric name -> float value
         """
+        if mean.numel() == 0 or target is None or target.numel() == 0:
+            return {
+                "r2": float("nan"), "rmse": float("nan"), "mae": float("nan"),
+                "pearson_r": float("nan"), "spearman_rho": float("nan"),
+                "mean_std": float("nan"), "calibration_error": float("nan"),
+                "crps": float("nan"),
+            }
+
         mean_np = mean.detach().cpu().numpy().flatten()
         target_np = target.detach().cpu().numpy().flatten()
 

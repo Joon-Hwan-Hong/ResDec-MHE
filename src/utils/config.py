@@ -130,6 +130,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         "training.scheduler.eta_min": ((int, float), lambda v: v >= 0),
         # Optimizer type
         "training.optimizer.type": (str, lambda v: v in ("adamw", "adam")),
+        # Per-step LR decay for Bayesian SVI (ignored in deterministic mode)
+        "training.optimizer.lrd": ((int, float), lambda v: 0 < v <= 1),
         # Sampling
         "data.cell_sampling.sampling_strategy": (str, lambda v: v in ("random", "stratified", "importance")),
         "data.cell_sampling.max_cells_per_type": (int, lambda v: v > 0),
@@ -144,6 +146,8 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         # Inference
         "inference.num_posterior_samples": (int, lambda v: v > 0),
         "inference.batch_size": (int, lambda v: v > 0),
+        # Visualization
+        "visualization.format": (str, lambda v: v in ("png", "svg", "pdf")),
     }
 
     for dotpath, (expected_type, validator) in _FIELD_RULES.items():
@@ -187,7 +191,59 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
     except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
         pass
 
-    # 3. n_regions must match dataset constant if specified
+    # 3. Bayesian SVI uses Adam + ExponentialLR (Pyro convention).
+    #    Warn if user configured non-default scheduler/optimizer, since those
+    #    settings are silently ignored in Bayesian mode.
+    try:
+        head_type = config.model.head.type
+        if head_type == "bayesian":
+            import logging as _logging
+            _cfg_logger = _logging.getLogger(__name__)
+
+            opt_type = config.training.optimizer.type
+            if opt_type != "adamw":
+                _cfg_logger.warning(
+                    "Bayesian SVI ignores training.optimizer.type='%s'. "
+                    "SVI uses Adam (Pyro convention). "
+                    "See: https://pyro.ai/examples/svi_part_iv.html",
+                    opt_type,
+                )
+
+            sched_type = config.training.scheduler.type
+            warmup = config.training.scheduler.get("warmup_epochs", 0)
+            if sched_type != "cosine" or warmup > 0:
+                _cfg_logger.warning(
+                    "Bayesian SVI ignores training.scheduler (type='%s', warmup_epochs=%d). "
+                    "SVI uses per-step ExponentialLR via training.optimizer.lrd. "
+                    "Configure lrd (0 < lrd <= 1) to control LR decay in Bayesian mode.",
+                    sched_type, warmup,
+                )
+
+            wd = config.training.optimizer.get("weight_decay", 0)
+            if wd > 0:
+                _cfg_logger.warning(
+                    "Bayesian SVI ignores training.optimizer.weight_decay=%.4f. "
+                    "Pyro's Adam does not support decoupled weight decay (AdamW). "
+                    "Set weight_decay=0 to silence this warning.",
+                    wd,
+                )
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+        pass
+
+    # 4. n_pathology_features must match len(pathology_columns)
+    try:
+        n_path_cols = len(config.data.pathology_columns)
+        n_path_model = config.model.pathology_attention.n_pathology_features
+        if n_path_cols != n_path_model:
+            errors.append(
+                f"data.pathology_columns has {n_path_cols} entries but "
+                f"model.pathology_attention.n_pathology_features={n_path_model}. "
+                f"These must match."
+            )
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+        pass
+
+    # 5. n_regions must match dataset constant if specified
     try:
         from src.data.constants import N_REGIONS
         cfg_n_regions = config.model.n_regions
@@ -198,6 +254,33 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
             )
     except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
         pass  # n_regions not in config — correct behavior
+
+    # 6. DDP strategy must use find_unused_parameters=True for HGT edge-specific params
+    try:
+        strategy = config.training.strategy
+        if isinstance(strategy, str) and "ddp" in strategy and "find_unused" not in strategy:
+            import logging as _logging
+            _cfg_logger = _logging.getLogger(__name__)
+            _cfg_logger.warning(
+                "training.strategy='%s' with HGT model requires find_unused_parameters=True "
+                "because edge-type-specific parameters may be unused in some batches. "
+                "Use 'ddp_find_unused_parameters_true' instead.",
+                strategy,
+            )
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+        pass
+
+    # 7. n_cell_types must match dataset constant if specified
+    try:
+        from src.data.constants import N_CELL_TYPES
+        cfg_n_ct = config.model.n_cell_types
+        if cfg_n_ct != N_CELL_TYPES:
+            errors.append(
+                f"model.n_cell_types={cfg_n_ct} but data constant N_CELL_TYPES={N_CELL_TYPES}. "
+                f"Cell type count is fixed by dataset schema."
+            )
+    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError):
+        pass
 
     if errors:
         raise ValueError(

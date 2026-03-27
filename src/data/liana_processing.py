@@ -124,8 +124,16 @@ def assign_edge_types(
         logger.warning(f"CellChatDB not found at {cellchatdb_path}")
         lr_to_category = {}
 
-    # Get unique categories for encoding
-    categories = CELLCHATDB_EDGE_TYPES + [novel_category]
+    # Validate novel_category matches the canonical constant to prevent
+    # edge type index divergence between preprocessing and model.
+    if novel_category != EDGE_TYPE_NOVEL:
+        raise ValueError(
+            f"novel_category '{novel_category}' does not match EDGE_TYPE_NOVEL "
+            f"('{EDGE_TYPE_NOVEL}'). Using a non-standard category would cause "
+            f"edge type index misalignment with ALL_EDGE_TYPES."
+        )
+    # Use ALL_EDGE_TYPES as single source of truth for category ordering
+    categories = ALL_EDGE_TYPES
     category_to_idx = {cat: idx for idx, cat in enumerate(categories)}
 
     # Assign edge types

@@ -42,6 +42,16 @@ def create_stratification_variable(
 
     metadata = metadata.copy()
 
+    # Validate stratification columns have no NaN — pd.qcut silently
+    # creates NaN bins which can bias fold assignments.
+    for col in [pathology_column, cognition_column]:
+        n_nan = metadata[col].isna().sum()
+        if n_nan > 0:
+            raise ValueError(
+                f"Stratification column '{col}' has {n_nan} NaN values. "
+                f"Filter NaN subjects before creating splits."
+            )
+
     def bin_column(values: pd.Series, col_name: str, n_bins: int) -> pd.Series:
         """Bin a column, falling back to median if qcut fails."""
         labels_3 = ["low", "medium", "high"]
@@ -59,12 +69,13 @@ def create_stratification_variable(
             if actual_bins < n_bins:
                 raise ValueError(f"Only got {actual_bins} bins")
             return binned
-        except (ValueError, IndexError):
+        except (ValueError, IndexError) as e:
             # IndexError: pd.qcut edge case when duplicates="drop" produces
             # degenerate bin edges with label array length mismatch.
             # Fall back to median split
             warnings.warn(
-                f"Could not create {n_bins} bins for {col_name}, falling back to "
+                f"Could not create {n_bins} bins for {col_name} "
+                f"({type(e).__name__}: {e}), falling back to "
                 f"median split (2 bins). This may reduce stratification granularity.",
                 UserWarning,
             )
@@ -307,9 +318,20 @@ def load_splits(path: str | Path) -> dict:
 
     Returns:
         Split dictionary
+
+    Raises:
+        ValueError: If JSON is missing required keys
     """
     with open(path, "r") as f:
         splits = json.load(f)
+
+    required_keys = {"holdout_test", "folds"}
+    missing = required_keys - set(splits.keys())
+    if missing:
+        raise ValueError(
+            f"Splits JSON missing required keys: {missing}. "
+            f"Available keys: {sorted(splits.keys())}"
+        )
 
     return splits
 
@@ -322,9 +344,13 @@ def get_fold_subjects(
     """
     Get subject IDs for a specific fold and split type.
 
+    Note: For split_type='test', fold_idx is ignored — the holdout test set
+    is the same for all folds. This is by design: the test set is held out
+    from all CV folds to prevent information leakage.
+
     Args:
         splits: Split dictionary
-        fold_idx: Fold index (0-indexed)
+        fold_idx: Fold index (0-indexed). Ignored when split_type="test".
         split_type: "train", "val", or "test"
 
     Returns:
@@ -333,6 +359,11 @@ def get_fold_subjects(
     if split_type == "test":
         return splits["holdout_test"]
     elif split_type in ("train", "val"):
+        n_folds = len(splits["folds"])
+        if fold_idx < 0 or fold_idx >= n_folds:
+            raise IndexError(
+                f"fold_idx={fold_idx} out of range for {n_folds} folds (0-indexed)"
+            )
         return splits["folds"][fold_idx][split_type]
     else:
         raise ValueError(f"Unknown split_type: {split_type}")

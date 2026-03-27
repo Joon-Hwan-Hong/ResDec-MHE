@@ -87,6 +87,14 @@ def create_mock_dataset_sample(
 ) -> dict:
     """Create a sample matching CognitiveResilienceDataset output format.
 
+    Mirrors real dataset schema: uses production N_CELL_TYPES/N_REGIONS from constants.
+    Divergences from real data: uses random tensors (real data is sparse, non-negative
+    expression); all cell_type_mask/cell_mask entries are True (real data has masked types);
+    edge indices are uniform random (real CCC edges have structure).
+
+    If the real dataset schema changes (new keys, shape changes), update this factory
+    and all tests that use it.
+
     Args:
         n_genes: Number of genes
         max_cells: Maximum cells per cell type

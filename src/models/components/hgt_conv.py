@@ -302,6 +302,13 @@ class HGTConvWithEdgeAttr(nn.Module):
             # k_j: [n_edges, heads, d_k]
             # w_att[rel]: [heads, d_k, d_k]
             # Result: [n_edges, heads, d_k]
+            #
+            # AMP note: under bf16 autocast, this einsum and the dot-product below
+            # accumulate over d_k elements in bf16 (~7-bit mantissa). For d_k=32,
+            # accumulation error is bounded by ~O(0.01) on attention scores.
+            # This is acceptable because: (1) _softmax_by_target promotes to float32
+            # for the nonlinear normalization, (2) parameter gradients are always
+            # float32, (3) inference runs without autocast (float32).
             k_j_transformed = torch.einsum('ehd,hdk->ehk', k_j, self.w_att[rel_key])
 
             # Compute attention scores
@@ -342,10 +349,13 @@ class HGTConvWithEdgeAttr(nn.Module):
                     edge_type,
                 )
 
-            attn_weights = self.dropout(attn_weights)
-
+            # Extract attention BEFORE dropout. In eval mode dropout is
+            # identity so this doesn't change values; in training mode it
+            # returns the raw attention weights rather than dropout-zeroed values.
             if return_attention:
                 attn_dict[edge_type] = attn_weights.detach()
+
+            attn_weights = self.dropout(attn_weights)
 
             # ─────────────────────────────────────────────────────────────────
             # Step 5: Relation-specific message passing with edge scaling
@@ -356,6 +366,9 @@ class HGTConvWithEdgeAttr(nn.Module):
 
             # Weight by attention
             # attn_weights: [n_edges, heads] -> [n_edges, heads, 1]
+            # v_j_transformed is bf16 under autocast; multiplying by float32
+            # attn_weights auto-promotes messages to float32, which accumulates
+            # correctly in the float32 out_dict buffer (line 388).
             messages = attn_weights.unsqueeze(-1) * v_j_transformed  # [n_edges, heads, d_k]
 
             # Apply edge-based message scaling (LIANA magnitude affects message strength)
@@ -452,6 +465,9 @@ class HGTConvWithEdgeAttr(nn.Module):
         max_scores = torch.full(
             (num_nodes, n_heads), float('-inf'), device=device, dtype=torch.float32
         )
+        # scatter_reduce_ (amax) and scatter_add_ below are both
+        # non-deterministic on CUDA (same as scatter_add in message passing).
+        # Covered by torch.use_deterministic_algorithms(True, warn_only=True).
         max_scores.scatter_reduce_(
             0,
             target_idx.unsqueeze(-1).expand(-1, n_heads),

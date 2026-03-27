@@ -58,7 +58,12 @@ class MultiheadAttentionBlock(nn.Module):
         self.d_model = d_model
         self.n_heads = n_heads
 
-        # Multihead attention
+        # nn.MultiheadAttention uses scaled_dot_product_attention internally,
+        # which performs float32 softmax accumulation even under bf16 autocast
+        # (via FlashAttention-2 / memory-efficient attention on CUDA).
+        # Note: with dropout > 0, the FlashAttention kernel may be
+        # non-deterministic on CUDA. This is an additional source of GPU
+        # non-determinism alongside HGT scatter_add (see reproducibility.py).
         self.attention = nn.MultiheadAttention(
             embed_dim=d_model,
             num_heads=n_heads,

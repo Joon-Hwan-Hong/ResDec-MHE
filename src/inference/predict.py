@@ -158,6 +158,15 @@ class Predictor:
         self.model = model.to(self.device)
         self.model.eval()
 
+        # Validate guide matches head type. Default True: CognitiveResilienceModel
+        # always sets this attribute. If a model lacks it, assume Bayesian
+        # (fail-open for guide acceptance — safer than rejecting valid guides).
+        if guide is not None and not getattr(model, 'use_bayesian_head', True):
+            raise ValueError(
+                "Guide provided but model uses a deterministic head. "
+                "Remove the guide argument or use a model with head.type='bayesian'."
+            )
+
         logger.info(f"Predictor initialized on {self.device}")
 
     @classmethod
@@ -410,6 +419,10 @@ class Predictor:
         for _ in range(num_samples):
             # Guide kwargs are unused after prototype initialization, but must
             # match the model signature for Pyro's trace mechanism.
+            # Note: model_kwargs contains large tensors (region_pseudobulk, cells)
+            # that the guide does not consume. They are kept alive by reference
+            # during the loop but not re-computed. Memory cost is O(1) references,
+            # not O(num_samples) copies.
             guide_trace = pyro.poutine.trace(self.guide).get_trace(**model_kwargs)
 
             # Extract head parameter values from guide trace, strip module prefix
@@ -491,6 +504,11 @@ class Predictor:
     ) -> dict[str, Any]:
         """
         Run inference on a single batch.
+
+        Runs in float32 (no autocast) for maximum numerical fidelity.
+        This avoids all mixed-precision concerns at the cost of 2x memory
+        vs bf16. For memory-constrained inference, torch.autocast can be
+        added around the forward pass.
 
         Args:
             batch: Batch dict from DataLoader
@@ -632,7 +650,7 @@ class Predictor:
                     batch, extract_hgt_attention, extract_pma_attention,
                     extract_region_attention, extract_embeddings,
                 )
-            except (KeyError, ValueError) as e:
+            except (KeyError, ValueError, RuntimeError) as e:
                 if self._missing_field_policy == "skip":
                     batch_ids = batch.get("subject_ids", ["unknown"])
                     logger.warning("Skipping batch (input error %s): subjects=%s", e, batch_ids)
@@ -698,6 +716,8 @@ class Predictor:
                     all_region_mask.append(rm)
                     region_pseudobulk_has_mask = True
                 # Accumulate running sum/count for region_pseudobulk_mean
+                # Incremental sum/count in float64 — precision loss is negligible
+                # for expected dataset sizes (hundreds of subjects, not millions).
                 if rmask is not None:
                     mask_expanded = rmask[:, :, np.newaxis, np.newaxis]
                     masked_rpb = np.where(mask_expanded, rpb, 0.0)

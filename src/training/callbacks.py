@@ -160,7 +160,12 @@ class TemperatureAnnealing(pl.Callback):
         raise ValueError(f"Unknown schedule: {self.schedule}")
 
     def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        """Set gene gate temperature at the start of each epoch."""
+        """Set gene gate temperature at the start of each epoch.
+
+        On checkpoint resume, the temperature buffer may contain a stale
+        value. This callback is authoritative — it recomputes from
+        trainer.current_epoch, which Lightning restores correctly.
+        """
         epoch = trainer.current_epoch
         tau = self.get_temperature(epoch)
         gate = getattr(
@@ -240,6 +245,10 @@ class GradientNormLogger(pl.Callback):
         for branch_name, params in self._branch_params.items():
             grad_params = [p for p in params if p.grad is not None]
             if grad_params:
+                # Under bf16-mixed and 32-true, p.grad contains unscaled gradients
+                # (no GradScaler). Under 16-mixed (float16), Lightning uses GradScaler
+                # and p.grad here contains SCALED gradients — logged norms would
+                # include the scale factor.
                 total_norm = torch.sqrt(
                     sum(p.grad.data.norm(2) ** 2 for p in grad_params)
                 )
@@ -252,6 +261,9 @@ class GradientNormLogger(pl.Callback):
     def compute_norm_ratio(norms: dict[str, float]) -> float:
         """
         Compute max/min ratio of branch norms.
+
+        All-zero norms (e.g., frozen branches or pre-first-step) return ratio 0.0
+        because max(values) == 0 and EPSILON_DIVISION prevents division by zero.
 
         Args:
             norms: Dict mapping branch name to gradient norm
@@ -281,7 +293,12 @@ class GradientNormLogger(pl.Callback):
         return "normal"
 
     def on_before_optimizer_step(self, trainer: pl.Trainer, pl_module: pl.LightningModule, optimizer) -> None:
-        """Log branch gradient norms after DDP sync, before optimizer step (every N steps)."""
+        """Log branch gradient norms after DDP sync, before optimizer step (every N steps).
+
+        Under DDP, gradients are already synchronized (allreduce) before this
+        hook fires, so all ranks have identical gradient values. We log from
+        rank 0 only to avoid duplicate entries.
+        """
         if trainer.global_step % self.log_every_n_steps != 0:
             return
 
@@ -293,6 +310,7 @@ class GradientNormLogger(pl.Callback):
                 norm,
                 on_step=True,
                 on_epoch=False,
+                rank_zero_only=True,
             )
 
         ratio = self.compute_norm_ratio(norms)
@@ -301,16 +319,17 @@ class GradientNormLogger(pl.Callback):
             ratio,
             on_step=True,
             on_epoch=False,
+            rank_zero_only=True,
         )
 
         severity = self.get_severity(ratio)
         norms_str = {k: f"{v:.4f}" for k, v in norms.items()}
-        if severity == "red":
+        if severity == "red" and trainer.is_global_zero:
             logger.error(
                 "CRITICAL gradient norm imbalance (ratio=%.1f, intervention recommended): %s",
                 ratio, norms_str,
             )
-        elif severity == "yellow":
+        elif severity == "yellow" and trainer.is_global_zero:
             logger.warning(
                 "Gradient norm imbalance detected (ratio=%.1f): %s",
                 ratio, norms_str,
@@ -345,7 +364,12 @@ class ResilienceModelCheckpoint(pl.Callback):
         pl_module: pl.LightningModule,
         checkpoint: dict,
     ) -> None:
-        """Add custom metadata to checkpoint dict."""
+        """Add custom metadata to checkpoint dict.
+
+        Called only on rank 0 by Lightning's ModelCheckpoint. RNG states are
+        rank-0 only; other ranks re-initialize from global seed on resume
+        (see _make_worker_init_fn for rank-aware data worker seeding).
+        """
         config = pl_module.config
 
         # Convert OmegaConf to plain dict if needed
@@ -449,8 +473,16 @@ class ResilienceModelCheckpoint(pl.Callback):
                 # build correct keys. We also directly set store._params to avoid
                 # going through constraint transforms which would create new tensors
                 # and break the identity link with the optimizer.
-                # Tested against Pyro 1.9.x — store._params and store._param_to_name
+                # Tested against Pyro 1.8.x–1.9.x — store._params and store._param_to_name
                 # are private but no public API preserves tensor identity with optimizer.
+                _TESTED_PYRO_VERSIONS = ("1.8", "1.9")
+                pyro_version = ".".join(pyro.__version__.split(".")[:2])
+                if pyro_version not in _TESTED_PYRO_VERSIONS:
+                    logger.warning(
+                        "Pyro param store re-sync uses private APIs tested on Pyro %s. "
+                        "Current version: %s. Verify store._params/_param_to_name.",
+                        ", ".join(_TESTED_PYRO_VERSIONS), pyro.__version__,
+                    )
                 guide = pl_module.guide
 
                 # Clean slate: remove all old entries before re-registering
@@ -481,6 +513,16 @@ class ResilienceModelCheckpoint(pl.Callback):
                             store._param_to_name[live_param] = fullname
 
                 pl_module._pyro_resuming_from_checkpoint = False
+
+                # Sanity check: param count should be non-zero if guide has params
+                expected_n = sum(1 for p in guide.parameters() if p is not None)
+                actual_n = len(store._params)
+                if actual_n == 0 and expected_n > 0:
+                    raise RuntimeError(
+                        f"Pyro param store re-sync produced 0 params but guide has "
+                        f"{expected_n}. Pyro internal API may have changed "
+                        f"(version: {pyro.__version__})."
+                    )
                 logger.info(
                     "Pyro param store re-synced from guide after checkpoint resume: "
                     "%d params", len(store._params)

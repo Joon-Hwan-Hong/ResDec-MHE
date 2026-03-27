@@ -32,6 +32,7 @@ Design Decisions:
      others receive learned empty_embedding (no NaN, fully differentiable)
 """
 
+import tempfile
 import warnings
 from pathlib import Path
 from typing import Any
@@ -62,9 +63,16 @@ def _validate_no_nan_columns(
     """
     for col in columns:
         if col not in metadata.columns:
+            available = sorted(metadata.columns.tolist())
+            if column_type == "target":
+                raise ValueError(
+                    f"Target column '{col}' not found in metadata. "
+                    f"Available columns: {available}"
+                )
             warnings.warn(
                 f"{column_type} column '{col}' not found in metadata. "
-                f"Values will default to 0.0 for all subjects.",
+                f"Values will default to 0.0 for all subjects. "
+                f"Available columns: {available}",
                 UserWarning,
                 stacklevel=3,
             )
@@ -113,6 +121,7 @@ class CognitiveResilienceDataset(Dataset):
         sampling_strategy: str = "random",
         sampling_seed: int = 42,
         region_column: str = "BrainRegion",
+        max_missing_subject_fraction: float = 0.1,
         transform: Any = None,
     ):
         """
@@ -133,6 +142,9 @@ class CognitiveResilienceDataset(Dataset):
             sampling_strategy: Strategy for cell sampling ("random", "stratified", "importance")
             sampling_seed: Random seed for reproducible cell sampling
             region_column: Column in adata.obs for brain region labels (for multi-region)
+            max_missing_subject_fraction: Maximum fraction of subjects allowed to be
+                missing from adata/metadata before raising an error (default: 0.1 = 10%).
+                Set via data.max_missing_subject_fraction in config.
             transform: Optional transform to apply to samples
 
         Note:
@@ -157,6 +169,7 @@ class CognitiveResilienceDataset(Dataset):
 
         self.max_cells_per_type = max_cells_per_type
         self.min_cells_threshold = min_cells_threshold
+        self.max_missing_subject_fraction = max_missing_subject_fraction
 
         self.transform = transform
 
@@ -200,7 +213,12 @@ class CognitiveResilienceDataset(Dataset):
             )
 
     def _validate_subjects(self):
-        """Validate that all subject IDs exist in data and have valid targets/pathology."""
+        """Validate that all subject IDs exist in data and have valid targets/pathology.
+
+        Raises ValueError if too many subjects are missing (> max_missing_subject_fraction
+        of the original list). This catches bulk data pipeline failures while allowing
+        small expected mismatches from metadata/AnnData filtering.
+        """
         adata_subjects = set(self.adata.obs[self.subject_column].unique())
         metadata_subjects = set(self.metadata.index)
 
@@ -211,8 +229,19 @@ class CognitiveResilienceDataset(Dataset):
 
         if len(valid_subjects) < len(self.subject_ids):
             n_removed = len(self.subject_ids) - len(valid_subjects)
+            missing_fraction = n_removed / len(self.subject_ids) if self.subject_ids else 0.0
+            max_fraction = self.max_missing_subject_fraction
+
+            if missing_fraction > max_fraction:
+                raise ValueError(
+                    f"Too many subjects missing: {n_removed}/{len(self.subject_ids)} "
+                    f"({missing_fraction:.1%}) exceeds threshold ({max_fraction:.0%}). "
+                    f"Check that adata and metadata contain the expected subjects. "
+                    f"Adjust data.max_missing_subject_fraction in config to override."
+                )
             warnings.warn(
-                f"Removed {n_removed} subjects not found in adata or metadata",
+                f"Removed {n_removed} subjects not found in adata or metadata "
+                f"({missing_fraction:.1%} of {len(self.subject_ids)})",
                 UserWarning,
                 stacklevel=2,
             )
@@ -377,6 +406,10 @@ class CognitiveResilienceDataset(Dataset):
         pseudobulk aggregations per region. This enables the model to learn
         region-specific expression patterns.
 
+        Note: per-region cell_type_mask is not computed. RegionHandler pools
+        across regions using region_mask only (region present/absent).
+        If per-region cell-type masking is needed, add it here.
+
         Args:
             adata_subject: AnnData subset for one subject
             X: Expression matrix [n_cells, n_genes] — sparse or dense
@@ -530,6 +563,12 @@ class CognitiveResilienceDataset(Dataset):
     def _get_pathology(self, subject_id: str) -> np.ndarray:
         """Get pathology scores for subject.
 
+        Pathology features (gpath, amylsqrt, tangsqrt) are used at their natural
+        scale — no train-set-fit normalization is applied. The PathologyEncoder's
+        learned linear projection handles scale adaptation. Gene expression is
+        log1p-normalized once during preprocessing (applied uniformly to all data
+        before splitting, so no train/test leakage).
+
         NaN values are validated at __init__ time and should never be encountered here.
         """
         pathology = np.zeros(len(self.pathology_columns), dtype=np.float32)
@@ -619,6 +658,7 @@ class PrecomputedDataset(Dataset):
 
         # Validate files exist
         self._validate_files()
+        self._validate_gene_names()
 
         # Validate no NaN in target or pathology columns
         self._validate_metadata()
@@ -633,9 +673,31 @@ class PrecomputedDataset(Dataset):
 
         if len(valid_subjects) < len(self.subject_ids):
             n_removed = len(self.subject_ids) - len(valid_subjects)
-            warnings.warn(f"Removed {n_removed} subjects without feature files")
+            missing = [s for s in self.subject_ids if s not in valid_subjects]
+            preview = missing[:10]
+            suffix = f" (and {len(missing) - 10} more)" if len(missing) > 10 else ""
+            warnings.warn(
+                f"Removed {n_removed} subjects without feature files or metadata: "
+                f"{preview}{suffix}"
+            )
 
         self.subject_ids = valid_subjects
+
+    def _validate_gene_names(self):
+        """Validate gene_names.npy gene count matches pseudobulk gene dimension."""
+        gene_names = self.get_gene_names()
+        if gene_names is None or len(self.subject_ids) == 0:
+            return
+        # Check against first subject's pseudobulk
+        sample_file = self.feature_dir / f"{self.subject_ids[0]}.npz"
+        with np.load(sample_file) as npz:
+            n_genes_data = npz["pseudobulk"].shape[1]
+        if len(gene_names) != n_genes_data:
+            raise ValueError(
+                f"gene_names.npy has {len(gene_names)} genes but pseudobulk "
+                f"has {n_genes_data} genes. Re-run precompute_features.py to "
+                f"regenerate the sidecar file."
+            )
 
     def _validate_metadata(self):
         """Validate that target and pathology columns have no NaN for included subjects."""
@@ -656,8 +718,11 @@ class PrecomputedDataset(Dataset):
         """
         gene_names_path = self.feature_dir / "gene_names.npy"
         if gene_names_path.exists():
-            names = np.load(gene_names_path, allow_pickle=True)
-            return [str(n) for n in names]
+            try:
+                names = np.load(gene_names_path, allow_pickle=True)
+                return [str(n) for n in names]
+            except Exception as e:
+                warnings.warn(f"Could not load gene names from {gene_names_path}: {e}")
         return None
 
     def get_cell_type_names(self) -> list[str]:
@@ -672,8 +737,29 @@ class PrecomputedDataset(Dataset):
         subject_id = self.subject_ids[idx]
         feature_file = self.feature_dir / f"{subject_id}.npz"
 
+        try:
+            return self._load_npz(subject_id, feature_file)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load precomputed features for subject '{subject_id}' "
+                f"from {feature_file}: {type(e).__name__}: {e}"
+            ) from e
+
+    def _load_npz(self, subject_id: str, feature_file: Path) -> dict[str, torch.Tensor]:
+        """Load and validate a single .npz file. Called by __getitem__."""
         # Load features (context manager ensures file handle is closed)
         with np.load(feature_file, allow_pickle=True) as npz_data:
+            # Validate required keys
+            required_keys = {
+                "pseudobulk", "cell_type_mask", "cells", "cell_mask",
+                "edge_index", "edge_type", "edge_attr",
+            }
+            missing_keys = required_keys - set(npz_data.files)
+            if missing_keys:
+                raise KeyError(
+                    f"Missing required keys: {missing_keys}. "
+                    f"Available: {list(npz_data.files)}"
+                )
             # Validate cell_type_order matches (if stored in file)
             if "cell_type_order" in npz_data:
                 saved_order = list(npz_data["cell_type_order"])
@@ -711,6 +797,24 @@ class PrecomputedDataset(Dataset):
             ccc_edge_index = torch.from_numpy(npz_data["edge_index"]).long()
             ccc_edge_type = torch.from_numpy(npz_data["edge_type"]).long()
             ccc_edge_attr = torch.from_numpy(npz_data["edge_attr"]).float()
+
+            # Shape validation: pseudobulk must be [n_cell_types, n_genes]
+            n_ct = len(self.cell_type_order)
+            if pseudobulk.ndim != 2 or pseudobulk.shape[0] != n_ct:
+                raise ValueError(
+                    f"pseudobulk shape {tuple(pseudobulk.shape)}: expected "
+                    f"[{n_ct}, n_genes], got wrong n_cell_types dim"
+                )
+            if cells.ndim != 3 or cells.shape[0] != n_ct:
+                raise ValueError(
+                    f"cells shape {tuple(cells.shape)}: expected "
+                    f"[{n_ct}, max_cells, n_genes], got wrong n_cell_types dim"
+                )
+            if pseudobulk.shape[1] != cells.shape[2]:
+                raise ValueError(
+                    f"Gene dimension mismatch: pseudobulk has {pseudobulk.shape[1]} genes "
+                    f"but cells has {cells.shape[2]} genes"
+                )
 
             # Load multi-region pseudobulk data (if present in file)
             region_pseudobulks = {}
@@ -784,6 +888,9 @@ def save_precomputed_features(
     updating targets (e.g., different cognition measures) without re-precomputing
     the expensive cell-level features.
 
+    Note: cell_barcodes are not saved in .npz files. For barcode-level
+    interpretability analysis, use CognitiveResilienceDataset directly.
+
     Args:
         dataset: CognitiveResilienceDataset to precompute
         output_dir: Directory to save .npz files
@@ -793,10 +900,13 @@ def save_precomputed_features(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save gene names sidecar for downstream interpretability
-    gene_names = dataset.get_gene_names()
-    if gene_names is not None:
-        np.save(output_dir / "gene_names.npy", np.array(gene_names, dtype=object))
+    # Save gene names sidecar for downstream interpretability.
+    # Only save when dataset is non-empty (skip_subjects may contain stale IDs
+    # not in dataset, so counting effective_subjects from set difference is fragile).
+    if len(dataset) > 0:
+        gene_names = dataset.get_gene_names()
+        if gene_names is not None:
+            np.save(output_dir / "gene_names.npy", np.array(gene_names, dtype=object))
 
     n_skipped = 0
     for i in range(len(dataset)):
@@ -835,7 +945,14 @@ def save_precomputed_features(
         if "available_regions" in sample:
             save_data["available_regions"] = np.array(sample["available_regions"])
 
-        np.savez_compressed(output_file, **save_data)
+        # Atomic write: save to temp file then rename to prevent partial files on crash.
+        # np.savez_compressed appends .npz if not present, so use .npz suffix on temp file.
+        with tempfile.NamedTemporaryFile(
+            dir=output_dir, suffix=".npz", delete=False
+        ) as tmp_f:
+            tmp_path = Path(tmp_f.name)
+        np.savez_compressed(tmp_path, **save_data)
+        tmp_path.rename(output_file)
 
         if verbose and (i + 1 - n_skipped) % 50 == 0:
             print(f"Saved {i + 1 - n_skipped}/{len(dataset) - n_skipped} subjects")

@@ -2,6 +2,50 @@
 Shared test fixtures for cognitive resilience model tests.
 """
 
+import sys
+import types
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Torchvision Mock (broken C extension workaround)
+# ─────────────────────────────────────────────────────────────────────────────
+# Lightning imports torchmetrics which imports torchvision, but torchvision._C.so
+# has undefined symbols in this environment. Since tests don't need torchvision,
+# mock it before lightning is imported. Applied at top-level conftest so all test
+# directories share one copy (previously duplicated in smoke/ and unit/training/).
+
+
+class _MockModule(types.ModuleType):
+    """Mock module that returns sub-mocks for any attribute access."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.__path__ = []
+        self.__file__ = "<mock>"
+        self.__version__ = "0.25.0"
+        self.__all__ = []
+
+    def __getattr__(self, name):
+        sub = _MockModule(f"{self.__name__}.{name}")
+        setattr(self, name, sub)
+        return sub
+
+    def __call__(self, *args, **kwargs):
+        return None
+
+
+if "torchvision" not in sys.modules:
+    _tv_names = [
+        "torchvision", "torchvision._meta_registrations",
+        "torchvision.datasets", "torchvision.io", "torchvision.models",
+        "torchvision.ops", "torchvision.transforms", "torchvision.utils",
+        "torchvision.transforms.functional", "torchvision.extension",
+    ]
+    for mod_name in _tv_names:
+        sys.modules[mod_name] = _MockModule(mod_name)
+    sys.modules["torchvision"].extension._has_ops = lambda: False
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 import pytest
 import torch
 import numpy as np
@@ -16,7 +60,14 @@ from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key, N_
 
 
 def _make_edge_dicts(batch_size, n_edges=5, device=None):
-    """Create edge_index_dict_list and edge_attr_dict_list for testing."""
+    """Create edge_index_dict_list and edge_attr_dict_list for testing.
+
+    Uses a subset of production cell types (first 3) and edge types (first 2)
+    for speed. Real CCC graphs have variable connectivity; this factory creates
+    dense connections between the subset. Edge indices are all zeros (self-loops
+    on node 0) — sufficient for shape/dtype testing but not for message-passing
+    correctness. Update if HGT edge dict schema changes.
+    """
     edge_index_dict_list = []
     edge_attr_dict_list = []
     for _ in range(batch_size):
@@ -208,7 +259,13 @@ def test_data_dir(project_root):
 
 @pytest.fixture(autouse=True)
 def set_random_seeds(seed):
-    """Automatically set seeds before each test."""
+    """Reset all RNG state before every test for reproducibility.
+
+    Autouse=True means this runs before EVERY test without explicit request.
+    Seeds Python random, NumPy, PyTorch CPU, and PyTorch CUDA. This ensures
+    tests using random data (torch.randn, np.random) produce identical results
+    across runs, making flaky test failures reproducible.
+    """
     import random
     random.seed(seed)
     np.random.seed(seed)

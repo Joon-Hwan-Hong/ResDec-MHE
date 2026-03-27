@@ -299,8 +299,9 @@ class TestWorkerInitFn:
         fn = dm._make_worker_init_fn()
         assert callable(fn)
 
-    def test_different_ranks_produce_different_fns(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
-        fns = []
+    def test_different_ranks_produce_different_seeds(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
+        """Verify that different DDP ranks produce different worker seeds."""
+        seeds_per_rank = []
         for rank in range(3):
             dm = CognitiveResilienceDataModule(
                 config=minimal_config, metadata=mock_metadata, splits=mock_splits,
@@ -308,6 +309,18 @@ class TestWorkerInitFn:
             )
             dm.trainer = MagicMock()
             dm.trainer.global_rank = rank
-            fns.append(dm._make_worker_init_fn())
-        assert len(fns) == 3
-        assert fns[0] is not fns[1]
+            fn = dm._make_worker_init_fn()
+
+            # Call the init fn with worker_id=0 and capture the numpy seed
+            import numpy as np
+            worker_info = MagicMock()
+            worker_info.dataset = MagicMock(spec=[])  # no sampler attr
+            with patch("torch.utils.data.get_worker_info", return_value=worker_info):
+                fn(0)
+            seed = np.random.get_state()[1][0]  # first element of MT state
+            seeds_per_rank.append(seed)
+
+        # All ranks should produce different seeds
+        assert len(set(seeds_per_rank)) == 3, (
+            f"Expected 3 unique seeds, got {seeds_per_rank}"
+        )

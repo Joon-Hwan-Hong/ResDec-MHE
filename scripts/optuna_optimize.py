@@ -185,13 +185,14 @@ def build_trial_config(
         else:
             logger.warning("Unknown parameter '%s' — skipping", name)
 
-    # Validate n_heads divides d_embed (required by all attention mechanisms)
+    # Validate n_heads divides d_embed (required by all attention mechanisms).
+    # Raise TrialPruned (not ValueError) so Optuna discards this trial
+    # and samples new parameters instead of crashing the entire study.
     n_heads = config.model.hgt.get("n_heads")
     d_embed = config.model.get("d_embed")
     if n_heads and d_embed and d_embed % n_heads != 0:
-        raise ValueError(
-            f"d_embed ({d_embed}) must be divisible by n_heads ({n_heads}). "
-            f"Ensure Optuna search space only samples compatible (d_embed, n_heads) pairs."
+        raise optuna.TrialPruned(
+            f"d_embed ({d_embed}) not divisible by n_heads ({n_heads}) — pruning trial"
         )
 
     return config
@@ -275,7 +276,19 @@ def objective(
     # Within-fold warmup protection is handled by MinEpochEarlyStopping.
     _EXCLUDED_TRIAL_CALLBACKS = (ModelCheckpoint, ResilienceModelCheckpoint, LearningRateMonitor)
 
+    # Per-fold results are in-memory — no fold-level checkpointing.
+    # If the process crashes at fold K, folds 0..K-1 results are lost.
+    # This is acceptable for HP search (trials are cheaper than full training).
     for fold_idx in range(n_folds):
+        # Re-seed per fold for independent reproducibility: each fold's
+        # initialization and training are reproducible regardless of what
+        # happened in prior folds (pruning, early stopping, etc.).
+        set_seed(
+            seed + fold_idx,
+            deterministic=repro_cfg.get("deterministic", True),
+            benchmark=repro_cfg.get("benchmark", False),
+        )
+
         # Build model
         module = CognitiveResilienceLightningModule(config)
 
@@ -542,6 +555,12 @@ def main() -> None:
         )
     else:
         # Single-GPU mode (original behavior)
+        # Limitation: interrupted trials are NOT resumed. If the process crashes
+        # mid-trial, the trial is marked FAIL in the study database and a new trial
+        # with new hyperparameters starts on re-run. Per-fold results (fold_val_losses
+        # list in objective()) are in-memory and lost on crash. For expensive training
+        # runs, consider: (1) shorter max_epochs for HP search, (2) SQLite storage
+        # for completed trial persistence, (3) per-fold result files if needed.
         study.optimize(
             lambda trial: objective(
                 trial, config, gpu_id=gpu_id,

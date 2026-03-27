@@ -5,9 +5,8 @@ Verifies that the entire pipeline (data -> train N epochs -> checkpoint ->
 predict -> analyze) runs without crashing for both Bayesian and deterministic
 head configurations.
 
-Uses tiny dimensions for speed:
-  d_embed=16, d_fused=16, n_genes=100, n_cell_types=5, n_regions=6,
-  batch_size=4, max_cells_per_type=50, 2 epochs.
+Uses production cell type count (31) and edge types for realistic coverage,
+with small dimensions (d_embed=16, n_genes=100) for speed.
 
 Marked @pytest.mark.slow so it can be skipped in fast CI runs.
 """
@@ -25,6 +24,9 @@ from omegaconf import OmegaConf
 from src.training.lightning_module import CognitiveResilienceLightningModule
 from src.training.callbacks import ResilienceModelCheckpoint
 from src.inference.predict import Predictor
+from src.data.constants import (
+    N_CELL_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,9 +34,8 @@ from src.inference.predict import Predictor
 # ─────────────────────────────────────────────────────────────────────────────
 
 N_SAMPLES = 10
-N_CELL_TYPES = 5
+# N_CELL_TYPES and N_REGIONS imported from constants (31 and 6 respectively)
 N_GENES = 100
-N_REGIONS = 6
 MAX_CELLS = 50
 BATCH_SIZE = 4
 D_EMBED = 16
@@ -49,7 +50,11 @@ MAX_EPOCHS = 2
 
 
 class SyntheticDataset(torch.utils.data.Dataset):
-    """Minimal synthetic dataset for smoke testing."""
+    """Minimal synthetic dataset for smoke testing.
+
+    Uses production N_CELL_TYPES (31) and includes HGT graph edges
+    to exercise the full model architecture including CCC encoding.
+    """
 
     def __init__(self, n_samples, n_cell_types, n_genes, n_regions, max_cells):
         self.n_samples = n_samples
@@ -58,10 +63,24 @@ class SyntheticDataset(torch.utils.data.Dataset):
         self.n_regions = n_regions
         self.max_cells = max_cells
 
+        # Pre-compute sanitized names for edge construction
+        self._sanitized_types = [sanitize_key(ct) for ct in CELL_TYPE_ORDER[:n_cell_types]]
+        self._sanitized_edges = [sanitize_key(et) for et in ALL_EDGE_TYPES]
+
     def __len__(self):
         return self.n_samples
 
     def __getitem__(self, idx):
+        # Build sparse graph edges (3 source types × 3 dest types × 1 edge type)
+        # Enough to exercise HGT without being expensive
+        edge_index_dict = {}
+        edge_attr_dict = {}
+        for src in self._sanitized_types[:3]:
+            for dst in self._sanitized_types[:3]:
+                key = (src, self._sanitized_edges[0], dst)
+                edge_index_dict[key] = torch.tensor([[0], [0]], dtype=torch.long)
+                edge_attr_dict[key] = torch.rand(1, 1)
+
         return {
             "pseudobulk": torch.randn(self.n_cell_types, self.n_genes),
             "cognition": torch.randn(1),
@@ -75,15 +94,20 @@ class SyntheticDataset(torch.utils.data.Dataset):
                 self.n_cell_types, self.max_cells, dtype=torch.bool
             ),
             "cell_type_mask": torch.ones(self.n_cell_types, dtype=torch.bool),
+            "edge_index_dict": edge_index_dict,
+            "edge_attr_dict": edge_attr_dict,
         }
 
 
 def simple_collate(batch):
-    """Stack tensors from a list of dicts into a batched dict."""
+    """Stack tensors and collect dicts from a list of sample dicts."""
     result = {}
     for key in batch[0]:
         if isinstance(batch[0][key], torch.Tensor):
             result[key] = torch.stack([b[key] for b in batch])
+        elif isinstance(batch[0][key], dict):
+            # Edge dicts: collect into a list (one dict per sample)
+            result[key + "_list"] = [b[key] for b in batch]
         else:
             result[key] = [b[key] for b in batch]
     return result
@@ -108,8 +132,8 @@ def make_smoke_config(head_type: str) -> OmegaConf:
         "experiment": {"name": "smoke_test", "seed": 42, "device": "cpu"},
         "model": {
             "n_genes": N_GENES,
-            "n_cell_types": N_CELL_TYPES,
-            "n_regions": N_REGIONS,
+            "n_cell_types": N_CELL_TYPES,  # 31 from constants
+            "n_regions": N_REGIONS,  # 6 from constants
             "d_embed": D_EMBED,
             "d_fused": D_FUSED,
             "dropout": 0.0,

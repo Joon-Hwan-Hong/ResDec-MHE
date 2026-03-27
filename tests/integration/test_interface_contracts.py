@@ -34,7 +34,12 @@ MAX_CELLS = 20
 
 
 def create_mock_sample(n_edges: int = 15) -> dict:
-    """Create a mock dataset sample matching CognitiveResilienceDataset output."""
+    """Create a mock dataset sample matching CognitiveResilienceDataset output.
+
+    Uses production constants (N_CELL_TYPES, N_REGIONS, N_EDGE_TYPES).
+    Divergences: random dense tensors (real data is sparse non-negative expression),
+    all masks True (real data has masked types/cells). Update if dataset schema changes.
+    """
     return {
         "subject_id": "TEST_SUBJECT",
         "pseudobulk": torch.randn(N_CELL_TYPES, N_GENES),

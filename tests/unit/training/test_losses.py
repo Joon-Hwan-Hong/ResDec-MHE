@@ -92,17 +92,25 @@ class TestBetaNLLLoss:
     # ─────────────────────────────────────────────────────────────────
 
     def test_beta_zero_approximates_mse(self):
-        """β=0 loss should be dominated by MSE-like behavior (ignores variance)."""
+        """β=0: variance gradient from MSE term is zero (detached).
+
+        At β=0 the MSE denominator is var.detach()^0 * var^1 = var (fully attached),
+        but the key property is that the MSE term's gradient w.r.t. std comes only
+        through the non-detached var^(1-β) = var^1 factor, meaning var is NOT detached.
+        The β-NLL paper's β=0 property: the mean prediction gradient is decoupled from
+        the variance-reduction incentive. Verify the loss is finite and produces gradients.
+        """
         from src.training.losses import BetaNLLLoss
         loss_fn = BetaNLLLoss(beta=0.0)
-        mean = torch.tensor([[1.0]])
-        std = torch.tensor([[0.5]])
+        mean = torch.tensor([[1.0]], requires_grad=True)
+        std = torch.tensor([[0.5]], requires_grad=True)
         target = torch.tensor([[2.0]])
         loss = loss_fn(mean, std, target)
-        # β=0: mse_term = 0.5 * (target - mean)^2 / var^0 / var^1 = 0.5 * 1 / 0.25 = 2.0
-        # plus 0.5*log(0.25) = -0.693
-        # The MSE term dominates and is independent of std in the gradient
-        assert torch.isfinite(loss)
+        loss.backward()
+
+        assert torch.isfinite(loss), "β=0 loss should be finite"
+        assert mean.grad is not None and torch.isfinite(mean.grad).all(), "mean should have gradient"
+        assert std.grad is not None and torch.isfinite(std.grad).all(), "std should have gradient"
 
     def test_perfect_prediction_low_loss(self):
         """Perfect prediction (target == mean) gives lower loss than imperfect."""

@@ -118,6 +118,15 @@ def main():
         metadata = metadata.set_index(subject_col)
     logger.info("Metadata filtered: %d subjects", len(metadata))
 
+    # Log subjects missing from metadata (helps debug preprocessing issues)
+    missing_from_metadata = set(subject_ids) - set(metadata.index)
+    if missing_from_metadata:
+        logger.warning(
+            "%d subjects in splits but not in metadata: %s",
+            len(missing_from_metadata),
+            sorted(missing_from_metadata)[:10],  # show first 10
+        )
+
     # Load LIANA results (optional)
     liana_results = {}
     if args.liana_dir:
@@ -153,6 +162,7 @@ def main():
         min_cells_threshold=data_cfg.cell_sampling.min_cells_threshold,
         sampling_strategy=data_cfg.cell_sampling.sampling_strategy,
         sampling_seed=seed,
+        region_column=data_cfg.get("region_column", "BrainRegion"),
         liana_results=liana_results if liana_results else None,
     )
 

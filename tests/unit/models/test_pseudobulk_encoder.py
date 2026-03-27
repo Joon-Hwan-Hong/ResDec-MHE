@@ -252,6 +252,10 @@ class TestGradientFlow:
 # 5. INTERPRETABILITY TESTS
 # =============================================================================
 
+
+class TestInterpretability:
+    """Tests for interpretability features."""
+
     def test_extra_repr(self, small_encoder):
         """extra_repr should contain key info."""
         repr_str = small_encoder.extra_repr()

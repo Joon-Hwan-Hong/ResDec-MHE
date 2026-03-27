@@ -90,7 +90,10 @@ class BayesianPredictionHead(PyroModule):
         # fc_log_std is deterministic (aleatoric uncertainty only)
         self.fc_log_std = nn.Linear(d_hidden, 1)
 
-        # ELBO likelihood scaling factor (set to world_size for DDP)
+        # ELBO likelihood scaling factor (set to world_size for DDP).
+        # Intentionally NOT a registered buffer: this is ephemeral per-process
+        # state re-set by configure_optimizers() based on DDP world_size.
+        # For inference (single process), the default 1.0 is correct.
         self._data_scale = 1.0
 
         # Device sentinel — moves with .to(device), priors read its device at sample time
@@ -158,7 +161,12 @@ class BayesianPredictionHead(PyroModule):
 
         mean = self.fc_mean(h)
         log_std = self.fc_log_std(h)
-        std = F.softplus(log_std) + EPSILON_POSITIVE_FLOOR  # Ensure positive with minimum
+        # Promote to float32 before softplus: under bf16 autocast, extreme
+        # log_std values (e.g., -20) produce softplus(x)≈0 in bf16, collapsing
+        # learned uncertainty to the epsilon floor. SVI path is safe (autocast
+        # disabled at line 198 of lightning_module.py), but validation/test
+        # forward passes run under autocast.
+        std = F.softplus(log_std.float()) + EPSILON_POSITIVE_FLOOR
 
         with pyro.plate("data", x.size(0)):
             with pyro.poutine.scale(scale=self._data_scale):

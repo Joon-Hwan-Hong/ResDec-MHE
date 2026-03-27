@@ -11,7 +11,7 @@ import lightning.pytorch as pl
 import torch
 from omegaconf import DictConfig
 
-from src.data.collate import create_dataloader, _deterministic_worker_init_fn
+from src.data.collate import create_dataloader
 from src.data.datasets import CognitiveResilienceDataset, PrecomputedDataset
 from src.data.splits import get_fold_subjects, get_final_train_subjects
 
@@ -87,6 +87,12 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
 
             if stage in ("fit", None):
                 self._train_ds = self._make_dataset(train_subjects)
+                if len(self._train_ds) == 0:
+                    raise ValueError(
+                        f"Training dataset is empty after filtering. "
+                        f"Original: {len(train_subjects)} subjects. "
+                        f"Check that .npz files exist or adata contains these subjects."
+                    )
                 logger.info(
                     "Final mode: %d train subjects", len(train_subjects)
                 )
@@ -106,6 +112,17 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             if stage in ("fit", None):
                 self._train_ds = self._make_dataset(train_subjects)
                 self._val_ds = self._make_dataset(val_subjects)
+                if len(self._train_ds) == 0:
+                    raise ValueError(
+                        f"Training dataset is empty after filtering (fold {self.fold_idx}). "
+                        f"Original: {len(train_subjects)} subjects. "
+                        f"Check that .npz files exist or adata contains these subjects."
+                    )
+                if len(self._val_ds) == 0:
+                    raise ValueError(
+                        f"Validation dataset is empty after filtering (fold {self.fold_idx}). "
+                        f"Original: {len(val_subjects)} subjects."
+                    )
                 logger.info(
                     "Fold %d: %d train, %d val subjects",
                     self.fold_idx, len(train_subjects), len(val_subjects),
@@ -168,13 +185,18 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 region_column=self._data_cfg.get(
                     "region_column", "BrainRegion"
                 ),
+                max_missing_subject_fraction=self._data_cfg.get(
+                    "max_missing_subject_fraction", 0.1
+                ),
             )
 
     def train_dataloader(self) -> torch.utils.data.DataLoader:
         """Create training DataLoader.
 
         Lightning automatically replaces shuffle with DistributedSampler
-        when using strategy="ddp".
+        when using strategy="ddp". On resume, Lightning calls
+        DistributedSampler.set_epoch(current_epoch) automatically, so
+        shuffle order is correct for the restarted epoch.
         """
         return create_dataloader(
             self._train_ds,
@@ -191,6 +213,11 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
 
     def val_dataloader(self) -> torch.utils.data.DataLoader | None:
         """Create validation DataLoader with deterministic cell sampling.
+
+        DDP note: DistributedSampler pads dataset to make it evenly divisible
+        across ranks. _gather_and_compute_metrics truncates to real dataset
+        size for correct correlation metrics. drop_last defaults to False,
+        which is correct here (padding handles equal batch counts).
 
         Returns None in final_mode (no validation set exists).
         """
@@ -247,10 +274,12 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             worker_seed = (global_seed + global_rank * max_workers + worker_id) % (2**32)
             np.random.seed(worker_seed)
             random.seed(worker_seed)
+            torch.manual_seed(worker_seed)
 
             # Re-seed CellSampler's RNG if the dataset has one
             worker_info = torch.utils.data.get_worker_info()
             dataset = worker_info.dataset
+            # PrecomputedDataset has no sampler — hasattr is a no-op for it
             if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
                 dataset.sampler.rng = np.random.default_rng(worker_seed)
 
@@ -262,6 +291,11 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         Uses experiment seed (not hardcoded 42) for consistency with the rest
         of the reproducibility pipeline. Val/test workers get the same seed
         every epoch so evaluation is reproducible within and across runs.
+
+        DDP note: Does not incorporate global_rank. Under DDP, all ranks'
+        val/test workers use the same seed. This is correct because
+        DistributedSampler gives each rank different subjects, and with
+        PrecomputedDataset (recommended) cell sampling does not apply.
         """
         global_seed = self.config.experiment.get("seed", 42)
 
@@ -271,9 +305,11 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             seed = global_seed + worker_id
             np.random.seed(seed)
             random.seed(seed)
+            torch.manual_seed(seed)
 
             worker_info = torch.utils.data.get_worker_info()
             dataset = worker_info.dataset
+            # PrecomputedDataset has no sampler — hasattr is a no-op for it
             if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
                 dataset.sampler.rng = np.random.default_rng(seed)
 

@@ -67,9 +67,11 @@ class TestInferenceSplitMapping:
 class TestRunInferenceScriptConfigRecovery:
     """Verify config can be recovered from checkpoint for data loading."""
 
-    def test_config_recovery_from_checkpoint(self):
-        """When --config is omitted, script should attempt predictor.config before failing."""
-        source = Path("scripts/run_inference.py").read_text()
-        assert 'Config is required for data loading' not in source, (
-            "Hard-fail for missing config should be replaced with checkpoint config recovery"
+    def test_config_recovery_codepath_exists(self):
+        """Script has a config recovery path from checkpoint before failing."""
+        source = (Path(__file__).resolve().parents[3] / "scripts" / "run_inference.py").read_text()
+        # The script should try predictor.config before raising ValueError
+        assert "predictor.config" in source or "config = predictor" in source, (
+            "run_inference.py should attempt to recover config from checkpoint "
+            "before raising ValueError about missing config"
         )

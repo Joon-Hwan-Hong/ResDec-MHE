@@ -4,8 +4,9 @@ Reproducibility utilities for deterministic experiments.
 Reproducibility guarantee levels:
 - CPU: bit-reproducible given same seed, config, and data order.
 - CUDA: statistically reproducible (same convergence, not bit-for-bit).
-  scatter_add in HGT message passing uses non-deterministic atomicAdd.
-  warn_only=True permits this — see set_seed() for details.
+  Non-deterministic operations: scatter_add in HGT message passing (atomicAdd),
+  scatter_reduce_ in HGT softmax (amax), and nn.MultiheadAttention with
+  dropout via FlashAttention kernel. warn_only=True permits all three.
 - Checkpoint resume: converges to same quality but exact gradient trajectory
   differs from uninterrupted run. See ResilienceModelCheckpoint.on_load_checkpoint()
   for limitations (DataLoader position, CellSampler per-worker RNG).
@@ -66,6 +67,11 @@ def set_seed(seed: int, deterministic: bool = True, benchmark: bool = False) -> 
 def get_rng_states() -> dict[str, Any]:
     """
     Capture current RNG states for all relevant libraries.
+
+    Note: Pyro state is NOT captured separately because Pyro delegates
+    entirely to PyTorch/Python/NumPy RNG (confirmed on Pyro 1.9.1:
+    pyro.set_rng_seed calls torch.manual_seed + random.seed + np.random.seed).
+    Capturing torch + python + numpy state covers Pyro completely.
 
     Returns:
         Dictionary containing RNG states for Python, NumPy, and PyTorch

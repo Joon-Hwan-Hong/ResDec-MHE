@@ -5,12 +5,15 @@ Handles sampling cells from each cell type for cell-level modeling,
 with various strategies for handling variable cell counts.
 """
 
+import logging
 from typing import Literal
 
 import numpy as np
 from anndata import AnnData
 
 from src.data.constants import EPSILON_POSITIVE_FLOOR
+
+logger = logging.getLogger(__name__)
 
 
 class CellSampler:
@@ -168,7 +171,15 @@ class CellSampler:
             else:
                 sampled.extend(self.rng.choice(stratum_indices, n_samples, replace=False))
 
-        return np.array(sampled[:self.max_cells_per_type])
+        result = np.array(sampled[:self.max_cells_per_type])
+        if len(result) < 0.9 * self.max_cells_per_type:
+            logger.debug(
+                "Stratified sampling returned %d/%d cells (%.0f%%) — "
+                "strata too small for full allocation",
+                len(result), self.max_cells_per_type,
+                100 * len(result) / self.max_cells_per_type,
+            )
+        return result
 
     def _importance_sample(
         self,
@@ -229,7 +240,10 @@ def subsample_adata(
     """
     Subsample AnnData to have at most max_cells per cell type.
 
-    Useful for reducing memory during preprocessing.
+    Useful for reducing memory during preprocessing. Unlike CellSampler.sample(),
+    this function does not enforce min_cells_threshold — all cell types are
+    retained regardless of count. This is appropriate for preprocessing where
+    we want to keep all cell types for pseudobulk computation.
 
     Args:
         adata: Full AnnData

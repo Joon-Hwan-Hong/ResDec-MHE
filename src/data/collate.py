@@ -26,6 +26,7 @@ Note on Multi-GPU:
     See: https://lightning.ai/docs/pytorch/stable/accelerators/gpu_intermediate.html
 """
 
+import logging
 import re
 import warnings
 from typing import Any
@@ -34,6 +35,8 @@ import numpy as np
 import torch
 
 from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX, sanitize_key
+
+logger = logging.getLogger(__name__)
 
 
 def _derive_available_regions_from_keys(sample: dict[str, Any]) -> list[int]:
@@ -434,7 +437,11 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
                 mask = inverse == i
                 n_triplet_edges = mask.sum().item()
 
-                # All edges are node 0 → node 0 (one node per type per subject)
+                # All edges are node 0 → node 0 because each cell type has
+                # exactly 1 node per subject (the pseudobulk embedding).
+                # This invariant is set by build_x_dict_list_from_embeddings
+                # (unsqueeze(0) → 1 node per type). If multi-node-per-type
+                # is ever added, edge indices must be updated.
                 edge_index_dict[triplet] = torch.zeros(
                     2, n_triplet_edges, dtype=torch.long
                 )
@@ -613,6 +620,16 @@ def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
         # Override inherited region_mask with the computed version based on
         # actual data presence. This is more accurate than the sample-level
         # region_mask which may differ in edge cases.
+        # Assert the computed mask is a subset of the per-sample mask: a region
+        # should never appear in the computed mask if the sample said it's absent.
+        if "region_mask" in result:
+            sample_mask = result["region_mask"].bool()
+            computed_mask = region_mask.bool()
+            if (computed_mask & ~sample_mask).any():
+                logger.warning(
+                    "Computed region_mask has regions marked present that per-sample "
+                    "mask marks absent. This may indicate a precomputation mismatch."
+                )
         result["region_mask"] = region_mask
 
     return result
@@ -642,8 +659,11 @@ def _worker_init_fn(worker_id: int) -> None:
 
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
-    # Re-seed CellSampler's RNG if the dataset has one
+    # Re-seed CellSampler's RNG if the dataset has one.
+    # PrecomputedDataset has no sampler (no cell sampling) — hasattr is
+    # intentionally a no-op for it.
     dataset = worker_info.dataset
     if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
         dataset.sampler.rng = np.random.default_rng(worker_seed)
@@ -652,6 +672,15 @@ def _worker_init_fn(worker_id: int) -> None:
 def _deterministic_worker_init_fn(worker_id: int) -> None:
     """
     Deterministic seeding for val/test workers — same samples every epoch.
+
+    Standalone convenience for create_dataloader() callers that don't use the
+    DataModule (e.g., custom scripts). The DataModule overrides this with its
+    own factory (_make_deterministic_worker_init_fn) that uses the experiment
+    seed from config instead of a hardcoded default.
+
+    WARNING: Uses hardcoded seed=42. For consistency with experiment seed,
+    use CognitiveResilienceDataModule instead of create_dataloader() directly,
+    or pass a custom worker_init_fn.
 
     Uses a fixed seed so validation/test cell sampling is reproducible.
     Note: with persistent_workers=True (default), this init runs once at
@@ -669,7 +698,11 @@ def _deterministic_worker_init_fn(worker_id: int) -> None:
     seed = 42 + worker_id
     np.random.seed(seed)
     random.seed(seed)
+    torch.manual_seed(seed)
 
+    # Re-seed CellSampler's RNG if the dataset has one.
+    # PrecomputedDataset has no sampler (no cell sampling) — hasattr is
+    # intentionally a no-op for it.
     worker_info = torch.utils.data.get_worker_info()
     dataset = worker_info.dataset
     if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):

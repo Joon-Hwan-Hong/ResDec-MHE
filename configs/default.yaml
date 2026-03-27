@@ -22,7 +22,7 @@ data:
 
   # Preprocessing
   preprocessing:
-    n_hvg: 4000
+    n_hvg: 4000  # Preprocessing only — determines n_genes for the model after HVG selection
     target_sum: 10000.0
     min_cells_per_gene: 10
 
@@ -52,6 +52,9 @@ data:
     max_cells_per_type: 1000
     min_cells_threshold: 50
     sampling_strategy: "random"  # "random", "stratified", "importance"
+
+  # Fraction of subjects allowed to be missing from splits before raising an error
+  max_missing_subject_fraction: 0.1
 
   # DataLoader
   dataloader:
@@ -150,7 +153,7 @@ training:
   # Learning rate scheduler
   scheduler:
     type: "cosine"               # Cosine annealing with linear warmup
-    warmup_epochs: 5             # Linear warmup epochs
+    warmup_epochs: 5             # Linear warmup for LR scheduler (independent of temperature_annealing.warmup_epochs below)
     eta_min: 0.000001            # Minimum learning rate
 
   # Loss function
@@ -162,11 +165,12 @@ training:
   temperature_annealing:
     tau_max: 2.0                 # Starting temperature (soft)
     tau_min: 0.1                 # Final temperature (sharp)
-    warmup_epochs: 5             # Keep tau_max for this many epochs
+    warmup_epochs: 5             # Keep tau_max for this many epochs (independent of scheduler.warmup_epochs above)
     anneal_epochs: 50            # Anneal over this many epochs
     schedule: "exponential"      # Annealing schedule: "exponential", "linear", "cosine"
 
-  # Gradient clipping
+  # Gradient clipping (L2 norm). Under bf16-mixed, parameter gradients are
+  # float32 (master weights), so this threshold applies to unscaled norms.
   gradient_clip_val: 1.0
 
   # Mixed precision
@@ -209,7 +213,7 @@ optuna:
     # at least 1 fold before considering pruning.
     # Within-fold warmup protection is handled by MinEpochEarlyStopping (min_epochs=20).
     n_warmup_steps: 1
-    interval_steps: 1  # Check after each fold completes
+    interval_steps: 1  # Report/check every N folds (1 = check after each fold for fastest pruning)
   sampler:
     type: "tpe"
     seed: 42
@@ -293,6 +297,7 @@ error_handling:
   training:
     nan_loss: "fail"             # NaN loss detected: "fail" immediately
     nan_batch: "skip"            # Single batch has NaN: "skip" batch, continue
+    max_nan_skip_fraction: 0.1   # Max fraction of batches skipped per epoch before failing (0.1 = 10%)
   inference:
     missing_field: "skip"        # Subject missing required field: "skip" subject
   analysis:
@@ -306,6 +311,13 @@ reproducibility:
   # Seed lives under experiment.seed (single source of truth)
   deterministic: true            # Use deterministic algorithms (slower but reproducible)
   benchmark: false               # Disable cuDNN autotuner for reproducibility
+  # Note: Even with deterministic=true, CUDA runs are NOT bit-exact due to:
+  #   1. scatter_add in HGT message passing (atomicAdd non-determinism)
+  #   2. scatter_reduce_ in HGT softmax (amax reduction)
+  #   3. nn.MultiheadAttention FlashAttention kernel with dropout
+  # CPU runs ARE bit-exact. See src/utils/reproducibility.py for details.
+  # For full reproducibility, also set PYTHONHASHSEED=<seed> in the
+  # launch environment (must be set before Python starts).
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Visualization

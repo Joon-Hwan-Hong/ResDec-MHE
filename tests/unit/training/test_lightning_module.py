@@ -545,17 +545,18 @@ class TestNaNHandling:
     """Tests for NaN detection and handling in training_step."""
 
     def test_nan_loss_policy_fail_raises(self, base_config):
-        """NaN loss with fail policy raises ValueError."""
+        """NaN in batch with fail policy raises ValueError."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
-        # nan_batch="fail" so NaN cognition passes through to loss computation
+        # nan_batch="fail" catches NaN in any tensor (including cognition)
+        # before loss computation even runs.
         base_config.error_handling = {"training": {"nan_loss": "fail", "nan_batch": "fail"}}
         module = CognitiveResilienceLightningModule(base_config)
 
         batch = _make_batch(n_genes=50)
-        # Inject NaN into cognition to cause NaN loss
+        # Inject NaN into cognition — caught by _check_batch_nan
         batch["cognition"] = torch.full_like(batch["cognition"], float("nan"))
 
-        with pytest.raises(ValueError, match="NaN loss"):
+        with pytest.raises(ValueError, match="NaN detected in batch"):
             module.training_step(batch, batch_idx=0)
 
     def test_nan_batch_skip_returns_none(self, base_config):
@@ -579,14 +580,27 @@ class TestNaNHandling:
         assert module._nan_loss_policy == "fail"
         assert module._nan_batch_policy == "skip"
 
-    def test_check_batch_nan_skips_cells_tensor(self, base_config):
-        """_check_batch_nan should skip cells/cell_mask tensors."""
+    def test_check_batch_nan_detects_nan_in_cells(self, base_config):
+        """_check_batch_nan detects NaN in cells tensor (corrupt preprocessing)."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         batch = {
-            "cells": torch.tensor([[[float("nan")]]]),  # NaN in cells — should be skipped
+            "cells": torch.tensor([[[float("nan")]]]),  # NaN in cells — should be detected
             "cell_mask": torch.ones(1, 1, dtype=torch.bool),
             "cognition": torch.tensor([[1.0]]),  # No NaN here
+        }
+        assert module._check_batch_nan(batch)
+
+    def test_check_batch_nan_skips_mask_tensors(self, base_config):
+        """_check_batch_nan skips boolean mask tensors (cell_mask, cell_type_mask, region_mask)."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        batch = {
+            "cells": torch.ones(1, 1, 1),
+            "cell_mask": torch.ones(1, 1, dtype=torch.bool),
+            "cell_type_mask": torch.ones(1, dtype=torch.bool),
+            "region_mask": torch.ones(1, dtype=torch.bool),
+            "cognition": torch.tensor([[1.0]]),
         }
         assert not module._check_batch_nan(batch)
 
@@ -612,6 +626,36 @@ class TestNaNHandling:
             ],
         }
         assert module._check_batch_nan(batch)
+
+    def test_nan_cells_skipped_in_training_step(self, base_config):
+        """NaN in cells tensor triggers batch skip in training_step."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        base_config.error_handling = {"training": {"nan_loss": "fail", "nan_batch": "skip"}}
+        module = CognitiveResilienceLightningModule(base_config)
+
+        batch = _make_batch(n_genes=50)
+        # Inject NaN into cells tensor (simulating corrupt preprocessing)
+        batch["cells"][0, 0, 0, :] = float("nan")
+
+        result = module.training_step(batch, batch_idx=0)
+        assert result is None, "Expected None return when cells contain NaN and nan_batch=skip"
+
+    def test_nan_skip_rate_threshold(self, base_config):
+        """Exceeding max_nan_skip_fraction raises RuntimeError at epoch end."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        base_config.error_handling = {
+            "training": {"nan_loss": "fail", "nan_batch": "skip", "max_nan_skip_fraction": 0.1}
+        }
+        module = CognitiveResilienceLightningModule(base_config)
+
+        # Simulate 5 batches, 2 NaN skips (40% > 10% threshold)
+        module._epoch_total_batches = 5
+        module._epoch_nan_skips = 2
+        # Mock self.log to avoid trainer requirement
+        module.log = MagicMock()
+
+        with pytest.raises(RuntimeError, match="NaN skip rate"):
+            module.on_train_epoch_end()
 
 
 class TestParameterWiring:

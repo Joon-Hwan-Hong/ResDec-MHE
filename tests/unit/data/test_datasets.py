@@ -300,10 +300,12 @@ class TestDatasetInit:
         # Include invalid subjects not in adata or metadata
         subject_ids = ["valid_subj", "missing_in_adata", "missing_in_metadata"]
 
+        # 2 of 3 subjects are invalid (66.7%), so use a high threshold
         ds = CognitiveResilienceDataset(
             adata=adata,
             metadata=metadata,
             subject_ids=subject_ids,
+            max_missing_subject_fraction=1.0,
         )
 
         # Should only keep the valid subject
@@ -1118,8 +1120,9 @@ class TestPrecomputedCellTypeOrderValidation:
             cell_type_order=wrong_order,
         )
 
-        # Should raise on __getitem__
-        with pytest.raises(ValueError, match="different cell_type_order"):
+        # Should raise on __getitem__ — ValueError is wrapped in RuntimeError
+        # by the error context annotation in __getitem__
+        with pytest.raises(RuntimeError, match="different cell_type_order"):
             _ = precomputed[0]
 
 
@@ -1475,8 +1478,9 @@ class TestPrecomputedGetGeneNames:
         # Save features to create valid precomputed dir
         save_precomputed_features(mock_dataset, tmp_path, verbose=False)
 
-        # Create sidecar gene_names.npy
-        gene_names = np.array(["APOE", "TREM2", "BIN1", "CLU", "PICALM"])
+        # Create sidecar gene_names.npy matching pseudobulk gene dimension
+        n_genes = mock_dataset.n_genes
+        gene_names = np.array([f"gene_{i}" for i in range(n_genes)])
         np.save(tmp_path / "gene_names.npy", gene_names)
 
         precomputed = PrecomputedDataset(
@@ -1487,7 +1491,8 @@ class TestPrecomputedGetGeneNames:
 
         result = precomputed.get_gene_names()
         assert result is not None
-        assert result == ["APOE", "TREM2", "BIN1", "CLU", "PICALM"]
+        assert len(result) == n_genes
+        assert result[0] == "gene_0"
         assert all(isinstance(n, str) for n in result)
 
     def test_get_gene_names_saved_by_precompute(self, mock_dataset, tmp_path):
@@ -1539,3 +1544,19 @@ class TestPrecomputedGetGeneNames:
 
         result = precomputed.get_cell_type_names()
         assert result == CELL_TYPE_ORDER
+
+    def test_gene_names_dimension_mismatch_raises(self, mock_dataset, tmp_path):
+        """Mismatched gene_names.npy length should raise ValueError."""
+        from src.data.datasets import PrecomputedDataset, save_precomputed_features
+
+        save_precomputed_features(mock_dataset, tmp_path, verbose=False)
+
+        # Overwrite with wrong-length gene_names
+        np.save(tmp_path / "gene_names.npy", np.array(["A", "B", "C"]))
+
+        with pytest.raises(ValueError, match="gene_names.npy has 3 genes"):
+            PrecomputedDataset(
+                feature_dir=tmp_path,
+                metadata=mock_dataset.metadata,
+                subject_ids=mock_dataset.subject_ids,
+            )

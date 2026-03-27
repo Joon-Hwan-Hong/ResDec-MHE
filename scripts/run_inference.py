@@ -209,6 +209,8 @@ def build_dataloader(
             if not subject_ids:
                 raise ValueError(f"No subjects found in '{split}' split after filtering")
 
+        from src.data.constants import CELL_TYPE_ORDER
+
         dataset = PrecomputedDataset(
             feature_dir=precomputed_dir,
             subject_ids=subject_ids,
@@ -216,6 +218,7 @@ def build_dataloader(
             subject_column=subject_column,
             target_column=target_column,
             pathology_columns=pathology_columns,
+            cell_type_order=CELL_TYPE_ORDER,  # Explicit: matches precomputation ordering
         )
     else:
         # On-the-fly mode: load AnnData
@@ -343,6 +346,18 @@ def main():
         fold=args.fold,
     )
     logger.info(f"DataLoader ready: {len(dataloader.dataset)} subjects, batch_size={batch_size}")
+
+    # Validate gene dimension matches between model and data
+    dataset = dataloader.dataset
+    if hasattr(dataset, 'get_gene_names'):
+        gene_names = dataset.get_gene_names()
+        if gene_names is not None and hasattr(predictor.model, 'n_genes'):
+            if len(gene_names) != predictor.model.n_genes:
+                raise ValueError(
+                    f"Data has {len(gene_names)} genes but model expects "
+                    f"{predictor.model.n_genes}. Check that --data-path matches "
+                    f"the precomputed features used during training."
+                )
 
     # Determine extraction flags
     # If no CLI flags explicitly set, check config for defaults

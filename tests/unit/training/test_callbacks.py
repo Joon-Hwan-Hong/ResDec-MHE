@@ -11,10 +11,14 @@ Tests TemperatureAnnealing and GradientNormLogger callbacks:
 """
 
 import math
+from pathlib import Path
+
 import pytest
 import torch
 import torch.nn as nn
 from unittest.mock import MagicMock, PropertyMock, patch
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class TestTemperatureAnnealingSchedule:
@@ -335,7 +339,7 @@ class TestEarlyStopping:
         from omegaconf import OmegaConf
         from lightning.pytorch.callbacks import EarlyStopping
 
-        cfg = OmegaConf.load("configs/default.yaml")
+        cfg = OmegaConf.load(_PROJECT_ROOT / "configs" / "default.yaml")
         es_cfg = cfg.training.early_stopping
 
         # Instantiate with our config values
@@ -354,7 +358,7 @@ class TestEarlyStopping:
     def test_early_stopping_min_epochs(self):
         """Training config includes min_epochs to prevent premature stopping."""
         from omegaconf import OmegaConf
-        cfg = OmegaConf.load("configs/default.yaml")
+        cfg = OmegaConf.load(_PROJECT_ROOT / "configs" / "default.yaml")
         # min_epochs must be present and >= warmup + stabilization
         assert hasattr(cfg.training.early_stopping, "min_epochs"), \
             "early_stopping must include min_epochs"
@@ -467,7 +471,7 @@ class TestMinEpochEarlyStopping:
         from scripts.train import setup_callbacks
         from src.training.callbacks import MinEpochEarlyStopping
 
-        cfg = OmegaConf.load("configs/default.yaml")
+        cfg = OmegaConf.load(_PROJECT_ROOT / "configs" / "default.yaml")
         callbacks = setup_callbacks(cfg)
 
         # Find the MinEpochEarlyStopping callback
@@ -805,7 +809,7 @@ class TestModelCheckpoint:
     def test_model_checkpoint_saves_best(self):
         """Checkpoint config monitors val_loss and saves top-k models."""
         from omegaconf import OmegaConf
-        cfg = OmegaConf.load("configs/default.yaml")
+        cfg = OmegaConf.load(_PROJECT_ROOT / "configs" / "default.yaml")
         ckpt = cfg.training.checkpoint
         assert ckpt.monitor == "val_loss"
         assert ckpt.mode == "min"

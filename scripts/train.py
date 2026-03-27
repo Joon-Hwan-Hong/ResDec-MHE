@@ -320,7 +320,9 @@ def main() -> None:
     from src.utils.config import validate_config
     validate_config(config, required_keys=["experiment", "data", "model", "training", "paths"])
 
-    # Set seed
+    # Set global seed (same on all DDP ranks for identical model initialization).
+    # Rank-specific seeding for data augmentation is handled at the DataLoader
+    # worker level (see CognitiveResilienceDataModule._make_worker_init_fn).
     seed = config.experiment.get("seed", 42)
     repro_cfg = config.get("reproducibility", {})
     set_seed(
@@ -379,6 +381,8 @@ def main() -> None:
         splits = create_stratified_splits(
             metadata,
             subject_column=data_cfg.get("subject_column", "ROSMAP_IndividualID"),
+            # stratify_by[0] is the pathology column, cognition_column is from target_column.
+            # Both are used for stratification (pathology bins × cognition bins).
             pathology_column=data_cfg.splits.stratify_by[0] if data_cfg.splits.get("stratify_by") else "gpath",
             cognition_column=data_cfg.get("target_column", "cogn_global"),
             test_frac=data_cfg.splits.test_frac,
@@ -400,6 +404,23 @@ def main() -> None:
     if adata is None and not args.precomputed_dir:
         import scanpy as sc
         adata = sc.read_h5ad(data_cfg.adata_path)
+
+    # Validate n_genes matches AnnData if available. The model was already
+    # constructed above using config.model.n_genes — if it disagrees with
+    # adata.n_vars, rebuild the model with the correct value.
+    # For Bayesian mode, rebuild is safe because __init__ calls
+    # pyro.clear_param_store() and no training has occurred yet.
+    if adata is not None:
+        actual_n_genes = adata.n_vars
+        if config.model.n_genes != actual_n_genes:
+            logger.warning(
+                "Config model.n_genes=%d but AnnData has %d genes. "
+                "Updating config and rebuilding model.",
+                config.model.n_genes, actual_n_genes,
+            )
+            OmegaConf.update(config, "model.n_genes", actual_n_genes)
+            module = CognitiveResilienceLightningModule(config)
+            logger.info("Model rebuilt with n_genes=%d", actual_n_genes)
 
     if args.final:
         # Defensive guard: splits should always be non-None here because
@@ -457,7 +478,10 @@ def main() -> None:
         # Final mode uses last-epoch weights (not "best") because there is no validation
         # set for model selection — all data is used for training. Compare with the
         # fold-based path below which loads from best_model_path.
-        _export_weights(module, experiment.model_dir, is_bayesian=config.model.head.type == "bayesian")
+        # Guard with is_global_zero: under DDP (not ddp_spawn), only the main
+        # process continues after trainer.fit(), but this guard is defensive.
+        if trainer.is_global_zero:
+            _export_weights(module, experiment.model_dir, is_bayesian=config.model.head.type == "bayesian")
 
         # Single unbiased evaluation on holdout test set
         trainer.test(module, datamodule=dm)
@@ -479,10 +503,11 @@ def main() -> None:
         logger.info("Training complete.")
 
         # Export best checkpoint weights (not last epoch)
-        best_ckpt = getattr(trainer.checkpoint_callback, "best_model_path", None)
-        _export_weights(module, experiment.model_dir,
-                        is_bayesian=config.model.head.type == "bayesian",
-                        best_ckpt_path=best_ckpt if best_ckpt else None)
+        if trainer.is_global_zero:
+            best_ckpt = getattr(trainer.checkpoint_callback, "best_model_path", None)
+            _export_weights(module, experiment.model_dir,
+                            is_bayesian=config.model.head.type == "bayesian",
+                            best_ckpt_path=best_ckpt if best_ckpt else None)
 
 
 if __name__ == "__main__":

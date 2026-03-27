@@ -99,6 +99,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             # Safe to clear globally: the CV loop creates exactly one module at a
             # time per fold and does not hold references to previous fold modules
             # when constructing the next one (see scripts/optuna_optimize.py fold loop).
+            # Constraint: only one CognitiveResilienceLightning instance may exist
+            # per process at a time. Under DDP, each rank is a separate process,
+            # so this is safe across ranks.
             pyro.clear_param_store()
             self.guide = AutoDiagonalNormal(self.model)
             self.elbo = Trace_ELBO()
@@ -127,6 +130,12 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         error_cfg = config.get("error_handling", {}).get("training", {})
         self._nan_loss_policy = error_cfg.get("nan_loss", "fail")
         self._nan_batch_policy = error_cfg.get("nan_batch", "skip")
+        self._max_nan_skip_fraction = error_cfg.get("max_nan_skip_fraction", 0.1)
+        # Per-epoch NaN counters — intentionally NOT checkpointed.
+        # On resume, Lightning restarts the interrupted epoch from the
+        # beginning, so these correctly start at 0 for the full re-run.
+        self._epoch_nan_skips = 0
+        self._epoch_total_batches = 0
 
         # Metrics
         self.metrics = ResilienceMetrics()
@@ -213,6 +222,12 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         Used for validation/test to get deterministic predictions from the
         learned posterior, avoiding sampling noise.
 
+        AMP note: this runs UNDER autocast (unlike _svi_forward). The
+        pyro.sample call in BayesianPredictionHead records log_prob at bf16
+        precision, but this does not affect the returned mean/std values.
+        Validation ELBO is computed separately via _svi_forward with autocast
+        disabled (line 198).
+
         Falls back to standard forward if guide hasn't been prototyped yet
         (safety net only — guide is prototyped in configure_optimizers).
         """
@@ -243,10 +258,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         from data loading — cells/cell_mask come from preprocessing and are
         validated at dataset construction time.
         """
-        # Keys that are validated during dataset construction / preprocessing.
+        # Keys that are boolean masks (not data) — always 0/1, no NaN possible.
         # Note: edge_index_dict_list and edge_attr_dict_list are Python lists
         # (not tensors), so isinstance(value, torch.Tensor) already skips them.
-        _skip_keys = {"cells", "cell_mask", "cell_type_mask", "region_mask"}
+        _skip_keys = {"cell_mask", "cell_type_mask", "region_mask"}
         for key, value in batch.items():
             if key in _skip_keys:
                 continue
@@ -263,10 +278,38 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         return False
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor | None:
-        """Training step with ELBO loss for Bayesian head."""
-        if self._nan_batch_policy == "skip" and self._check_batch_nan(batch):
-            logger.warning("NaN detected in batch %d — skipping", batch_idx)
+        """Training step with ELBO loss for Bayesian head.
+
+        Returns None on NaN skip (nan_batch="skip") in single-GPU mode only.
+        Under DDP, NaN-skip is forced to "fail" to prevent rank desync: if one
+        rank returns None (skipping backward) while others proceed with
+        loss.backward(), the proceeding ranks hang at allreduce indefinitely.
+        """
+        self._epoch_total_batches += 1
+
+        # Under DDP, NaN-skip is unsafe: if only one rank returns None while
+        # others call loss.backward(), the proceeding ranks hang at allreduce.
+        # Force fail policy so NaN crashes immediately with a clear error.
+        # Fix NaN data upstream (precompute_features validation) instead.
+        nan_batch_policy = self._nan_batch_policy
+        nan_loss_policy = self._nan_loss_policy
+        world_size = self.trainer.world_size if self._trainer is not None else 1
+        if world_size > 1:
+            nan_batch_policy = "fail"
+            nan_loss_policy = "fail"
+
+        if nan_batch_policy == "skip" and self._check_batch_nan(batch):
+            self._epoch_nan_skips += 1
+            subject_ids = batch.get("subject_ids", ["unknown"])
+            logger.warning("NaN detected in batch %d (subjects=%s) — skipping", batch_idx, subject_ids)
             return None
+        elif nan_batch_policy == "fail" and self._check_batch_nan(batch):
+            subject_ids = batch.get("subject_ids", ["unknown"])
+            raise ValueError(
+                f"NaN detected in batch {batch_idx} (subjects={subject_ids}). "
+                f"Under DDP, NaN-skip is disabled to prevent rank desync. "
+                f"Validate data with precompute_features before multi-GPU training."
+            )
 
         if self._use_bayesian_svi:
             loss = self._svi_forward(batch)
@@ -281,9 +324,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         # Check for NaN loss
         if torch.isnan(loss):
-            if self._nan_loss_policy == "fail":
+            if nan_loss_policy == "fail":
                 raise ValueError(f"NaN loss detected at batch {batch_idx}")
             else:
+                self._epoch_nan_skips += 1
                 logger.warning("NaN loss at batch %d — skipping", batch_idx)
                 return None
 
@@ -295,6 +339,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         # Cache last batch on CPU for epoch-end NLL computation (avoids per-step
         # overhead). Stored on CPU to avoid holding ~7 GB GPU memory for the
         # entire epoch (B=16 × 31 cell types × 1000 cells × 4000 genes × 4 bytes).
+        # Under DDP, each rank caches its own last batch. train_loss_nll is
+        # logged with sync_dist=True, averaging each rank's NLL estimate.
         if self._use_bayesian_svi:
             self._last_train_batch = {
                 k: v.cpu() if isinstance(v, torch.Tensor) else v
@@ -304,7 +350,24 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         return loss
 
     def on_train_epoch_end(self) -> None:
-        """Compute NLL on last training batch once per epoch (Bayesian only)."""
+        """Check NaN skip rate and compute NLL on last batch (Bayesian only)."""
+        # Check NaN skip rate for the epoch.
+        # Under DDP, nan_batch_policy is forced to "fail" (see training_step),
+        # so _epoch_nan_skips is always 0 and this branch is unreachable.
+        # The threshold check exists for single-GPU NaN-skip diagnostics.
+        if self._epoch_total_batches > 0 and self._epoch_nan_skips > 0:
+            skip_frac = self._epoch_nan_skips / self._epoch_total_batches
+            self.log("nan_skip_fraction", skip_frac, sync_dist=True)
+            if skip_frac > self._max_nan_skip_fraction:
+                raise RuntimeError(
+                    f"NaN skip rate {skip_frac:.1%} ({self._epoch_nan_skips}/{self._epoch_total_batches} batches) "
+                    f"exceeds threshold {self._max_nan_skip_fraction:.1%}. "
+                    f"This indicates a data pipeline issue. "
+                    f"Configure error_handling.training.max_nan_skip_fraction to adjust."
+                )
+        self._epoch_nan_skips = 0
+        self._epoch_total_batches = 0
+
         if self._use_bayesian_svi and self._last_train_batch is not None:
             # Move cached batch back to model device for forward pass
             device = self.device
@@ -368,6 +431,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             # Lightning may return a single DataLoader or a list
             if isinstance(dl, (list, tuple)):
                 dl = dl[0]
+            # len(dl.dataset) returns the original (unpadded) size because
+            # DataLoader.dataset returns the raw dataset, not the
+            # DistributedSampler wrapper. Padded length is len(dl.sampler).
             return len(dl.dataset)
         except (RuntimeError, AttributeError):
             return None
@@ -418,7 +484,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 if all_stds is not None:
                     all_stds = all_stds[:real_n]
 
-        # Compute on rank 0 only to avoid duplicate logs
+        # Compute on rank 0 only to avoid duplicate logs.
+        # Note: val_pearson_r, val_spearman_rho, etc. are only available in
+        # trainer.callback_metrics on rank 0. Lightning's ModelCheckpoint and
+        # EarlyStopping read from rank 0, so this is correct.
         if is_global_zero:
             metrics = self.metrics.compute(all_means, all_stds, all_targets)
             for name, value in metrics.items():
@@ -432,7 +501,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         )
 
         # Log mean ELBO across all validation batches (diagnostic, separate from
-        # the per-step val_loss which is also ELBO for the Bayesian head)
+        # the per-step val_loss which is also ELBO for the Bayesian head).
+        # Under DDP, each rank computes mean from its local shard. sync_dist=True
+        # averages across ranks. DistributedSampler padding may introduce a minor
+        # bias (< 1 sample for typical setup), acceptable for a diagnostic metric.
         if self._val_elbos:
             mean_elbo = math.fsum(self._val_elbos) / len(self._val_elbos)
             self.log("val_elbo", mean_elbo, prog_bar=False, sync_dist=True)
@@ -488,6 +560,69 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             result["attention_weights"] = output["attention_weights"]
         return result
 
+    def _prototype_guide_if_needed(self, caller: str = "") -> bool:
+        """Prototype Bayesian guide with a dummy forward pass if not already done.
+
+        AutoDiagonalNormal creates variational parameters (loc, scale_unconstrained)
+        lazily during the first forward pass. This helper ensures the guide has
+        parameters before they're needed (e.g., by the optimizer or load_state_dict).
+
+        Uses self.device when available (after DDP setup), falls back to CPU.
+
+        Args:
+            caller: Name of the calling method (for logging).
+
+        Returns:
+            True if prototyping was performed, False if already prototyped.
+        """
+        if not self._use_bayesian_svi or self.guide is None:
+            return False
+
+        if getattr(self.guide, 'prototype_trace', None) is not None:
+            return False
+
+        model_cfg = self.config.model
+        # Use self.device when available (configure_optimizers, post-DDP);
+        # fall back to CPU (on_load_checkpoint, which runs before device setup).
+        try:
+            device = self.device
+        except RuntimeError:
+            device = torch.device("cpu")
+
+        dummy_batch = {
+            "region_pseudobulk": torch.zeros(
+                1, N_REGIONS, model_cfg.n_cell_types, model_cfg.n_genes,
+                device=device,
+            ),
+            "region_mask": torch.ones(1, N_REGIONS, dtype=torch.bool, device=device),
+            "cells": torch.zeros(
+                1, model_cfg.n_cell_types, 1, model_cfg.n_genes,
+                device=device,
+            ),
+            "cell_mask": torch.ones(
+                1, model_cfg.n_cell_types, 1, dtype=torch.bool,
+                device=device,
+            ),
+            "cell_type_mask": torch.ones(
+                1, model_cfg.n_cell_types, dtype=torch.bool,
+                device=device,
+            ),
+            "pathology": torch.zeros(
+                1,
+                model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
+                device=device,
+            ),
+            "edge_index_dict_list": [{}],
+            "edge_attr_dict_list": [{}],
+            "cognition": torch.zeros(1, 1, device=device),
+        }
+        with torch.no_grad():
+            self._svi_forward(dummy_batch)
+
+        n_params = sum(1 for _ in self.guide.parameters())
+        logger.info("Guide prototyped in %s: %d parameter tensors", caller, n_params)
+        return True
+
     def on_load_checkpoint(self, checkpoint: dict) -> None:
         """Pre-initialize Bayesian guide before load_state_dict.
 
@@ -495,14 +630,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         first forward pass (_setup_prototype). On checkpoint resume,
         load_state_dict(strict=True) runs BEFORE configure_optimizers, so the
         guide has no parameters yet → 'unexpected keys' error. We prototype
-        the guide here (this hook runs right before load_state_dict) using the
-        same dummy batch approach as configure_optimizers.
+        the guide here (this hook runs right before load_state_dict).
         """
         if not self._use_bayesian_svi or self.guide is None:
-            return
-
-        # Check if guide already has parameters (shouldn't on fresh module)
-        if getattr(self.guide, 'prototype_trace', None) is not None:
             return
 
         state_dict = checkpoint.get("state_dict", {})
@@ -510,28 +640,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         if not has_guide_keys:
             return
 
-        model_cfg = self.config.model
-        dummy_batch = {
-            "region_pseudobulk": torch.zeros(
-                1, N_REGIONS, model_cfg.n_cell_types, model_cfg.n_genes,
-            ),
-            "region_mask": torch.ones(1, N_REGIONS, dtype=torch.bool),
-            "cells": torch.zeros(1, model_cfg.n_cell_types, 1, model_cfg.n_genes),
-            "cell_mask": torch.ones(1, model_cfg.n_cell_types, 1, dtype=torch.bool),
-            "cell_type_mask": torch.ones(1, model_cfg.n_cell_types, dtype=torch.bool),
-            "pathology": torch.zeros(
-                1,
-                model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
-            ),
-            "edge_index_dict_list": [{}],
-            "edge_attr_dict_list": [{}],
-            "cognition": torch.zeros(1, 1),
-        }
-        with torch.no_grad():
-            self._svi_forward(dummy_batch)
-        logger.info(
-            "Guide prototyped in on_load_checkpoint for checkpoint resume"
-        )
+        self._prototype_guide_if_needed(caller="on_load_checkpoint")
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Configure optimizer and learning rate scheduler."""
@@ -559,6 +668,11 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         effective_lr = base_lr
 
         if self._use_bayesian_svi:
+            # Bayesian SVI uses Adam + ExponentialLR (Pyro convention).
+            # training.optimizer.type and training.scheduler.* are intentionally
+            # ignored here — validate_config() warns if non-defaults are set.
+            # See: https://pyro.ai/examples/svi_part_iv.html
+
             # Set ELBO likelihood scaling for DDP (world_size > 1)
             if world_size > 1:
                 self.model.prediction_head.set_data_scale(float(world_size))
@@ -566,41 +680,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
             # Prototype the guide so AutoDiagonalNormal creates its variational
             # parameters (loc, scale). Without this, guide.parameters() returns []
-            # and the optimizer never updates the posterior (F1 fix).
-            model_cfg = self.config.model
-            dummy_batch = {
-                "region_pseudobulk": torch.zeros(
-                    1, N_REGIONS, model_cfg.n_cell_types, model_cfg.n_genes,
-                    device=self.device,
-                ),
-                "region_mask": torch.ones(1, N_REGIONS, dtype=torch.bool, device=self.device),
-                "cells": torch.zeros(
-                    1, model_cfg.n_cell_types, 1, model_cfg.n_genes,
-                    device=self.device,
-                ),
-                "cell_mask": torch.ones(
-                    1, model_cfg.n_cell_types, 1, dtype=torch.bool,
-                    device=self.device,
-                ),
-                "cell_type_mask": torch.ones(
-                    1, model_cfg.n_cell_types, dtype=torch.bool,
-                    device=self.device,
-                ),
-                "pathology": torch.zeros(
-                    1,
-                    model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
-                    device=self.device,
-                ),
-                "edge_index_dict_list": [{}],
-                "edge_attr_dict_list": [{}],
-                "cognition": torch.zeros(1, 1, device=self.device),
-            }
-            with torch.no_grad():
-                self._svi_forward(dummy_batch)
-            n_guide_params = sum(1 for _ in self.guide.parameters())
-            logger.info(
-                f"Guide prototyped in configure_optimizers: {n_guide_params} parameter tensors"
-            )
+            # and the optimizer never updates the posterior.
+            # NOTE: This must happen in configure_optimizers (not later) because
+            # Lightning calls configure_optimizers() BEFORE DDP wrapping. Guide
+            # parameters created here are included in DDP's parameter list.
+            # If Lightning ever reorders this, guide gradients won't sync across
+            # ranks. The _prototype_guide_if_needed helper is idempotent — if
+            # on_load_checkpoint already prototyped (checkpoint resume), this is a no-op.
+            self._prototype_guide_if_needed(caller="configure_optimizers")
 
             # Collect model + guide parameters
             all_params = list(self.model.parameters()) + list(self.guide.parameters())
