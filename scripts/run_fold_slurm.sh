@@ -17,6 +17,9 @@
 #   sbatch --array=2-4 scripts/run_fold_slurm.sh   # re-run failed folds only
 set -euo pipefail
 
+# Reproducibility: PYTHONHASHSEED must be set before Python starts.
+export PYTHONHASHSEED=42
+
 FOLD=${SLURM_ARRAY_TASK_ID}
 
 mkdir -p outputs/logs/slurm

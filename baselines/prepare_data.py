@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import scanpy as sc
+import torch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -98,6 +99,8 @@ def prepare_mixmil_input(
     output_path: Path,
     n_latent: int = 30,
     max_epochs: int = 50,
+    num_workers: int = 8,
+    devices: int = 1,
 ) -> None:
     """Create MixMIL-compatible .h5ad with scVI embeddings.
 
@@ -142,6 +145,9 @@ def prepare_mixmil_input(
                 "scVI expects raw counts. Proceeding but results may be suboptimal."
             )
 
+    # Enable Tensor Core acceleration (suppresses warning on Ada GPUs)
+    torch.set_float32_matmul_precision("medium")
+
     # Set up and train scVI
     logger.info(f"Setting up scVI model (n_latent={n_latent})...")
     scvi.model.SCVI.setup_anndata(
@@ -156,8 +162,13 @@ def prepare_mixmil_input(
         gene_likelihood="nb",  # negative binomial for count data
     )
 
-    logger.info(f"Training scVI for {max_epochs} epochs...")
-    model.train(max_epochs=max_epochs, early_stopping=True)
+    train_kwargs = dict(max_epochs=max_epochs, early_stopping=True, num_workers=num_workers)
+    if devices > 1:
+        train_kwargs.update(accelerator="gpu", devices=devices, strategy="ddp")
+        logger.info(f"Training scVI for {max_epochs} epochs (num_workers={num_workers}, devices={devices}, strategy=ddp)...")
+    else:
+        logger.info(f"Training scVI for {max_epochs} epochs (num_workers={num_workers})...")
+    model.train(**train_kwargs)
 
     # Extract latent representation
     logger.info("Extracting latent representations...")
@@ -189,6 +200,8 @@ def main():
     parser.add_argument("--target-col", default="cogn_global")
     parser.add_argument("--scvi-epochs", type=int, default=50, help="scVI training epochs")
     parser.add_argument("--scvi-latent", type=int, default=30, help="scVI latent dimensions")
+    parser.add_argument("--scvi-num-workers", type=int, default=8, help="DataLoader workers for scVI")
+    parser.add_argument("--scvi-devices", type=int, default=1, help="Number of GPUs for scVI (>1 uses DDP)")
     parser.add_argument(
         "--methods", nargs="+", default=["scphase", "mixmil"],
         choices=["scphase", "mixmil"],
@@ -241,6 +254,8 @@ def main():
             output_dir / "mixmil_input.h5ad",
             n_latent=args.scvi_latent,
             max_epochs=args.scvi_epochs,
+            num_workers=args.scvi_num_workers,
+            devices=args.scvi_devices,
         )
 
     logger.info("All data preparation complete.")
