@@ -422,6 +422,11 @@ class ResilienceSignatureAnalyzer:
         high_path_indices = np.where(self.high_pathology_mask)[0]
         n_high_path = len(high_path_indices)
 
+        # Guarantee: n_resilient + n_vulnerable <= n_high_path by construction,
+        # because derive_resilience_groups selects resilient (top 1/3 cognition)
+        # and vulnerable (bottom 1/3 cognition) strictly within the high-pathology
+        # pool. The two slices below therefore never overlap or exceed the array.
+
         # Permutation distribution
         perm_signatures = np.zeros((n_permutations, len(self.cell_type_names)))
 
@@ -1061,6 +1066,10 @@ class ResilienceSignatureAnalyzer:
     def _compute_group_statistics(self) -> pd.DataFrame:
         """
         Compute descriptive statistics for resilient vs vulnerable groups.
+
+        Uses ddof=0 (population std) because these are purely descriptive summaries
+        of the observed data. By contrast, _compute_signature uses ddof=1 (sample std)
+        for inferential statistics (Cohen's d, confidence intervals).
 
         Returns:
             DataFrame with group-level statistics

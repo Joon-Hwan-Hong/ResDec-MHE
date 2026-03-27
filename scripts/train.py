@@ -444,7 +444,10 @@ def main() -> None:
         trainer.fit(module, datamodule=dm, ckpt_path=args.resume_from)
         logger.info("Final training complete.")
 
-        # Export weights-only artifact for inference (lighter than full Lightning checkpoint)
+        # Export weights-only artifact for inference (lighter than full Lightning checkpoint).
+        # Final mode uses last-epoch weights (not "best") because there is no validation
+        # set for model selection — all data is used for training. Compare with the
+        # fold-based path below which loads from best_model_path.
         _export_weights(module, experiment.model_dir, is_bayesian=config.model.head.type == "bayesian")
 
         # Single unbiased evaluation on holdout test set

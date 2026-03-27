@@ -27,6 +27,7 @@ data/snRNAseq/
 data/liana_cache/
 data/metadata_ROSMAP/
 data/mapmycells/
+data/database/
 *.h5ad
 *.h5
 
@@ -56,3 +57,5 @@ tmp_*
 # UV
 uv.lock
 .claude/
+CLAUDE.md
+claude_prompt_scrap.txt

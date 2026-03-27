@@ -114,7 +114,7 @@ def plot_cluster_composition(
     figsize: tuple[float, float] = (10, 6),
     title: str = "Cluster Composition",
     save_path: str | Path | None = None,
-) -> plt.Figure:
+) -> plt.Figure | None:
     """
     Plot cluster composition as stacked bar chart.
 
@@ -126,7 +126,7 @@ def plot_cluster_composition(
         save_path: If provided, save figure to this path
 
     Returns:
-        Matplotlib Figure
+        Matplotlib Figure, or None if required columns are missing
     """
     setup_seaborn_style()
 
@@ -164,7 +164,7 @@ def plot_linear_probe_results(
     figsize: tuple[float, float] = (10, 6),
     title: str = "Linear Probe Results (Embedding Quality)",
     save_path: str | Path | None = None,
-) -> plt.Figure:
+) -> plt.Figure | None:
     """
     Plot linear probe results showing embedding quality per target.
 
@@ -175,7 +175,7 @@ def plot_linear_probe_results(
         save_path: If provided, save figure to this path
 
     Returns:
-        Matplotlib Figure
+        Matplotlib Figure, or None if required columns are missing
     """
     setup_seaborn_style()
 

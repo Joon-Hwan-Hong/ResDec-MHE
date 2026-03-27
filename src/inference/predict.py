@@ -253,11 +253,15 @@ class Predictor:
             # AutoDiagonalNormal needs a forward pass through the model to
             # discover all sample sites before it can initialize parameters.
             # We run a dummy forward to trigger this initialization.
+            guide_prototype_ok = False
             try:
                 n_ct = model_cfg.n_cell_types
                 n_genes = model_cfg.n_genes
                 n_regions = N_REGIONS
                 n_pathology = model_cfg.pathology_attention.get("n_pathology_features", 3)
+                # Prototype includes cognition to discover all Pyro sample sites.
+                # Actual inference omits cognition (obs=None) to generate predictions
+                # rather than conditioning on observed values.
                 dummy_kwargs = {
                     "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
                     "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
@@ -267,8 +271,9 @@ class Predictor:
                     "cognition": torch.zeros(1, 1),
                 }
                 guide(**dummy_kwargs)
+                guide_prototype_ok = True
             except Exception as e:
-                logger.warning("Guide prototype forward failed: %s. Param store load may fail if guide params are uninitialized.", e)
+                logger.warning("Guide prototype forward failed: %s. Will attempt param store restoration.", e)
 
             # Restore Pyro param store (primary mechanism — guide params live here)
             if "pyro_param_store" in checkpoint:
@@ -282,11 +287,23 @@ class Predictor:
                     pyro.get_param_store().setdefault(k, v.to(target_device))
 
             # Also load guide state dict (secondary — for internal guide state)
+            guide_state_ok = False
             try:
                 guide.load_state_dict(checkpoint["guide_state_dict"])
+                guide_state_ok = True
             except Exception as e:
                 # Guide may not be prototyped yet; param store is sufficient
                 logger.warning("Could not load guide state_dict; using param store only: %s", e)
+
+            # Check if both restoration mechanisms failed
+            has_param_store = "pyro_param_store" in checkpoint and len(checkpoint["pyro_param_store"]) > 0
+            if not guide_prototype_ok and not has_param_store and not guide_state_ok:
+                raise RuntimeError(
+                    "Bayesian guide restoration failed: prototype forward failed, "
+                    "no param store in checkpoint, and state_dict load failed. "
+                    "Cannot produce valid uncertainty estimates. Provide a checkpoint "
+                    "with pyro_param_store or verify model config matches checkpoint."
+                )
 
         return cls(
             model=model,
@@ -674,7 +691,8 @@ class Predictor:
                     per_subject_pseudobulk_parts.append(per_subj)
                 else:
                     batch_sum = rpb.sum(axis=0)
-                    batch_count = rpb.shape[0]
+                    # Use array (not scalar) to match masked path shape for += accumulation
+                    batch_count = np.full_like(batch_sum, rpb.shape[0], dtype=np.float64)
                     per_subject_pseudobulk_parts.append(rpb.mean(axis=1))
                 if region_pseudobulk_sum is None:
                     region_pseudobulk_sum = batch_sum
@@ -780,7 +798,7 @@ class Predictor:
                     0.0,
                 )
             else:
-                region_pseudobulk_mean = region_pseudobulk_sum / max(region_pseudobulk_count, 1)
+                region_pseudobulk_mean = region_pseudobulk_sum / np.maximum(region_pseudobulk_count, 1)
 
         # Per-subject pseudobulk was computed incrementally in the batch loop
         per_subject_pseudobulk = None

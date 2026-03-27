@@ -148,6 +148,9 @@ def plot_gene_importance_volcano(
     elif "p_value" in gene_df.columns:
         p_col = "p_value"
 
+    # Fallback to "weight" column: all pipeline outputs from GeneImportanceAnalyzer
+    # include a "weight" column (model attention or feature importance scores).
+    # "log2_fold_change" is only present when differential expression was computed.
     fc_col = "log2_fold_change" if "log2_fold_change" in gene_df.columns else "weight"
 
     if p_col is None:
@@ -276,15 +279,21 @@ def plot_top_interactions_heatmap(
     interactions_df: pd.DataFrame,
     top_k: int = 20,
     figsize: tuple[float, float] = (10, 8),
-    title: str = "Top Cell-Cell Interactions",
+    title: str = "Cell-Cell Communication Attention",
     save_path: str | Path | None = None,
 ) -> plt.Figure:
     """
-    Plot top cell-cell interactions as heatmap.
+    Plot cell-cell interaction attention as a source × target heatmap.
+
+    Pivots interaction data into a matrix of source (rows) × target (columns)
+    cell types, with color representing mean HGT attention weight. When multiple
+    edge types exist between the same source-target pair, their attention values
+    are summed (reflecting total communication strength).
 
     Args:
         interactions_df: DataFrame with columns [source, target, mean_attention]
-        top_k: Number of top interactions to show
+        top_k: Filter to top_k interactions before pivoting (default: 20).
+            Set to 0 or None to include all interactions.
         figsize: Figure size
         title: Plot title
         save_path: If provided, save figure to this path
@@ -315,28 +324,41 @@ def plot_top_interactions_heatmap(
             save_figure(fig, str(save_path))
         return fig
 
-    # Get top interactions
-    df = interactions_df.head(top_k)
+    df = interactions_df.copy()
 
-    # Create interaction labels
-    df = df.copy()
-    df["interaction"] = df["source"] + " → " + df["target"]
+    # Optionally filter to top_k interactions by attention
+    if top_k:
+        df = df.nlargest(top_k, "mean_attention")
+
+    # Pivot: source (rows) × target (columns), summing attention across edge types
+    # for the same source-target pair (e.g., Secreted + ECM between same cell types)
+    pivot = df.pivot_table(
+        index="source",
+        columns="target",
+        values="mean_attention",
+        aggfunc="sum",
+        fill_value=0,
+    )
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Sort by attention
-    df = df.sort_values("mean_attention", ascending=True)
+    sns.heatmap(
+        pivot,
+        ax=ax,
+        cmap=get_sequential_cmap(),
+        annot=True,
+        fmt=".3f",
+        linewidths=0.5,
+        cbar_kws={"label": "Mean Attention Weight"},
+    )
 
-    colors = [get_cell_type_color(src) for src in df["source"]]
+    ax.set_xlabel("Target Cell Type")
+    ax.set_ylabel("Source Cell Type")
+    ax.set_title(title)
 
-    ax.barh(df["interaction"], df["mean_attention"], color=colors)
-
-    ax.set_xlabel("Mean Attention Weight")
-    ax.set_ylabel("Interaction")
-    ax.set_title(f"{title} (Top {top_k})")
-
-    # Adjust label size for readability
-    ax.tick_params(axis="y", labelsize=8)
+    # Rotate labels for readability
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
 
     plt.tight_layout()
 

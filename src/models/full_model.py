@@ -33,6 +33,7 @@ import warnings
 from typing import Optional
 
 import torch
+import logging
 import torch.nn as nn
 from pyro.nn import PyroModule
 
@@ -43,6 +44,8 @@ from src.models.branches.hgt_encoder import HGTEncoderBatched
 from src.models.components import RegionHandler
 from src.models.fusion import FusionLayer, PathologyEncoder, PathologyStratifiedAttention
 from src.models.heads import BayesianPredictionHead, DeterministicPredictionHead
+
+logger = logging.getLogger(__name__)
 
 
 class CognitiveResilienceModel(PyroModule):
@@ -322,7 +325,9 @@ class CognitiveResilienceModel(PyroModule):
             elif node_type in self._sanitized_to_idx:
                 ct_idx = self._sanitized_to_idx[node_type]
             else:
-                # Unknown node type, skip
+                # Unknown node type — should not happen since HGT uses the same
+                # node_types list. Log for debugging if it does.
+                logger.debug("Skipping unknown HGT output key: %s", node_type)
                 continue
 
             emb = hgt_out_dict[node_type]  # [B, 1, d_embed]

@@ -121,6 +121,9 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         "training.max_epochs": (int, lambda v: v > 0),
         "training.optimizer.lr": ((int, float), lambda v: v > 0),
         "training.optimizer.weight_decay": ((int, float), lambda v: v >= 0),
+        # gradient_clip_val: when present, must be a positive number.
+        # To disable clipping, omit the key entirely (Lightning defaults to None).
+        # Setting it to null in YAML will fail validation — use omission instead.
         "training.gradient_clip_val": ((int, float), lambda v: v > 0),
         "training.loss.type": (str, lambda v: v in ("beta_nll", "mse")),
         "training.loss.beta": ((int, float), lambda v: 0 <= v <= 1),

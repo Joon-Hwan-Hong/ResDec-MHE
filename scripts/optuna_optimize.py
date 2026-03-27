@@ -302,11 +302,19 @@ def objective(
             benchmark=config.get("reproducibility", {}).get("benchmark", False),
         )
 
-        # Data loading for this fold
-        if splits is None or adata is None or metadata is None:
+        # Data loading for this fold — fail-fast on missing inputs.
+        # adata is allowed to be None when precomputed_dir is set, because
+        # PrecomputedDataset reads from .npz files without touching AnnData.
+        if splits is None or metadata is None:
             raise RuntimeError(
                 "Data not provided to objective(). This should not happen — "
                 "main() should validate --splits-path before calling optimize()."
+            )
+        if adata is None and precomputed_dir is None:
+            raise RuntimeError(
+                "Either adata or precomputed_dir must be provided. "
+                "Use --precomputed-dir for pre-built features, or ensure "
+                "config.data.adata_path points to a valid h5ad file."
             )
 
         from src.data.datamodule import CognitiveResilienceDataModule
@@ -427,14 +435,24 @@ def main() -> None:
     splits = load_splits(args.splits_path)
     logger.info("Loaded splits from %s", args.splits_path)
 
-    import scanpy as sc
     import pandas as pd
-    adata = sc.read_h5ad(config.data.adata_path)
     metadata_path = Path(config.data.metadata_path)
     # metadata can be None if CSV doesn't exist — objective() will raise
     # RuntimeError on the first trial attempt, providing a clear error message.
     metadata = pd.read_csv(metadata_path / "metadata.csv") if (metadata_path / "metadata.csv").exists() else None
-    logger.info("Loaded adata (%d cells) and metadata", adata.n_obs)
+
+    # Skip AnnData loading when precomputed features are available.
+    # PrecomputedDataset reads from .npz files and only needs metadata,
+    # so loading the full AnnData (potentially multi-GB for ROSMAP) is wasted I/O.
+    # In multi-GPU mode this is especially costly since each subprocess would
+    # independently re-read the entire file.
+    if args.precomputed_dir:
+        adata = None
+        logger.info("Using precomputed features from %s — skipping AnnData loading", args.precomputed_dir)
+    else:
+        import scanpy as sc
+        adata = sc.read_h5ad(config.data.adata_path)
+        logger.info("Loaded adata (%d cells)", adata.n_obs)
 
     # Create study (always use create_study to respect config pruner type)
     study = create_study(config, storage=args.storage)

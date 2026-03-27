@@ -255,11 +255,11 @@ class UncertaintyAnalyzer:
         df = pd.DataFrame(rows)
         if len(df) > 0:
             # FDR correction (Benjamini-Hochberg) for multiple comparisons
-            from statsmodels.stats.multitest import multipletests
+            from src.utils.statistics import benjamini_hochberg
 
-            _, fdr_values, _, _ = multipletests(df["p_value"].values, method="fdr_bh")
+            fdr_values, sig_mask = benjamini_hochberg(df["p_value"].values)
             df["p_value_fdr"] = fdr_values
-            df["significant_fdr"] = fdr_values < 0.05
+            df["significant_fdr"] = sig_mask
             df = df.sort_values("p_value").reset_index(drop=True)
 
         return df
