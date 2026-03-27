@@ -134,3 +134,9 @@ def sanitize_key(name: str) -> str:
     if sanitized and sanitized[0].isdigit():
         sanitized = "_" + sanitized
     return sanitized
+
+
+# Pre-computed sanitized names for collate functions.
+# Avoids 36 sanitize_key() calls per batch (31 cell types + 5 edge types).
+SANITIZED_CELL_TYPE_ORDER: list[str] = [sanitize_key(ct) for ct in CELL_TYPE_ORDER]
+SANITIZED_EDGE_TYPES: list[str] = [sanitize_key(et) for et in ALL_EDGE_TYPES]

@@ -429,25 +429,3 @@ def validate_no_leakage(splits: dict) -> bool:
 
     logger.info("No data leakage detected")
     return True
-
-
-def print_split_summary(splits: dict) -> None:
-    """Print summary of splits."""
-    meta = splits["metadata"]
-
-    logger.info("\n" + "=" * 60)
-    logger.info("SPLIT SUMMARY")
-    logger.info("=" * 60)
-    logger.info(f"Total subjects: {meta['n_subjects']}")
-    logger.info(f"Holdout test: {meta['n_test']} ({meta['test_frac']*100:.0f}%)")
-    logger.info(f"Train+Val pool: {meta['n_train_val']} ({(1-meta['test_frac'])*100:.0f}%)")
-    logger.info(f"Number of CV folds: {meta['n_folds']}")
-    logger.info(f"Random state: {meta['random_state']}")
-    logger.info("")
-
-    for i, fold in enumerate(splits["folds"]):
-        n_train = len(fold["train"])
-        n_val = len(fold["val"])
-        logger.info(f"  Fold {i+1}: {n_train} train, {n_val} val")
-
-    logger.info("=" * 60 + "\n")

@@ -223,15 +223,19 @@ class TestForwardPass:
         n_cell_types = N_CELL_TYPES
         n_attention_heads = 4
 
+        # Training mode: attention_weights skipped for performance
+        output_train = small_model_bayesian(**sample_inputs)
+        assert output_train['mean'].shape == (B, 1)
+        assert output_train['std'].shape == (B, 1)
+        assert output_train['attention_weights'] is None
+
+        # Eval mode: attention_weights computed for interpretability
+        small_model_bayesian.eval()
         output = small_model_bayesian(**sample_inputs)
+        small_model_bayesian.train()
 
-        # mean: [B, 1]
         assert output['mean'].shape == (B, 1)
-
-        # std: [B, 1]
         assert output['std'].shape == (B, 1)
-
-        # attention_weights: [B, n_heads, n_cell_types]
         assert output['attention_weights'].shape == (B, n_attention_heads, n_cell_types)
 
     def test_output_shapes_deterministic(self, small_model_deterministic, sample_inputs):
@@ -240,12 +244,17 @@ class TestForwardPass:
         n_cell_types = N_CELL_TYPES
         n_attention_heads = 4
 
+        # Training mode: attention_weights skipped for performance
+        output_train = small_model_deterministic(**sample_inputs)
+        assert output_train['mean'].shape == (B, 1)
+        assert output_train['attention_weights'] is None
+
+        # Eval mode: attention_weights computed for interpretability
+        small_model_deterministic.eval()
         output = small_model_deterministic(**sample_inputs)
+        small_model_deterministic.train()
 
-        # mean: [B, 1]
         assert output['mean'].shape == (B, 1)
-
-        # attention_weights: [B, n_heads, n_cell_types]
         assert output['attention_weights'].shape == (B, n_attention_heads, n_cell_types)
 
     def test_forward_without_cognition(self, small_model_deterministic, sample_inputs):
@@ -260,7 +269,10 @@ class TestForwardPass:
 
     def test_attention_weights_sum_to_one(self, small_model_deterministic, sample_inputs):
         """Test that attention weights sum to approximately 1 across cell types."""
+        # Eval mode: attention_weights only computed outside training
+        small_model_deterministic.eval()
         output = small_model_deterministic(**sample_inputs)
+        small_model_deterministic.train()
 
         attention_weights = output['attention_weights']  # [B, n_heads, n_cell_types]
 
@@ -480,7 +492,10 @@ class TestEdgeCases:
             'pathology': torch.randn(B, 3),
         }
 
+        # Eval mode for attention_weights check (skipped during training)
+        small_model.eval()
         output = small_model(**inputs)
+        small_model.train()
         assert output['mean'].shape == (B, 1)
         assert 'attention_weights' in output
         assert output['attention_weights'].shape == (B, 4, n_cell_types)

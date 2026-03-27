@@ -27,35 +27,87 @@ Note on Multi-GPU:
 """
 
 import logging
-import re
+import os
 import warnings
 from typing import Any
 
 import numpy as np
 import torch
 
-from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX, sanitize_key
+from src.data.constants import (
+    CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX,
+    sanitize_key, SANITIZED_CELL_TYPE_ORDER, SANITIZED_EDGE_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 
+# Cache for edge dict grouping — PrecomputedDataset produces identical
+# edge tensors per subject every epoch, so caching avoids repeated argsort +
+# boundary detection. Keyed by (subject_id, n_edges).
+# Note: this is module-level (global) state. With persistent_workers=True,
+# each worker retains its cache across epochs. Call clear_edge_dict_cache()
+# between dataset switches or in test teardown.
+_edge_dict_cache: dict[tuple[str, int], tuple[dict, dict]] = {}
+_EDGE_DICT_CACHE_MAX = 1024  # Limit memory usage
+
+
+def clear_edge_dict_cache() -> None:
+    """Clear the module-level edge dict cache.
+
+    Call between test cases, dataset switches, or when edge data changes
+    for the same subject IDs.
+    """
+    _edge_dict_cache.clear()
+
 
 def _derive_available_regions_from_keys(sample: dict[str, Any]) -> list[int]:
-    """
-    Derive available regions from region_{idx}_pseudobulk keys in sample.
-
-    Args:
-        sample: Sample dictionary
-
-    Returns:
-        Sorted list of region indices found in sample keys
-    """
-    pattern = re.compile(r"^region_(\d+)_pseudobulk$")
+    """Derive available regions from region_{idx}_pseudobulk keys in sample."""
     regions = []
     for key in sample.keys():
-        match = pattern.match(key)
-        if match:
-            regions.append(int(match.group(1)))
+        if key.startswith("region_") and key.endswith("_pseudobulk"):
+            try:
+                idx = int(key[7:-11])  # len("region_") = 7, len("_pseudobulk") = 11
+                regions.append(idx)
+            except ValueError:
+                pass
     return sorted(regions)
+
+
+def _pad_and_stack_cells(
+    batch: list[dict[str, Any]],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pad cells/cell_mask to batch actual max and stack.
+
+    Pre-computes actual max valid cell index to avoid over-allocation
+    and eliminate the separate trim pass.
+    """
+    n_cell_types = batch[0]["cells"].shape[0]
+    n_genes = batch[0]["cells"].shape[2]
+    batch_size = len(batch)
+
+    # Compute actual max valid cells across all samples to avoid
+    # over-allocating and then trimming.
+    actual_max = 0
+    for s in batch:
+        mask = s["cell_mask"]  # [n_cell_types, nc]
+        if mask.any():
+            # Find highest valid cell index across all cell types
+            valid_per_col = mask.any(dim=0)  # [nc]
+            if valid_per_col.any():
+                last_valid = valid_per_col.nonzero()[-1].item() + 1
+                actual_max = max(actual_max, last_valid)
+    actual_max = max(actual_max, 1)  # At least 1
+
+    # Allocate directly to actual_max (zero-filled = correct padding)
+    cells = torch.zeros(batch_size, n_cell_types, actual_max, n_genes)
+    cell_mask = torch.zeros(batch_size, n_cell_types, actual_max, dtype=torch.bool)
+
+    for i, s in enumerate(batch):
+        nc = min(s["cells"].shape[1], actual_max)
+        cells[i, :, :nc, :] = s["cells"][:, :nc, :]
+        cell_mask[i, :, :nc] = s["cell_mask"][:, :nc]
+
+    return cells, cell_mask
 
 
 def _trim_cells_to_actual_max(
@@ -208,22 +260,7 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cell_counts = torch.stack([s["cell_counts"] for s in batch], dim=0)
     pathology = torch.stack([s["pathology"] for s in batch], dim=0)
     cognition = torch.stack([s["cognition"] for s in batch], dim=0)
-    # Pad cells/cell_mask to batch max (samples may have different max_cells after H7)
-    max_cells_in_batch = max(s["cells"].shape[1] for s in batch)
-    cells_list = []
-    mask_list = []
-    for s in batch:
-        c = s["cells"]      # [n_cell_types, subject_max_cells, n_genes]
-        m = s["cell_mask"]   # [n_cell_types, subject_max_cells]
-        pad_size = max_cells_in_batch - c.shape[1]
-        if pad_size > 0:
-            c = torch.nn.functional.pad(c, (0, 0, 0, pad_size))  # pad cells dim
-            m = torch.nn.functional.pad(m, (0, pad_size))          # pad mask dim
-        cells_list.append(c)
-        mask_list.append(m)
-    cells = torch.stack(cells_list, dim=0)
-    cell_mask = torch.stack(mask_list, dim=0)
-    cells, cell_mask = _trim_cells_to_actual_max(cells, cell_mask)
+    cells, cell_mask = _pad_and_stack_cells(batch)
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -344,22 +381,7 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     cell_counts = torch.stack([s["cell_counts"] for s in batch], dim=0)
     pathology = torch.stack([s["pathology"] for s in batch], dim=0)
     cognition = torch.stack([s["cognition"] for s in batch], dim=0)
-    # Pad cells/cell_mask to batch max (samples may have different max_cells after H7)
-    max_cells_in_batch = max(s["cells"].shape[1] for s in batch)
-    cells_list = []
-    mask_list = []
-    for s in batch:
-        c = s["cells"]      # [n_cell_types, subject_max_cells, n_genes]
-        m = s["cell_mask"]   # [n_cell_types, subject_max_cells]
-        pad_size = max_cells_in_batch - c.shape[1]
-        if pad_size > 0:
-            c = torch.nn.functional.pad(c, (0, 0, 0, pad_size))  # pad cells dim
-            m = torch.nn.functional.pad(m, (0, pad_size))          # pad mask dim
-        cells_list.append(c)
-        mask_list.append(m)
-    cells = torch.stack(cells_list, dim=0)
-    cell_mask = torch.stack(mask_list, dim=0)
-    cells, cell_mask = _trim_cells_to_actual_max(cells, cell_mask)
+    cells, cell_mask = _pad_and_stack_cells(batch)
 
     region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
@@ -372,31 +394,54 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
     edge_type_names = ALL_EDGE_TYPES
 
     # Validate cell_type_order consistency (structural invariant from dataset construction).
-    # Must be a proper check, not assert, since assert is disabled under python -O.
-    for s in batch[1:]:
-        if s.get("cell_type_order", CELL_TYPE_ORDER) != cell_type_names:
-            raise RuntimeError(
-                "cell_type_order mismatch within batch — dataset construction bug. "
-                f"Expected {cell_type_names[:3]}..., got {s.get('cell_type_order', 'N/A')[:3]}..."
-            )
+    # Gated behind RESILIENCE_DEBUG because this is a hot path and the invariant is
+    # enforced by dataset construction; the check is useful for debugging only.
+    if os.environ.get("RESILIENCE_DEBUG"):
+        for s in batch[1:]:
+            if s.get("cell_type_order", CELL_TYPE_ORDER) != cell_type_names:
+                raise RuntimeError(
+                    "cell_type_order mismatch within batch — dataset construction bug. "
+                    f"Expected {cell_type_names[:3]}..., got {s.get('cell_type_order', 'N/A')[:3]}..."
+                )
 
     # Sanitize names for PyG compatibility (uses shared sanitize_key from constants)
-    sanitized_cell_types = [sanitize_key(ct) for ct in cell_type_names]
-    sanitized_edge_types = [sanitize_key(et) for et in edge_type_names]
+    # Use pre-computed constants when cell_type_names matches global order (common case)
+    if cell_type_names is CELL_TYPE_ORDER or cell_type_names == CELL_TYPE_ORDER:
+        sanitized_cell_types = SANITIZED_CELL_TYPE_ORDER
+    else:
+        sanitized_cell_types = [sanitize_key(ct) for ct in cell_type_names]
+    if edge_type_names is ALL_EDGE_TYPES:
+        sanitized_edge_types = SANITIZED_EDGE_TYPES
+    else:
+        sanitized_edge_types = [sanitize_key(et) for et in edge_type_names]
 
     edge_index_dict_list = []
     edge_attr_dict_list = []
 
     for s in batch:
+        subject_id = s.get("subject_id")
+        edge_index = s["ccc_edge_index"]
+        n_edges = edge_index.shape[1] if edge_index.numel() > 0 else 0
+
+        # Check cache for precomputed edge dicts (valid for PrecomputedDataset
+        # where edge tensors are identical across epochs for each subject).
+        # Key includes n_edges to avoid stale hits when the same subject_id
+        # appears with different edge counts (e.g., across test scenarios).
+        cache_key = (subject_id, n_edges) if subject_id is not None else None
+        if cache_key is not None and cache_key in _edge_dict_cache:
+            cached_ei, cached_ea = _edge_dict_cache[cache_key]
+            edge_index_dict_list.append(cached_ei)
+            edge_attr_dict_list.append(cached_ea)
+            continue
+
         # Build edge dicts: {(src, rel, dst): tensor}
         edge_index_dict: dict[tuple[str, str, str], torch.Tensor] = {}
         edge_attr_dict: dict[tuple[str, str, str], torch.Tensor] = {}
 
-        edge_index = s["ccc_edge_index"]
         edge_type_indices = s["ccc_edge_type"]
         edge_attr = s["ccc_edge_attr"]
 
-        if edge_index.numel() > 0:
+        if n_edges > 0:
             # Vectorized grouping: compute a composite key per edge encoding
             # (src_type, edge_type, dst_type) as a single integer, then use
             # torch.unique to find distinct triplets in one pass.
@@ -419,10 +464,20 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
             # Composite key: src * (n_ct * n_et) + dst * n_et + edge_type
             composite = src_indices * (n_ct * n_et) + dst_indices * n_et + edge_type_indices
 
-            unique_keys, inverse = torch.unique(composite, return_inverse=True)
+            sorted_order = torch.argsort(composite)
+            sorted_composite = composite[sorted_order]
 
-            for i, key_val in enumerate(unique_keys):
-                k = key_val.item()
+            # Find group boundaries in single pass (pre-allocated, no sentinel tensors)
+            changes = torch.empty(len(sorted_composite) + 1, dtype=torch.bool,
+                                  device=sorted_composite.device)
+            changes[0] = True
+            changes[1:-1] = sorted_composite[1:] != sorted_composite[:-1]
+            changes[-1] = True
+            boundaries = torch.where(changes)[0]
+
+            for g in range(len(boundaries) - 1):
+                start, end = boundaries[g].item(), boundaries[g + 1].item()
+                k = sorted_composite[start].item()
                 src_idx = k // (n_ct * n_et)
                 remaining = k % (n_ct * n_et)
                 dst_idx = remaining // n_et
@@ -433,9 +488,7 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
                     sanitized_edge_types[et_idx],
                     sanitized_cell_types[dst_idx],
                 )
-
-                mask = inverse == i
-                n_triplet_edges = mask.sum().item()
+                n_triplet_edges = end - start
 
                 # All edges are node 0 → node 0 because each cell type has
                 # exactly 1 node per subject (the pseudobulk embedding).
@@ -445,7 +498,12 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
                 edge_index_dict[triplet] = torch.zeros(
                     2, n_triplet_edges, dtype=torch.long
                 )
-                edge_attr_dict[triplet] = edge_attr[mask]
+                # Contiguous slice from sorted order instead of boolean mask
+                edge_attr_dict[triplet] = edge_attr[sorted_order[start:end]]
+
+        # Cache result for this subject
+        if cache_key is not None and len(_edge_dict_cache) < _EDGE_DICT_CACHE_MAX:
+            _edge_dict_cache[cache_key] = (edge_index_dict, edge_attr_dict)
 
         edge_index_dict_list.append(edge_index_dict)
         edge_attr_dict_list.append(edge_attr_dict)
@@ -511,10 +569,13 @@ def build_x_dict_list_from_embeddings(
     # n_cell_types is always 31 (Allen Brain Cell Atlas mapping invariant from snRNAseq data)
     n_cell_types = pseudobulk_embeddings.size(1)
 
+    # Pre-split along cell type dim in one C++ call, then use slice views
+    ct_slices = pseudobulk_embeddings.unbind(dim=1)  # tuple of [B, d_embed]
+
     x_dict_list = []
     for b in range(batch_size):
         x_dict = {
-            node_types[ct_idx]: pseudobulk_embeddings[b, ct_idx].unsqueeze(0)
+            node_types[ct_idx]: ct_slices[ct_idx][b:b+1]  # [1, d_embed] slice view
             for ct_idx in range(n_cell_types)
         }
         x_dict_list.append(x_dict)
@@ -598,13 +659,12 @@ def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     # Start with HGT format collate
     result = collate_for_hgt(batch)
 
-    # Check if multi-region data is present by looking for region_{idx}_pseudobulk keys
-    # in any sample (not just the sentinel "region_pseudobulk" key)
-    has_regions = False
-    for s in batch:
-        if "region_pseudobulk" in s or _derive_available_regions_from_keys(s):
-            has_regions = True
-            break
+    # Check only first sample — all samples in a batch come from the same
+    # dataset and should have the same key structure.
+    has_regions = (
+        "region_pseudobulk" in batch[0]
+        or bool(_derive_available_regions_from_keys(batch[0]))
+    )
 
     if has_regions:
         batch_size = len(batch)
@@ -667,46 +727,6 @@ def _worker_init_fn(worker_id: int) -> None:
     dataset = worker_info.dataset
     if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
         dataset.sampler.rng = np.random.default_rng(worker_seed)
-
-
-def _deterministic_worker_init_fn(worker_id: int) -> None:
-    """
-    Deterministic seeding for val/test workers — same samples every epoch.
-
-    Standalone convenience for create_dataloader() callers that don't use the
-    DataModule (e.g., custom scripts). The DataModule overrides this with its
-    own factory (_make_deterministic_worker_init_fn) that uses the experiment
-    seed from config instead of a hardcoded default.
-
-    WARNING: Uses hardcoded seed=42. For consistency with experiment seed,
-    use CognitiveResilienceDataModule instead of create_dataloader() directly,
-    or pass a custom worker_init_fn.
-
-    Uses a fixed seed so validation/test cell sampling is reproducible.
-    Note: with persistent_workers=True (default), this init runs once at
-    worker creation, not per-epoch. The RNG advances as samples are drawn,
-    so exact sample-level reproducibility holds only within a single run
-    (same worker processes same subjects in same order). Cross-run
-    reproducibility requires identical DataLoader configuration.
-    For PrecomputedDataset, cell sampling does not apply.
-
-    Args:
-        worker_id: Worker process index (0 to num_workers-1)
-    """
-    import random
-
-    seed = 42 + worker_id
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-
-    # Re-seed CellSampler's RNG if the dataset has one.
-    # PrecomputedDataset has no sampler (no cell sampling) — hasattr is
-    # intentionally a no-op for it.
-    worker_info = torch.utils.data.get_worker_info()
-    dataset = worker_info.dataset
-    if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
-        dataset.sampler.rng = np.random.default_rng(seed)
 
 
 def create_dataloader(

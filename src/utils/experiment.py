@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from src.utils.hashing import generate_experiment_hash
-from src.utils.config import load_config, save_config
+from src.utils.config import save_config
 
 
 @dataclass
@@ -29,14 +29,6 @@ class Experiment:
     @property
     def model_dir(self) -> Path:
         return self.exp_dir / "model"
-
-    @property
-    def analysis_dir(self) -> Path:
-        return self.exp_dir / "analysis"
-
-    @property
-    def preprocessing_dir(self) -> Path:
-        return self.exp_dir / "preprocessing"
 
     @property
     def logs_dir(self) -> Path:
@@ -107,55 +99,3 @@ class ExperimentManager:
             exp_hash=exp_hash,
         )
 
-    def load_experiment(self, exp_hash: str) -> Experiment:
-        """
-        Load an existing experiment by hash.
-
-        Args:
-            exp_hash: Experiment hash identifier
-
-        Returns:
-            Experiment object
-
-        Raises:
-            FileNotFoundError: If experiment doesn't exist
-        """
-        exp_dir = self.base_dir / exp_hash
-        if not exp_dir.exists():
-            raise FileNotFoundError(f"Experiment not found: {exp_hash}")
-
-        config_path = exp_dir / "config.yaml"
-        config = load_config(config_path)
-
-        return Experiment(
-            exp_dir=exp_dir,
-            config=config,
-            exp_hash=exp_hash,
-        )
-
-    def list_experiments(self) -> list[str]:
-        """
-        List all experiment hashes in base directory.
-
-        Returns:
-            List of experiment hash strings
-        """
-        return [
-            d.name for d in self.base_dir.iterdir()
-            if d.is_dir() and (d / "config.yaml").exists()
-        ]
-
-    def get_latest_experiment(self) -> Experiment | None:
-        """
-        Get the most recently created experiment.
-
-        Returns:
-            Latest Experiment or None if no experiments exist
-        """
-        experiments = self.list_experiments()
-        if not experiments:
-            return None
-
-        # Sort by timestamp prefix (YYYYMMDD_HHMMSS)
-        latest_hash = sorted(experiments)[-1]
-        return self.load_experiment(latest_hash)

@@ -49,7 +49,6 @@ from src.visualization.prediction_plots import (
 from src.visualization.training_curves import (
     load_tensorboard_scalars,
     plot_loss_curves,
-    plot_metric_curves,
     plot_learning_rate,
     plot_training_summary,
 )
@@ -98,7 +97,6 @@ __all__ = [
     # Training curves
     "load_tensorboard_scalars",
     "plot_loss_curves",
-    "plot_metric_curves",
     "plot_learning_rate",
     "plot_training_summary",
     # Embedding plots

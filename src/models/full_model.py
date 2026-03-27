@@ -128,6 +128,7 @@ class CognitiveResilienceModel(PyroModule):
         node_types: Optional[list[str]] = None,
         edge_categories: Optional[list[str]] = None,
         use_gradient_checkpointing: bool = False,
+        use_torch_compile: bool = False,
     ):
         super().__init__("cognitive_resilience_model")
 
@@ -164,6 +165,14 @@ class CognitiveResilienceModel(PyroModule):
         self._sanitized_node_types = [sanitize_key(nt) for nt in self.node_types]
         self._node_type_to_idx = {nt: idx for idx, nt in enumerate(self.node_types)}
         self._sanitized_to_idx = {sanitize_key(nt): idx for idx, nt in enumerate(self.node_types)}
+
+        # Pre-compute HGT output index mapping (avoids creating index tensor every forward)
+        _hgt_indices = [self._sanitized_to_idx[sanitize_key(nt)] for nt in self.node_types]
+        self.register_buffer(
+            "_hgt_idx_tensor",
+            torch.tensor(_hgt_indices, dtype=torch.long),
+            persistent=False,
+        )
 
         # Branch 1: Pseudobulk Encoder (applied per region)
         self.pseudobulk_encoder = PseudobulkEncoder(
@@ -249,6 +258,18 @@ class CognitiveResilienceModel(PyroModule):
                 dropout=dropout,
             )
 
+        # torch.compile fuses Linear+LN+GELU+Dropout into fewer CUDA kernels.
+        # Only applied to pure tensor modules (no dict ops, no dynamic shapes).
+        # BayesianPredictionHead uses pyro.sample which is incompatible with
+        # torch.compile, so only compile the deterministic head.
+        # Gated by config flag since torch.compile adds startup latency.
+        if use_torch_compile:
+            self.pseudobulk_encoder = torch.compile(self.pseudobulk_encoder)
+            self.fusion_layer = torch.compile(self.fusion_layer)
+            self.pathology_encoder = torch.compile(self.pathology_encoder)
+            if not use_bayesian_head:
+                self.prediction_head = torch.compile(self.prediction_head)
+
     def _encode_pseudobulk_per_region(
         self,
         region_pseudobulk: torch.Tensor,  # [B, n_regions, n_cell_types, n_genes]
@@ -314,28 +335,61 @@ class CognitiveResilienceModel(PyroModule):
         # compatibility. Under torch.autocast, HGT layers may produce float16
         # intermediates; using the same dtype here avoids an implicit cast that
         # would break the autocast graph.
+        if not hgt_out_dict:
+            return torch.zeros(
+                batch_size, self.n_cell_types, self.d_embed, device=device,
+            )
         sample_tensor = next(iter(hgt_out_dict.values()))
-        output = torch.zeros(
-            batch_size, self.n_cell_types, self.d_embed,
-            device=device, dtype=sample_tensor.dtype
-        )
 
-        # Fill in from HGT output, handling both sanitized and unsanitized keys
-        for node_type in hgt_out_dict:
-            # Look up cell type index
+        # Fast path: when all sanitized node types are present (common case),
+        # use pre-computed index buffer to avoid per-forward tensor creation.
+        sanitized_keys = set(self._sanitized_to_idx.keys())
+        if set(hgt_out_dict.keys()) == sanitized_keys:
+            # Stack in canonical order matching _hgt_idx_tensor
+            stacked = torch.stack(
+                [hgt_out_dict[snt].squeeze(1) for snt in self._sanitized_to_idx],
+                dim=1,
+            )  # [B, n_cell_types, d_embed]
+            output = torch.zeros(
+                batch_size, self.n_cell_types, self.d_embed,
+                device=device, dtype=sample_tensor.dtype,
+            )
+            idx_tensor = self._hgt_idx_tensor.view(1, -1, 1).expand(
+                batch_size, -1, self.d_embed
+            )
+            output.scatter_(1, idx_tensor, stacked)
+            return output
+
+        # Slow path: dynamic index building for partial node sets
+        indices = []
+        tensors = []
+        for node_type, emb in hgt_out_dict.items():
             if node_type in self._node_type_to_idx:
                 ct_idx = self._node_type_to_idx[node_type]
             elif node_type in self._sanitized_to_idx:
                 ct_idx = self._sanitized_to_idx[node_type]
             else:
-                # Unknown node type — should not happen since HGT uses the same
-                # node_types list. Log for debugging if it does.
                 logger.warning("Skipping unknown HGT output key: %s", node_type)
                 continue
+            indices.append(ct_idx)
+            tensors.append(emb.squeeze(1))  # [B, d_embed]
 
-            emb = hgt_out_dict[node_type]  # [B, 1, d_embed]
-            output[:, ct_idx, :] = emb.squeeze(1)  # [B, d_embed]
+        if not tensors:
+            return torch.zeros(
+                batch_size, self.n_cell_types, self.d_embed,
+                device=device, dtype=sample_tensor.dtype,
+            )
 
+        # Stack and scatter in batched operations
+        stacked = torch.stack(tensors, dim=1)  # [B, n_found, d_embed]
+        output = torch.zeros(
+            batch_size, self.n_cell_types, self.d_embed,
+            device=device, dtype=sample_tensor.dtype,
+        )
+        idx_tensor = torch.tensor(indices, device=device).view(1, -1, 1).expand(
+            batch_size, -1, self.d_embed
+        )
+        output.scatter_(1, idx_tensor, stacked)
         return output
 
     def forward(
@@ -515,9 +569,10 @@ class CognitiveResilienceModel(PyroModule):
         # ─────────────────────────────────────────────────────────────────────
         # Pathology-stratified attention over cell types
         # ─────────────────────────────────────────────────────────────────────
-        # [B, d_fused], [B, n_heads, n_cell_types]
+        # [B, d_fused], [B, n_heads, n_cell_types] or None
         attended, attention_weights = self.pathology_attention(
-            fused, path_emb, cell_type_mask=cell_type_mask
+            fused, path_emb, cell_type_mask=cell_type_mask,
+            return_attention_weights=not self.training,
         )
 
         # ─────────────────────────────────────────────────────────────────────
@@ -552,6 +607,86 @@ class CognitiveResilienceModel(PyroModule):
             output['mean'] = mean
 
         return output
+
+    def forward_encoder_only(
+        self,
+        region_pseudobulk=None,
+        region_mask=None,
+        pseudobulk=None,
+        edge_index_dict_list=None,
+        edge_attr_dict_list=None,
+        cells=None,
+        cell_mask=None,
+        cell_type_mask=None,
+        pathology=None,
+    ) -> dict[str, torch.Tensor]:
+        """Run encoder branches + fusion + attention, skip prediction head.
+
+        Used by validation to run the deterministic encoder once and reuse
+        the attended vector for both predictions (via head with median weights)
+        and metrics, avoiding a redundant full forward pass.
+
+        Returns:
+            dict with 'attended' [B, d_fused] and 'attention_weights'
+        """
+        # Handle single-region vs multi-region input
+        if region_pseudobulk is not None:
+            B = region_pseudobulk.size(0)
+            device = region_pseudobulk.device
+            if region_mask is None:
+                region_mask = torch.ones(B, self.n_regions, dtype=torch.bool, device=device)
+        elif pseudobulk is not None:
+            B = pseudobulk.size(0)
+            device = pseudobulk.device
+            region_pseudobulk = torch.zeros(
+                B, self.n_regions, self.n_cell_types, self.n_genes,
+                device=device, dtype=pseudobulk.dtype,
+            )
+            region_pseudobulk[:, PFC_REGION_IDX, :, :] = pseudobulk
+            region_mask = torch.zeros(B, self.n_regions, dtype=torch.bool, device=device)
+            region_mask[:, PFC_REGION_IDX] = True
+        else:
+            raise ValueError("Must provide either region_pseudobulk or pseudobulk")
+
+        if cell_type_mask is not None and cell_type_mask.shape != (B, self.n_cell_types):
+            raise ValueError(
+                f"cell_type_mask shape must be [{B}, {self.n_cell_types}], "
+                f"got {list(cell_type_mask.shape)}"
+            )
+        if cells is None:
+            raise ValueError("cells tensor is required")
+        if cell_mask is None:
+            raise ValueError("cell_mask tensor is required")
+        if pathology is None:
+            raise ValueError("pathology tensor is required")
+
+        # Branch 1: Pseudobulk + region
+        region_encoded = self._encode_pseudobulk_per_region(region_pseudobulk, region_mask)
+        pseudobulk_emb, region_context, _ = self.region_handler(region_encoded, region_mask)
+
+        # Branch 2: HGT
+        x_dict_list = build_x_dict_list_from_embeddings(pseudobulk_emb, self._sanitized_node_types)
+        if edge_index_dict_list is None:
+            edge_index_dict_list = [{} for _ in range(B)]
+        if edge_attr_dict_list is None:
+            edge_attr_dict_list = [{} for _ in range(B)]
+        hgt_out_dict, _ = self.hgt_encoder(x_dict_list, edge_index_dict_list, edge_attr_dict_list)
+        hgt_emb = self._convert_hgt_batched_output_to_tensor(hgt_out_dict, B, device)
+
+        # Branch 3: Cell transformer
+        cell_emb, _, _ = self.cell_transformer(
+            cells, cell_mask, return_attention=False, apply_selection_weights=True,
+        )
+
+        # Fusion + pathology + attention
+        fused = self.fusion_layer(pseudobulk_emb, hgt_emb, cell_emb)
+        path_emb = self.pathology_encoder(pathology, region_context)
+        attended, attention_weights = self.pathology_attention(
+            fused, path_emb, cell_type_mask=cell_type_mask,
+            return_attention_weights=not self.training,
+        )
+
+        return {"attended": attended, "attention_weights": attention_weights}
 
     def get_cell_type_importance(self) -> dict[str, float]:
         """
@@ -656,6 +791,7 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
     """
     head_type = model_cfg.get("head", {}).get("type", "deterministic")
     use_bayesian = head_type == "bayesian"
+    use_torch_compile = model_cfg.get("use_torch_compile", False)
     # node_types and edge_categories are intentionally not configurable —
     # they are fixed to the 31 Allen ABC cell types (CELL_TYPE_ORDER) and
     # 5 CellChatDB edge categories (ALL_EDGE_TYPES) from constants.py.
@@ -681,4 +817,5 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         n_pma_seeds=_cfg_get(model_cfg.set_transformer, "n_pma_seeds", 1, "model.set_transformer"),
         mlp_hidden=list(model_cfg.pseudobulk.mlp_hidden) if model_cfg.get("pseudobulk", {}).get("mlp_hidden") is not None else None,
         use_layer_norm=model_cfg.get("pseudobulk", {}).get("use_layer_norm", True),
+        use_torch_compile=use_torch_compile,
     )

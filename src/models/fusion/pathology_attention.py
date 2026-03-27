@@ -91,7 +91,8 @@ class PathologyStratifiedAttention(nn.Module):
         cell_type_embeddings: torch.Tensor,  # [B, n_cell_types, d_fused]
         path_emb: torch.Tensor,               # [B, d_cond]
         cell_type_mask: torch.Tensor = None,  # [B, n_cell_types] optional mask
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return_attention_weights: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Attend over cell types conditioned on pathology.
 
@@ -100,10 +101,14 @@ class PathologyStratifiedAttention(nn.Module):
             path_emb: [B, d_cond] - pathology embedding from PathologyEncoder
             cell_type_mask: [B, n_cell_types] - bool mask, True=available (optional)
                 If not provided, all cell types are assumed available.
+            return_attention_weights: Whether to compute attention weights for
+                interpretability. When False, skips the Q-K score recomputation
+                (separate from SDPA path) and returns None for attention_weights.
+                Set to False during training to avoid unnecessary compute.
 
         Returns:
             attended: [B, d_fused] - pathology-weighted cell type summary
-            attention_weights: [B, n_heads, n_cell_types] - for interpretability
+            attention_weights: [B, n_heads, n_cell_types] or None - for interpretability
         """
         # Input validation
         if cell_type_embeddings.dim() != 3:
@@ -135,66 +140,64 @@ class PathologyStratifiedAttention(nn.Module):
 
         # Generate pathology-conditioned query
         query = self.query_generator(path_emb)  # [B, d_fused]
-        query = query.view(B, 1, self.n_heads, self.d_head)
+        query = query.view(B, self.n_heads, 1, self.d_head)  # [B, H, 1, d_head]
 
         # Project cell types to keys and values
-        keys = self.key_proj(cell_type_embeddings).view(B, self.n_cell_types, self.n_heads, self.d_head)
-        values = self.value_proj(cell_type_embeddings).view(B, self.n_cell_types, self.n_heads, self.d_head)
+        keys = self.key_proj(cell_type_embeddings).view(B, C, self.n_heads, self.d_head)
+        keys = keys.permute(0, 2, 1, 3)  # [B, H, C, d_head]
+        values = self.value_proj(cell_type_embeddings).view(B, C, self.n_heads, self.d_head)
+        values = values.permute(0, 2, 1, 3)  # [B, H, C, d_head]
 
-        # Attention scores
-        scores = torch.einsum('bqhd,bkhd->bhqk', query, keys) / (self.d_head ** 0.5)
-
-        # Pathology-dependent additive bias
-        path_emb_expanded = path_emb.unsqueeze(1).expand(-1, self.n_cell_types, -1)  # [B, n_cell_types, d_cond]
+        # Pathology-dependent additive bias → SDPA attn_mask
+        path_emb_expanded = path_emb.unsqueeze(1).expand(-1, self.n_cell_types, -1)  # [B, C, d_cond]
         bias_input = torch.cat([path_emb_expanded, cell_type_embeddings], dim=-1)
-        bias = self.pathology_bias(bias_input)  # [B, n_cell_types, n_heads]
-        bias = bias.permute(0, 2, 1).unsqueeze(2)  # [B, n_heads, 1, n_cell_types]
+        bias = self.pathology_bias(bias_input)  # [B, C, n_heads]
+        attn_bias = bias.permute(0, 2, 1).unsqueeze(2)  # [B, H, 1, C]
 
-        scores = scores + bias  # additive bias: directly shifts attention per cell type
-
-        # Initialize all_masked before conditional to prevent UnboundLocalError
-        # if masking logic is ever refactored. Default: no samples are fully masked.
+        # Initialize all_masked before conditional
         all_masked = torch.zeros(B, dtype=torch.bool, device=cell_type_embeddings.device)
 
-        # Apply cell type mask if provided (mask out missing cell types)
+        # Apply cell type mask as additive bias (-inf for absent types)
         if cell_type_mask is not None:
-            # cell_type_mask: [B, n_cell_types] -> [B, 1, 1, n_cell_types]
-            mask = cell_type_mask.unsqueeze(1).unsqueeze(2)
-            # Set scores for masked cell types to -inf so softmax gives 0
-            scores = scores.masked_fill(~mask, float('-inf'))
-
-            # For batch elements where ALL cell types are masked, all scores are -inf.
-            # Softmax on all -inf produces NaN which poisons gradients even though
-            # nan_to_num fixes forward values. Replace -inf with a large finite
-            # negative so softmax produces near-zero uniform weights instead of NaN.
+            mask = cell_type_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, C]
+            attn_bias = attn_bias.masked_fill(~mask, float('-inf'))
             all_masked = ~cell_type_mask.any(dim=1)  # [B]
             if all_masked.any():
-                # Expand to match scores shape [B, n_heads, 1, n_cell_types]
-                all_masked_expanded = all_masked.view(-1, 1, 1, 1).expand_as(scores)
-                scores = scores.masked_fill(all_masked_expanded, -1e9)
+                all_masked_expanded = all_masked.view(-1, 1, 1, 1).expand_as(attn_bias)
+                attn_bias = attn_bias.masked_fill(all_masked_expanded, -1e9)
 
-        # Softmax and attend
-        if scores.size(2) != 1:
-            raise RuntimeError(f"Expected query dim 1, got {scores.size(2)}")
-        attention_weights = F.softmax(scores.float(), dim=-1)[:, :, 0, :]  # [B, n_heads, n_cell_types]
+        # Fused attention via SDPA (dispatches to FlashAttention/memory-efficient backend).
+        # SDPA handles float32 softmax internally — no explicit .float() promotion needed.
+        attended = F.scaled_dot_product_attention(
+            query, keys, values,
+            attn_mask=attn_bias,
+            dropout_p=0.0,
+        )  # [B, H, 1, d_head]
 
-        # Zero out attention for fully-masked samples (softmax gave near-uniform,
-        # but these samples should contribute nothing)
+        attended = attended.squeeze(2).reshape(B, self.d_fused)
+        attended = self.out_proj(attended)
+
+        # Zero out attended output for fully-masked samples
         if cell_type_mask is not None and all_masked.any():
-            # all_masked: [B] -> [B, 1, 1] for broadcasting
-            attention_weights = attention_weights.masked_fill(
-                all_masked.unsqueeze(-1).unsqueeze(-1).expand_as(attention_weights), 0.0
+            attended = attended.masked_fill(
+                all_masked.unsqueeze(-1).expand_as(attended), 0.0
             )
 
-        values = values.permute(0, 2, 1, 3)  # [B, n_heads, n_cell_types, d_head]
-        # Compute weighted sum in float32 for precision — attention_weights are float32
-        # from softmax promotion, values may be float16 under AMP.
-        # einsum does not auto-promote mixed dtypes, so cast values up explicitly.
-        # Cast result back to input dtype before out_proj (Linear layer stays in AMP dtype).
-        attended = torch.einsum('bhk,bhkd->bhd', attention_weights, values.to(attention_weights.dtype))
-        attended = attended.to(cell_type_embeddings.dtype)
-        attended = attended.reshape(B, self.d_fused)
-        attended = self.out_proj(attended)
+        # Compute attention weights for interpretability (detached, no grad).
+        # Separate from SDPA path since SDPA doesn't return weights.
+        # Skipped during training (return_attention_weights=False) to avoid
+        # the redundant Q-K matmul + softmax computation.
+        if return_attention_weights:
+            with torch.no_grad():
+                scores = torch.einsum('bhqd,bhkd->bhqk', query, keys) / (self.d_head ** 0.5)
+                scores = scores + attn_bias
+                attention_weights = F.softmax(scores.float(), dim=-1)[:, :, 0, :]  # [B, H, C]
+                if cell_type_mask is not None and all_masked.any():
+                    attention_weights = attention_weights.masked_fill(
+                        all_masked.unsqueeze(-1).unsqueeze(-1).expand_as(attention_weights), 0.0
+                    )
+        else:
+            attention_weights = None
 
         return attended, attention_weights
 

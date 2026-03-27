@@ -56,8 +56,11 @@ class BetaNLLLoss(nn.Module):
         Returns:
             Scalar loss value
         """
-        if (std <= 0).any():
-            raise ValueError("std must be strictly positive everywhere")
+        # Fast pre-check avoids allocating a full boolean tensor on the common path.
+        # isfinite(sum()) catches NaN/Inf; std.min() is a single reduction
+        # (no boolean tensor allocation), cheaper than (std <= 0).any().
+        if not torch.isfinite(std.sum()) or std.min() <= 0:
+            raise ValueError("std must be strictly positive and finite everywhere")
 
         # Upcast to float32 for numerical stability under AMP.
         # Under torch.autocast("cuda", dtype=float16), the inputs may be float16.

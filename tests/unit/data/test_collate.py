@@ -399,8 +399,17 @@ class TestCollateForHgt:
         sample_b = create_mock_sample(n_genes=n_genes, n_cell_types=n_cell_types)
         sample_b["cell_type_order"] = order_b
 
-        with pytest.raises(RuntimeError, match="cell_type_order mismatch"):
-            collate_for_hgt([sample_a, sample_b])
+        import os
+        old = os.environ.get("RESILIENCE_DEBUG")
+        os.environ["RESILIENCE_DEBUG"] = "1"
+        try:
+            with pytest.raises(RuntimeError, match="cell_type_order mismatch"):
+                collate_for_hgt([sample_a, sample_b])
+        finally:
+            if old is None:
+                os.environ.pop("RESILIENCE_DEBUG", None)
+            else:
+                os.environ["RESILIENCE_DEBUG"] = old
 
 
 class TestBuildXDictListFromEmbeddings:
@@ -849,6 +858,7 @@ class TestCompositeKeyOverflow:
         fake_ct = [f"c{i}" for i in range(huge_n)]
         fake_et = [f"e{i}" for i in range(huge_n)]
         monkeypatch.setattr(collate_mod, "ALL_EDGE_TYPES", fake_et)
+        monkeypatch.setattr(collate_mod, "SANITIZED_EDGE_TYPES", fake_et)
         monkeypatch.setattr(collate_mod, "sanitize_key", lambda x: x)
         n_ct_small = 4
         sample = {

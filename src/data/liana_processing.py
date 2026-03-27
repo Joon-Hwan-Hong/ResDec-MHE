@@ -136,23 +136,19 @@ def assign_edge_types(
     categories = ALL_EDGE_TYPES
     category_to_idx = {cat: idx for idx, cat in enumerate(categories)}
 
-    # Assign edge types
-    def get_edge_type_name(row):
-        ligand = row.get(ligand_col, "")
-        receptor = row.get(receptor_col, "")
-
-        if pd.isna(ligand) or pd.isna(receptor):
-            return novel_category
-
-        lr_key = f"{ligand}_{receptor}"
-
-        if lr_key in lr_to_category:
-            return lr_to_category[lr_key]
-        else:
-            return novel_category
-
+    # Assign edge types — vectorized pandas ops instead of row-wise apply
     liana_results = liana_results.copy()
-    liana_results["edge_type_name"] = liana_results.apply(get_edge_type_name, axis=1)
+    if len(liana_results) == 0:
+        liana_results["edge_type_name"] = pd.Series(dtype=str)
+        liana_results["edge_type"] = pd.Series(dtype=int)
+        return liana_results
+    ligand_vals = liana_results[ligand_col].fillna("")
+    receptor_vals = liana_results[receptor_col].fillna("")
+    lr_keys = ligand_vals.astype(str) + "_" + receptor_vals.astype(str)
+    liana_results["edge_type_name"] = lr_keys.map(lr_to_category).fillna(novel_category)
+    # Rows where ligand or receptor was NaN get novel_category
+    nan_mask = liana_results[ligand_col].isna() | liana_results[receptor_col].isna()
+    liana_results.loc[nan_mask, "edge_type_name"] = novel_category
     liana_results["edge_type"] = liana_results["edge_type_name"].map(category_to_idx)
 
     return liana_results
@@ -341,25 +337,23 @@ def liana_to_adjacency_matrix(
     # Initialize with fill value (no interaction)
     adj_matrix = np.full((n_types, n_types), fill_value, dtype=np.float32)
 
-    # Fill in observed interactions
-    for _, row in liana_results.iterrows():
-        src = row[source_col]
-        tgt = row[target_col]
+    if len(liana_results) == 0:
+        return adj_matrix
 
-        if src in ct_to_idx and tgt in ct_to_idx:
-            score = row.get(score_col)
+    # Fill in observed interactions — vectorized filtering and assignment
+    has_src = liana_results[source_col].isin(ct_to_idx)
+    has_tgt = liana_results[target_col].isin(ct_to_idx)
+    has_score = liana_results[score_col].notna()
+    in_range = liana_results[score_col].between(0.0, 1.0)
+    valid = has_src & has_tgt & has_score & in_range
+    df_valid = liana_results.loc[valid]
 
-            # Skip invalid magnitude_rank values - consistent with edge building
-            if score is None or pd.isna(score):
-                continue
-            if score < 0.0 or score > 1.0:
-                continue
-
-            src_idx = ct_to_idx[src]
-            tgt_idx = ct_to_idx[tgt]
-
-            # For ranks, keep minimum (most significant)
-            adj_matrix[src_idx, tgt_idx] = min(adj_matrix[src_idx, tgt_idx], score)
+    if len(df_valid) > 0:
+        src_idx_arr = df_valid[source_col].map(ct_to_idx).values
+        tgt_idx_arr = df_valid[target_col].map(ct_to_idx).values
+        scores = df_valid[score_col].values
+        # For ranks, keep minimum (most significant)
+        np.minimum.at(adj_matrix, (src_idx_arr, tgt_idx_arr), scores)
 
     return adj_matrix
 

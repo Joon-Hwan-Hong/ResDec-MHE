@@ -415,31 +415,62 @@ class Predictor:
         # We extract head-specific sites, strip the prefix, and condition the
         # head directly on sampled weights.
 
+        # Vectorized posterior sampling: sample all weight sets at once from
+        # the guide's variational parameters (loc, scale), bypassing Pyro's
+        # trace machinery. AutoDiagonalNormal stores a flat (loc, scale) pair
+        # for all latent sites; we draw from Normal(loc, scale) directly.
+        guide_loc = self.guide.loc.detach()      # [n_latent]
+        guide_scale = self.guide.scale.detach()  # [n_latent]
+
+        # Draw all samples in one call: [num_samples, n_latent]
+        eps = torch.randn(
+            num_samples, guide_loc.shape[0],
+            device=guide_loc.device, dtype=guide_loc.dtype,
+        )
+        all_flat_samples = guide_loc.unsqueeze(0) + guide_scale.unsqueeze(0) * eps
+
+        # Build site-name-to-slice mapping from guide's prototype trace
+        # (maps each variational site to its offset/shape in the flat vector).
+        # Uses unconstrained shapes to match guide's internal _unpack_latent.
+        # All BayesianPredictionHead priors are Normal(0,1) with Real support,
+        # so unconstrained == constrained shapes. Assert this to fail fast if
+        # a constrained prior (e.g., HalfNormal, LogNormal) is ever added.
+        site_slices: list[tuple[str, int, tuple[int, ...]]] = []
+        idx = 0
+        for name, site in self.guide.prototype_trace.iter_stochastic_nodes():
+            unconstrained_shape = self.guide._unconstrained_shapes.get(name)
+            constrained_shape = site["value"].shape
+            if unconstrained_shape is not None:
+                assert unconstrained_shape == constrained_shape, (
+                    f"Vectorized sampling requires identity constraint transform "
+                    f"for site '{name}'. Got unconstrained_shape="
+                    f"{unconstrained_shape} != constrained_shape={constrained_shape}. "
+                    f"Use the original trace-based sampling loop for non-Normal priors."
+                )
+            shape = constrained_shape
+            numel = site["value"].numel()
+            site_slices.append((name, idx, shape))
+            idx += numel
+
         means = []
-        for _ in range(num_samples):
-            # Guide kwargs are unused after prototype initialization, but must
-            # match the model signature for Pyro's trace mechanism.
-            # Note: model_kwargs contains large tensors (region_pseudobulk, cells)
-            # that the guide does not consume. They are kept alive by reference
-            # during the loop but not re-computed. Memory cost is O(1) references,
-            # not O(num_samples) copies.
-            guide_trace = pyro.poutine.trace(self.guide).get_trace(**model_kwargs)
+        for i in range(num_samples):
+            flat_sample = all_flat_samples[i]
 
-            # Extract head parameter values from guide trace, strip module prefix
+            # Unpack flat sample vector into per-site tensors
             head_data = {}
-            for name, site in guide_trace.nodes.items():
-                if (isinstance(site, dict)
-                        and site.get("type") == "sample"
-                        and name.startswith("prediction_head.")):
-                    head_data[name[len("prediction_head."):]] = site["value"]
+            for name, start, shape in site_slices:
+                numel = 1
+                for s in shape:
+                    numel *= s
+                value = flat_sample[start:start + numel].reshape(shape)
+                if name.startswith("prediction_head."):
+                    head_data[name[len("prediction_head."):]] = value
 
-            # Condition only the head on sampled weights (3 Linear layers on [B, 128])
             head_conditioned = pyro.poutine.condition(
                 self.model.prediction_head, data=head_data
             )
             mean, _std = head_conditioned(attended)
             means.append(mean.detach().cpu())
-            del mean, _std, head_data, guide_trace, head_conditioned
 
         means_stacked = torch.stack(means, dim=0)  # [num_samples, B, 1]
         epistemic_std = means_stacked.std(dim=0)    # [B, 1]

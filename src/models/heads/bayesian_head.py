@@ -21,17 +21,24 @@ from pyro.nn import PyroModule, PyroSample
 
 
 def _make_normal_prior(shape: list[int], head_module: "BayesianPredictionHead"):
-    """Create a device-aware Normal prior that follows the module's device.
+    """Create a device-aware Normal prior with cached tensors.
 
     Uses a sentinel buffer registered on head_module that moves with .to().
     The prior samples on whatever device the sentinel is currently on.
+    Caches loc/scale tensors per device to avoid re-allocation every forward pass.
     """
+    _cache: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
+
     def prior_fn(module):
         device = head_module._device_sentinel.device
-        return dist.Normal(
-            torch.zeros(shape, device=device),
-            torch.ones(shape, device=device),
-        ).to_event(len(shape))
+        if device not in _cache:
+            _cache.clear()  # Only keep one device's tensors
+            _cache[device] = (
+                torch.zeros(shape, device=device),
+                torch.ones(shape, device=device),
+            )
+        loc, scale = _cache[device]
+        return dist.Normal(loc, scale).to_event(len(shape))
     return prior_fn
 
 

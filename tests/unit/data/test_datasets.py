@@ -1398,73 +1398,52 @@ class TestRuntimeErrorPaths:
             subject_ids=["subj_001"],
         )
 
-    def test_da1_get_pathology_nan_raises_runtime_error(self):
-        """D-A1: _get_pathology raises RuntimeError when a pathology column is NaN.
+    def test_da1_get_pathology_uses_preextracted_array(self):
+        """D-A1: _get_pathology uses pre-extracted numpy array, not pandas .loc.
 
-        We inject NaN into the metadata *after* init validation to reach
-        the defensive RuntimeError inside _get_pathology().
+        Post-init metadata mutation does not affect __getitem__ because
+        phenotypes are pre-extracted to numpy arrays at init time.
         """
         ds = self._make_valid_dataset()
+        original_val = ds._pathology_array[0, 0]
 
-        # Mutate metadata after construction: set gpath to NaN for subj_001
+        # Mutate metadata after construction — should have no effect
         ds.metadata.loc["subj_001", "gpath"] = np.nan
 
-        with pytest.raises(RuntimeError, match="NaN in pathology column 'gpath' for subject 'subj_001'"):
-            ds[0]
+        sample = ds[0]
+        # Value comes from pre-extracted array, not metadata
+        assert sample["pathology"][0].item() == original_val
 
-    def test_da2_get_target_nan_raises_runtime_error(self):
-        """D-A2: _get_target raises RuntimeError when target column is NaN.
+    def test_da2_get_target_uses_preextracted_array(self):
+        """D-A2: _get_target uses pre-extracted numpy array, not pandas .loc.
 
-        We inject NaN into the metadata *after* init validation to reach
-        the defensive RuntimeError inside _get_target().
+        Post-init metadata mutation does not affect __getitem__ because
+        phenotypes are pre-extracted to numpy arrays at init time.
         """
         ds = self._make_valid_dataset()
+        original_val = ds._target_array[0]
 
-        # Mutate metadata after construction: set cogn_global to NaN for subj_001
+        # Mutate metadata after construction — should have no effect
         ds.metadata.loc["subj_001", "cogn_global"] = np.nan
 
-        with pytest.raises(RuntimeError, match="NaN in target column 'cogn_global' for subject 'subj_001'"):
-            ds[0]
+        sample = ds[0]
+        # Value comes from pre-extracted array, not metadata
+        assert sample["cognition"].item() == original_val
 
     def test_da3_get_target_subject_not_found_raises_runtime_error(self):
-        """D-A3: _get_target raises RuntimeError when subject is missing from metadata.
+        """D-A3: __getitem__ raises RuntimeError when subject is not in pre-computed index.
 
-        We append a phantom subject ID to subject_ids *after* init validation
-        to reach the defensive RuntimeError inside _get_target().
+        We append a phantom subject ID to subject_ids *after* init to bypass
+        validation. The __getitem__ guard catches this before any data loading.
         """
         ds = self._make_valid_dataset()
-
-        # Inject a subject that passed init validation but is absent from metadata.
-        # Also need cells in adata for this subject so __getitem__ can proceed
-        # past pseudobulk/cell-level computation. Since _get_target is called
-        # after those steps, we add a fake subject_id that has cells in adata
-        # but NOT in metadata.
-        from src.data.constants import CELL_TYPE_ORDER
-        import anndata
-
-        # Add cells for the phantom subject to adata
-        n_new = 50
-        n_genes = ds.n_genes
-        X_new = np.random.rand(n_new, n_genes).astype(np.float32)
-        obs_new = pd.DataFrame({
-            "ROSMAP_IndividualID": ["phantom_subj"] * n_new,
-            "supercluster_name": np.random.choice(CELL_TYPE_ORDER[:5], n_new),
-            "BrainRegion": ["PFC"] * n_new,
-        })
-        var = pd.DataFrame(index=list(ds.adata.var_names))
-
-        adata_new = anndata.AnnData(X=X_new, obs=obs_new, var=var)
-
-        # Concatenate adata
-        import anndata as ad
-        ds.adata = ad.concat([ds.adata, adata_new])
 
         # Append phantom subject_id (bypassing _validate_subjects)
         ds.subject_ids.append("phantom_subj")
 
         # Access the phantom subject (last index)
         idx = len(ds) - 1
-        with pytest.raises(RuntimeError, match="Subject 'phantom_subj' not found in metadata"):
+        with pytest.raises(RuntimeError, match="not in pre-computed index"):
             ds[idx]
 
 

@@ -59,6 +59,7 @@ class CellSampler:
         adata: AnnData,
         cell_type_column: str = "supercluster_name",
         cell_types: list[str] | None = None,
+        precomputed_indices: dict[str, np.ndarray] | None = None,
     ) -> dict[str, np.ndarray]:
         """
         Sample cells from each cell type.
@@ -67,6 +68,9 @@ class CellSampler:
             adata: AnnData object (single subject)
             cell_type_column: Column containing cell type labels
             cell_types: List of cell types to sample (in order)
+            precomputed_indices: Optional pre-computed dict mapping cell_type_name
+                -> np.ndarray of positional indices. When provided, skips the
+                per-cell-type np.where scan (perf optimization from __getitem__).
 
         Returns:
             Dictionary mapping cell_type -> array of cell indices
@@ -77,8 +81,12 @@ class CellSampler:
         sampled_indices = {}
 
         for ct_name in cell_types:
-            ct_mask = adata.obs[cell_type_column] == ct_name
-            ct_indices = np.where(ct_mask.values)[0]
+            if precomputed_indices is not None:
+                ct_indices = precomputed_indices.get(ct_name, np.array([], dtype=np.int64))
+                ct_mask = None  # Lazily computed below if needed
+            else:
+                ct_mask = adata.obs[cell_type_column] == ct_name
+                ct_indices = np.where(ct_mask.values)[0]
             n_cells = len(ct_indices)
 
             if n_cells < self.min_cells_threshold:
@@ -94,8 +102,14 @@ class CellSampler:
                 if self.strategy == "random":
                     sampled = self._random_sample(ct_indices)
                 elif self.strategy == "stratified":
+                    # Reconstruct boolean mask if we used precomputed indices
+                    if ct_mask is None:
+                        ct_mask = adata.obs[cell_type_column] == ct_name
                     sampled = self._stratified_sample(adata, ct_indices, ct_mask)
                 elif self.strategy == "importance":
+                    # Reconstruct boolean mask if we used precomputed indices
+                    if ct_mask is None:
+                        ct_mask = adata.obs[cell_type_column] == ct_name
                     sampled = self._importance_sample(adata, ct_indices, ct_mask)
                 else:
                     raise ValueError(f"Unknown strategy: {self.strategy}")
@@ -161,17 +175,18 @@ class CellSampler:
         # all available cells. The shortfall is NOT redistributed to other strata,
         # so the final count may be less than max_cells_per_type. This is acceptable
         # because downstream padding handles variable-length cell arrays.
-        sampled = []
+        sampled_parts = []
         for stratum, n_samples in zip(unique_strata, samples_per_stratum):
             stratum_mask = strata == stratum
             stratum_indices = indices[stratum_mask]
 
             if len(stratum_indices) <= n_samples:
-                sampled.extend(stratum_indices)
+                sampled_parts.append(stratum_indices)
             else:
-                sampled.extend(self.rng.choice(stratum_indices, n_samples, replace=False))
+                sampled_parts.append(self.rng.choice(stratum_indices, n_samples, replace=False))
 
-        result = np.array(sampled[:self.max_cells_per_type])
+        result_arr = np.concatenate(sampled_parts) if sampled_parts else np.array([], dtype=np.int64)
+        result = result_arr[:self.max_cells_per_type]
         if len(result) < 0.9 * self.max_cells_per_type:
             logger.debug(
                 "Stratified sampling returned %d/%d cells (%.0f%%) — "
@@ -256,19 +271,20 @@ def subsample_adata(
     """
     rng = np.random.default_rng(seed)
 
-    keep_indices = []
+    keep_parts = []
 
     for ct_name in adata.obs[cell_type_column].unique():
         ct_mask = adata.obs[cell_type_column] == ct_name
         ct_indices = np.where(ct_mask.values)[0]
 
         if len(ct_indices) <= max_cells_per_type:
-            keep_indices.extend(ct_indices)
+            keep_parts.append(ct_indices)
         else:
             sampled = rng.choice(ct_indices, max_cells_per_type, replace=False)
-            keep_indices.extend(sampled)
+            keep_parts.append(sampled)
 
-    keep_indices = np.array(sorted(keep_indices))
+    keep_indices = np.concatenate(keep_parts) if keep_parts else np.array([], dtype=np.int64)
+    keep_indices.sort()  # in-place sort, avoids Python sorted()
 
     return adata[keep_indices].copy()
 

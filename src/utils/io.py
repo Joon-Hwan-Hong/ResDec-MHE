@@ -2,7 +2,6 @@
 Input/output utilities for saving and loading various data formats.
 """
 
-import json
 from pathlib import Path
 
 import h5py
@@ -572,59 +571,3 @@ def load_dataframe(
     return None
 
 
-def save_dataframes_multi_format(
-    df: pd.DataFrame,
-    output_dir: str | Path,
-    name: str,
-    formats: list[str] | None = None,
-) -> dict[str, Path]:
-    """
-    Save DataFrame in multiple formats.
-
-    Args:
-        df: DataFrame to save
-        output_dir: Output directory
-        name: Base filename (without extension)
-        formats: List of formats (default: ["parquet", "csv"])
-
-    Returns:
-        Dict mapping format to saved path
-    """
-    if formats is None:
-        formats = ["parquet", "csv"]
-
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    saved = {}
-    for fmt in formats:
-        path = output_dir / f"{name}.{fmt}"
-        save_dataframe(df, path, fmt)
-        saved[fmt] = path
-
-    return saved
-
-
-# =============================================================================
-# JSON I/O
-# =============================================================================
-
-
-def save_json(data: dict | list, path: str | Path) -> None:
-    """Save data to JSON file."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-
-
-def load_json(path: str | Path) -> dict | list:
-    """Load data from JSON file.
-
-    Raises FileNotFoundError (via open()) if file doesn't exist.
-    This is intentional fail-fast behavior — callers should handle
-    missing files explicitly rather than receiving a silent None.
-    """
-    with open(path) as f:
-        return json.load(f)

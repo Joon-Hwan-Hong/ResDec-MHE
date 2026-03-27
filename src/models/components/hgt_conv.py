@@ -342,7 +342,7 @@ class HGTConvWithEdgeAttr(nn.Module):
             # Uses logger.warning (not raise) because NaN inputs legitimately
             # produce NaN attention — the training loop's NaN loss detection
             # (lightning_module.py:274) handles the actual fail/skip decision.
-            if torch.isnan(attn_weights).any():
+            if not torch.isfinite(attn_weights.sum()):
                 logger.warning(
                     "NaN detected in HGT attention weights for edge type %s. "
                     "Check edge_lin initialization and edge attribute magnitudes.",
@@ -410,29 +410,29 @@ class HGTConvWithEdgeAttr(nn.Module):
 
         received_messages = received_nodes
 
-        # Cast accumulated float32 output back to input dtype before out_lin
-        out_dict = {
-            node_type: out.to(input_dtypes[node_type])
-            for node_type, out in out_dict.items()
-        }
-
-        # Apply output projection
-        out_dict = {
-            node_type: self.out_lin(out)
-            for node_type, out in out_dict.items()
-        }
-
-        # Zero out isolated nodes (those that received no messages)
-        # Without this, out_lin's bias would give isolated nodes a non-zero
-        # "communication" signal, conflating "no edges" with "baseline signal"
-        out_dict = {
-            node_type: torch.where(
-                received_messages[node_type].unsqueeze(-1),
-                out,
-                torch.zeros_like(out)
-            )
-            for node_type, out in out_dict.items()
-        }
+        # Batch all node-type outputs into a single tensor for 3 fused ops
+        # instead of 3*N separate CUDA kernel launches (dtype cast, out_lin,
+        # isolation mask). Requires all node types to have the same number of
+        # nodes (true in production where each type has 1 node per sample).
+        # Falls back to per-type ops when shapes differ (e.g. test fixtures).
+        node_keys = list(out_dict.keys())
+        if node_keys:
+            cast_tensors = [out_dict[k].to(input_dtypes[k]) for k in node_keys]
+            shapes_equal = all(t.shape == cast_tensors[0].shape for t in cast_tensors)
+            if shapes_equal:
+                stacked = torch.stack(cast_tensors)  # [N_types, n_nodes, out_channels]
+                stacked = self.out_lin(stacked)  # Linear broadcasts over leading dims
+                received_mask = torch.stack(
+                    [received_messages[k].unsqueeze(-1) for k in node_keys]
+                )  # [N_types, n_nodes, 1]
+                stacked = stacked * received_mask.to(stacked.dtype)
+                out_dict = {k: stacked[i] for i, k in enumerate(node_keys)}
+            else:
+                # Fallback: per-type ops when node counts differ across types
+                for i, k in enumerate(node_keys):
+                    projected = self.out_lin(cast_tensors[i])
+                    mask = received_messages[k].unsqueeze(-1).to(projected.dtype)
+                    out_dict[k] = projected * mask
 
         return out_dict, attn_dict
 

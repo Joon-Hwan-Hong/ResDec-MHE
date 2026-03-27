@@ -190,15 +190,25 @@ class CognitiveResilienceDataset(Dataset):
         # Pre-compute subject-to-row index mapping to avoid O(n_cells) string
         # scan in __getitem__. Single-pass O(n_cells) groupby instead of
         # O(n_subjects * n_cells) loop of np.where calls.
-        subject_id_set = set(self.subject_ids)
         obs_values = self.adata.obs[self.subject_column].values
-        indices_by_subject: dict[str, list[int]] = {sid: [] for sid in self.subject_ids}
-        for i, sid in enumerate(obs_values):
-            if sid in subject_id_set:
-                indices_by_subject[sid].append(i)
-        self._subject_indices = {
-            sid: np.array(idxs, dtype=np.int64) for sid, idxs in indices_by_subject.items()
-        }
+
+        # Vectorized: use pd.Categorical for O(n_cells) integer encoding
+        cat = pd.Categorical(obs_values, categories=self.subject_ids)
+        codes = cat.codes  # -1 for cells not in subject_ids
+        valid_mask = codes >= 0
+        valid_indices = np.where(valid_mask)[0]
+        valid_codes = codes[valid_mask]
+
+        # Sort by subject code for grouped extraction
+        order = np.argsort(valid_codes, kind='stable')
+        sorted_indices = valid_indices[order]
+        sorted_codes = valid_codes[order]
+
+        # Split into per-subject arrays using searchsorted
+        boundaries = np.searchsorted(sorted_codes, np.arange(len(self.subject_ids) + 1))
+        self._subject_indices = {}
+        for i, sid in enumerate(self.subject_ids):
+            self._subject_indices[sid] = sorted_indices[boundaries[i]:boundaries[i + 1]]
 
         # Warn if using on-the-fly dataset with large AnnData — PrecomputedDataset
         # is the recommended path for training at scale.
@@ -257,6 +267,24 @@ class CognitiveResilienceDataset(Dataset):
             self.pathology_columns, "pathology",
         )
 
+        # Pre-extract phenotypes to numpy arrays for O(1) __getitem__ access.
+        self._sid_to_idx = {sid: i for i, sid in enumerate(self.subject_ids)}
+        self._pathology_array = np.zeros(
+            (len(self.subject_ids), len(self.pathology_columns)), dtype=np.float32
+        )
+        self._target_array = np.zeros(len(self.subject_ids), dtype=np.float32)
+        for i, sid in enumerate(self.subject_ids):
+            if sid in self.metadata.index:
+                for j, col in enumerate(self.pathology_columns):
+                    if col in self.metadata.columns:
+                        val = self.metadata.loc[sid, col]
+                        if not pd.isna(val):
+                            self._pathology_array[i, j] = float(val)
+                if self.target_column in self.metadata.columns:
+                    val = self.metadata.loc[sid, self.target_column]
+                    if not pd.isna(val):
+                        self._target_array[i] = float(val)
+
     def __len__(self) -> int:
         return len(self.subject_ids)
 
@@ -288,11 +316,11 @@ class CognitiveResilienceDataset(Dataset):
 
         # Get subject's cells using pre-computed index for O(1) lookup
         if subject_id not in self._subject_indices:
-            # Fallback for subjects added after init (e.g., testing)
-            subject_mask = self.adata.obs[self.subject_column] == subject_id
-            adata_subject = self.adata[subject_mask]
-        else:
-            adata_subject = self.adata[self._subject_indices[subject_id]]
+            raise RuntimeError(
+                f"Subject '{subject_id}' not in pre-computed index. "
+                f"This indicates a bug — all subjects should be indexed at __init__."
+            )
+        adata_subject = self.adata[self._subject_indices[subject_id]]
 
         # ─────────────────────────────────────────────────────────────────────
         # Expression data — keep sparse for pseudobulk, densify only sampled cells.
@@ -303,14 +331,28 @@ class CognitiveResilienceDataset(Dataset):
         X_is_sparse = hasattr(X_sparse, "toarray")
 
         # ─────────────────────────────────────────────────────────────────────
+        # Single-pass cell-type grouping: compute once, reuse across
+        # _compute_pseudobulk, _get_cell_level_data, _compute_pseudobulk_by_region.
+        # Avoids ~248 redundant string comparisons for a 20K-cell subject.
+        # ─────────────────────────────────────────────────────────────────────
+        ct_values = adata_subject.obs[self.cell_type_column].values
+        ct_grouped: dict[str, np.ndarray] = {}
+        for ct_name in self.cell_type_order:
+            ct_grouped[ct_name] = np.where(ct_values == ct_name)[0]
+
+        # ─────────────────────────────────────────────────────────────────────
         # Pseudobulk expression (works on sparse or dense)
         # ─────────────────────────────────────────────────────────────────────
-        pseudobulk, cell_type_mask, cell_counts = self._compute_pseudobulk(adata_subject, X_sparse)
+        pseudobulk, cell_type_mask, cell_counts = self._compute_pseudobulk(
+            adata_subject, X_sparse, ct_grouped=ct_grouped,
+        )
 
         # ─────────────────────────────────────────────────────────────────────
         # Cell-level data for Set Transformer (densifies only sampled rows)
         # ─────────────────────────────────────────────────────────────────────
-        cells, cell_mask, cell_barcodes = self._get_cell_level_data(adata_subject, X_sparse)
+        cells, cell_mask, cell_barcodes = self._get_cell_level_data(
+            adata_subject, X_sparse, ct_grouped=ct_grouped,
+        )
 
         # ─────────────────────────────────────────────────────────────────────
         # CCC graph features
@@ -321,7 +363,9 @@ class CognitiveResilienceDataset(Dataset):
         # Region mask and multi-region pseudobulk
         # ─────────────────────────────────────────────────────────────────────
         region_mask = self._get_region_mask(adata_subject)
-        region_pseudobulks, available_regions = self._compute_pseudobulk_by_region(adata_subject, X_sparse)
+        region_pseudobulks, available_regions = self._compute_pseudobulk_by_region(
+            adata_subject, X_sparse, ct_grouped=ct_grouped,
+        )
 
         # ─────────────────────────────────────────────────────────────────────
         # Phenotypes
@@ -363,6 +407,7 @@ class CognitiveResilienceDataset(Dataset):
 
     def _compute_pseudobulk(
         self, adata_subject: AnnData, X,
+        ct_grouped: dict[str, np.ndarray] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute pseudobulk expression and cell counts for each cell type.
 
@@ -373,22 +418,27 @@ class CognitiveResilienceDataset(Dataset):
         Args:
             adata_subject: AnnData subset for one subject
             X: Expression matrix [n_cells, n_genes] — sparse or dense
+            ct_grouped: Optional pre-computed dict mapping cell_type_name
+                -> np.ndarray of positional indices. When provided, skips the
+                per-cell-type np.where scan (perf optimization from __getitem__).
         """
         pseudobulk = np.zeros((self.n_cell_types, self.n_genes), dtype=np.float32)
         cell_type_mask = np.zeros(self.n_cell_types, dtype=bool)
         cell_counts = np.zeros(self.n_cell_types, dtype=np.int64)
 
-        # Single-pass groupby instead of per-cell-type boolean comparison
-        ct_col = adata_subject.obs[self.cell_type_column]
-        for ct_name, group in ct_col.groupby(ct_col):
-            if ct_name not in self.ct_to_idx:
-                continue
-            ct_idx = self.ct_to_idx[ct_name]
-            indices = group.index
-            n_cells = len(indices)
+        # Use pre-computed grouping if available; otherwise compute on the fly.
+        # Positional indexing via np.where — avoids pandas label-based
+        # get_indexer which fails silently on duplicate obs indices
+        # (common in merged multi-region AnnData).
+        if ct_grouped is None:
+            ct_values = adata_subject.obs[self.cell_type_column].values
+            ct_grouped = {ct: np.where(ct_values == ct)[0] for ct in self.cell_type_order}
+
+        for ct_idx, ct_name in enumerate(self.cell_type_order):
+            pos = ct_grouped[ct_name]
+            n_cells = len(pos)
             cell_counts[ct_idx] = n_cells
             if n_cells > 0:
-                pos = adata_subject.obs.index.get_indexer(indices)
                 # scipy sparse .mean() returns a matrix; squeeze to 1D
                 row_mean = X[pos].mean(axis=0)
                 pseudobulk[ct_idx] = np.asarray(row_mean, dtype=np.float32).ravel()
@@ -398,6 +448,7 @@ class CognitiveResilienceDataset(Dataset):
 
     def _compute_pseudobulk_by_region(
         self, adata_subject: AnnData, X,
+        ct_grouped: dict[str, np.ndarray] | None = None,
     ) -> tuple[dict[str, np.ndarray], list[int]]:
         """
         Compute per-region pseudobulk for multi-region data.
@@ -413,6 +464,10 @@ class CognitiveResilienceDataset(Dataset):
         Args:
             adata_subject: AnnData subset for one subject
             X: Expression matrix [n_cells, n_genes] — sparse or dense
+            ct_grouped: Optional pre-computed dict mapping cell_type_name
+                -> np.ndarray of positional indices. When provided, intersects
+                with region positions instead of doing inner np.where scans
+                (perf optimization from __getitem__).
 
         Returns:
             region_pseudobulks: Dict mapping "region_{idx}_pseudobulk" -> [n_cell_types, n_genes]
@@ -428,27 +483,41 @@ class CognitiveResilienceDataset(Dataset):
         # Build region name → index lookup
         region_to_idx = {name: idx for idx, name in enumerate(REGION_ORDER)}
 
-        # Group cells by (region, cell_type) in a single pass
+        # Group cells by (region, cell_type) using positional indexing —
+        # avoids pandas label-based get_indexer which fails on duplicate obs indices.
         obs = adata_subject.obs
         regions_in_data = set()
-        grouped = obs.groupby([self.region_column, self.cell_type_column])
-        for (region_name, ct_name), group in grouped:
-            if region_name not in region_to_idx or ct_name not in self.ct_to_idx:
+        region_values = obs[self.region_column].values
+
+        # Use pre-computed grouping if available; otherwise compute on the fly.
+        if ct_grouped is None:
+            ct_values = obs[self.cell_type_column].values
+            ct_grouped = {ct: np.where(ct_values == ct)[0] for ct in self.cell_type_order}
+
+        for region_name, region_idx in region_to_idx.items():
+            region_pos = np.where(region_values == region_name)[0]
+            if len(region_pos) == 0:
                 continue
-            region_idx = region_to_idx[region_name]
-            ct_idx = self.ct_to_idx[ct_name]
 
-            # Lazily initialize region pseudobulk array
             key = f"region_{region_idx}_pseudobulk"
-            if key not in region_pseudobulks:
-                region_pseudobulks[key] = np.zeros(
-                    (self.n_cell_types, self.n_genes), dtype=np.float32
-                )
-                regions_in_data.add(region_idx)
+            region_pseudobulks[key] = np.zeros(
+                (self.n_cell_types, self.n_genes), dtype=np.float32
+            )
+            regions_in_data.add(region_idx)
 
-            pos = obs.index.get_indexer(group.index)
-            row_mean = X[pos].mean(axis=0)
-            region_pseudobulks[key][ct_idx] = np.asarray(row_mean, dtype=np.float32).ravel()
+            # Boolean mask for O(1) membership test — avoids np.isin
+            # re-sorting region_pos for each of 31 cell types.
+            region_mask_arr = np.zeros(len(region_values), dtype=bool)
+            region_mask_arr[region_pos] = True
+
+            for ct_idx, ct_name in enumerate(self.cell_type_order):
+                ct_pos = ct_grouped[ct_name]
+                # Intersect: cells that are both this cell type AND in this region
+                pos = ct_pos[region_mask_arr[ct_pos]]
+                if len(pos) == 0:
+                    continue
+                row_mean = X[pos].mean(axis=0)
+                region_pseudobulks[key][ct_idx] = np.asarray(row_mean, dtype=np.float32).ravel()
 
         available_regions = sorted(regions_in_data)
         return region_pseudobulks, available_regions
@@ -482,6 +551,7 @@ class CognitiveResilienceDataset(Dataset):
 
     def _get_cell_level_data(
         self, adata_subject: AnnData, X,
+        ct_grouped: dict[str, np.ndarray] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
         """
         Get cell-level expression for ALL cell types using CellSampler.
@@ -497,6 +567,10 @@ class CognitiveResilienceDataset(Dataset):
         Args:
             adata_subject: AnnData subset for one subject
             X: Expression matrix [n_cells, n_genes] — sparse or dense
+            ct_grouped: Optional pre-computed dict mapping cell_type_name
+                -> np.ndarray of positional indices. Passed through to
+                CellSampler.sample as precomputed_indices (perf optimization
+                from __getitem__).
 
         Returns:
             cells: [n_cell_types, max_cells, n_genes] expression data
@@ -510,6 +584,7 @@ class CognitiveResilienceDataset(Dataset):
             adata_subject,
             cell_type_column=self.cell_type_column,
             cell_types=self.cell_type_order,  # ALL 31 types
+            precomputed_indices=ct_grouped,
         )
 
         # Determine actual max cells across all types for this subject
@@ -536,7 +611,7 @@ class CognitiveResilienceDataset(Dataset):
                     rows = rows.toarray()
                 cells[i, :n_sampled] = np.asarray(rows, dtype=np.float32)
                 cell_mask[i, :n_sampled] = True
-                cell_barcodes[i] = [str(obs_index[idx]) for idx in indices]
+                cell_barcodes[i] = [str(x) for x in obs_index[indices].tolist()]
 
         return cells, cell_mask, cell_barcodes
 
@@ -561,48 +636,12 @@ class CognitiveResilienceDataset(Dataset):
         return features["edge_index"], features["edge_type"], features["edge_attr"]
 
     def _get_pathology(self, subject_id: str) -> np.ndarray:
-        """Get pathology scores for subject.
-
-        Pathology features (gpath, amylsqrt, tangsqrt) are used at their natural
-        scale — no train-set-fit normalization is applied. The PathologyEncoder's
-        learned linear projection handles scale adaptation. Gene expression is
-        log1p-normalized once during preprocessing (applied uniformly to all data
-        before splitting, so no train/test leakage).
-
-        NaN values are validated at __init__ time and should never be encountered here.
-        """
-        pathology = np.zeros(len(self.pathology_columns), dtype=np.float32)
-
-        if subject_id in self.metadata.index:
-            for i, col in enumerate(self.pathology_columns):
-                if col in self.metadata.columns:
-                    val = self.metadata.loc[subject_id, col]
-                    if pd.isna(val):
-                        raise RuntimeError(
-                            f"NaN in pathology column '{col}' for subject '{subject_id}'. "
-                            f"This should have been caught at __init__ validation."
-                        )
-                    pathology[i] = float(val)
-
-        return pathology
+        """Get pathology scores (O(1) numpy lookup)."""
+        return self._pathology_array[self._sid_to_idx[subject_id]]
 
     def _get_target(self, subject_id: str) -> float:
-        """Get cognition target for subject.
-
-        NaN values are validated at __init__ time and should never be encountered here.
-        """
-        if subject_id in self.metadata.index:
-            val = self.metadata.loc[subject_id, self.target_column]
-            if pd.isna(val):
-                raise RuntimeError(
-                    f"NaN in target column '{self.target_column}' for subject '{subject_id}'. "
-                    f"This should have been caught at __init__ validation."
-                )
-            return float(val)
-        raise RuntimeError(
-            f"Subject '{subject_id}' not found in metadata. "
-            f"This should have been caught at __init__ validation."
-        )
+        """Get cognition target (O(1) numpy lookup)."""
+        return float(self._target_array[self._sid_to_idx[subject_id]])
 
     def get_gene_names(self) -> list[str]:
         """Get gene names in order."""
@@ -611,10 +650,6 @@ class CognitiveResilienceDataset(Dataset):
     def get_cell_type_names(self) -> list[str]:
         """Get cell type names in order."""
         return self.cell_type_order
-
-    def get_metadata_for_subjects(self) -> pd.DataFrame:
-        """Get metadata subset for subjects in this dataset."""
-        return self.metadata.loc[self.metadata.index.isin(self.subject_ids)]
 
 
 class PrecomputedDataset(Dataset):
@@ -633,6 +668,7 @@ class PrecomputedDataset(Dataset):
         target_column: str = "cogn_global",
         pathology_columns: list[str] | None = None,
         cell_type_order: list[str] | None = None,
+        max_missing_subject_fraction: float = 0.1,
     ):
         """
         Initialize from precomputed features.
@@ -647,6 +683,8 @@ class PrecomputedDataset(Dataset):
             cell_type_order: Order of cell types for edge index mapping.
                 Must match the order used when precomputing features.
                 Defaults to CELL_TYPE_ORDER from constants.
+            max_missing_subject_fraction: Maximum fraction of subjects allowed to be
+                missing .npz files before raising an error (default: 0.1 = 10%).
         """
         self.feature_dir = Path(feature_dir)
         self.subject_ids = list(subject_ids)
@@ -655,6 +693,7 @@ class PrecomputedDataset(Dataset):
         self.target_column = target_column
         self.pathology_columns = pathology_columns or ["gpath", "amylsqrt", "tangsqrt"]
         self.cell_type_order = cell_type_order or CELL_TYPE_ORDER
+        self.max_missing_subject_fraction = max_missing_subject_fraction
 
         # Validate files exist
         self._validate_files()
@@ -662,6 +701,19 @@ class PrecomputedDataset(Dataset):
 
         # Validate no NaN in target or pathology columns
         self._validate_metadata()
+
+        # Pre-extract phenotypes to numpy arrays for O(1) __getitem__ access.
+        # Avoids 4 pandas .loc lookups per sample (3 pathology + 1 target).
+        self._sid_to_idx = {sid: i for i, sid in enumerate(self.subject_ids)}
+        self._pathology_array = np.zeros(
+            (len(self.subject_ids), len(self.pathology_columns)), dtype=np.float32
+        )
+        self._target_array = np.zeros(len(self.subject_ids), dtype=np.float32)
+        for i, sid in enumerate(self.subject_ids):
+            for j, col in enumerate(self.pathology_columns):
+                if col in self.metadata.columns:
+                    self._pathology_array[i, j] = float(self.metadata.loc[sid, col])
+            self._target_array[i] = float(self.metadata.loc[sid, self.target_column])
 
     def _validate_files(self):
         """Check that feature files exist for all subjects."""
@@ -673,6 +725,16 @@ class PrecomputedDataset(Dataset):
 
         if len(valid_subjects) < len(self.subject_ids):
             n_removed = len(self.subject_ids) - len(valid_subjects)
+            missing_fraction = n_removed / len(self.subject_ids) if self.subject_ids else 0.0
+
+            if missing_fraction > self.max_missing_subject_fraction:
+                raise ValueError(
+                    f"Too many subjects missing .npz files or metadata: "
+                    f"{n_removed}/{len(self.subject_ids)} ({missing_fraction:.1%}) "
+                    f"exceeds threshold ({self.max_missing_subject_fraction:.0%}). "
+                    f"Check feature_dir path: {self.feature_dir}"
+                )
+
             missing = [s for s in self.subject_ids if s not in valid_subjects]
             preview = missing[:10]
             suffix = f" (and {len(missing) - 10} more)" if len(missing) > 10 else ""
@@ -719,6 +781,8 @@ class PrecomputedDataset(Dataset):
         gene_names_path = self.feature_dir / "gene_names.npy"
         if gene_names_path.exists():
             try:
+                # allow_pickle=True required for object-dtype arrays (string gene names).
+                # Safe here: .npy files are self-generated by save_precomputed_features().
                 names = np.load(gene_names_path, allow_pickle=True)
                 return [str(n) for n in names]
             except Exception as e:
@@ -738,16 +802,18 @@ class PrecomputedDataset(Dataset):
         feature_file = self.feature_dir / f"{subject_id}.npz"
 
         try:
-            return self._load_npz(subject_id, feature_file)
+            return self._load_npz(subject_id, feature_file, idx)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load precomputed features for subject '{subject_id}' "
                 f"from {feature_file}: {type(e).__name__}: {e}"
             ) from e
 
-    def _load_npz(self, subject_id: str, feature_file: Path) -> dict[str, torch.Tensor]:
+    def _load_npz(self, subject_id: str, feature_file: Path, idx: int) -> dict[str, torch.Tensor]:
         """Load and validate a single .npz file. Called by __getitem__."""
         # Load features (context manager ensures file handle is closed)
+        # allow_pickle=True required for object-dtype arrays (cell_type_order).
+        # Safe here: .npz files are self-generated by save_precomputed_features().
         with np.load(feature_file, allow_pickle=True) as npz_data:
             # Validate required keys
             required_keys = {
@@ -828,25 +894,9 @@ class PrecomputedDataset(Dataset):
                 else None
             )
 
-        # Get phenotypes from metadata (no npz access needed)
-        pathology = np.zeros(len(self.pathology_columns), dtype=np.float32)
-        for i, col in enumerate(self.pathology_columns):
-            if col in self.metadata.columns:
-                val = self.metadata.loc[subject_id, col]
-                if pd.isna(val):
-                    raise RuntimeError(
-                        f"NaN in pathology column '{col}' for subject '{subject_id}'. "
-                        f"This should have been caught at __init__ validation."
-                    )
-                pathology[i] = float(val)
-
-        target = self.metadata.loc[subject_id, self.target_column]
-        if pd.isna(target):
-            raise RuntimeError(
-                f"NaN in target column '{self.target_column}' for subject '{subject_id}'. "
-                f"This should have been caught at __init__ validation."
-            )
-        target = float(target)
+        # Use pre-extracted phenotype arrays (O(1) numpy indexing vs pandas .loc)
+        pathology = torch.from_numpy(self._pathology_array[idx]).float()
+        target = float(self._target_array[idx])
 
         sample = {
             "subject_id": subject_id,
@@ -861,7 +911,7 @@ class PrecomputedDataset(Dataset):
             "ccc_edge_type": ccc_edge_type,
             "ccc_edge_attr": ccc_edge_attr,
             # Phenotypes
-            "pathology": torch.from_numpy(pathology).float(),
+            "pathology": pathology,
             "cognition": torch.tensor([target], dtype=torch.float32),
             # Metadata for collate - cell type ordering for edge index mapping
             "cell_type_order": self.cell_type_order,
@@ -909,6 +959,7 @@ def save_precomputed_features(
             np.save(output_dir / "gene_names.npy", np.array(gene_names, dtype=object))
 
     n_skipped = 0
+    n_saved = 0
     for i in range(len(dataset)):
         sample = dataset[i]
         subject_id = sample["subject_id"]
@@ -946,18 +997,20 @@ def save_precomputed_features(
             save_data["available_regions"] = np.array(sample["available_regions"])
 
         # Atomic write: save to temp file then rename to prevent partial files on crash.
-        # np.savez_compressed appends .npz if not present, so use .npz suffix on temp file.
+        # np.savez appends .npz if not present, so use .npz suffix on temp file.
+        # Uncompressed: zlib decompression on every __getitem__ read dominates
+        # DataLoader CPU time. Float32 expression data has poor compression ratio
+        # (~1.2-2x), so disk savings are modest vs the per-epoch decompression cost.
         with tempfile.NamedTemporaryFile(
             dir=output_dir, suffix=".npz", delete=False
         ) as tmp_f:
             tmp_path = Path(tmp_f.name)
-        np.savez_compressed(tmp_path, **save_data)
+        np.savez(tmp_path, **save_data)
         tmp_path.rename(output_file)
+        n_saved += 1
 
-        if verbose and (i + 1 - n_skipped) % 50 == 0:
-            print(f"Saved {i + 1 - n_skipped}/{len(dataset) - n_skipped} subjects")
-
-    n_saved = len(dataset) - n_skipped
+        if verbose and n_saved % 50 == 0:
+            print(f"Saved {n_saved}/{len(dataset) - n_skipped} subjects")
     if verbose:
         print(f"Saved {n_saved} subjects to {output_dir}" +
               (f" (skipped {n_skipped} existing)" if n_skipped else ""))

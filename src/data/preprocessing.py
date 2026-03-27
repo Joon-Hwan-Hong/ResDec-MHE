@@ -182,12 +182,10 @@ def preprocess_adata(
 
         sub_idx.sort()  # Sorted for efficient CSR row slicing
 
-        # Row slicing CSR is cheap (view), then copy to get a concrete matrix
-        adata_sub = adata[sub_idx].copy()
-
-        # Apply min_cells filter on the subsample before HVG
-        # (genes with < min_cells in full data definitely have fewer in subsample)
-        adata_sub = adata_sub[:, min_cells_mask].copy()
+        # Chain row + column slicing before copying — avoids materializing at full
+        # gene count. Both adata[sub_idx] and [:, min_cells_mask] return views;
+        # .copy() materializes only the final [n_sub × n_filtered_genes] matrix.
+        adata_sub = adata[sub_idx][:, min_cells_mask].copy()
 
         logger.info(f"Subsample shape: {adata_sub.shape}")
 
@@ -208,6 +206,7 @@ def preprocess_adata(
     # STEP 4: Force include L-R genes from CellChatDB
     # ─────────────────────────────────────────────────────────────────────────
     cellchatdb_path = Path(cellchatdb_path)
+    lr_genes: set[str] = set()
     lr_mask = np.zeros(adata.n_vars, dtype=bool)
 
     if cellchatdb_path.exists():
@@ -237,16 +236,9 @@ def preprocess_adata(
     if sparse.issparse(adata.X):
         logger.info(f"Subset nnz: {adata.X.nnz:,}")
 
-    # Store gene metadata
-    adata.var["highly_variable"] = adata.var_names.isin(
-        set(adata.var_names) & set(np.array(adata.var_names)[hvg_mask[final_mask]])
-    )
-    # Simpler: re-derive from the masks we computed
-    orig_var_names = np.array(adata.var_names)
-    adata.var["highly_variable"] = True  # All genes in final set are "selected"
-    adata.var["lr_gene"] = adata.var_names.isin(
-        set(lr_genes) if cellchatdb_path.exists() and lr_mask.any() else set()
-    )
+    # Store gene metadata — all genes in the final set are "selected" (HVG or L-R forced)
+    adata.var["highly_variable"] = True
+    adata.var["lr_gene"] = adata.var_names.isin(lr_genes) if lr_genes else False
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 6: Normalize + Log transform
@@ -259,8 +251,16 @@ def preprocess_adata(
     sc.pp.log1p(adata)
     logger.info(f"Normalized (target_sum={target_sum:.0e}) and log1p transformed")
 
-    # For non-seurat_v3 flavors, run HVG on normalized data
+    # For non-seurat_v3 flavors, run HVG on normalized data.
+    # WARNING: This path runs HVG on already-subsetted data (~4K genes).
+    # The design doc specifies seurat_v3 exclusively for production use.
+    # Non-seurat_v3 flavors may produce unexpected results at this stage.
     if hvg_flavor != "seurat_v3":
+        logger.warning(
+            "Non-seurat_v3 HVG running on already-subsetted data (%d genes). "
+            "This path is not validated at scale. seurat_v3 is recommended.",
+            adata.n_vars,
+        )
         sc.pp.highly_variable_genes(
             adata,
             n_top_genes=n_hvg,

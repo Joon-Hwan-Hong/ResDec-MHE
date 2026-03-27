@@ -860,7 +860,10 @@ class TestDDPBehavior:
         assert len(set(all_seeds)) == len(all_seeds), f"Duplicate seeds: {all_seeds}"
 
     def test_sync_dist_on_all_logged_metrics(self, base_config):
-        """All self.log calls use sync_dist=True for DDP correctness."""
+        """All self.log calls use sync_dist=True for DDP correctness,
+        except train_loss which uses sync_dist=False (DDP-1: per-step
+        allreduce on the training loss is unnecessary overhead — Lightning
+        already reduces gradients via DDP)."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
 
@@ -868,7 +871,9 @@ class TestDDPBehavior:
         original_log = module.log
 
         def capture_log(*args, **kwargs):
-            log_calls.append(kwargs)
+            # Capture metric name (first positional arg) alongside kwargs
+            name = args[0] if args else kwargs.get("name", "unknown")
+            log_calls.append({"_name": name, **kwargs})
             return original_log(*args, **kwargs)
 
         module.log = capture_log
@@ -878,7 +883,16 @@ class TestDDPBehavior:
 
         assert len(log_calls) > 0, "No log calls captured"
         for call in log_calls:
-            assert call.get("sync_dist", False) is True, f"Missing sync_dist=True: {call}"
+            name = call["_name"]
+            if name == "train_loss":
+                # DDP-1: train_loss intentionally skips sync_dist
+                assert call.get("sync_dist", False) is False, (
+                    f"train_loss should use sync_dist=False (DDP-1): {call}"
+                )
+            else:
+                assert call.get("sync_dist", False) is True, (
+                    f"Missing sync_dist=True on {name}: {call}"
+                )
 
 
 class TestBayesianELBOConvergence:

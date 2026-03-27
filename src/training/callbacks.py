@@ -178,7 +178,7 @@ class TemperatureAnnealing(pl.Callback):
                 "but the attribute path does not exist on the current model."
             )
         gate.temperature = tau
-        pl_module.log("gene_gate_temperature", tau, sync_dist=True)
+        pl_module.log("gene_gate_temperature", tau, rank_zero_only=True)
 
     def __repr__(self) -> str:
         return (
@@ -249,10 +249,11 @@ class GradientNormLogger(pl.Callback):
                 # (no GradScaler). Under 16-mixed (float16), Lightning uses GradScaler
                 # and p.grad here contains SCALED gradients — logged norms would
                 # include the scale factor.
-                total_norm = torch.sqrt(
-                    sum(p.grad.data.norm(2) ** 2 for p in grad_params)
+                # Stack per-param norms and reduce in 2 ops instead of N.
+                grad_norms = torch.stack(
+                    [p.grad.data.norm(2) for p in grad_params]
                 )
-                branch_norms[branch_name] = total_norm.item()
+                branch_norms[branch_name] = grad_norms.norm(2).item()
             else:
                 branch_norms[branch_name] = 0.0
         return branch_norms
@@ -296,10 +297,12 @@ class GradientNormLogger(pl.Callback):
         """Log branch gradient norms after DDP sync, before optimizer step (every N steps).
 
         Under DDP, gradients are already synchronized (allreduce) before this
-        hook fires, so all ranks have identical gradient values. We log from
-        rank 0 only to avoid duplicate entries.
+        hook fires, so all ranks have identical gradient values. Computation
+        and logging runs on rank 0 only — avoids .item() CUDA sync on non-zero ranks.
         """
         if trainer.global_step % self.log_every_n_steps != 0:
+            return
+        if not trainer.is_global_zero:
             return
 
         norms = self.compute_branch_norms(pl_module.model)
@@ -442,7 +445,7 @@ class ResilienceModelCheckpoint(pl.Callback):
             device = torch.device("cpu")
             pyro.clear_param_store()
             for k, v in checkpoint["pyro_param_store"].items():
-                pyro.get_param_store().setdefault(k, v.to(device))
+                pyro.get_param_store()[k] = v.to(device)
 
             # Flag that we're resuming — on_train_start needs to re-sync
             # param store with guide's nn.Parameters for tensor identity

@@ -43,7 +43,7 @@ from omegaconf import DictConfig
 
 import pyro
 import pyro.poutine
-from pyro.infer import Trace_ELBO
+from pyro.infer import TraceMeanField_ELBO
 from pyro.infer.autoguide import AutoDiagonalNormal
 
 from src.data.constants import N_REGIONS
@@ -104,7 +104,12 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             # so this is safe across ranks.
             pyro.clear_param_store()
             self.guide = AutoDiagonalNormal(self.model)
-            self.elbo = Trace_ELBO()
+            # Disable Pyro's runtime validation (shape/support/constraint checks
+            # on every pyro.sample call). This is a GLOBAL Pyro setting that persists
+            # for the process lifetime. Safe for training (one module per process).
+            # Re-enable with pyro.enable_validation(True) for debugging.
+            pyro.enable_validation(False)
+            self.elbo = TraceMeanField_ELBO()
             # automatic_optimization stays True (default) —
             # differentiable_loss returns a loss tensor that flows through
             # Lightning's standard backward + optimizer step + DDP gradient sync.
@@ -151,8 +156,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self._test_targets: list[torch.Tensor] = []
         self._test_stds: list[torch.Tensor] = []
 
-        # Cache last training batch for epoch-end NLL computation (P7)
-        self._last_train_batch: dict | None = None
+        # GPU reference to last training batch for epoch-end NLL computation (P7)
+        self._last_train_batch_ref: dict | None = None
 
     def _compute_loss(self, output: dict, cognition: torch.Tensor) -> torch.Tensor:
         """Compute loss with branching based on head type."""
@@ -197,7 +202,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         # Disable autocast for ELBO: log-probability arithmetic requires float32
         # precision. Under bf16, small posterior scales cause std**2 underflow
         # and corrupt KL divergence terms.
-        device_type = "cuda" if batch.get("cognition", torch.tensor(0)).is_cuda else "cpu"
+        device_type = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         with torch.amp.autocast(device_type, enabled=False):
             loss = self.elbo.differentiable_loss(
                 self.model,
@@ -334,18 +339,18 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         bs = batch["cognition"].shape[0]
         # For Bayesian head: train_loss = ELBO (the actual optimization target).
         # For deterministic head: train_loss = MSE.
-        self.log("train_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("train_loss", loss, prog_bar=True, sync_dist=False, batch_size=bs)
 
-        # Cache last batch on CPU for epoch-end NLL computation (avoids per-step
-        # overhead). Stored on CPU to avoid holding ~7 GB GPU memory for the
-        # entire epoch (B=16 × 31 cell types × 1000 cells × 4000 genes × 4 bytes).
+        # Keep GPU reference to last batch for epoch-end NLL computation.
+        # on_train_epoch_end runs immediately after the last training_step,
+        # before DataLoader fetches next epoch's data, so reference is valid.
         # Under DDP, each rank caches its own last batch. train_loss_nll is
         # logged with sync_dist=True, averaging each rank's NLL estimate.
         if self._use_bayesian_svi:
-            self._last_train_batch = {
-                k: v.cpu() if isinstance(v, torch.Tensor) else v
-                for k, v in batch.items()
-            }
+            # Keep GPU reference to last batch — no CPU copy.
+            # on_train_epoch_end runs immediately after the last training_step,
+            # before DataLoader fetches next epoch's data, so reference is valid.
+            self._last_train_batch_ref = batch
 
         return loss
 
@@ -368,19 +373,14 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self._epoch_nan_skips = 0
         self._epoch_total_batches = 0
 
-        if self._use_bayesian_svi and self._last_train_batch is not None:
-            # Move cached batch back to model device for forward pass
-            device = self.device
-            batch_on_device = {
-                k: v.to(device) if isinstance(v, torch.Tensor) else v
-                for k, v in self._last_train_batch.items()
-            }
+        if self._use_bayesian_svi and self._last_train_batch_ref is not None:
+            # Last batch is still on GPU — use directly, no transfer needed.
             with torch.no_grad():
-                nll_output = self._forward_batch_posterior(batch_on_device)
-                nll_loss = self._compute_loss(nll_output, batch_on_device["cognition"])
-            bs = batch_on_device["cognition"].shape[0]
+                nll_output = self._forward_batch_posterior(self._last_train_batch_ref)
+                nll_loss = self._compute_loss(nll_output, self._last_train_batch_ref["cognition"])
+            bs = self._last_train_batch_ref["cognition"].shape[0]
             self.log("train_loss_nll", nll_loss, sync_dist=True, batch_size=bs)
-            self._last_train_batch = None
+            self._last_train_batch_ref = None
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
         """Validation step — accumulates predictions for epoch-level metrics.
@@ -395,7 +395,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             # See module docstring for rationale.
             with torch.no_grad():
                 val_elbo = self._svi_forward(batch)
-            self._val_elbos.append(float(val_elbo))
+            self._val_elbos.append(val_elbo.detach().item())
             # Beta-NLL (predictive quality at posterior median) logged as val_nll
             nll_loss = self._compute_loss(output, batch["cognition"])
             bs = batch["cognition"].shape[0]
@@ -407,11 +407,13 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             bs = batch["cognition"].shape[0]
             self.log("val_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        # Accumulate predictions for epoch-level correlation metrics
-        self._val_means.append(output["mean"].detach())
-        self._val_targets.append(batch["cognition"].detach())
+        # Accumulate predictions for epoch-level correlation metrics.
+        # .cpu() moves to host immediately, freeing GPU memory that would
+        # otherwise accumulate across the full validation epoch.
+        self._val_means.append(output["mean"].detach().cpu())
+        self._val_targets.append(batch["cognition"].detach().cpu())
         if output.get("std") is not None:
-            self._val_stds.append(output["std"].detach())
+            self._val_stds.append(output["std"].detach().cpu())
 
     def _get_real_dataset_size(self, prefix: str) -> int | None:
         """Get actual dataset size (before DistributedSampler padding).
@@ -525,11 +527,12 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         bs = batch["cognition"].shape[0]
         self.log("test_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        # Accumulate for epoch-level computation (same as validation)
-        self._test_means.append(output["mean"].detach())
-        self._test_targets.append(batch["cognition"].detach())
+        # Accumulate for epoch-level computation (same as validation).
+        # .cpu() moves to host immediately, freeing GPU memory.
+        self._test_means.append(output["mean"].detach().cpu())
+        self._test_targets.append(batch["cognition"].detach().cpu())
         if output.get("std") is not None:
-            self._test_stds.append(output["std"].detach())
+            self._test_stds.append(output["std"].detach().cpu())
 
     def on_test_epoch_end(self) -> None:
         """Compute epoch-level test metrics from accumulated predictions."""

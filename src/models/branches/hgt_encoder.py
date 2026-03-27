@@ -23,6 +23,7 @@ Key features:
 """
 
 import logging
+from collections import defaultdict
 from typing import Optional
 
 import torch
@@ -261,26 +262,38 @@ class HGTEncoder(nn.Module):
             if return_attention and attn is not None:
                 attention_weights.append(attn)
 
-            # Residual + LayerScale(message) per node type
+            # Batch residual + LayerScale: stack all node types, apply in 3 ops
+            # instead of 31*3 (one dropout + one scale multiply + one addition).
             # Pre-LN: NO LayerNorm after the add - gradient flows directly!
-            # NOTE: Iterate over h_dict.keys() (not self.node_types) to handle both
-            # sanitized keys (from collate_for_hgt) and unsanitized keys.
-            for node_key in list(h_dict.keys()):
-                # Look up node index for LayerScale (handles both sanitized/unsanitized)
-                node_type_idx = self._key_to_node_idx.get(node_key)
-                if node_type_idx is None:
-                    # Unknown node type, skip
-                    continue
+            # NOTE: Filter by _key_to_node_idx to handle both sanitized keys
+            # (from collate_for_hgt) and unsanitized keys.
+            node_keys = [k for k in h_dict if self._key_to_node_idx.get(k) is not None]
+            if node_keys:
+                # Group by tensor shape — the common path (HGTEncoderBatched)
+                # has all [1, d] tensors so this produces a single group.
+                # Variable-node-count cases (direct HGTEncoder use) are handled
+                # correctly by grouping same-shape tensors.
+                shape_groups: dict[tuple[int, ...], list[str]] = defaultdict(list)
+                for k in node_keys:
+                    shape_groups[h_dict[k].shape].append(k)
 
-                h_new = h_new_dict.get(node_key, torch.zeros_like(h_dict[node_key]))
-
-                # Apply LayerScale: scale the message contribution per cell type
-                # Initialized to 1.0 for Pre-LN (we're not trying to start at identity)
-                scale = scales[node_type_idx]
-                scaled_message = scale * self.dropout(h_new)
-
-                # Residual + scaled message (no norm after - this is Pre-LN!)
-                h_dict[node_key] = h_dict[node_key] + scaled_message
+                for _shape, group_keys in shape_groups.items():
+                    node_indices = [self._key_to_node_idx[k] for k in group_keys]
+                    h_stack = torch.stack([h_dict[k] for k in group_keys])
+                    h_new_stack = torch.stack([
+                        h_new_dict.get(k, torch.zeros_like(h_dict[k])) for k in group_keys
+                    ])
+                    # Fast path: when all node types present, use scales directly
+                    # to avoid creating an index tensor every forward pass.
+                    if len(group_keys) == self.n_node_types:
+                        scale_vec = scales
+                    else:
+                        scale_vec = scales[torch.tensor(node_indices, device=scales.device)]
+                    # Reshape scale for broadcasting: [N, 1, ...] over (*, d) dims
+                    scaled_msg = scale_vec.view(-1, *([1] * (h_stack.dim() - 1))) * self.dropout(h_new_stack)
+                    h_stack = h_stack + scaled_msg
+                    for i, k in enumerate(group_keys):
+                        h_dict[k] = h_stack[i]
 
         # Output projection
         output_dict = {}

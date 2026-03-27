@@ -19,7 +19,6 @@ import pandas as pd
 from src.visualization.config import (
     ACCENT_CORAL,
     ACCENT_TEAL,
-    ACCENT_PEACH,
     setup_seaborn_style,
     save_figure,
 )
@@ -171,70 +170,6 @@ def plot_loss_curves(
         save_kwargs = {"dpi": dpi} if dpi is not None else {}
         save_figure(fig, str(save_path), **save_kwargs)
         logger.info(f"Saved loss curves to {save_path}")
-
-    return fig
-
-
-def plot_metric_curves(
-    metrics: dict[str, np.ndarray | list],
-    epochs: np.ndarray | list | None = None,
-    figsize: tuple[float, float] = (10, 6),
-    title: str = "Training Metrics",
-    save_path: str | Path | None = None,
-    dpi: int | None = None,
-) -> plt.Figure:
-    """
-    Plot multiple metric curves on the same figure.
-
-    Args:
-        metrics: Dict mapping metric name to values per epoch
-        epochs: Epoch numbers (defaults to 1, 2, 3, ...)
-        figsize: Figure size
-        title: Plot title
-        save_path: If provided, save figure to this path
-
-    Returns:
-        Matplotlib Figure
-    """
-    setup_seaborn_style()
-
-    # Determine number of epochs from first metric
-    first_metric = list(metrics.values())[0]
-    n_epochs = len(first_metric)
-    if epochs is None:
-        epochs = np.arange(1, n_epochs + 1)
-    else:
-        epochs = np.asarray(epochs)
-
-    # Color palette for multiple metrics
-    colors = [ACCENT_CORAL, ACCENT_TEAL, ACCENT_PEACH, "#9467BD", "#8C564B", "#E377C2"]
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    for i, (name, values) in enumerate(metrics.items()):
-        values = np.asarray(values)
-        color = colors[i % len(colors)]
-        ax.plot(
-            epochs[:len(values)], values,
-            color=color,
-            linewidth=2,
-            label=name,
-            marker="o",
-            markersize=3,
-        )
-
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Value")
-    ax.set_title(title)
-    ax.legend(loc="best")
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    if save_path:
-        save_kwargs = {"dpi": dpi} if dpi is not None else {}
-        save_figure(fig, str(save_path), **save_kwargs)
-        logger.info(f"Saved metric curves to {save_path}")
 
     return fig
 
