@@ -43,6 +43,9 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         final_mode: If True, train on full train_val_pool, test on holdout
         liana_results: Dict mapping subject_id -> LIANA+ DataFrame for CCC edges
             (only used with on-the-fly CognitiveResilienceDataset, not PrecomputedDataset)
+        preloaded_cache: Pre-loaded subject tensors from
+            ``PrecomputedDataset.load_subject_cache``. Eliminates per-trial disk I/O
+            during HPO. Only used with PrecomputedDataset.
     """
 
     def __init__(
@@ -55,16 +58,19 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         adata: anndata.AnnData | None = None,
         final_mode: bool = False,
         liana_results: dict[str, pd.DataFrame] | None = None,
+        preloaded_cache: dict[str, dict] | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.metadata = metadata
         self.splits = splits
         self.fold_idx = fold_idx
+        self._prefetchers: list[ThreadedPrefetcher] = []
         self.precomputed_dir = Path(precomputed_dir) if precomputed_dir is not None else None
         self.adata = adata
         self.final_mode = final_mode
         self.liana_results = liana_results
+        self.preloaded_cache = preloaded_cache
 
         self._data_cfg = config.data
         self._dl_cfg = self._data_cfg.dataloader
@@ -149,6 +155,11 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 self._test_ds = self._make_dataset(test_subjects)
 
     @property
+    def train_dataset(self):
+        """Public access to the training dataset (used by LightningModule for 1/N KL scaling)."""
+        return self._train_ds
+
+    @property
     def train_target_mean(self) -> float | None:
         """Compute mean of training targets for data-driven prior centering.
 
@@ -157,11 +168,8 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         """
         if self._train_ds is None or len(self._train_ds) == 0:
             return None
-        targets = []
-        for i in range(len(self._train_ds)):
-            sample = self._train_ds[i]
-            targets.append(sample["cognition"].item())
-        return float(np.mean(targets))
+        # Direct array access avoids N __getitem__ calls + dict construction
+        return float(np.mean(self._train_ds._target_array))
 
     def _make_dataset(self, subject_ids: list[str]):
         """Create a dataset for the given subject IDs."""
@@ -179,6 +187,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 pathology_columns=list(
                     self._data_cfg.get("pathology_columns", [])
                 ),
+                preloaded_cache=self.preloaded_cache,
             )
         else:
             if self.adata is None:
@@ -253,7 +262,14 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 num_replicas=self.trainer.world_size,
                 rank=self.trainer.global_rank,
                 shuffle=True,
+                seed=self.config.experiment.get("seed", 42),
             )
+
+        # When ThreadedPrefetcher will wrap the DataLoader, disable pin_memory
+        # since the prefetcher does its own .to(device) — double-pinning wastes
+        # a synchronous memcpy.
+        use_prefetcher = torch.cuda.is_available() and self.trainer is not None
+        pin = False if use_prefetcher else self._dl_cfg.get("pin_memory", True)
 
         dl = create_dataloader(
             self._train_ds,
@@ -261,21 +277,24 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             shuffle=True,
             drop_last=True,
             num_workers=nw,
-            pin_memory=self._dl_cfg.get("pin_memory", True),
+            pin_memory=pin,
             multiregion=True,
             use_hgt_format=True,
             prefetch_factor=self._dl_cfg.get("prefetch_factor", 2) if nw > 0 else None,
             worker_init_fn=self._make_worker_init_fn() if nw > 0 else None,
             sampler=sampler,
+            seed=self.config.experiment.get("seed", 42),
         )
 
-        if torch.cuda.is_available() and self.trainer is not None:
+        if use_prefetcher:
             device = torch.device(f"cuda:{self.trainer.local_rank}")
-            return ThreadedPrefetcher(dl, device, prefetch_count=2)
+            pf = ThreadedPrefetcher(dl, device, prefetch_count=2)
+            self._prefetchers.append(pf)
+            return pf
 
         return dl
 
-    def val_dataloader(self) -> torch.utils.data.DataLoader | None:
+    def val_dataloader(self) -> torch.utils.data.DataLoader | ThreadedPrefetcher | None:
         """Create validation DataLoader with deterministic cell sampling.
 
         DDP note: DistributedSampler pads dataset to make it evenly divisible
@@ -283,37 +302,73 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         size for correct correlation metrics. Lightning handles
         DistributedSampler automatically (use_distributed_sampler=True).
 
+        On CUDA, wraps with ThreadedPrefetcher (same as train_dataloader)
+        to overlap collation with GPU compute.
+
         Returns None in final_mode (no validation set exists).
         """
         if self._val_ds is None:
             return None
         nw = self._effective_num_workers
-        return create_dataloader(
+        use_prefetcher = torch.cuda.is_available() and self.trainer is not None
+        pin = False if use_prefetcher else self._dl_cfg.get("pin_memory", True)
+        dl = create_dataloader(
             self._val_ds,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=nw,
-            pin_memory=self._dl_cfg.get("pin_memory", True),
+            pin_memory=pin,
             multiregion=True,
             use_hgt_format=True,
             prefetch_factor=self._dl_cfg.get("prefetch_factor", 2) if nw > 0 else None,
             worker_init_fn=self._make_deterministic_worker_init_fn() if nw > 0 else None,
+            seed=self.config.experiment.get("seed", 42),
         )
+        if use_prefetcher:
+            device = torch.device(f"cuda:{self.trainer.local_rank}")
+            pf = ThreadedPrefetcher(dl, device, prefetch_count=2)
+            self._prefetchers.append(pf)
+            return pf
+        return dl
 
-    def test_dataloader(self) -> torch.utils.data.DataLoader:
-        """Create test DataLoader with deterministic cell sampling."""
+    def test_dataloader(self) -> torch.utils.data.DataLoader | ThreadedPrefetcher:
+        """Create test DataLoader with deterministic cell sampling.
+
+        On CUDA, wraps with ThreadedPrefetcher (same as train/val) to overlap
+        collation with GPU compute.
+        """
         nw = self._effective_num_workers
-        return create_dataloader(
+        use_prefetcher = torch.cuda.is_available() and self.trainer is not None
+        pin = False if use_prefetcher else self._dl_cfg.get("pin_memory", True)
+        dl = create_dataloader(
             self._test_ds,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=nw,
-            pin_memory=self._dl_cfg.get("pin_memory", True),
+            pin_memory=pin,
             multiregion=True,
             use_hgt_format=True,
             prefetch_factor=self._dl_cfg.get("prefetch_factor", 2) if nw > 0 else None,
             worker_init_fn=self._make_deterministic_worker_init_fn() if nw > 0 else None,
+            seed=self.config.experiment.get("seed", 42),
         )
+        if use_prefetcher:
+            device = torch.device(f"cuda:{self.trainer.local_rank}")
+            pf = ThreadedPrefetcher(dl, device, prefetch_count=2)
+            self._prefetchers.append(pf)
+            return pf
+        return dl
+
+    def shutdown_prefetchers(self) -> None:
+        """Shut down all ThreadedPrefetcher instances created by this DataModule.
+
+        Call before deleting the DataModule to ensure daemon producer threads
+        release their GPU tensor references. Replaces the fragile
+        gc.get_objects() scan pattern.
+        """
+        for pf in self._prefetchers:
+            pf.shutdown()
+        self._prefetchers.clear()
 
     def _make_worker_init_fn(self):
         """Create a rank-aware worker init function for DDP reproducibility.

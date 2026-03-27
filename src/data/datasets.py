@@ -14,24 +14,27 @@ Design Decisions:
    predicting cognitive resilience. This enables end-to-end learning of cell
    type importance rather than requiring a priori biological assumptions.
 
-2. Mask semantics (2026-01-27): Two distinct masks serve different purposes:
+2. Cell data format: Both CognitiveResilienceDataset and PrecomputedDataset
+   return flat cell representations:
+
+   - cell_data [total_cells, n_genes]: concatenated expression for all cell types
+   - cell_offsets [n_cell_types + 1]: cumulative offsets into cell_data
+
+   This avoids the ~87% zero padding of the old 3D [n_types, max_cells, n_genes]
+   format.
+
+3. Mask semantics:
 
    - cell_type_mask [n_cell_types]: True if ANY cells exist for this type (>0).
      Used by Pseudobulk and HGT branches. Even 1 cell provides meaningful
      pseudobulk (mean expression) and allows HGT message passing.
 
-   - cell_mask [n_cell_types, max_cells]: True for valid sampled cells.
-     Used by SetTransformer branch. Cell types with fewer than min_cells_threshold
-     (default: 50) get all-False masks because modeling within-cell-type
-     heterogeneity requires sufficient cell counts.
-
-   This design allows each branch to use data appropriate to its requirements:
-   - Pseudobulk branch: Uses all cell types with any cells
-   - HGT branch: Uses pseudobulk as node features for all present cell types
-   - SetTransformer branch: Only processes cell types with ≥50 cells;
-     others receive learned empty_embedding (no NaN, fully differentiable)
+   Cell types with fewer than min_cells_threshold (default: 50) have zero cells
+   in the flat representation (offsets are equal). The model's CellTransformer
+   handles empty types via zero embeddings.
 """
 
+import contextlib
 import logging
 import tempfile
 import warnings
@@ -48,6 +51,23 @@ from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
 from src.data.cell_sampling import CellSampler
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _shared_mmap():
+    """Temporarily set torch mmap default to MAP_SHARED, restoring MAP_PRIVATE on exit.
+
+    MAP_SHARED lets all processes/ranks share physical pages via the OS page
+    cache instead of getting private copies (MAP_PRIVATE). This is critical
+    for DDP and multi-process HPO to avoid duplicating multi-GB data per rank.
+    """
+    import mmap as _mmap
+
+    torch.serialization.set_default_mmap_options(_mmap.MAP_SHARED)
+    try:
+        yield
+    finally:
+        torch.serialization.set_default_mmap_options(_mmap.MAP_PRIVATE)
 
 
 def _validate_no_nan_columns(
@@ -352,8 +372,9 @@ class CognitiveResilienceDataset(Dataset):
 
         # ─────────────────────────────────────────────────────────────────────
         # Cell-level data for Set Transformer (densifies only sampled rows)
+        # Returns flat format: cell_data + cell_offsets
         # ─────────────────────────────────────────────────────────────────────
-        cells, cell_mask, cell_barcodes = self._get_cell_level_data(
+        cell_data, cell_offsets, cell_barcodes = self._get_cell_level_data(
             adata_subject, X_sparse, ct_grouped=ct_grouped,
         )
 
@@ -382,9 +403,9 @@ class CognitiveResilienceDataset(Dataset):
             "cell_type_mask": torch.from_numpy(cell_type_mask).bool(),
             "cell_counts": torch.from_numpy(cell_counts).long(),
             "region_mask": torch.from_numpy(region_mask).bool(),
-            # Cell-level data for ALL 31 types (model selects which to use)
-            "cells": torch.from_numpy(cells).float(),
-            "cell_mask": torch.from_numpy(cell_mask).bool(),
+            # Cell-level data in flat format: cell_data + cell_offsets
+            "cell_data": torch.from_numpy(cell_data).float(),
+            "cell_offsets": torch.from_numpy(cell_offsets).long(),
             # Graph features (CCC = cell-cell communication)
             "ccc_edge_index": torch.from_numpy(edge_index).long(),
             "ccc_edge_type": torch.from_numpy(edge_type).long(),
@@ -556,13 +577,15 @@ class CognitiveResilienceDataset(Dataset):
         """
         Get cell-level expression for ALL cell types using CellSampler.
 
-        Only densifies the sampled rows (bounded by max_cells_per_type × 31),
-        not the entire subject expression matrix. This keeps memory bounded
-        even for subjects with 20K+ cells.
+        Returns flat format: cell_data [total_cells, n_genes] + cell_offsets
+        [n_cell_types + 1] (cumulative offsets). Only densifies the sampled
+        rows (bounded by max_cells_per_type * 31), not the entire subject
+        expression matrix. This keeps memory bounded even for subjects with
+        20K+ cells.
 
         Returns data for all 31 cell types. Cell types with fewer cells than
-        min_cells_threshold will have empty data (all-False mask). The model's
-        CellTypeSelector learns which types to use for prediction.
+        min_cells_threshold will have empty data (zero cells in offsets). The
+        model's CellTypeSelector learns which types to use for prediction.
 
         Args:
             adata_subject: AnnData subset for one subject
@@ -573,8 +596,8 @@ class CognitiveResilienceDataset(Dataset):
                 from __getitem__).
 
         Returns:
-            cells: [n_cell_types, max_cells, n_genes] expression data
-            cell_mask: [n_cell_types, max_cells] valid cell mask
+            cell_data: [total_cells, n_genes] flat concatenated expression data
+            cell_offsets: [n_cell_types + 1] cumulative offsets into cell_data
             cell_barcodes: list of lists of barcode strings per cell type
         """
         cell_barcodes: list[list[str]] = [[] for _ in range(self.n_cell_types)]
@@ -587,16 +610,8 @@ class CognitiveResilienceDataset(Dataset):
             precomputed_indices=ct_grouped,
         )
 
-        # Determine actual max cells across all types for this subject
-        actual_max = max(
-            (len(sampled_indices.get(ct, [])) for ct in self.cell_type_order),
-            default=0,
-        )
-        # Clamp to at least 1 to avoid zero-sized dimension
-        actual_max = max(actual_max, 1)
-
-        cells = np.zeros((self.n_cell_types, actual_max, self.n_genes), dtype=np.float32)
-        cell_mask = np.zeros((self.n_cell_types, actual_max), dtype=bool)
+        flat_parts: list[np.ndarray] = []
+        cell_offsets = np.zeros(self.n_cell_types + 1, dtype=np.int64)
 
         obs_index = adata_subject.obs.index
 
@@ -609,11 +624,17 @@ class CognitiveResilienceDataset(Dataset):
                 rows = X[indices]
                 if hasattr(rows, "toarray"):
                     rows = rows.toarray()
-                cells[i, :n_sampled] = np.asarray(rows, dtype=np.float32)
-                cell_mask[i, :n_sampled] = True
+                flat_parts.append(np.asarray(rows, dtype=np.float32))
                 cell_barcodes[i] = [str(x) for x in obs_index[indices].tolist()]
 
-        return cells, cell_mask, cell_barcodes
+            cell_offsets[i + 1] = cell_offsets[i] + n_sampled
+
+        if flat_parts:
+            cell_data = np.concatenate(flat_parts, axis=0)
+        else:
+            cell_data = np.empty((0, self.n_genes), dtype=np.float32)
+
+        return cell_data, cell_offsets, cell_barcodes
 
     def _get_graph_features(self, subject_id: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Get CCC graph features from LIANA+ results."""
@@ -662,6 +683,9 @@ class PrecomputedDataset(Dataset):
     Each DDP rank loads its own copy (~38 GB for full ROSMAP dataset).
     This avoids Linux ``mmap_lock`` contention that causes 4x data-loading
     slowdown under DDP on kernels < 6.4 (no per-VMA locking).
+
+    For HPO, pass ``preloaded_cache`` to skip per-trial disk I/O. Use
+    :meth:`load_subject_cache` to build the cache once per worker process.
     """
 
     def __init__(
@@ -674,6 +698,7 @@ class PrecomputedDataset(Dataset):
         pathology_columns: list[str] | None = None,
         cell_type_order: list[str] | None = None,
         max_missing_subject_fraction: float = 0.1,
+        preloaded_cache: dict[str, dict[str, Any]] | None = None,
     ):
         """
         Initialize from precomputed .pt features (loaded into RAM).
@@ -690,6 +715,9 @@ class PrecomputedDataset(Dataset):
                 Defaults to CELL_TYPE_ORDER from constants.
             max_missing_subject_fraction: Maximum fraction of subjects allowed to be
                 missing .pt files before raising an error (default: 0.1 = 10%).
+            preloaded_cache: Pre-loaded subject data from :meth:`load_subject_cache`.
+                When provided, validation runs from cache with zero disk I/O
+                (``_validate_from_cache``) instead of loading from disk.
         """
         self.feature_dir = Path(feature_dir)
         self.subject_ids = list(subject_ids)
@@ -699,16 +727,24 @@ class PrecomputedDataset(Dataset):
         self.pathology_columns = pathology_columns or ["gpath", "amylsqrt", "tangsqrt"]
         self.max_missing_subject_fraction = max_missing_subject_fraction
 
-        # Auto-detect cell_type_order from first .pt file if not explicitly given.
-        # This avoids mismatches when the DataModule doesn't forward cell_type_order.
+        # Single-pass load + validate: loads each .pt file exactly once,
+        # detecting cell_type_order, filtering degenerate subjects, and
+        # checking gene_names in the same pass.  When preloaded_cache is
+        # provided (HPO fast path), all validation is done from the cache
+        # with zero disk I/O.
+        if preloaded_cache is not None:
+            self._small_cache, detected_order = self._validate_from_cache(
+                preloaded_cache, cell_type_order,
+            )
+        else:
+            self._small_cache, detected_order = self._load_and_validate_all(
+                cell_type_order,
+            )
+
         if cell_type_order is not None:
             self.cell_type_order = cell_type_order
         else:
-            self.cell_type_order = self._detect_cell_type_order() or CELL_TYPE_ORDER
-
-        # Validate files exist
-        self._validate_files()
-        self._validate_gene_names()
+            self.cell_type_order = detected_order or CELL_TYPE_ORDER
 
         # Validate no NaN in target or pathology columns
         self._validate_metadata()
@@ -731,12 +767,9 @@ class PrecomputedDataset(Dataset):
             self._target_array, dtype=torch.float32
         ).unsqueeze(1)  # [N_subjects, 1]
 
-        # Load all .pt files into process-local heap memory.  Each DDP rank
-        # gets its own copy (~38 GB) but avoids mmap_lock contention that
-        # causes 4x data-loading slowdown under DDP on kernel < 6.4.
-        self._load_all()
-
         # Pre-build sample templates (avoids dict construction per __getitem__)
+        from src.data.constants import N_REGIONS, PFC_REGION_IDX
+
         self._sample_templates = {}
         for i, subject_id in enumerate(self.subject_ids):
             cached = self._small_cache[subject_id]
@@ -751,13 +784,12 @@ class PrecomputedDataset(Dataset):
                 "ccc_edge_type": cached["ccc_edge_type"],
                 "ccc_edge_attr": cached["ccc_edge_attr"],
                 "cell_data": cached["cell_data"],
-                "pathology": torch.from_numpy(self._pathology_array[i]).float().clone(),
-                "cognition": self._cognition_tensors[i].clone(),
+                "pathology": torch.from_numpy(self._pathology_array[i]).float(),
+                "cognition": self._cognition_tensors[i],
             }
             # Pre-stack region pseudobulks into [n_regions, n_cell_types, n_genes]
             # so collation can torch.stack directly instead of allocating zeros
             # + nested fill loop over the 36 MB region_pseudobulk tensor.
-            from src.data.constants import N_REGIONS, PFC_REGION_IDX
             n_ct, n_genes = cached["pseudobulk"].shape
             region_pb = torch.zeros(N_REGIONS, n_ct, n_genes)
             region_msk = torch.zeros(N_REGIONS, dtype=torch.bool)
@@ -774,104 +806,189 @@ class PrecomputedDataset(Dataset):
             template["region_mask"] = region_msk
             self._sample_templates[subject_id] = template
 
-    def _load_all(self) -> None:
-        """Load all .pt files into process-local heap memory.
+    def _load_and_validate_all(
+        self,
+        cell_type_order: list[str] | None,
+    ) -> tuple[dict[str, dict[str, Any]], list[str] | None]:
+        """Single-pass load + validate: loads each .pt file exactly once.
 
-        Each DDP rank gets its own copy of the data (~38 GB for full ROSMAP).
-        This trades memory for zero ``mmap_lock`` contention during training —
-        on Linux < 6.4, concurrent mmap page faults across DDP ranks contend
-        on a single kernel lock, causing 4x data-loading slowdown.
+        Merges the work previously split across ``_detect_cell_type_order``,
+        ``_validate_files``, ``_validate_gene_names``, and ``_load_all`` into
+        one pass over the .pt files. Each file is loaded once via mmap and
+        validated in-line.
+
+        Under DDP, automatically caches data to ``/dev/shm`` (RAM-backed
+        tmpfs) for near-instant loading across all ranks. The staggered
+        loading pattern (rank 0 first, barrier, then other ranks) ensures
+        rank 0's ``madvise(MADV_WILLNEED)`` pre-faults all pages before
+        other ranks touch them.
+
+        Returns:
+            (cache, detected_cell_type_order) where cache maps subject_id
+            to its tensor dict and detected_cell_type_order is the order
+            read from the first .pt file (or None).
         """
         import time as _time
+        import torch.distributed as dist
 
-        t0 = _time.monotonic()
-        self._small_cache: dict[str, dict[str, Any]] = {}
-        total_cell_bytes = 0
-        for sid in self.subject_ids:
-            feature_file = self._resolve_feature_file(sid)
-            pt_data = torch.load(feature_file, weights_only=False)
-            # Validate cell_type_order if stored in .pt file
-            if "cell_type_order" in pt_data:
-                saved_order = list(pt_data["cell_type_order"])
-                if saved_order != list(self.cell_type_order):
-                    raise RuntimeError(
-                        f"Subject {sid} was precomputed with different cell_type_order. "
-                        f"Saved: {saved_order[:5]}... vs current: {list(self.cell_type_order)[:5]}... "
-                        f"Re-run precompute_features.py with the correct cell_type_order."
-                    )
-            entry: dict[str, Any] = {
-                "pseudobulk": pt_data["pseudobulk"],
-                "cell_type_mask": pt_data["cell_type_mask"],
-                "cell_offsets": pt_data["cell_offsets"],
-                "ccc_edge_index": pt_data["ccc_edge_index"],
-                "ccc_edge_type": pt_data["ccc_edge_type"],
-                "ccc_edge_attr": pt_data["ccc_edge_attr"],
-                "cell_counts": pt_data["cell_counts"],
-                "region_mask": pt_data["region_mask"],
-                "cell_data": pt_data["cell_data"],
-            }
-            for key in pt_data:
-                if key.startswith("region_") and key.endswith("_pseudobulk"):
-                    entry[key] = pt_data[key]
-            if "available_regions" in pt_data:
-                entry["available_regions"] = list(pt_data["available_regions"])
-            total_cell_bytes += entry["cell_data"].nelement() * entry["cell_data"].element_size()
-            self._small_cache[sid] = entry
-        elapsed = _time.monotonic() - t0
-        logger.info(
-            "Loaded all .pt files for %d subjects into RAM in %.1f s (cell_data: %.1f GB)",
-            len(self.subject_ids), elapsed, total_cell_bytes / (1024**3),
-        )
+        ddp_active = dist.is_initialized() and dist.get_world_size() > 1
+        rank = dist.get_rank() if ddp_active else 0
+        world_size = dist.get_world_size() if ddp_active else 1
 
-    def _resolve_feature_file(self, sid: str) -> Path | None:
-        """Return the .pt feature file path for a subject.
+        # Under DDP, cache data to /dev/shm for fast loading across ranks.
+        load_dir = self.feature_dir
+        if ddp_active:
+            load_dir = self._ensure_shm_cache(rank)
 
-        Returns None if the file does not exist.
-        """
-        pt_path = self.feature_dir / f"{sid}.pt"
-        if pt_path.exists():
-            return pt_path
-        return None
+        # These will be populated by the loading rank and used after barriers.
+        cache: dict[str, dict[str, Any]] = {}
+        detected_order: list[str] | None = None
+        degenerate: list[str] = []
+        edge_counts: dict[str, int] = {}
 
-    def _detect_cell_type_order(self) -> list[str] | None:
-        """Read cell_type_order from the first available .pt file.
+        # Gene-name validation state (checked on first loaded subject).
+        gene_names = self.get_gene_names()
+        gene_names_checked = False
 
-        Returns None if no .pt file is found or it lacks the key.
-        """
-        for sid in self.subject_ids:
-            pt_path = self.feature_dir / f"{sid}.pt"
-            if pt_path.exists():
-                data = torch.load(pt_path, weights_only=False)
-                if "cell_type_order" in data:
-                    return list(data["cell_type_order"])
-        return None
+        # Enable MAP_SHARED so all ranks share physical pages via the
+        # OS page cache instead of getting private copies. Context manager
+        # restores MAP_PRIVATE on exit (normal or exceptional).
+        #
+        # DDP deadlock prevention: if any rank throws during loading, other
+        # ranks would hang forever at dist.barrier(). We use all_reduce to
+        # communicate failure before the barrier so all ranks can raise.
+        load_error: Exception | None = None
+        with _shared_mmap():
+            # Stagger loading: each rank loads sequentially to avoid
+            # thundering-herd page faults on the process-level mmap_lock.
+            for load_rank in range(world_size):
+                if rank == load_rank:
+                    try:
+                        t0 = _time.monotonic()
+                        total_cell_bytes = 0
+                        is_first_loaded = True
 
-    def _validate_files(self):
-        """Check that .pt feature files exist for all subjects.
+                        for sid in self.subject_ids:
+                            # --- file existence check (was in _validate_files) ---
+                            feature_file = load_dir / f"{sid}.pt"
+                            if not feature_file.exists():
+                                feature_file = self._resolve_feature_file(sid)
+                            if feature_file is None:
+                                continue
+                            if sid not in self.metadata.index:
+                                continue
 
-        Also removes degenerate subjects with fewer than 2 active cell types,
-        since CCC edges require at least 2 cell types interacting and the
-        model cannot learn from subjects with no inter-type communication.
-        """
-        valid_subjects = []
-        degenerate = []
-        edge_counts = {}
-        for sid in self.subject_ids:
-            feature_file = self._resolve_feature_file(sid)
-            if feature_file is None or sid not in self.metadata.index:
-                continue
-            # Check for degenerate subjects (< 2 active cell types)
-            data = self._load_raw_feature_file(feature_file)
-            ct_mask = data["cell_type_mask"]
-            n_active = int(ct_mask.sum() if isinstance(ct_mask, (torch.Tensor, np.ndarray)) else np.array(ct_mask).sum())
-            edge_val = data["ccc_edge_index"]
-            n_edges = int(edge_val.shape[1] if isinstance(edge_val, (torch.Tensor, np.ndarray)) else np.array(edge_val).shape[1])
-            if n_active < 2:
-                degenerate.append(sid)
-                continue
-            valid_subjects.append(sid)
-            edge_counts[sid] = n_edges
+                            pt_data = torch.load(
+                                feature_file, weights_only=False, mmap=True,
+                            )
 
+                            # --- detect cell_type_order from first file (was _detect_cell_type_order) ---
+                            if is_first_loaded:
+                                if "cell_type_order" in pt_data:
+                                    detected_order = list(pt_data["cell_type_order"])
+
+                                # --- validate gene_names against first pseudobulk (was _validate_gene_names) ---
+                                if gene_names is not None and not gene_names_checked:
+                                    n_genes_data = pt_data["pseudobulk"].shape[1]
+                                    if len(gene_names) != n_genes_data:
+                                        raise ValueError(
+                                            f"gene_names.npy has {len(gene_names)} genes but pseudobulk "
+                                            f"has {n_genes_data} genes. Re-run precompute_features.py to "
+                                            f"regenerate the sidecar file."
+                                        )
+                                    gene_names_checked = True
+                                is_first_loaded = False
+
+                            # --- validate cell_type_order consistency (was in old _load_all) ---
+                            # Use the effective order: explicit > detected > default
+                            effective_order = cell_type_order or detected_order or CELL_TYPE_ORDER
+                            if "cell_type_order" in pt_data:
+                                saved_order = list(pt_data["cell_type_order"])
+                                if saved_order != list(effective_order):
+                                    raise RuntimeError(
+                                        f"Subject {sid} was precomputed with different cell_type_order. "
+                                        f"Saved: {saved_order[:5]}... vs current: {list(effective_order)[:5]}... "
+                                        f"Re-run precompute_features.py with the correct cell_type_order."
+                                    )
+
+                            # --- degenerate subject check (was in _validate_files) ---
+                            ct_mask = pt_data["cell_type_mask"]
+                            n_active = int(
+                                ct_mask.sum()
+                                if isinstance(ct_mask, (torch.Tensor, np.ndarray))
+                                else np.array(ct_mask).sum()
+                            )
+                            if n_active < 2:
+                                degenerate.append(sid)
+                                continue
+
+                            edge_val = pt_data["ccc_edge_index"]
+                            n_edges = int(
+                                edge_val.shape[1]
+                                if isinstance(edge_val, (torch.Tensor, np.ndarray))
+                                else np.array(edge_val).shape[1]
+                            )
+                            edge_counts[sid] = n_edges
+
+                            # --- build cache entry (was in old _load_all) ---
+                            entry: dict[str, Any] = {
+                                "pseudobulk": pt_data["pseudobulk"],
+                                "cell_type_mask": pt_data["cell_type_mask"],
+                                "cell_offsets": pt_data["cell_offsets"],
+                                "ccc_edge_index": pt_data["ccc_edge_index"],
+                                "ccc_edge_type": pt_data["ccc_edge_type"],
+                                "ccc_edge_attr": pt_data["ccc_edge_attr"],
+                                "cell_counts": pt_data["cell_counts"],
+                                "region_mask": pt_data["region_mask"],
+                                "cell_data": pt_data["cell_data"],
+                            }
+                            for key in pt_data:
+                                if key.startswith("region_") and key.endswith("_pseudobulk"):
+                                    entry[key] = pt_data[key]
+                            if "available_regions" in pt_data:
+                                entry["available_regions"] = list(pt_data["available_regions"])
+                            total_cell_bytes += entry["cell_data"].nelement() * entry["cell_data"].element_size()
+                            cache[sid] = entry
+
+                        elapsed = _time.monotonic() - t0
+                        logger.info(
+                            "Rank %d: loaded %d subjects via mmap (MAP_SHARED) in %.1f s "
+                            "(cell_data: %.1f GB, source: %s)",
+                            rank, len(cache), elapsed,
+                            total_cell_bytes / (1024**3),
+                            "shm" if str(load_dir).startswith("/dev/shm") else "disk",
+                        )
+
+                        # Pre-fault all mmap'd pages so subsequent ranks find them
+                        # resident in the page cache (minor faults only).
+                        if ddp_active and rank == 0:
+                            self._prefault_cache(cache)
+
+                    except Exception as exc:
+                        load_error = exc
+                        logger.error("Rank %d: loading failed: %s", rank, exc)
+
+                # DDP deadlock prevention: use all_reduce to check if any
+                # rank failed before the barrier. Without this, a failed rank
+                # skips the barrier while healthy ranks wait forever.
+                if ddp_active:
+                    device = torch.device(f"cuda:{rank}") if torch.cuda.is_available() else torch.device("cpu")
+                    load_ok = torch.tensor([1 if load_error is None else 0], dtype=torch.int32, device=device)
+                    dist.all_reduce(load_ok, op=dist.ReduceOp.MIN)
+                    if load_ok.item() == 0:
+                        if load_error is not None:
+                            raise load_error
+                        raise RuntimeError(
+                            f"Rank {rank}: a DDP rank failed during data loading; "
+                            "aborting to prevent barrier deadlock"
+                        )
+                    dist.barrier()
+
+        # Re-raise outside DDP context for single-GPU runs
+        if load_error is not None:
+            raise load_error
+
+        # --- post-load validation (was in _validate_files) ---
         if degenerate:
             warnings.warn(
                 f"Removed {len(degenerate)} degenerate subjects with <2 active "
@@ -879,6 +996,7 @@ class PrecomputedDataset(Dataset):
                 stacklevel=2,
             )
 
+        valid_subjects = list(cache.keys())
         if len(valid_subjects) < len(self.subject_ids):
             n_removed = len(self.subject_ids) - len(valid_subjects)
             missing_fraction = n_removed / len(self.subject_ids) if self.subject_ids else 0.0
@@ -891,7 +1009,7 @@ class PrecomputedDataset(Dataset):
                     f"Check feature_dir path: {self.feature_dir}"
                 )
 
-            missing = [s for s in self.subject_ids if s not in valid_subjects]
+            missing = [s for s in self.subject_ids if s not in cache]
             preview = missing[:10]
             suffix = f" (and {len(missing) - 10} more)" if len(missing) > 10 else ""
             warnings.warn(
@@ -901,28 +1019,335 @@ class PrecomputedDataset(Dataset):
 
         self.subject_ids = valid_subjects
         self._edge_counts = edge_counts
+        return cache, detected_order
+
+    def _validate_from_cache(
+        self,
+        preloaded_cache: dict[str, dict[str, Any]],
+        cell_type_order: list[str] | None,
+    ) -> tuple[dict[str, dict[str, Any]], list[str] | None]:
+        """Validate and filter subjects from a preloaded cache (zero disk I/O).
+
+        Performs the same validation as ``_load_and_validate_all`` but reads
+        all data from the in-memory cache instead of .pt files on disk.
+        Used on the HPO fast path where ``load_subject_cache()`` has already
+        loaded everything.
+
+        Returns:
+            (cache, detected_cell_type_order)
+        """
+        detected_order: list[str] | None = None
+        degenerate: list[str] = []
+        edge_counts: dict[str, int] = {}
+        cache: dict[str, dict[str, Any]] = {}
+
+        gene_names = self.get_gene_names()
+        gene_names_checked = False
+        is_first = True
+
+        for sid in self.subject_ids:
+            if sid not in preloaded_cache or sid not in self.metadata.index:
+                continue
+            data = preloaded_cache[sid]
+
+            if is_first:
+                # Detect cell_type_order from the cached data if a
+                # "cell_type_order" key was preserved (load_subject_cache
+                # doesn't store it, but the pseudobulk shape is available).
+                # For the HPO path, cell_type_order is typically passed
+                # explicitly, so detected_order is a fallback.
+                # We check the first subject's pseudobulk for gene_names.
+                if gene_names is not None and not gene_names_checked:
+                    n_genes_data = data["pseudobulk"].shape[1]
+                    if len(gene_names) != n_genes_data:
+                        raise ValueError(
+                            f"gene_names.npy has {len(gene_names)} genes but pseudobulk "
+                            f"has {n_genes_data} genes. Re-run precompute_features.py to "
+                            f"regenerate the sidecar file."
+                        )
+                    gene_names_checked = True
+                is_first = False
+
+            # Degenerate subject check
+            ct_mask = data["cell_type_mask"]
+            n_active = int(
+                ct_mask.sum()
+                if isinstance(ct_mask, (torch.Tensor, np.ndarray))
+                else np.array(ct_mask).sum()
+            )
+            if n_active < 2:
+                degenerate.append(sid)
+                continue
+
+            edge_val = data["ccc_edge_index"]
+            n_edges = int(
+                edge_val.shape[1]
+                if isinstance(edge_val, (torch.Tensor, np.ndarray))
+                else np.array(edge_val).shape[1]
+            )
+            edge_counts[sid] = n_edges
+            cache[sid] = data
+
+        if degenerate:
+            warnings.warn(
+                f"Removed {len(degenerate)} degenerate subjects with <2 active "
+                f"cell types (no CCC edges possible): {degenerate}",
+                stacklevel=2,
+            )
+
+        valid_subjects = list(cache.keys())
+        if len(valid_subjects) < len(self.subject_ids):
+            n_removed = len(self.subject_ids) - len(valid_subjects)
+            missing_fraction = n_removed / len(self.subject_ids) if self.subject_ids else 0.0
+
+            if missing_fraction > self.max_missing_subject_fraction:
+                raise ValueError(
+                    f"Too many subjects missing feature files or metadata: "
+                    f"{n_removed}/{len(self.subject_ids)} ({missing_fraction:.1%}) "
+                    f"exceeds threshold ({self.max_missing_subject_fraction:.0%}). "
+                    f"Check feature_dir path: {self.feature_dir}"
+                )
+
+            missing = [s for s in self.subject_ids if s not in cache]
+            preview = missing[:10]
+            suffix = f" (and {len(missing) - 10} more)" if len(missing) > 10 else ""
+            warnings.warn(
+                f"Removed {n_removed} subjects without feature files or metadata: "
+                f"{preview}{suffix}"
+            )
+
+        self.subject_ids = valid_subjects
+        self._edge_counts = edge_counts
+        return cache, detected_order
+
+    def _ensure_shm_cache(self, rank: int) -> Path:
+        """Copy feature files to /dev/shm for fast DDP loading.
+
+        Rank 0 copies files; other ranks wait at a barrier.
+        Returns the /dev/shm cache directory path.
+        """
+        import shutil
+        import torch.distributed as dist
+
+        shm_dir = Path("/dev/shm") / f"precomputed_{self.feature_dir.name}"
+
+        if rank == 0:
+            # Check if cache is valid (exists and has at least as many files)
+            if shm_dir.exists() and len(list(shm_dir.glob("*.pt"))) >= len(self.subject_ids):
+                logger.info("Using existing /dev/shm cache: %s", shm_dir)
+                self._register_shm_cleanup(shm_dir)
+            else:
+                # Check space: need ~1.2x data size for safety margin
+                shm_stat = shutil.disk_usage("/dev/shm")
+                data_size = sum(f.stat().st_size for f in self.feature_dir.glob("*.pt"))
+                if shm_stat.free > data_size * 1.2:
+                    logger.info(
+                        "Caching %d .pt files (%.1f GB) to /dev/shm for DDP...",
+                        len(self.subject_ids), data_size / (1024**3),
+                    )
+                    shm_dir.mkdir(exist_ok=True)
+                    for sid in self.subject_ids:
+                        src = self._resolve_feature_file(sid)
+                        if src is not None:
+                            shutil.copy2(src, shm_dir / f"{sid}.pt")
+                    logger.info("Cached to %s", shm_dir)
+                    self._register_shm_cleanup(shm_dir)
+                else:
+                    logger.warning(
+                        "/dev/shm has %.1f GB free but data needs %.1f GB. "
+                        "Falling back to disk loading.",
+                        shm_stat.free / (1024**3), data_size / (1024**3),
+                    )
+                    shm_dir = self.feature_dir
+
+        # Broadcast the resolved shm_dir from rank 0 so all ranks agree.
+        # Without this, if rank 0 fell back to self.feature_dir (not enough
+        # /dev/shm space), non-zero ranks might load stale data from a
+        # pre-existing /dev/shm/precomputed_* directory from a previous run.
+        resolved = [str(shm_dir)]
+        dist.broadcast_object_list(resolved, src=0)
+        shm_dir = Path(resolved[0])
+
+        dist.barrier()
+        return shm_dir if shm_dir.exists() else self.feature_dir
+
+    def _prefault_cache(self, cache: dict[str, dict[str, Any]] | None = None) -> None:
+        """Advise kernel to pre-fault all mmap'd tensor pages.
+
+        Uses ``madvise(MADV_WILLNEED)`` to trigger readahead on all pages
+        backing the mmap'd tensors. After this, the pages are resident in
+        the page cache and other ranks' MAP_SHARED mappings will only
+        trigger minor faults (page table setup, no disk I/O).
+
+        Args:
+            cache: Cache dict to pre-fault. If None, uses self._small_cache.
+        """
+        import ctypes
+        import ctypes.util
+
+        if cache is None:
+            cache = self._small_cache
+        libc_name = ctypes.util.find_library("c")
+        if libc_name is None:
+            logger.warning("Could not find libc for madvise pre-fault; skipping")
+            return
+        libc = ctypes.CDLL(libc_name)
+        MADV_WILLNEED = 3
+        n_advised = 0
+        for entry in cache.values():
+            for val in entry.values():
+                if isinstance(val, torch.Tensor) and val.is_contiguous():
+                    nbytes = val.nelement() * val.element_size()
+                    if nbytes > 0 and val.data_ptr() != 0:
+                        libc.madvise(
+                            ctypes.c_void_p(val.data_ptr()),
+                            ctypes.c_size_t(nbytes),
+                            MADV_WILLNEED,
+                        )
+                        n_advised += 1
+        logger.info("Pre-faulted %d tensors via madvise(MADV_WILLNEED)", n_advised)
 
     @staticmethod
-    def _load_raw_feature_file(path: Path) -> dict:
-        """Load a .pt feature file and return its contents as a dict."""
-        return torch.load(path, weights_only=False)
+    def load_subject_cache(
+        feature_dir: str | Path,
+        subject_ids: list[str],
+        use_mmap: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Load .pt files for all subjects into a reusable cache dict.
 
-    def _validate_gene_names(self):
-        """Validate gene_names.npy gene count matches pseudobulk gene dimension."""
-        gene_names = self.get_gene_names()
-        if gene_names is None or len(self.subject_ids) == 0:
+        Call once per worker process, then pass the result as
+        ``preloaded_cache`` to avoid per-trial disk I/O during HPO.
+
+        Args:
+            feature_dir: Directory containing .pt files.
+            subject_ids: Subject IDs to load.
+            use_mmap: If True, use mmap with MAP_SHARED for cross-process
+                page sharing. Requires files on a tmpfs (e.g. /dev/shm)
+                for best performance. Default False for backward compat.
+
+        Returns:
+            Mapping of subject_id -> dict of tensors (same structure as
+            ``_small_cache``).
+        """
+        import time as _time
+
+        # Use _shared_mmap() context manager to set MAP_SHARED during loading
+        # and restore MAP_PRIVATE on exit (normal or exceptional).
+        cm = _shared_mmap() if use_mmap else contextlib.nullcontext()
+
+        feature_dir = Path(feature_dir)
+        t0 = _time.monotonic()
+        cache: dict[str, dict[str, Any]] = {}
+        total_cell_bytes = 0
+        with cm:
+            for sid in subject_ids:
+                pt_path = feature_dir / f"{sid}.pt"
+                if not pt_path.exists():
+                    continue
+                pt_data = torch.load(pt_path, weights_only=False, mmap=use_mmap)
+                entry: dict[str, Any] = {
+                    "pseudobulk": pt_data["pseudobulk"],
+                    "cell_type_mask": pt_data["cell_type_mask"],
+                    "cell_offsets": pt_data["cell_offsets"],
+                    "ccc_edge_index": pt_data["ccc_edge_index"],
+                    "ccc_edge_type": pt_data["ccc_edge_type"],
+                    "ccc_edge_attr": pt_data["ccc_edge_attr"],
+                    "cell_counts": pt_data["cell_counts"],
+                    "region_mask": pt_data["region_mask"],
+                    "cell_data": pt_data["cell_data"],
+                }
+                for key in pt_data:
+                    if key.startswith("region_") and key.endswith("_pseudobulk"):
+                        entry[key] = pt_data[key]
+                if "available_regions" in pt_data:
+                    entry["available_regions"] = list(pt_data["available_regions"])
+                total_cell_bytes += entry["cell_data"].nelement() * entry["cell_data"].element_size()
+                cache[sid] = entry
+        elapsed = _time.monotonic() - t0
+        logger.info(
+            "Pre-loaded %d subjects into cache in %.1f s (cell_data: %.1f GB, mmap=%s)",
+            len(cache), elapsed, total_cell_bytes / (1024**3), use_mmap,
+        )
+        return cache
+
+    @staticmethod
+    def share_cache_memory(cache: dict[str, dict[str, Any]]) -> None:
+        """Move all tensors in a preloaded cache to shared memory (in-place).
+
+        Call before ``fork()``-based DDP so child ranks share the same
+        physical pages instead of duplicating ~37 GB per rank.
+        """
+        n_shared = 0
+        for sid, entry in cache.items():
+            for key, val in entry.items():
+                if isinstance(val, torch.Tensor) and not val.is_shared():
+                    entry[key] = val.share_memory_()
+                    n_shared += 1
+        logger.info("Moved %d tensors to shared memory", n_shared)
+
+    @staticmethod
+    def cleanup_shm_cache(shm_dir: Path) -> None:
+        """Remove a /dev/shm cache directory.
+
+        Safe to call from atexit or signal handlers. Only deletes paths
+        under /dev/shm or /tmp (safety guard against accidental deletion).
+        """
+        import shutil
+
+        if not shm_dir.exists():
             return
-        # Check against first subject's pseudobulk
-        sample_file = self._resolve_feature_file(self.subject_ids[0])
-        data = self._load_raw_feature_file(sample_file)
-        pb = data["pseudobulk"]
-        n_genes_data = pb.shape[1]
-        if len(gene_names) != n_genes_data:
-            raise ValueError(
-                f"gene_names.npy has {len(gene_names)} genes but pseudobulk "
-                f"has {n_genes_data} genes. Re-run precompute_features.py to "
-                f"regenerate the sidecar file."
-            )
+        # Safety: only remove dirs under /dev/shm or /tmp
+        parent = str(shm_dir.resolve())
+        if not (parent.startswith("/dev/shm/") or parent.startswith("/tmp/")):
+            logger.warning("Refusing to delete non-shm path: %s", shm_dir)
+            return
+        shutil.rmtree(shm_dir, ignore_errors=True)
+        logger.info("Cleaned up shm cache: %s", shm_dir)
+
+    @staticmethod
+    def _register_shm_cleanup(shm_dir: Path) -> None:
+        """Register atexit + SIGTERM/SIGINT handlers to clean up a /dev/shm cache dir."""
+        import atexit
+        import signal
+
+        _cleaning_up = False
+
+        def _cleanup():
+            nonlocal _cleaning_up
+            if _cleaning_up:
+                return  # Re-entrancy guard: signal during atexit cleanup
+            _cleaning_up = True
+            try:
+                PrecomputedDataset.cleanup_shm_cache(shm_dir)
+            finally:
+                _cleaning_up = False
+
+        atexit.register(_cleanup)
+        prev_sigterm = signal.getsignal(signal.SIGTERM)
+        prev_sigint = signal.getsignal(signal.SIGINT)
+
+        def _signal_handler(signum, frame):
+            _cleanup()
+            # Chain to previous handler
+            prev = prev_sigterm if signum == signal.SIGTERM else prev_sigint
+            if callable(prev) and prev not in (signal.SIG_DFL, signal.SIG_IGN):
+                prev(signum, frame)
+            else:
+                raise SystemExit(128 + signum)
+
+        signal.signal(signal.SIGTERM, _signal_handler)
+        signal.signal(signal.SIGINT, _signal_handler)
+        logger.info("Registered atexit + SIGTERM/SIGINT cleanup for %s", shm_dir)
+
+    def _resolve_feature_file(self, sid: str) -> Path | None:
+        """Return the .pt feature file path for a subject.
+
+        Returns None if the file does not exist.
+        """
+        pt_path = self.feature_dir / f"{sid}.pt"
+        if pt_path.exists():
+            return pt_path
+        return None
 
     def _validate_metadata(self):
         """Validate that target and pathology columns have no NaN for included subjects."""
@@ -1011,27 +1436,8 @@ def save_precomputed_features(
 
         output_file = output_dir / f"{subject_id}.pt"
 
-        # Convert padded cells [n_types, max_cells, n_genes] to flat format
-        # cell_data [total_real_cells, n_genes] + cell_offsets [n_types+1]
-        cells_padded = sample["cells"]  # already a torch.Tensor
-        cell_mask_padded = sample["cell_mask"]  # already a torch.Tensor
-        n_types = cells_padded.shape[0]
-
-        cell_offsets = torch.zeros(n_types + 1, dtype=torch.long)
-        flat_parts: list[torch.Tensor] = []
-        for ct in range(n_types):
-            n = int(cell_mask_padded[ct].sum().item())
-            if n > 0:
-                flat_parts.append(cells_padded[ct, :n])
-            cell_offsets[ct + 1] = cell_offsets[ct] + n
-
-        cell_data = (
-            torch.cat(flat_parts, dim=0)
-            if flat_parts
-            else torch.empty((0, cells_padded.shape[2]), dtype=torch.float32)
-        )
-
         # Build save dict with core features.
+        # Dataset already returns flat format (cell_data + cell_offsets).
         # Keys use ccc_edge_* names (matching PrecomputedDataset expectations).
         # All tensor values are saved as torch.Tensor directly.
         save_data: dict = {
@@ -1042,8 +1448,8 @@ def save_precomputed_features(
             "ccc_edge_index": sample["ccc_edge_index"],
             "ccc_edge_type": sample["ccc_edge_type"],
             "ccc_edge_attr": sample["ccc_edge_attr"],
-            "cell_data": cell_data,
-            "cell_offsets": cell_offsets,
+            "cell_data": sample["cell_data"],
+            "cell_offsets": sample["cell_offsets"],
             # Store ordering metadata for validation on load (Python list)
             "cell_type_order": list(dataset.cell_type_order),
         }
@@ -1061,8 +1467,12 @@ def save_precomputed_features(
             dir=output_dir, suffix=".pt", delete=False
         ) as tmp_f:
             tmp_path = Path(tmp_f.name)
-        torch.save(save_data, tmp_path)
-        tmp_path.rename(output_file)
+        try:
+            torch.save(save_data, tmp_path)
+            tmp_path.rename(output_file)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
         n_saved += 1
 
         if verbose and n_saved % 50 == 0:

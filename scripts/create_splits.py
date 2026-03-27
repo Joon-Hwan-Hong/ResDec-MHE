@@ -2,7 +2,7 @@
 """Create and save stratified subject-level splits.
 
 Generates a splits JSON file used by all downstream scripts (train.py,
-optuna_optimize.py, precompute_features.py, profile_training.py).
+hpo.py, precompute_features.py, profile_training.py).
 
 Stratification: joint pathology × cognition tertiles (3×3 = 9 strata).
 Each subject appears in exactly one validation fold (disjoint).
@@ -52,6 +52,10 @@ def main() -> None:
         "--seed", type=int, default=None,
         help="Random seed (default: from config experiment.seed)",
     )
+    parser.add_argument(
+        "--precomputed-dir", type=str, default=None,
+        help="Path to precomputed .pt dir — restricts splits to subjects with features",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -71,6 +75,19 @@ def main() -> None:
         raise FileNotFoundError(f"Metadata file not found: {metadata_csv}")
     metadata = pd.read_csv(metadata_csv)
     logger.info("Loaded metadata: %d subjects", len(metadata))
+
+    # Filter to subjects with precomputed features
+    if args.precomputed_dir:
+        precomputed_subjects = {
+            p.stem for p in Path(args.precomputed_dir).glob("*.pt")
+        }
+        subject_col = config.data.get("subject_column", "ROSMAP_IndividualID")
+        before = len(metadata)
+        metadata = metadata[metadata[subject_col].isin(precomputed_subjects)]
+        logger.info(
+            "Filtered to %d subjects with precomputed features (from %d)",
+            len(metadata), before,
+        )
 
     # Split parameters (CLI overrides > config)
     data_cfg = config.data

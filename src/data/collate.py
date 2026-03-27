@@ -3,7 +3,7 @@ Custom collate functions for batching heterogeneous graph data.
 
 Handles batching of:
 - Variable-sized graphs (different number of CCC edges per subject)
-- Padded cell-level data
+- Flat cell-level data (cell_data + cell_offsets)
 - Multi-region data (optional)
 
 Collate Format:
@@ -13,7 +13,7 @@ Collate Format:
     These are directly compatible with HGTEncoderTensor. Key functions:
     - collate_for_hgt_multiregion: Primary collate for training (recommended)
     - collate_for_hgt: Single-region variant
-    - collate_fn: Basic collate without HGT padded format
+    - collate_fn: Basic collate without HGT format
 
 Note on Multi-GPU:
     Device allocation is handled by PyTorch Lightning's Trainer, NOT by manual
@@ -51,84 +51,6 @@ def _derive_available_regions_from_keys(sample: dict[str, Any]) -> list[int]:
                 pass
     return sorted(regions)
 
-
-def _pad_and_stack_cells(
-    batch: list[dict[str, Any]],
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pad cells/cell_mask to batch actual max and stack.
-
-    Supports both flat format (cell_data + cell_offsets) and legacy
-    padded format (cells + cell_mask).
-
-    Pre-computes actual max valid cell index to avoid over-allocation
-    and eliminate the separate trim pass.
-    """
-    batch_size = len(batch)
-
-    if "cell_data" in batch[0]:
-        # ── Flat format: reconstruct padded tensor from cell_data + cell_offsets
-        n_types = batch[0]["cell_offsets"].shape[0] - 1
-        # Get n_genes from first non-empty sample
-        n_genes = 0
-        for s in batch:
-            if s["cell_data"].shape[0] > 0:
-                n_genes = s["cell_data"].shape[1]
-                break
-        if n_genes == 0:
-            n_genes = batch[0]["pseudobulk"].shape[1]
-
-        # Find max cells per type across batch
-        max_cells = 0
-        for s in batch:
-            offsets = s["cell_offsets"]
-            for ct in range(n_types):
-                n = int(offsets[ct + 1] - offsets[ct])
-                max_cells = max(max_cells, n)
-        max_cells = max(max_cells, 1)
-
-        cells = torch.zeros(batch_size, n_types, max_cells, n_genes)
-        cell_mask = torch.zeros(batch_size, n_types, max_cells, dtype=torch.bool)
-
-        for i, s in enumerate(batch):
-            data = s["cell_data"]
-            offsets = s["cell_offsets"]
-            for ct in range(n_types):
-                start = int(offsets[ct])
-                end = int(offsets[ct + 1])
-                n = end - start
-                if n > 0:
-                    cells[i, ct, :n] = data[start:end]
-                    cell_mask[i, ct, :n] = True
-
-        return cells, cell_mask
-    else:
-        # ── Legacy padded format
-        n_cell_types = batch[0]["cells"].shape[0]
-        n_genes = batch[0]["cells"].shape[2]
-
-        # Compute actual max valid cells across all samples to avoid
-        # over-allocating and then trimming.
-        actual_max = 0
-        for s in batch:
-            mask = s["cell_mask"]  # [n_cell_types, nc]
-            if mask.any():
-                # Find highest valid cell index across all cell types
-                valid_per_col = mask.any(dim=0)  # [nc]
-                if valid_per_col.any():
-                    last_valid = valid_per_col.nonzero()[-1].item() + 1
-                    actual_max = max(actual_max, last_valid)
-        actual_max = max(actual_max, 1)  # At least 1
-
-        # Allocate directly to actual_max (zero-filled = correct padding)
-        cells = torch.zeros(batch_size, n_cell_types, actual_max, n_genes)
-        cell_mask = torch.zeros(batch_size, n_cell_types, actual_max, dtype=torch.bool)
-
-        for i, s in enumerate(batch):
-            nc = min(s["cells"].shape[1], actual_max)
-            cells[i, :, :nc, :] = s["cells"][:, :nc, :]
-            cell_mask[i, :, :nc] = s["cell_mask"][:, :nc]
-
-        return cells, cell_mask
 
 
 def _assemble_region_tensors(
@@ -214,6 +136,68 @@ def _assemble_region_tensors(
     return region_pseudobulk, region_mask
 
 
+def _collate_cell_data(
+    batch: list[dict[str, Any]], n_genes: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Concatenate per-sample cell_data and offset cell_offsets for the batch.
+
+    Shared helper for collate_fn and collate_for_hgt.
+
+    Returns:
+        cell_data: [total_cells, n_genes] concatenated cell expressions
+        cell_offsets: [batch_size, n_cell_types + 1] batch-adjusted offsets
+    """
+    all_data: list[torch.Tensor] = []
+    batch_offsets: list[torch.Tensor] = []
+    cumulative = 0
+    for s in batch:
+        sample_offsets = s["cell_offsets"]  # [n_types + 1]
+        batch_offsets.append(sample_offsets + cumulative)
+        cumulative += int(sample_offsets[-1])
+        if s["cell_data"].shape[0] > 0:
+            all_data.append(s["cell_data"])
+
+    cell_data = torch.cat(all_data) if all_data else torch.empty(0, n_genes)
+    cell_offsets = torch.stack(batch_offsets)  # [B, n_types + 1]
+    return cell_data, cell_offsets
+
+
+def _collate_edges(
+    batch: list[dict[str, Any]], n_nodes_per_graph: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Concatenate per-sample edge tensors with node index offsets.
+
+    Shared helper for collate_fn and collate_for_hgt.
+
+    Returns:
+        ccc_edge_index: [2, E_total] with per-sample node offsets
+        ccc_edge_type: [E_total]
+        ccc_edge_attr: [E_total, edge_dim]
+    """
+    all_edge_indices: list[torch.Tensor] = []
+    all_edge_types: list[torch.Tensor] = []
+    all_edge_attrs: list[torch.Tensor] = []
+
+    for i, s in enumerate(batch):
+        ei = s["ccc_edge_index"]  # [2, n_edges_i]
+        n_edges = ei.shape[1] if ei.numel() > 0 else 0
+        if n_edges > 0:
+            all_edge_indices.append(ei + i * n_nodes_per_graph)
+            all_edge_types.append(s["ccc_edge_type"])
+            all_edge_attrs.append(s["ccc_edge_attr"])
+
+    if all_edge_indices:
+        ccc_edge_index = torch.cat(all_edge_indices, dim=1)
+        ccc_edge_type = torch.cat(all_edge_types)
+        ccc_edge_attr = torch.cat(all_edge_attrs)
+    else:
+        ccc_edge_index = torch.zeros(2, 0, dtype=torch.long)
+        ccc_edge_type = torch.zeros(0, dtype=torch.long)
+        ccc_edge_attr = torch.zeros(0, 1)
+
+    return ccc_edge_index, ccc_edge_type, ccc_edge_attr
+
+
 def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Collate function for CognitiveResilienceDataset.
@@ -221,7 +205,7 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     Handles:
     - Standard tensor stacking (pseudobulk, pathology, cognition)
     - Graph batching for variable-sized CCC graphs
-    - Padded tensors (cells, cell_mask)
+    - Flat cell-level data (cell_data + cell_offsets)
     - Subject IDs as list
 
     Args:
@@ -239,8 +223,8 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         - ccc_edge_attr: [total_edges, 1] edge attributes
         - graph_batch: [total_nodes] mapping each node to its graph index
         - graph_ptr: [batch+1] pointers to graph boundaries
-        - cells: [batch, n_cell_types, max_cells, n_genes]
-        - cell_mask: [batch, n_cell_types, max_cells]
+        - cell_data: [total_cells, n_genes] concatenated cell expressions
+        - cell_offsets: [batch, n_cell_types + 1] cumulative offsets
         - region_mask: [batch, n_regions] bool mask for available regions
         - subject_ids: list of strings
         - batch_size: int
@@ -267,45 +251,19 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         cognition[i] = s["cognition"]
         region_mask[i] = s["region_mask"]
 
-    cells, cell_mask = _pad_and_stack_cells(batch)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Cell-level data: flat format (cell_data + cell_offsets)
+    # ─────────────────────────────────────────────────────────────────────────
+    n_genes_flat = s0["pseudobulk"].shape[1]
+    cell_data, cell_offsets = _collate_cell_data(batch, n_genes_flat)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Graph batching - Manual approach for homogeneous treatment
     # ─────────────────────────────────────────────────────────────────────────
-    # For HGT, we have a fixed number of nodes (31 cell types) per graph,
-    # but variable edges. We batch by:
-    # 1. Concatenating edge_index with node offsets
-    # 2. Concatenating edge_type and edge_attr
-    # 3. Creating batch vector mapping nodes to graphs
-
     n_nodes_per_graph = batch[0]["pseudobulk"].shape[0]  # 31 cell types
-
-    edge_indices = []
-    edge_types = []
-    edge_attrs = []
-    node_offset = 0
-
-    for s in batch:
-        ccc_edge_index = s["ccc_edge_index"]
-        n_edges = ccc_edge_index.shape[1] if ccc_edge_index.numel() > 0 else 0
-
-        if n_edges > 0:
-            # Add node offset for batching
-            edge_indices.append(ccc_edge_index + node_offset)
-            edge_types.append(s["ccc_edge_type"])
-            edge_attrs.append(s["ccc_edge_attr"])
-
-        node_offset += n_nodes_per_graph
-
-    # Concatenate all edges
-    if edge_indices:
-        batched_ccc_edge_index = torch.cat(edge_indices, dim=1)
-        batched_ccc_edge_type = torch.cat(edge_types, dim=0)
-        batched_ccc_edge_attr = torch.cat(edge_attrs, dim=0)
-    else:
-        batched_ccc_edge_index = torch.zeros((2, 0), dtype=torch.long)
-        batched_ccc_edge_type = torch.zeros((0,), dtype=torch.long)
-        batched_ccc_edge_attr = torch.zeros((0, 1), dtype=torch.float)
+    batched_ccc_edge_index, batched_ccc_edge_type, batched_ccc_edge_attr = (
+        _collate_edges(batch, n_nodes_per_graph)
+    )
 
     # Create batch vector: [0,0,...,0, 1,1,...,1, 2,2,...,2, ...]
     graph_batch = torch.arange(batch_size).repeat_interleave(n_nodes_per_graph)
@@ -331,9 +289,9 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "graph_batch": graph_batch,
         "graph_ptr": graph_ptr,
         "n_nodes_per_graph": n_nodes_per_graph,
-        # Cell-level data (all 31 cell types)
-        "cells": cells,
-        "cell_mask": cell_mask,
+        # Cell-level data (flat format)
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         # Region mask
         "region_mask": region_mask,
         # Metadata
@@ -366,8 +324,8 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
         - ccc_edge_attr: [E_total, edge_dim] edge attributes
         - pathology: [batch, n_pathology]
         - cognition: [batch, 1]
-        - cells: [batch, n_cell_types, max_cells, n_genes]
-        - cell_mask: [batch, n_cell_types, max_cells]
+        - cell_data: [total_cells, n_genes] concatenated cell expressions
+        - cell_offsets: [batch, n_cell_types + 1] cumulative offsets
         - region_mask: [batch, n_regions] bool mask for available regions
         - subject_ids: list of strings
         - batch_size: int
@@ -394,53 +352,16 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
             region_mask[i] = s["region_mask"]
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Cell-level data: flat format (preferred) or padded (legacy)
-    # Flat format avoids constructing the ~9.5 GB padded 4D tensor entirely.
+    # Cell-level data: flat format (cell_data + cell_offsets)
     # ─────────────────────────────────────────────────────────────────────────
-    use_flat = "cell_data" in batch[0]
-
-    if use_flat:
-        all_data = []
-        batch_offsets = []
-        cumulative = 0
-        for s in batch:
-            sample_offsets = s["cell_offsets"]  # [n_types + 1]
-            batch_offsets.append(sample_offsets + cumulative)
-            cumulative += int(sample_offsets[-1])
-            if s["cell_data"].shape[0] > 0:
-                all_data.append(s["cell_data"])
-
-        n_genes_flat = batch[0]["pseudobulk"].shape[1]
-        cell_data = torch.cat(all_data) if all_data else torch.empty(0, n_genes_flat)
-        cell_offsets = torch.stack(batch_offsets)  # [B, n_types + 1]
-    else:
-        cells, cell_mask = _pad_and_stack_cells(batch)
+    n_genes_flat = s0["pseudobulk"].shape[1]
+    cell_data, cell_offsets = _collate_cell_data(batch, n_genes_flat)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Build flat edge tensors for HGTEncoderTensor
     # ─────────────────────────────────────────────────────────────────────────
-    # Concatenate edges across batch with node indices offset by sample * N.
-    N = batch[0]["pseudobulk"].shape[0]  # n_cell_types (fixed at 31)
-    all_edge_indices = []
-    all_edge_types = []
-    all_edge_attrs = []
-    for i, s in enumerate(batch):
-        ei = s["ccc_edge_index"]   # [2, n_edges_i]
-        n_edges = ei.shape[1] if ei.numel() > 0 else 0
-        if n_edges > 0:
-            all_edge_indices.append(ei + i * N)  # offset node indices
-            all_edge_types.append(s["ccc_edge_type"])
-            all_edge_attrs.append(s["ccc_edge_attr"])
-
-    if all_edge_indices:
-        ccc_edge_index = torch.cat(all_edge_indices, dim=1)  # [2, E_total]
-        ccc_edge_type = torch.cat(all_edge_types)             # [E_total]
-        ccc_edge_attr = torch.cat(all_edge_attrs)             # [E_total, 1]
-    else:
-        ccc_edge_index = torch.zeros(2, 0, dtype=torch.long)
-        ccc_edge_type = torch.zeros(0, dtype=torch.long)
-        edge_dim = 1
-        ccc_edge_attr = torch.zeros(0, edge_dim)
+    N = s0["pseudobulk"].shape[0]  # n_cell_types (fixed at 31)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr = _collate_edges(batch, N)
 
     subject_ids = [s["subject_id"] for s in batch]
 
@@ -454,18 +375,13 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
         "ccc_edge_index": ccc_edge_index,
         "ccc_edge_type": ccc_edge_type,
         "ccc_edge_attr": ccc_edge_attr,
+        # Cell-level data (flat format)
+        "cell_data": cell_data,
+        "cell_offsets": cell_offsets,
         # Metadata
         "subject_ids": subject_ids,
         "batch_size": batch_size,
     }
-
-    # Cell-level data: only one format in the batch
-    if use_flat:
-        result["cell_data"] = cell_data
-        result["cell_offsets"] = cell_offsets
-    else:
-        result["cells"] = cells
-        result["cell_mask"] = cell_mask
 
     if not skip_region_mask:
         result["region_mask"] = region_mask
@@ -636,6 +552,7 @@ def create_dataloader(
     prefetch_factor: int | None = 2,
     worker_init_fn=None,
     sampler=None,
+    seed: int | None = None,
 ) -> torch.utils.data.DataLoader:
     """
     Create DataLoader with appropriate collate function.
@@ -666,10 +583,19 @@ def create_dataloader(
         worker_init_fn: Optional custom worker init function. When provided,
             overrides the default _worker_init_fn. Used by CognitiveResilienceDataModule
             to inject rank-aware seeding for DDP.
+        seed: Optional seed for DataLoader's internal Generator. Controls
+            shuffling order when shuffle=True and no external sampler is used.
+            Pass experiment seed for reproducible batch ordering.
 
     Returns:
         Configured DataLoader
     """
+    # Create a seeded Generator for reproducible shuffling
+    generator = None
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+
     # Select collate function based on flags
     if use_hgt_format and multiregion:
         collate = collate_for_hgt_multiregion
@@ -698,6 +624,7 @@ def create_dataloader(
         persistent_workers=num_workers > 0,
         worker_init_fn=(worker_init_fn or _worker_init_fn) if num_workers > 0 else None,
         prefetch_factor=effective_prefetch,
+        generator=generator,
     )
 
 

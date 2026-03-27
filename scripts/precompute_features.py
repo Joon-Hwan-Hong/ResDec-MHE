@@ -119,6 +119,24 @@ def main():
         metadata = metadata.set_index(subject_col)
     logger.info("Metadata filtered: %d subjects", len(metadata))
 
+    # Drop subjects with NaN in target or pathology columns (can't train on them)
+    target_col = data_cfg.get("target_column", "cogn_global")
+    pathology_cols = list(data_cfg.get("pathology_columns", []))
+    required_cols = [target_col] + pathology_cols
+    nan_subjects = set()
+    for col in required_cols:
+        if col in metadata.columns:
+            nans = metadata[metadata[col].isna()].index.tolist()
+            if nans:
+                logger.warning(
+                    "%d subjects have NaN in '%s', excluding: %s",
+                    len(nans), col, nans,
+                )
+                nan_subjects.update(nans)
+    if nan_subjects:
+        subject_ids = [s for s in subject_ids if s not in nan_subjects]
+        logger.info("Excluded %d subjects with NaN values, %d remaining", len(nan_subjects), len(subject_ids))
+
     # Log subjects missing from metadata (helps debug preprocessing issues)
     missing_from_metadata = set(subject_ids) - set(metadata.index)
     if missing_from_metadata:

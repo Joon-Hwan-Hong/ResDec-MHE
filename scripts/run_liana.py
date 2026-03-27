@@ -6,8 +6,8 @@ per-subject parquet files with ligand-receptor interaction scores. These
 are consumed by precompute_features.py to build CCC graph edges for the
 HGT encoder branch.
 
-The AnnData must contain normalized, log-transformed expression (not raw
-counts). LIANA+ uses these directly when use_raw=False.
+The AnnData must have raw counts in adata.raw (set by merge_adata.py).
+LIANA+ reads from adata.raw when use_raw=True.
 
 Usage:
     # Full ROSMAP dataset (all subjects):
@@ -105,7 +105,7 @@ def run_liana_single_subject(
         resource_name=resource_name,
         expr_prop=0.1,
         min_cells=min_cells,
-        use_raw=False,  # Use normalized log-transformed counts directly
+        use_raw=True,  # Use raw counts from adata.raw (set by merge_adata.py)
         n_perms=n_perms,
         seed=seed,
         n_jobs=n_jobs,
