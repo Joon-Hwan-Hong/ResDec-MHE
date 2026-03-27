@@ -28,17 +28,13 @@ Note on Multi-GPU:
 """
 
 import logging
-import os
 import warnings
 from typing import Any
 
 import numpy as np
 import torch
 
-from src.data.constants import (
-    CELL_TYPE_ORDER, ALL_EDGE_TYPES, N_REGIONS, PFC_REGION_IDX,
-    sanitize_key, SANITIZED_CELL_TYPE_ORDER, SANITIZED_EDGE_TYPES,
-)
+from src.data.constants import N_REGIONS, PFC_REGION_IDX
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +147,9 @@ def _assemble_region_tensors(
     region_pseudobulk = torch.zeros(batch_size, n_regions, n_cell_types, n_genes)
     region_mask = torch.zeros(batch_size, n_regions, dtype=torch.bool)
 
+    # Pre-compute region key strings to avoid f-string allocation in inner loop
+    region_keys = [f"region_{idx}_pseudobulk" for idx in range(n_regions)]
+
     missing_count = 0
 
     for i, s in enumerate(batch):
@@ -177,7 +176,7 @@ def _assemble_region_tensors(
 
         for region_idx in available_regions:
             if region_idx < n_regions:
-                region_key = f"region_{region_idx}_pseudobulk"
+                region_key = region_keys[region_idx]
                 if region_key in s:
                     region_pseudobulk[i, region_idx] = s[region_key]
                     region_mask[i, region_idx] = True
@@ -236,15 +235,25 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     batch_size = len(batch)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Standard tensor stacking
+    # Pre-allocate and fill in single pass (avoids 6 separate list comprehensions)
     # ─────────────────────────────────────────────────────────────────────────
-    pseudobulk = torch.stack([s["pseudobulk"] for s in batch], dim=0)
-    cell_type_mask = torch.stack([s["cell_type_mask"] for s in batch], dim=0)
-    cell_counts = torch.stack([s["cell_counts"] for s in batch], dim=0)
-    pathology = torch.stack([s["pathology"] for s in batch], dim=0)
-    cognition = torch.stack([s["cognition"] for s in batch], dim=0)
+    s0 = batch[0]
+    pseudobulk = torch.empty(batch_size, *s0["pseudobulk"].shape, dtype=torch.float32)
+    cell_type_mask = torch.empty(batch_size, *s0["cell_type_mask"].shape, dtype=torch.bool)
+    cell_counts = torch.empty(batch_size, *s0["cell_counts"].shape, dtype=torch.long)
+    pathology = torch.empty(batch_size, *s0["pathology"].shape, dtype=torch.float32)
+    cognition = torch.empty(batch_size, *s0["cognition"].shape, dtype=torch.float32)
+    region_mask = torch.empty(batch_size, *s0["region_mask"].shape, dtype=torch.bool)
+
+    for i, s in enumerate(batch):
+        pseudobulk[i] = s["pseudobulk"]
+        cell_type_mask[i] = s["cell_type_mask"]
+        cell_counts[i] = s["cell_counts"]
+        pathology[i] = s["pathology"]
+        cognition[i] = s["cognition"]
+        region_mask[i] = s["region_mask"]
+
     cells, cell_mask = _pad_and_stack_cells(batch)
-    region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Graph batching - Manual approach for homogeneous treatment
@@ -318,14 +327,10 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "batch_size": batch_size,
     }
 
-    barcodes = [s.get("cell_barcodes") for s in batch]
-    if any(b is not None for b in barcodes):
-        result["cell_barcodes"] = barcodes
-
     return result
 
 
-def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
+def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = False) -> dict[str, Any]:
     """
     Collate function returning padded tensor format for HGTEncoderTensor.
 
@@ -353,51 +358,33 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
         - region_mask: [batch, n_regions] bool mask for available regions
         - subject_ids: list of strings
         - batch_size: int
-        - node_types: list of sanitized cell type names
-        - edge_types: list of sanitized edge type names
     """
     batch_size = len(batch)
 
-    # Standard tensor stacking (same as collate_fn)
-    pseudobulk = torch.stack([s["pseudobulk"] for s in batch], dim=0)
-    cell_type_mask = torch.stack([s["cell_type_mask"] for s in batch], dim=0)
-    cell_counts = torch.stack([s["cell_counts"] for s in batch], dim=0)
-    pathology = torch.stack([s["pathology"] for s in batch], dim=0)
-    cognition = torch.stack([s["cognition"] for s in batch], dim=0)
-    cells, cell_mask = _pad_and_stack_cells(batch)
+    # Pre-allocate and fill in single pass (avoids 6 separate list comprehensions)
+    s0 = batch[0]
+    pseudobulk = torch.empty(batch_size, *s0["pseudobulk"].shape, dtype=torch.float32)
+    cell_type_mask = torch.empty(batch_size, *s0["cell_type_mask"].shape, dtype=torch.bool)
+    cell_counts = torch.empty(batch_size, *s0["cell_counts"].shape, dtype=torch.long)
+    pathology = torch.empty(batch_size, *s0["pathology"].shape, dtype=torch.float32)
+    cognition = torch.empty(batch_size, *s0["cognition"].shape, dtype=torch.float32)
+    if not skip_region_mask:
+        region_mask = torch.empty(batch_size, *s0["region_mask"].shape, dtype=torch.bool)
 
-    region_mask = torch.stack([s["region_mask"] for s in batch], dim=0)
+    for i, s in enumerate(batch):
+        pseudobulk[i] = s["pseudobulk"]
+        cell_type_mask[i] = s["cell_type_mask"]
+        cell_counts[i] = s["cell_counts"]
+        pathology[i] = s["pathology"]
+        cognition[i] = s["cognition"]
+        if not skip_region_mask:
+            region_mask[i] = s["region_mask"]
+
+    cells, cell_mask = _pad_and_stack_cells(batch)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Build padded edge tensors for HGTEncoderTensor
     # ─────────────────────────────────────────────────────────────────────────
-    # Use cell_type_order from dataset, with fallback to global constant for
-    # backward compatibility with samples that don't include it
-    cell_type_names = batch[0].get("cell_type_order", CELL_TYPE_ORDER)
-    edge_type_names = ALL_EDGE_TYPES
-
-    # Validate cell_type_order consistency (structural invariant from dataset construction).
-    # Gated behind RESILIENCE_DEBUG because this is a hot path and the invariant is
-    # enforced by dataset construction; the check is useful for debugging only.
-    if os.environ.get("RESILIENCE_DEBUG"):
-        for s in batch[1:]:
-            if s.get("cell_type_order", CELL_TYPE_ORDER) != cell_type_names:
-                raise RuntimeError(
-                    "cell_type_order mismatch within batch — dataset construction bug. "
-                    f"Expected {cell_type_names[:3]}..., got {s.get('cell_type_order', 'N/A')[:3]}..."
-                )
-
-    # Sanitize names for PyG compatibility (uses shared sanitize_key from constants)
-    # Use pre-computed constants when cell_type_names matches global order (common case)
-    if cell_type_names is CELL_TYPE_ORDER or cell_type_names == CELL_TYPE_ORDER:
-        sanitized_cell_types = SANITIZED_CELL_TYPE_ORDER
-    else:
-        sanitized_cell_types = [sanitize_key(ct) for ct in cell_type_names]
-    if edge_type_names is ALL_EDGE_TYPES:
-        sanitized_edge_types = SANITIZED_EDGE_TYPES
-    else:
-        sanitized_edge_types = [sanitize_key(et) for et in edge_type_names]
-
     # ── Raw edge tensors (padded to max_edges in batch) ────────────────
     # Pass raw CCC tensors padded to max_edges for HGTEncoderTensor.
     edge_indices = [s["ccc_edge_index"] for s in batch]    # List of [2, n_edges_i]
@@ -439,21 +426,12 @@ def collate_for_hgt(batch: list[dict[str, Any]]) -> dict[str, Any]:
         # Cell-level data (all 31 cell types)
         "cells": cells,
         "cell_mask": cell_mask,
-        # Region mask
-        "region_mask": region_mask,
         # Metadata
         "subject_ids": subject_ids,
         "batch_size": batch_size,
-        # Include metadata for model
-        "node_types": sanitized_cell_types,
-        "edge_types": sanitized_edge_types,
-        # Raw cell type order (unsanitized) for reference
-        "cell_type_order": cell_type_names,
     }
-
-    barcodes = [s.get("cell_barcodes") for s in batch]
-    if any(b is not None for b in barcodes):
-        result["cell_barcodes"] = barcodes
+    if not skip_region_mask:
+        result["region_mask"] = region_mask
 
     return result
 
@@ -531,15 +509,16 @@ def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
         - region_mask: [batch, n_regions] bool mask (overrides inherited version
           with actual data presence check)
     """
-    # Start with HGT format collate
-    result = collate_for_hgt(batch)
-
     # Check only first sample — all samples in a batch come from the same
     # dataset and should have the same key structure.
     has_regions = (
         "region_pseudobulk" in batch[0]
         or bool(_derive_available_regions_from_keys(batch[0]))
     )
+
+    # Start with HGT format collate; skip region_mask stacking when
+    # _assemble_region_tensors will compute it from scratch anyway.
+    result = collate_for_hgt(batch, skip_region_mask=has_regions)
 
     if has_regions:
         batch_size = len(batch)
@@ -552,19 +531,6 @@ def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
         )
 
         result["region_pseudobulk"] = region_pseudobulk
-        # Override inherited region_mask with the computed version based on
-        # actual data presence. This is more accurate than the sample-level
-        # region_mask which may differ in edge cases.
-        # Assert the computed mask is a subset of the per-sample mask: a region
-        # should never appear in the computed mask if the sample said it's absent.
-        if "region_mask" in result:
-            sample_mask = result["region_mask"].bool()
-            computed_mask = region_mask.bool()
-            if (computed_mask & ~sample_mask).any():
-                logger.warning(
-                    "Computed region_mask has regions marked present that per-sample "
-                    "mask marks absent. This may indicate a precomputation mismatch."
-                )
         result["region_mask"] = region_mask
 
     return result

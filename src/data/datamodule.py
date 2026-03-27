@@ -149,6 +149,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 pathology_columns=list(
                     self._data_cfg.get("pathology_columns", [])
                 ),
+                preload_to_ram=self._data_cfg.get("preload_to_ram", False),
             )
         else:
             if self.adata is None:

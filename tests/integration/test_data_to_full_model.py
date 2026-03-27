@@ -83,7 +83,6 @@ def create_mock_dataset_sample(
     max_cells: int = 50,
     n_edges: int = 20,
     subject_id: str = "TEST_SUBJECT",
-    include_cell_type_order: bool = True,
 ) -> dict:
     """Create a sample matching CognitiveResilienceDataset output format.
 
@@ -100,7 +99,6 @@ def create_mock_dataset_sample(
         max_cells: Maximum cells per cell type
         n_edges: Number of CCC edges
         subject_id: Subject identifier
-        include_cell_type_order: Whether to include cell_type_order key
 
     Returns:
         Dictionary matching CognitiveResilienceDataset.__getitem__() output
@@ -119,8 +117,6 @@ def create_mock_dataset_sample(
         "cognition": torch.randn(1),
         "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
     }
-    if include_cell_type_order:
-        sample["cell_type_order"] = CELL_TYPE_ORDER
     return sample
 
 

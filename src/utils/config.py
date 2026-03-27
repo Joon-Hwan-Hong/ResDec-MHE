@@ -209,31 +209,31 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
             import logging as _logging
             _cfg_logger = _logging.getLogger(__name__)
 
+            # Bayesian SVI uses its own optimizer/scheduler (Adam + ExponentialLR).
+            # These diagnostics are DEBUG-level because the config intentionally
+            # carries settings for both head types in a single file.
             opt_type = config.training.optimizer.type
             if opt_type != "adamw":
-                _cfg_logger.warning(
+                _cfg_logger.debug(
                     "Bayesian SVI ignores training.optimizer.type='%s'. "
-                    "SVI uses Adam (Pyro convention). "
-                    "See: https://pyro.ai/examples/svi_part_iv.html",
+                    "SVI uses Adam (Pyro convention).",
                     opt_type,
                 )
 
             sched_type = config.training.scheduler.type
             warmup = config.training.scheduler.get("warmup_epochs", 0)
             if sched_type != "cosine" or warmup > 0:
-                _cfg_logger.warning(
+                _cfg_logger.debug(
                     "Bayesian SVI ignores training.scheduler (type='%s', warmup_epochs=%d). "
-                    "SVI uses per-step ExponentialLR via training.optimizer.lrd. "
-                    "Configure lrd (0 < lrd <= 1) to control LR decay in Bayesian mode.",
+                    "SVI uses per-step ExponentialLR via training.optimizer.lrd.",
                     sched_type, warmup,
                 )
 
             wd = config.training.optimizer.get("weight_decay", 0)
             if wd > 0:
-                _cfg_logger.warning(
+                _cfg_logger.debug(
                     "Bayesian SVI ignores training.optimizer.weight_decay=%.4f. "
-                    "Pyro's Adam does not support decoupled weight decay (AdamW). "
-                    "Set weight_decay=0 to silence this warning.",
+                    "Pyro's Adam does not support decoupled weight decay (AdamW).",
                     wd,
                 )
     except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,

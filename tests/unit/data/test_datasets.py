@@ -1084,7 +1084,7 @@ class TestPrecomputedCellTypeOrderValidation:
 
         assert "cell_type_order" in data
         saved_order = list(data["cell_type_order"])
-        assert saved_order == sample["cell_type_order"]
+        assert saved_order == mock_dataset.cell_type_order
 
     def test_precomputed_validates_matching_order(self, mock_dataset, tmp_path):
         """PrecomputedDataset should load successfully with matching order."""
@@ -1102,7 +1102,9 @@ class TestPrecomputedCellTypeOrderValidation:
 
         # Should load without error
         sample = precomputed[0]
-        assert sample["cell_type_order"] == mock_dataset.cell_type_order
+        # cell_type_order is no longer in the sample dict (removed for DDP serialization),
+        # but it should still be accessible as a dataset attribute
+        assert precomputed.cell_type_order == mock_dataset.cell_type_order
 
     def test_precomputed_raises_on_mismatched_order(self, mock_dataset, tmp_path):
         """PrecomputedDataset should raise ValueError on mismatched order."""

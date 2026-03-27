@@ -461,12 +461,14 @@ class TestCollateRawEdgeTensors:
             if n < max_edges:
                 assert (edge_attr[b, n:] == 0).all(), f"Non-zero padding in sample {b}"
 
-    def test_collate_preserves_node_and_edge_types(self):
-        """collate_for_hgt should still return node_types and edge_types."""
+    def test_collate_excludes_non_tensor_metadata(self):
+        """collate_for_hgt should not include non-tensor metadata strings."""
         batch = [create_mock_sample(n_edges=10) for _ in range(2)]
         collated = collate_for_hgt(batch)
-        assert "node_types" in collated
-        assert "edge_types" in collated
+        assert "node_types" not in collated
+        assert "edge_types" not in collated
+        assert "cell_type_order" not in collated
+        assert "cell_barcodes" not in collated
 
 
 # =============================================================================

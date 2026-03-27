@@ -75,17 +75,11 @@ class TestMoveBatchToDevice:
             "pseudobulk": torch.randn(4, 31, 50),
             "subject_ids": ["subj_0", "subj_1", "subj_2", "subj_3"],
             "batch_size": 4,
-            "node_types": ["Type_A", "Type_B"],
-            "edge_types": ["edge_0"],
-            "cell_type_order": ["TypeA", "TypeB"],
             "n_nodes_per_graph": [31, 31, 31, 31],
         }
         moved = move_batch_to_device(batch, "cpu")
         assert moved["subject_ids"] is batch["subject_ids"]
         assert moved["batch_size"] is batch["batch_size"]
-        assert moved["node_types"] is batch["node_types"]
-        assert moved["edge_types"] is batch["edge_types"]
-        assert moved["cell_type_order"] is batch["cell_type_order"]
         assert moved["n_nodes_per_graph"] is batch["n_nodes_per_graph"]
 
     def test_raw_edge_tensors_moved_to_device(self):
@@ -115,8 +109,6 @@ class TestMoveBatchToDevice:
             "ccc_edge_counts": torch.zeros(4, dtype=torch.long),
             "subject_ids": [f"subj_{i}" for i in range(4)],
             "batch_size": 4,
-            "node_types": ["Type_0"],
-            "edge_types": [],
         }
         moved = move_batch_to_device(batch, "cpu")
         assert set(moved.keys()) == set(batch.keys())

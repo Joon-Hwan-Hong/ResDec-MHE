@@ -53,6 +53,10 @@ data:
     min_cells_threshold: 50
     sampling_strategy: "random"  # "random", "stratified", "importance"
 
+  # Pre-load all .npz files to RAM at startup (eliminates disk I/O during training).
+  # Costs ~20 GB RAM for full ROSMAP dataset. Recommended for machines with 64+ GB.
+  preload_to_ram: true
+
   # Fraction of subjects allowed to be missing from splits before raising an error
   max_missing_subject_fraction: 0.1
 
@@ -69,7 +73,7 @@ data:
 
 model:
   # Dimensions
-  n_genes: 4000  # Will be updated after preprocessing
+  n_genes: 4797  # 4000 HVGs + 797 CellChatDB L-R genes (from preprocessed AnnData)
   n_cell_types: 31
   # n_regions is fixed at 6 (from constants.N_REGIONS) — determined by dataset schema.
   # Do NOT add n_regions here; the model reads N_REGIONS from src.data.constants.

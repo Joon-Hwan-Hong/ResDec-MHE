@@ -93,7 +93,6 @@ class TestCollateOutputSchema:
             # HGT raw edge tensors
             "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts",
             "subject_ids", "batch_size",
-            "node_types", "edge_types",
         }
 
         assert required_keys.issubset(set(batch.keys())), \
@@ -258,30 +257,6 @@ class TestCollateForHgt:
         assert result["batch_size"] == 3
         assert result["ccc_edge_index"].shape[0] == 3
 
-    def test_includes_node_and_edge_types(self):
-        """Result includes metadata about node/edge types."""
-        from src.data.collate import collate_for_hgt
-
-        batch = [create_mock_sample() for _ in range(2)]
-        result = collate_for_hgt(batch)
-
-        assert "node_types" in result
-        assert "edge_types" in result
-        assert len(result["node_types"]) == N_CELL_TYPES  # Cell types
-        assert len(result["edge_types"]) == 5   # CellChatDB categories
-
-    def test_sanitizes_names(self):
-        """Node and edge type names should be sanitized."""
-        from src.data.collate import collate_for_hgt
-
-        batch = [create_mock_sample() for _ in range(1)]
-        result = collate_for_hgt(batch)
-
-        # Names should not contain spaces or slashes
-        for name in result["node_types"]:
-            assert " " not in name
-            assert "/" not in name
-
     def test_single_sample_batch(self):
         """Handle batch of size 1."""
         from src.data.collate import collate_for_hgt
@@ -311,71 +286,7 @@ class TestCollateForHgt:
         assert result["ccc_edge_type"].shape == (1, 2)
         assert result["ccc_edge_attr"].shape == (1, 2, 1)
 
-    def test_uses_custom_cell_type_order(self):
-        """Should use cell_type_order from sample, not global constant."""
-        from src.data.collate import collate_for_hgt
 
-        # Create sample with custom cell type order
-        custom_order = ["TypeA", "TypeB", "TypeC"]
-        sample = create_mock_sample()
-        sample["pseudobulk"] = torch.randn(3, 100)  # 3 cell types
-        sample["cell_type_order"] = custom_order
-
-        # Edge from TypeA (0) to TypeB (1)
-        sample["ccc_edge_index"] = torch.tensor([[0], [1]])
-        sample["ccc_edge_type"] = torch.tensor([0])
-        sample["ccc_edge_attr"] = torch.tensor([[0.5]])
-
-        result = collate_for_hgt([sample])
-
-        # Node types should match custom order (sanitized)
-        assert result["node_types"] == ["TypeA", "TypeB", "TypeC"]
-
-        # Raw cell_type_order should be preserved
-        assert result["cell_type_order"] == custom_order
-
-    def test_falls_back_to_default_cell_type_order(self):
-        """Should use CELL_TYPE_ORDER when sample doesn't include cell_type_order."""
-        from src.data.collate import collate_for_hgt
-        from src.data.constants import CELL_TYPE_ORDER
-
-        # Create sample WITHOUT cell_type_order key
-        sample = create_mock_sample()
-        # Ensure no cell_type_order key
-        if "cell_type_order" in sample:
-            del sample["cell_type_order"]
-
-        result = collate_for_hgt([sample])
-
-        # Should fall back to default CELL_TYPE_ORDER
-        assert result["cell_type_order"] == CELL_TYPE_ORDER
-
-    def test_raises_on_mismatched_cell_type_order(self):
-        """Should raise RuntimeError when samples have different cell_type_order."""
-        from src.data.collate import collate_for_hgt
-
-        n_cell_types = 3
-        n_genes = 10
-        order_a = ["TypeA", "TypeB", "TypeC"]
-        order_b = ["TypeC", "TypeA", "TypeB"]  # Different order
-
-        sample_a = create_mock_sample(n_genes=n_genes, n_cell_types=n_cell_types)
-        sample_a["cell_type_order"] = order_a
-
-        sample_b = create_mock_sample(n_genes=n_genes, n_cell_types=n_cell_types)
-        sample_b["cell_type_order"] = order_b
-
-        import os
-        old = os.environ.get("RESILIENCE_DEBUG")
-        os.environ["RESILIENCE_DEBUG"] = "1"
-        try:
-            with pytest.raises(RuntimeError, match="cell_type_order mismatch"):
-                collate_for_hgt([sample_a, sample_b])
-        finally:
-            if old is None:
-                os.environ.pop("RESILIENCE_DEBUG", None)
-            else:
-                os.environ["RESILIENCE_DEBUG"] = old
 
 
 class TestCreateDataloader:
@@ -436,8 +347,6 @@ class TestCollateForHgtMultiregion:
         assert "ccc_edge_type" in result
         assert "ccc_edge_attr" in result
         assert "ccc_edge_counts" in result
-        assert "node_types" in result
-        assert "edge_types" in result
 
     def test_includes_region_data_when_present(self):
         """Should include region data when samples have region_pseudobulk."""
@@ -521,7 +430,6 @@ class TestMoveBatchToDevice:
                 {"TypeA": torch.randn(1, 64), "TypeB": torch.randn(1, 64)},
                 {"TypeA": torch.randn(1, 64), "TypeB": torch.randn(1, 64)},
             ],
-            "node_types": ["TypeA", "TypeB"],
         }
 
         moved = move_batch_to_device(batch, "cpu")
@@ -530,9 +438,6 @@ class TestMoveBatchToDevice:
         for x_dict in moved["x_dict_list"]:
             for ct_name, tensor in x_dict.items():
                 assert tensor.device == torch.device("cpu")
-
-        # Metadata should be unchanged
-        assert moved["node_types"] == ["TypeA", "TypeB"]
 
     def test_moves_raw_edge_tensors(self):
         """Should move raw edge tensors (ccc_edge_*) to device."""
@@ -558,9 +463,6 @@ class TestMoveBatchToDevice:
             "pseudobulk": torch.randn(2, N_CELL_TYPES, 100),
             "subject_ids": ["A", "B"],
             "batch_size": 2,
-            "node_types": ["TypeA", "TypeB"],
-            "edge_types": ["rel1", "rel2"],
-            "cell_type_order": ["TypeA", "TypeB"],
         }
 
         moved = move_batch_to_device(batch, "cpu")
@@ -568,9 +470,6 @@ class TestMoveBatchToDevice:
         # These should be unchanged
         assert moved["subject_ids"] == ["A", "B"]
         assert moved["batch_size"] == 2
-        assert moved["node_types"] == ["TypeA", "TypeB"]
-        assert moved["edge_types"] == ["rel1", "rel2"]
-        assert moved["cell_type_order"] == ["TypeA", "TypeB"]
 
 
 class TestGetEffectiveBatchSize:
@@ -754,7 +653,6 @@ class TestCompositeKeyOverflow:
             "cognition": torch.randn(1),
             "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
             "subject_id": "test_subj",
-            "cell_type_order": [f"c{i}" for i in range(n_ct)],
         }
         result = collate_for_hgt([sample])
         assert result["ccc_edge_counts"][0].item() == 2
