@@ -34,6 +34,9 @@ class KLAnnealedELBO(TraceMeanField_ELBO):
         super().__init__(**kwargs)
         self.kl_weight = kl_weight
 
+    def __repr__(self) -> str:
+        return f"KLAnnealedELBO(kl_weight={self.kl_weight}, num_particles={self.num_particles})"
+
     def differentiable_loss(self, model, guide, *args, **kwargs):
         """Compute KL-annealed ELBO loss.
 

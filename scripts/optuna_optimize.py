@@ -436,6 +436,7 @@ def main() -> None:
     optuna_cfg = config.optuna
     n_trials = args.n_trials or optuna_cfg.get("n_trials", 100)
     timeout = args.timeout or optuna_cfg.get("timeout", None)
+    per_trial_timeout = optuna_cfg.get("per_trial_timeout", None)
 
     # Fail fast if data not provided (before expensive data loading)
     if args.splits_path is None:
@@ -471,6 +472,19 @@ def main() -> None:
 
     # Create study (always use create_study to respect config pruner type)
     study = create_study(config, storage=args.storage)
+
+    # Per-trial timeout callback: fails individual trials that exceed the limit
+    # without killing the entire study (unlike the global timeout).
+    callbacks = []
+    if per_trial_timeout:
+        from datetime import timedelta
+        callbacks.append(
+            optuna.callbacks.MaxTrialDurationCallback(timedelta(seconds=per_trial_timeout))
+        )
+        logger.info(
+            "Per-trial timeout: %d s (%.1f hours)",
+            per_trial_timeout, per_trial_timeout / 3600,
+        )
 
     logger.info(
         "Starting optimization: n_trials=%d, timeout=%s",
@@ -569,6 +583,7 @@ def main() -> None:
             ),
             n_trials=n_trials,
             timeout=timeout,
+            callbacks=callbacks or None,
         )
 
     # Report results

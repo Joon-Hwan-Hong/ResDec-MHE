@@ -5,7 +5,7 @@
 # Experiment metadata
 experiment:
   name: "cognitive_resilience"
-  run_name: "run1"  # Human-readable tag for experiment dirs (e.g., "baseline-5fold", "hgt-ablation")
+  run_name: "run2"  # Human-readable tag for experiment dirs (e.g., "baseline-5fold", "hgt-ablation")
   seed: 42
   device: "auto"  # "auto", "cuda", "cpu"
 
@@ -230,7 +230,8 @@ training:
 
 optuna:
   n_trials: 100
-  timeout: 432000  # 5 days (100 trials × 5-fold CV worst case)
+  timeout: null  # No global timeout — n_trials is the stopping condition
+  per_trial_timeout: 14400  # 4 hours per trial (worst case ~2.3h for 5-fold CV)
   pruner:
     type: "median"
     n_startup_trials: 5

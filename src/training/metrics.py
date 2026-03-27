@@ -136,7 +136,7 @@ class ResilienceMetrics:
         target_np = target.detach().cpu().float().numpy().flatten()
         n = len(mean_np)
 
-        rng = np.random.RandomState(seed)
+        rng = np.random.default_rng(seed)
         boot_results: dict[str, list[float]] = {m: [] for m in metrics}
 
         for _ in range(n_bootstrap):

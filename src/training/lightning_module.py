@@ -241,7 +241,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 if self.training:
                     bs = batch["cognition"].shape[0]
                     self.log("train_nll", nll.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
-                    self.log("train_kl", kl.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
+                    self.log("train_kl_weighted", kl.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
             else:
                 loss = self.elbo.differentiable_loss(
                     self.model, self.guide,
