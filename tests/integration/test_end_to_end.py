@@ -207,7 +207,7 @@ class TestPrecomputeRoundTrip:
 
         # Verify files exist
         for sid in subject_ids:
-            assert (tmp_path / f"{sid}.npz").exists()
+            assert (tmp_path / f"{sid}.pt").exists()
 
         # Load via PrecomputedDataset
         ds_pre = PrecomputedDataset(
@@ -236,14 +236,19 @@ class TestPrecomputeRoundTrip:
         live_sample = ds_live2[0]
         pre_sample = ds_pre[0]
 
-        # Core tensors must match
-        for key in ["pseudobulk", "cell_type_mask", "cell_counts",
-                     "cells", "cell_mask", "region_mask"]:
+        # Core tensors must match (same format in both datasets)
+        for key in ["pseudobulk", "cell_type_mask", "cell_counts", "region_mask"]:
             assert key in pre_sample, f"Missing key '{key}' in PrecomputedDataset"
             torch.testing.assert_close(
                 pre_sample[key], live_sample[key],
                 msg=f"Mismatch in '{key}'",
             )
+
+        # Cell data: PrecomputedDataset uses flat format (cell_data + cell_offsets)
+        # while CognitiveResilienceDataset uses padded (cells + cell_mask).
+        # Flat format correctness is tested in test_flat_cells.py; here just check presence.
+        assert "cell_data" in pre_sample, "Missing 'cell_data' in PrecomputedDataset"
+        assert "cell_offsets" in pre_sample, "Missing 'cell_offsets' in PrecomputedDataset"
 
         # Edge tensors
         for key in ["ccc_edge_index", "ccc_edge_type", "ccc_edge_attr"]:
@@ -268,7 +273,7 @@ class TestPrecomputeRoundTrip:
 
         # Save all first
         save_precomputed_features(ds, tmp_path, verbose=False)
-        first_mtime = (tmp_path / f"{subject_ids[0]}.npz").stat().st_mtime
+        first_mtime = (tmp_path / f"{subject_ids[0]}.pt").stat().st_mtime
 
         # Save again, skipping first two
         import time
@@ -279,7 +284,7 @@ class TestPrecomputeRoundTrip:
         )
 
         # First subject's file should NOT be overwritten
-        assert (tmp_path / f"{subject_ids[0]}.npz").stat().st_mtime == first_mtime
+        assert (tmp_path / f"{subject_ids[0]}.pt").stat().st_mtime == first_mtime
         # Third subject's file should be overwritten (newer mtime)
 
 

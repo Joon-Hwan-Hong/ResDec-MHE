@@ -29,7 +29,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
     Wraps dataset creation and DataLoader construction for DDP-safe training.
     Lightning automatically adds DistributedSampler when strategy="ddp".
 
-    Note: For reproducible validation, use PrecomputedDataset (precomputed .npz features).
+    Note: For reproducible validation, use PrecomputedDataset (precomputed .pt features).
     On-the-fly CognitiveResilienceDataset uses random cell sampling which introduces
     stochastic variation in val/test metrics.
 
@@ -92,7 +92,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                     raise ValueError(
                         f"Training dataset is empty after filtering. "
                         f"Original: {len(train_subjects)} subjects. "
-                        f"Check that .npz files exist or adata contains these subjects."
+                        f"Check that .pt files exist or adata contains these subjects."
                     )
                 logger.info(
                     "Final mode: %d train subjects", len(train_subjects)
@@ -117,7 +117,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                     raise ValueError(
                         f"Training dataset is empty after filtering (fold {self.fold_idx}). "
                         f"Original: {len(train_subjects)} subjects. "
-                        f"Check that .npz files exist or adata contains these subjects."
+                        f"Check that .pt files exist or adata contains these subjects."
                     )
                 if len(self._val_ds) == 0:
                     raise ValueError(
@@ -173,7 +173,6 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 pathology_columns=list(
                     self._data_cfg.get("pathology_columns", [])
                 ),
-                preload_to_ram=self._data_cfg.get("preload_to_ram", False),
             )
         else:
             if self.adata is None:

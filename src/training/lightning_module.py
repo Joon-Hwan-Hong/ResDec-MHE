@@ -238,7 +238,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                     self.model, self.guide,
                     **self._batch_to_model_kwargs(batch),
                 )
-                if self.training:
+                if self.training and not getattr(self, '_is_prototyping', False):
                     bs = batch["cognition"].shape[0]
                     self.log("train_nll", nll.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
                     self.log("train_kl_weighted", kl.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
@@ -625,8 +625,12 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             "ccc_edge_attr": torch.zeros(0, 1, device=device),
             "cognition": torch.zeros(1, 1, device=device),
         }
-        with torch.no_grad():
-            self._svi_forward(dummy_batch)
+        self._is_prototyping = True
+        try:
+            with torch.no_grad():
+                self._svi_forward(dummy_batch)
+        finally:
+            self._is_prototyping = False
 
         n_params = sum(1 for _ in self.guide.parameters())
         logger.info("Guide prototyped in %s: %d parameter tensors", caller, n_params)

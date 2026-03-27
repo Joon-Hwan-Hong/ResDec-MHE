@@ -925,9 +925,11 @@ class TestPrecomputedDataset:
         precomputed_sample = precomputed[0]
 
         # Check all required keys are present
+        # PrecomputedDataset uses flat cell format (cell_data + cell_offsets)
+        # instead of padded format (cells + cell_mask)
         required_keys = [
             "pseudobulk", "cell_type_mask", "cell_counts", "region_mask",
-            "cells", "cell_mask", "ccc_edge_index", "ccc_edge_type",
+            "cell_data", "cell_offsets", "ccc_edge_index", "ccc_edge_type",
             "ccc_edge_attr", "pathology", "cognition",
         ]
         for key in required_keys:
@@ -1080,7 +1082,7 @@ class TestPrecomputedCellTypeOrderValidation:
         # Check that cell_type_order was saved
         sample = mock_dataset[0]
         subject_id = sample["subject_id"]
-        data = np.load(tmp_path / f"{subject_id}.npz", allow_pickle=True)
+        data = torch.load(tmp_path / f"{subject_id}.pt", weights_only=False)
 
         assert "cell_type_order" in data
         saved_order = list(data["cell_type_order"])
@@ -1209,18 +1211,18 @@ class TestMultiRegionPseudobulk:
 
         save_precomputed_features(mock_dataset, tmp_path, verbose=False)
 
-        # Check that npz file contains region data
+        # Check that .pt file contains region data
         sample = mock_dataset[0]
         subject_id = sample["subject_id"]
-        data = np.load(tmp_path / f"{subject_id}.npz", allow_pickle=True)
+        data = torch.load(tmp_path / f"{subject_id}.pt", weights_only=False)
 
         # Check region keys are saved
         for key in sample:
             if key.startswith("region_") and key.endswith("_pseudobulk"):
-                assert key in data.files, f"Missing {key} in saved npz"
+                assert key in data, f"Missing {key} in saved .pt"
 
         if "available_regions" in sample:
-            assert "available_regions" in data.files
+            assert "available_regions" in data
 
     def test_precomputed_loads_region_data(self, mock_dataset, tmp_path):
         """PrecomputedDataset should load region pseudobulk data."""

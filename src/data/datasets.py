@@ -220,7 +220,7 @@ class CognitiveResilienceDataset(Dataset):
                 f"CognitiveResilienceDataset initialized with {adata.n_obs:,} cells. "
                 f"With num_workers > 0, each DataLoader worker forks the full AnnData "
                 f"object (~{adata.n_obs * adata.n_vars * 4 / 1e9:.1f} GB if dense). "
-                f"Use PrecomputedDataset with precomputed .npz files for training at scale.",
+                f"Use PrecomputedDataset with precomputed .pt files for training at scale.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -654,15 +654,14 @@ class CognitiveResilienceDataset(Dataset):
 
 class PrecomputedDataset(Dataset):
     """
-    Dataset loading precomputed features from disk.
+    Dataset loading precomputed features from .pt files via mmap.
 
-    Use this for faster training after initial preprocessing.
-
-    When ``preload_to_ram=True``, all .npz files (including cell_data) are
-    decompressed and converted to torch tensors at init time.  Subsequent
-    ``__getitem__`` calls return from the in-memory cache (microseconds)
-    with zero disk I/O.  Total RAM cost is ~41 GB for the full ROSMAP
-    dataset (465 subjects), which fits on machines with 64+ GB RAM.
+    All subjects are memory-mapped at init time using
+    ``torch.load(path, mmap=True, weights_only=False)``.  The OS pages in
+    data on demand; multiple DataLoader workers (and DDP ranks) share the
+    same page-cache pages with zero /dev/shm overhead.
+    ``__getitem__`` returns from pre-built templates with no disk I/O
+    beyond the initial page-fault.
     """
 
     def __init__(
@@ -675,13 +674,12 @@ class PrecomputedDataset(Dataset):
         pathology_columns: list[str] | None = None,
         cell_type_order: list[str] | None = None,
         max_missing_subject_fraction: float = 0.1,
-        preload_to_ram: bool = False,
     ):
         """
-        Initialize from precomputed features.
+        Initialize from precomputed .pt features (memory-mapped).
 
         Args:
-            feature_dir: Directory containing precomputed .npz files
+            feature_dir: Directory containing precomputed .pt files
             subject_ids: List of subject IDs
             metadata: Subject metadata
             subject_column: Column for subject IDs
@@ -691,9 +689,7 @@ class PrecomputedDataset(Dataset):
                 Must match the order used when precomputing features.
                 Defaults to CELL_TYPE_ORDER from constants.
             max_missing_subject_fraction: Maximum fraction of subjects allowed to be
-                missing .npz files before raising an error (default: 0.1 = 10%).
-            preload_to_ram: If True, load all .npz files into memory at init time.
-                Eliminates disk I/O during training (~20 GB RAM for full ROSMAP dataset).
+                missing .pt files before raising an error (default: 0.1 = 10%).
         """
         self.feature_dir = Path(feature_dir)
         self.subject_ids = list(subject_ids)
@@ -729,144 +725,108 @@ class PrecomputedDataset(Dataset):
             self._target_array, dtype=torch.float32
         ).unsqueeze(1)  # [N_subjects, 1]
 
-        # Pre-load all arrays to RAM (optional).  Caches everything including
-        # cell_data (~87 MB/subject avg, ~41 GB total for 465 subjects).
-        # Eliminates all disk I/O during training.
-        self._small_cache: dict[str, dict[str, Any]] | None = None
-        if preload_to_ram:
-            self._preload_all_arrays()
+        # Memory-map all .pt files. OS pages in data on demand; multiple
+        # workers / DDP ranks share the same page-cache pages.
+        self._mmap_load_all()
 
-        # Pre-build sample templates for cached mode (avoids dict construction per __getitem__)
-        if self._small_cache is not None:
-            self._sample_templates = {}
-            for i, subject_id in enumerate(self.subject_ids):
-                cached = self._small_cache[subject_id]
-                template = {
-                    "subject_id": subject_id,
-                    "pseudobulk": cached["pseudobulk"],
-                    "cell_type_mask": cached["cell_type_mask"],
-                    "cell_counts": cached["cell_counts"],
-                    "region_mask": cached["region_mask"],
-                    "cell_offsets": cached["cell_offsets"],
-                    "ccc_edge_index": cached["ccc_edge_index"],
-                    "ccc_edge_type": cached["ccc_edge_type"],
-                    "ccc_edge_attr": cached["ccc_edge_attr"],
-                    "cell_data": cached["cell_data"],
-                    "pathology": torch.from_numpy(self._pathology_array[i]).float().clone().share_memory_(),
-                    "cognition": self._cognition_tensors[i].clone().share_memory_(),
-                }
-                # Pre-stack region pseudobulks into [n_regions, n_cell_types, n_genes]
-                # so collation can torch.stack directly instead of allocating zeros
-                # + nested fill loop over the 36 MB region_pseudobulk tensor.
-                from src.data.constants import N_REGIONS, PFC_REGION_IDX
-                n_ct, n_genes = cached["pseudobulk"].shape
-                region_pb = torch.zeros(N_REGIONS, n_ct, n_genes)
-                region_msk = torch.zeros(N_REGIONS, dtype=torch.bool)
-                avail = cached.get("available_regions", [PFC_REGION_IDX])
-                for ridx in avail:
-                    rkey = f"region_{ridx}_pseudobulk"
-                    if rkey in cached:
-                        region_pb[ridx] = cached[rkey]
-                        region_msk[ridx] = True
-                    elif ridx == PFC_REGION_IDX:
-                        region_pb[ridx] = cached["pseudobulk"]
-                        region_msk[ridx] = True
-                region_pb.share_memory_()
-                region_msk.share_memory_()
-                template["region_pseudobulk"] = region_pb
-                template["region_mask"] = region_msk
-                self._sample_templates[subject_id] = template
-        else:
-            self._sample_templates = None
+        # Pre-build sample templates (avoids dict construction per __getitem__)
+        self._sample_templates = {}
+        for i, subject_id in enumerate(self.subject_ids):
+            cached = self._small_cache[subject_id]
+            template = {
+                "subject_id": subject_id,
+                "pseudobulk": cached["pseudobulk"],
+                "cell_type_mask": cached["cell_type_mask"],
+                "cell_counts": cached["cell_counts"],
+                "region_mask": cached["region_mask"],
+                "cell_offsets": cached["cell_offsets"],
+                "ccc_edge_index": cached["ccc_edge_index"],
+                "ccc_edge_type": cached["ccc_edge_type"],
+                "ccc_edge_attr": cached["ccc_edge_attr"],
+                "cell_data": cached["cell_data"],
+                "pathology": torch.from_numpy(self._pathology_array[i]).float().clone(),
+                "cognition": self._cognition_tensors[i].clone(),
+            }
+            # Pre-stack region pseudobulks into [n_regions, n_cell_types, n_genes]
+            # so collation can torch.stack directly instead of allocating zeros
+            # + nested fill loop over the 36 MB region_pseudobulk tensor.
+            from src.data.constants import N_REGIONS, PFC_REGION_IDX
+            n_ct, n_genes = cached["pseudobulk"].shape
+            region_pb = torch.zeros(N_REGIONS, n_ct, n_genes)
+            region_msk = torch.zeros(N_REGIONS, dtype=torch.bool)
+            avail = cached.get("available_regions", [PFC_REGION_IDX])
+            for ridx in avail:
+                rkey = f"region_{ridx}_pseudobulk"
+                if rkey in cached:
+                    region_pb[ridx] = cached[rkey]
+                    region_msk[ridx] = True
+                elif ridx == PFC_REGION_IDX:
+                    region_pb[ridx] = cached["pseudobulk"]
+                    region_msk[ridx] = True
+            template["region_pseudobulk"] = region_pb
+            template["region_mask"] = region_msk
+            self._sample_templates[subject_id] = template
 
-    def _preload_all_arrays(self) -> None:
-        """Pre-load all arrays (including cell_data) into memory.
+    def _mmap_load_all(self) -> None:
+        """Memory-map all .pt files into ``_small_cache``.
 
-        Caches ~87 MB/subject on average (~41 GB total for 465 subjects).
-        Eliminates all disk I/O during training.
+        Uses ``torch.load(path, mmap=True)`` so that tensors are backed by
+        the OS page cache.  Multiple DataLoader workers and DDP ranks share
+        the same physical pages with no /dev/shm overhead.
         """
         import time as _time
 
         t0 = _time.monotonic()
-        self._small_cache = {}
+        self._small_cache: dict[str, dict[str, Any]] = {}
         total_cell_bytes = 0
         for sid in self.subject_ids:
-            feature_file = self.feature_dir / f"{sid}.npz"
-            with np.load(feature_file, allow_pickle=True) as npz_data:
-                entry: dict[str, Any] = {}
-                entry["pseudobulk"] = torch.from_numpy(npz_data["pseudobulk"]).float()
-                entry["cell_type_mask"] = torch.from_numpy(npz_data["cell_type_mask"]).bool()
-                if "cell_offsets" in npz_data:
-                    entry["cell_offsets"] = torch.from_numpy(npz_data["cell_offsets"]).long()
-                else:
-                    # Backward compat: convert old cell_mask to offsets
-                    cell_mask = npz_data["cell_mask"]  # [n_types, max_cells]
-                    n_types = cell_mask.shape[0]
-                    offsets = np.zeros(n_types + 1, dtype=np.int64)
-                    for ct in range(n_types):
-                        offsets[ct + 1] = offsets[ct] + int(cell_mask[ct].sum())
-                    entry["cell_offsets"] = torch.from_numpy(offsets).long()
-                entry["ccc_edge_index"] = torch.from_numpy(npz_data["edge_index"]).long()
-                entry["ccc_edge_type"] = torch.from_numpy(npz_data["edge_type"]).long()
-                entry["ccc_edge_attr"] = torch.from_numpy(npz_data["edge_attr"]).float()
-                if "cell_counts" in npz_data:
-                    entry["cell_counts"] = torch.from_numpy(npz_data["cell_counts"]).long()
-                elif "cell_offsets" in npz_data:
-                    offsets = npz_data["cell_offsets"]
-                    entry["cell_counts"] = torch.from_numpy(
-                        (offsets[1:] - offsets[:-1]).astype(np.int64)
+            feature_file = self._resolve_feature_file(sid)
+            pt_data = torch.load(feature_file, mmap=True, weights_only=False)
+            # Validate cell_type_order if stored in .pt file
+            if "cell_type_order" in pt_data:
+                saved_order = list(pt_data["cell_type_order"])
+                if saved_order != list(self.cell_type_order):
+                    raise RuntimeError(
+                        f"Subject {sid} was precomputed with different cell_type_order. "
+                        f"Saved: {saved_order[:5]}... vs current: {list(self.cell_type_order)[:5]}... "
+                        f"Re-run precompute_features.py with the correct cell_type_order."
                     )
-                else:
-                    entry["cell_counts"] = torch.from_numpy(
-                        npz_data["cell_mask"].sum(axis=1).astype(np.int64)
-                    )
-                if "region_mask" in npz_data:
-                    entry["region_mask"] = torch.from_numpy(npz_data["region_mask"]).bool()
-                else:
-                    from src.data.constants import REGION_ORDER
-                    rm = torch.zeros(len(REGION_ORDER), dtype=torch.bool)
-                    rm[0] = True
-                    entry["region_mask"] = rm
-                # Region pseudobulks
-                for key in npz_data.files:
-                    if key.startswith("region_") and key.endswith("_pseudobulk"):
-                        entry[key] = torch.from_numpy(npz_data[key]).float()
-                if "available_regions" in npz_data:
-                    entry["available_regions"] = npz_data["available_regions"].tolist()
-                # Cell data — the largest array per subject
-                if "cell_data" in npz_data:
-                    cell_tensor = torch.from_numpy(npz_data["cell_data"]).float()
-                else:
-                    # Backward compat: convert old padded format on-the-fly
-                    cells = npz_data["cells"]
-                    cell_mask_arr = npz_data["cell_mask"]
-                    n_types = cells.shape[0]
-                    flat_parts = []
-                    for ct in range(n_types):
-                        n_cells = int(cell_mask_arr[ct].sum())
-                        if n_cells > 0:
-                            flat_parts.append(cells[ct, :n_cells])
-                    cell_tensor = torch.from_numpy(
-                        np.concatenate(flat_parts) if flat_parts else np.empty((0, cells.shape[2]), dtype=np.float32)
-                    ).float()
-                entry["cell_data"] = cell_tensor
-                total_cell_bytes += cell_tensor.nelement() * cell_tensor.element_size()
-                self._small_cache[sid] = entry
-        # Move all tensors to shared memory so DataLoader worker forks
-        # share the same physical pages (avoids overcommit failures with
-        # 12 workers × 30+ GB cached data).
-        for entry in self._small_cache.values():
-            for key, val in entry.items():
-                if isinstance(val, torch.Tensor):
-                    val.share_memory_()
+            entry: dict[str, Any] = {
+                "pseudobulk": pt_data["pseudobulk"].float(),
+                "cell_type_mask": pt_data["cell_type_mask"].bool(),
+                "cell_offsets": pt_data["cell_offsets"].long(),
+                "ccc_edge_index": pt_data["ccc_edge_index"].long(),
+                "ccc_edge_type": pt_data["ccc_edge_type"].long(),
+                "ccc_edge_attr": pt_data["ccc_edge_attr"].float(),
+                "cell_counts": pt_data["cell_counts"].long(),
+                "region_mask": pt_data["region_mask"].bool(),
+                "cell_data": pt_data["cell_data"].float(),
+            }
+            for key in pt_data:
+                if key.startswith("region_") and key.endswith("_pseudobulk"):
+                    entry[key] = pt_data[key].float()
+            if "available_regions" in pt_data:
+                entry["available_regions"] = list(pt_data["available_regions"])
+            total_cell_bytes += entry["cell_data"].nelement() * entry["cell_data"].element_size()
+            self._small_cache[sid] = entry
         elapsed = _time.monotonic() - t0
         logger.info(
-            "Pre-loaded all arrays for %d subjects to RAM in %.1f s (cell_data: %.1f GB)",
+            "Memory-mapped all .pt files for %d subjects in %.1f s (cell_data: %.1f GB)",
             len(self.subject_ids), elapsed, total_cell_bytes / (1024**3),
         )
 
+    def _resolve_feature_file(self, sid: str) -> Path | None:
+        """Return the .pt feature file path for a subject.
+
+        Returns None if the file does not exist.
+        """
+        pt_path = self.feature_dir / f"{sid}.pt"
+        if pt_path.exists():
+            return pt_path
+        return None
+
     def _validate_files(self):
-        """Check that feature files exist for all subjects.
+        """Check that .pt feature files exist for all subjects.
 
         Also removes degenerate subjects with fewer than 2 active cell types,
         since CCC edges require at least 2 cell types interacting and the
@@ -876,13 +836,15 @@ class PrecomputedDataset(Dataset):
         degenerate = []
         edge_counts = {}
         for sid in self.subject_ids:
-            feature_file = self.feature_dir / f"{sid}.npz"
-            if not (feature_file.exists() and sid in self.metadata.index):
+            feature_file = self._resolve_feature_file(sid)
+            if feature_file is None or sid not in self.metadata.index:
                 continue
             # Check for degenerate subjects (< 2 active cell types)
-            with np.load(feature_file, allow_pickle=True) as npz:
-                n_active = int(npz["cell_type_mask"].sum())
-                n_edges = int(npz["edge_index"].shape[1])
+            data = self._load_raw_feature_file(feature_file)
+            ct_mask = data["cell_type_mask"]
+            n_active = int(ct_mask.sum() if isinstance(ct_mask, (torch.Tensor, np.ndarray)) else np.array(ct_mask).sum())
+            edge_val = data["ccc_edge_index"]
+            n_edges = int(edge_val.shape[1] if isinstance(edge_val, (torch.Tensor, np.ndarray)) else np.array(edge_val).shape[1])
             if n_active < 2:
                 degenerate.append(sid)
                 continue
@@ -902,7 +864,7 @@ class PrecomputedDataset(Dataset):
 
             if missing_fraction > self.max_missing_subject_fraction:
                 raise ValueError(
-                    f"Too many subjects missing .npz files or metadata: "
+                    f"Too many subjects missing feature files or metadata: "
                     f"{n_removed}/{len(self.subject_ids)} ({missing_fraction:.1%}) "
                     f"exceeds threshold ({self.max_missing_subject_fraction:.0%}). "
                     f"Check feature_dir path: {self.feature_dir}"
@@ -923,15 +885,21 @@ class PrecomputedDataset(Dataset):
         """Return edge counts in subject_ids order (for bucket batching)."""
         return [self._edge_counts[sid] for sid in self.subject_ids]
 
+    @staticmethod
+    def _load_raw_feature_file(path: Path) -> dict:
+        """Load a .pt feature file and return its contents as a dict."""
+        return torch.load(path, weights_only=False)
+
     def _validate_gene_names(self):
         """Validate gene_names.npy gene count matches pseudobulk gene dimension."""
         gene_names = self.get_gene_names()
         if gene_names is None or len(self.subject_ids) == 0:
             return
         # Check against first subject's pseudobulk
-        sample_file = self.feature_dir / f"{self.subject_ids[0]}.npz"
-        with np.load(sample_file) as npz:
-            n_genes_data = npz["pseudobulk"].shape[1]
+        sample_file = self._resolve_feature_file(self.subject_ids[0])
+        data = self._load_raw_feature_file(sample_file)
+        pb = data["pseudobulk"]
+        n_genes_data = pb.shape[1]
         if len(gene_names) != n_genes_data:
             raise ValueError(
                 f"gene_names.npy has {len(gene_names)} genes but pseudobulk "
@@ -975,180 +943,13 @@ class PrecomputedDataset(Dataset):
         return len(self.subject_ids)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        """Load precomputed features for a subject.
+        """Return pre-built template for a subject (mmap-backed, zero copy).
 
-        When preload_to_ram is enabled, all arrays (including cell_data) are
-        returned from the in-memory cache with zero disk I/O.
+        All subjects are memory-mapped at init; ``__getitem__`` is a dict
+        lookup with no per-call disk I/O.
         """
         subject_id = self.subject_ids[idx]
-        feature_file = self.feature_dir / f"{subject_id}.npz"
-
-        try:
-            if self._small_cache is not None:
-                return self._load_npz_with_cache(subject_id, feature_file, idx)
-            return self._load_npz(subject_id, feature_file, idx)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to load precomputed features for subject '{subject_id}' "
-                f"from {feature_file}: {type(e).__name__}: {e}"
-            ) from e
-
-    def _load_npz_with_cache(
-        self, subject_id: str, feature_file: Path, idx: int
-    ) -> dict[str, torch.Tensor]:
-        """Return pre-built template (all arrays already in RAM, zero disk I/O).
-
-        Returns the template dict directly (no copy). Safe because collation
-        only reads dict values — it never mutates the input sample dicts.
-        """
         return self._sample_templates[subject_id]
-
-    def _load_npz(self, subject_id: str, feature_file: Path, idx: int) -> dict[str, torch.Tensor]:
-        """Load and validate a single .npz file. Called by __getitem__."""
-        # Load features (context manager ensures file handle is closed)
-        # allow_pickle=True required for object-dtype arrays (cell_type_order).
-        # Safe here: .npz files are self-generated by save_precomputed_features().
-        with np.load(feature_file, allow_pickle=True) as npz_data:
-            file_keys = set(npz_data.files)
-            has_flat = "cell_data" in file_keys and "cell_offsets" in file_keys
-            has_padded = "cells" in file_keys and "cell_mask" in file_keys
-
-            # Validate required keys (accept either flat or padded cell format)
-            base_required = {"pseudobulk", "cell_type_mask", "edge_index", "edge_type", "edge_attr"}
-            missing_base = base_required - file_keys
-            if missing_base:
-                raise KeyError(
-                    f"Missing required keys: {missing_base}. "
-                    f"Available: {list(npz_data.files)}"
-                )
-            if not has_flat and not has_padded:
-                raise KeyError(
-                    f"Missing cell data keys: need either {{cell_data, cell_offsets}} "
-                    f"or {{cells, cell_mask}}. Available: {list(npz_data.files)}"
-                )
-
-            # Validate cell_type_order matches (if stored in file)
-            if "cell_type_order" in npz_data:
-                saved_order = list(npz_data["cell_type_order"])
-                if saved_order != self.cell_type_order:
-                    raise ValueError(
-                        f"Precomputed file {feature_file} was saved with different "
-                        f"cell_type_order than expected. Edge indices may be incorrectly "
-                        f"mapped. Saved: {saved_order[:3]}... Expected: {self.cell_type_order[:3]}..."
-                    )
-
-            # BACKWARD COMPAT: Pre-multi-region .npz files may lack cell_counts and
-            # region_mask. Safe to remove after re-running precompute_features on all
-            # subjects with multi-region support enabled.
-            if "cell_counts" in npz_data:
-                cell_counts = torch.from_numpy(npz_data["cell_counts"]).long()
-            else:
-                # Derive cell_counts from cell_mask (only available in padded format)
-                cell_mask_np = npz_data["cell_mask"]  # [n_cell_types, max_cells] bool
-                cell_counts = torch.from_numpy(cell_mask_np.sum(axis=1).astype(np.int64))
-
-            if "region_mask" in npz_data:
-                region_mask = torch.from_numpy(npz_data["region_mask"]).bool()
-            else:
-                # Default to first region only (PFC) for backward compatibility
-                from src.data.constants import REGION_ORDER
-                region_mask = torch.zeros(len(REGION_ORDER), dtype=torch.bool)
-                region_mask[0] = True
-
-            # Extract common arrays into tensors while file is open
-            pseudobulk = torch.from_numpy(npz_data["pseudobulk"]).float()
-            cell_type_mask = torch.from_numpy(npz_data["cell_type_mask"]).bool()
-            ccc_edge_index = torch.from_numpy(npz_data["edge_index"]).long()
-            ccc_edge_type = torch.from_numpy(npz_data["edge_type"]).long()
-            ccc_edge_attr = torch.from_numpy(npz_data["edge_attr"]).float()
-
-            # Load cell data (flat format preferred, padded converted on-the-fly)
-            if has_flat:
-                cell_data = torch.from_numpy(npz_data["cell_data"]).float()
-                cell_offsets = torch.from_numpy(npz_data["cell_offsets"]).long()
-            else:
-                # Backward compat: convert old padded format on-the-fly
-                cells_np = npz_data["cells"]
-                cell_mask_np = npz_data["cell_mask"]
-                n_types = cells_np.shape[0]
-                offsets = np.zeros(n_types + 1, dtype=np.int64)
-                flat_parts = []
-                for ct in range(n_types):
-                    n_cells = int(cell_mask_np[ct].sum())
-                    if n_cells > 0:
-                        flat_parts.append(cells_np[ct, :n_cells])
-                    offsets[ct + 1] = offsets[ct] + n_cells
-                cell_data = torch.from_numpy(
-                    np.concatenate(flat_parts) if flat_parts
-                    else np.empty((0, cells_np.shape[2]), dtype=np.float32)
-                ).float()
-                cell_offsets = torch.from_numpy(offsets).long()
-
-            # Shape validation
-            n_ct = len(self.cell_type_order)
-            if pseudobulk.ndim != 2 or pseudobulk.shape[0] != n_ct:
-                raise ValueError(
-                    f"pseudobulk shape {tuple(pseudobulk.shape)}: expected "
-                    f"[{n_ct}, n_genes], got wrong n_cell_types dim"
-                )
-            if cell_data.ndim != 2:
-                raise ValueError(
-                    f"cell_data should be 2D [total_cells, n_genes], "
-                    f"got {cell_data.ndim}D shape {tuple(cell_data.shape)}"
-                )
-            if cell_offsets.shape[0] != n_ct + 1:
-                raise ValueError(
-                    f"cell_offsets length {cell_offsets.shape[0]}: expected "
-                    f"{n_ct + 1} (n_cell_types + 1)"
-                )
-            if int(cell_offsets[-1].item()) != cell_data.shape[0]:
-                raise ValueError(
-                    f"cell_offsets[-1]={int(cell_offsets[-1].item())} != "
-                    f"cell_data.shape[0]={cell_data.shape[0]}: offset/data mismatch"
-                )
-            if cell_data.shape[0] > 0 and pseudobulk.shape[1] != cell_data.shape[1]:
-                raise ValueError(
-                    f"Gene dimension mismatch: pseudobulk has {pseudobulk.shape[1]} genes "
-                    f"but cell_data has {cell_data.shape[1]} genes"
-                )
-
-            # Load multi-region pseudobulk data (if present in file)
-            region_pseudobulks = {}
-            for key in npz_data.files:
-                if key.startswith("region_") and key.endswith("_pseudobulk"):
-                    region_pseudobulks[key] = torch.from_numpy(npz_data[key]).float()
-
-            available_regions = (
-                npz_data["available_regions"].tolist()
-                if "available_regions" in npz_data
-                else None
-            )
-
-        # Use pre-extracted phenotype arrays (O(1) numpy indexing vs pandas .loc)
-        pathology = torch.from_numpy(self._pathology_array[idx]).float()
-
-        sample = {
-            "subject_id": subject_id,
-            "pseudobulk": pseudobulk,
-            "cell_type_mask": cell_type_mask,
-            "cell_counts": cell_counts,
-            "region_mask": region_mask,
-            "cell_data": cell_data,
-            "cell_offsets": cell_offsets,
-            # Graph features (CCC = cell-cell communication)
-            "ccc_edge_index": ccc_edge_index,
-            "ccc_edge_type": ccc_edge_type,
-            "ccc_edge_attr": ccc_edge_attr,
-            # Phenotypes
-            "pathology": pathology,
-            "cognition": self._cognition_tensors[idx],
-            **region_pseudobulks,
-        }
-
-        if available_regions is not None:
-            sample["available_regions"] = available_regions
-
-        return sample
 
 
 def save_precomputed_features(
@@ -1160,17 +961,17 @@ def save_precomputed_features(
     """
     Save precomputed features to disk for faster loading.
 
-    Note: pathology and cognition values are NOT saved in .npz files — they
+    Note: pathology and cognition values are NOT saved in .pt files — they
     are read from metadata at training time by PrecomputedDataset. This allows
     updating targets (e.g., different cognition measures) without re-precomputing
     the expensive cell-level features.
 
-    Note: cell_barcodes are not saved in .npz files. For barcode-level
+    Note: cell_barcodes are not saved in .pt files. For barcode-level
     interpretability analysis, use CognitiveResilienceDataset directly.
 
     Args:
         dataset: CognitiveResilienceDataset to precompute
-        output_dir: Directory to save .npz files
+        output_dir: Directory to save .pt files
         verbose: Print progress
         skip_subjects: Subject IDs to skip (already precomputed)
     """
@@ -1195,63 +996,59 @@ def save_precomputed_features(
             n_skipped += 1
             continue
 
-        output_file = output_dir / f"{subject_id}.npz"
+        output_file = output_dir / f"{subject_id}.pt"
 
         # Convert padded cells [n_types, max_cells, n_genes] to flat format
         # cell_data [total_real_cells, n_genes] + cell_offsets [n_types+1]
-        cells_padded = sample["cells"].numpy()
-        cell_mask_padded = sample["cell_mask"].numpy()
+        cells_padded = sample["cells"]  # already a torch.Tensor
+        cell_mask_padded = sample["cell_mask"]  # already a torch.Tensor
         n_types = cells_padded.shape[0]
 
-        cell_offsets = np.zeros(n_types + 1, dtype=np.int64)
-        flat_parts = []
+        cell_offsets = torch.zeros(n_types + 1, dtype=torch.long)
+        flat_parts: list[torch.Tensor] = []
         for ct in range(n_types):
-            n = int(cell_mask_padded[ct].sum())
+            n = int(cell_mask_padded[ct].sum().item())
             if n > 0:
                 flat_parts.append(cells_padded[ct, :n])
             cell_offsets[ct + 1] = cell_offsets[ct] + n
 
         cell_data = (
-            np.concatenate(flat_parts, axis=0)
+            torch.cat(flat_parts, dim=0)
             if flat_parts
-            else np.empty((0, cells_padded.shape[2]), dtype=np.float32)
+            else torch.empty((0, cells_padded.shape[2]), dtype=torch.float32)
         )
 
-        # Build save dict with core features
-        save_data = {
-            "pseudobulk": sample["pseudobulk"].numpy(),
-            "cell_type_mask": sample["cell_type_mask"].numpy(),
-            "cell_counts": sample["cell_counts"].numpy(),
-            "region_mask": sample["region_mask"].numpy(),
-            # Note: We keep the npz keys as edge_* for backward compatibility
-            # with existing precomputed files. The PrecomputedDataset maps
-            # these to ccc_edge_* when loading.
-            "edge_index": sample["ccc_edge_index"].numpy(),
-            "edge_type": sample["ccc_edge_type"].numpy(),
-            "edge_attr": sample["ccc_edge_attr"].numpy(),
+        # Build save dict with core features.
+        # Keys use ccc_edge_* names (matching PrecomputedDataset expectations).
+        # All tensor values are saved as torch.Tensor directly.
+        save_data: dict = {
+            "pseudobulk": sample["pseudobulk"],
+            "cell_type_mask": sample["cell_type_mask"],
+            "cell_counts": sample["cell_counts"],
+            "region_mask": sample["region_mask"],
+            "ccc_edge_index": sample["ccc_edge_index"],
+            "ccc_edge_type": sample["ccc_edge_type"],
+            "ccc_edge_attr": sample["ccc_edge_attr"],
             "cell_data": cell_data,
             "cell_offsets": cell_offsets,
-            # Store ordering metadata for validation on load
-            "cell_type_order": np.array(dataset.cell_type_order, dtype=object),
+            # Store ordering metadata for validation on load (Python list)
+            "cell_type_order": list(dataset.cell_type_order),
         }
 
         # Add multi-region pseudobulk data (if present)
         for key in sample:
             if key.startswith("region_") and key.endswith("_pseudobulk"):
-                save_data[key] = sample[key].numpy()
+                save_data[key] = sample[key]
 
         if "available_regions" in sample:
-            save_data["available_regions"] = np.array(sample["available_regions"])
+            save_data["available_regions"] = list(sample["available_regions"])
 
         # Atomic write: save to temp file then rename to prevent partial files on crash.
-        # Flat cell format eliminates ~87% zero padding vs the old 3D padded layout,
-        # so the uncompressed size is already much smaller.  We still use
-        # savez_compressed for the remaining arrays (pseudobulk, edges, etc.).
         with tempfile.NamedTemporaryFile(
-            dir=output_dir, suffix=".npz", delete=False
+            dir=output_dir, suffix=".pt", delete=False
         ) as tmp_f:
             tmp_path = Path(tmp_f.name)
-        np.savez_compressed(tmp_path, **save_data)
+        torch.save(save_data, tmp_path)
         tmp_path.rename(output_file)
         n_saved += 1
 
