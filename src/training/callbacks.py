@@ -385,13 +385,69 @@ class ResilienceModelCheckpoint(pl.Callback):
             for k, v in checkpoint["pyro_param_store"].items():
                 pyro.get_param_store().setdefault(k, v.to(device))
 
+            # Flag that we're resuming — on_train_start needs to re-sync
+            # param store with guide's nn.Parameters for tensor identity
+            pl_module._pyro_resuming_from_checkpoint = True
+
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        """Migrate Pyro param store to training device if needed."""
+        """Migrate Pyro param store to training device and sync tensor identity.
+
+        After checkpoint resume, the Pyro param store holds tensor objects from
+        on_load_checkpoint(), but the guide's nn.Parameters (which the optimizer
+        tracks) are different objects restored by Lightning's load_state_dict().
+        We must re-sync the param store to point to the guide's actual tensors
+        so that optimizer updates are visible to Pyro's trace mechanism.
+        """
         if hasattr(pl_module, 'guide') and pl_module.guide is not None:
             import pyro
             target_device = pl_module.device
             store = pyro.get_param_store()
-            for k in list(store.keys()):
-                v = store[k]
-                if v.device != target_device:
-                    store[k] = v.to(target_device)
+
+            if getattr(pl_module, '_pyro_resuming_from_checkpoint', False):
+                # Re-sync param store from guide's nn.Parameters.
+                # After Lightning's load_state_dict(), the guide's parameters have
+                # the correct checkpoint values AND are the same objects the optimizer
+                # tracks. Replace param store entries with these authoritative tensors.
+                #
+                # Key naming: Pyro uses fullnames (e.g., "AutoDiagonalNormal.loc")
+                # not nn.Module names ("loc"). We must use _pyro_get_fullname() to
+                # build correct keys. We also directly set store._params to avoid
+                # going through constraint transforms which would create new tensors
+                # and break the identity link with the optimizer.
+                guide = pl_module.guide
+
+                # Clean out old reverse mappings
+                for old_param in list(store._param_to_name.keys()):
+                    del store._param_to_name[old_param]
+
+                # Re-register regular nn.Parameters (e.g., loc)
+                for name in list(guide._parameters.keys()):
+                    param = guide._parameters[name]
+                    if param is None or name.endswith('_unconstrained'):
+                        continue
+                    fullname = guide._pyro_get_fullname(name)
+                    live_param = param.to(target_device)
+                    store._params[fullname] = live_param
+                    store._param_to_name[live_param] = fullname
+
+                # Re-register PyroParams (e.g., scale → stored as scale_unconstrained)
+                if hasattr(guide, '_pyro_params'):
+                    for name in guide._pyro_params:
+                        unconstrained = guide._parameters.get(name + '_unconstrained')
+                        if unconstrained is not None:
+                            fullname = guide._pyro_get_fullname(name)
+                            live_param = unconstrained.to(target_device)
+                            store._params[fullname] = live_param
+                            store._param_to_name[live_param] = fullname
+
+                pl_module._pyro_resuming_from_checkpoint = False
+                logger.info(
+                    "Pyro param store re-synced from guide after checkpoint resume: "
+                    "%d params", len(store._params)
+                )
+            else:
+                # Normal startup — just migrate to device
+                for k in list(store.keys()):
+                    v = store[k]
+                    if v.device != target_device:
+                        store[k] = v.to(target_device)

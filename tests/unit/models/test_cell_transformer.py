@@ -677,12 +677,6 @@ class TestNaNInputHandling:
             n_inducing=config["n_inducing"],
         )
 
-    @pytest.mark.xfail(
-        reason="NaN in masked positions propagates through input_proj -> ISAB value "
-        "vectors before masking can suppress it. Zeroing masked inputs before "
-        "input_proj would fix this.",
-        strict=True,
-    )
     def test_nan_in_masked_positions_does_not_propagate(self, transformer, config):
         """NaN in masked (invalid) cell positions should not affect output."""
         B, C, max_cells, G = 2, config["n_cell_types"], 30, config["n_genes"]

@@ -24,6 +24,46 @@ class TestRunInferenceScriptImports:
         )
 
 
+class TestInferenceSplitMapping:
+    """Test that --split flag correctly maps to splits JSON keys."""
+
+    def test_split_test_maps_to_holdout_test(self, tmp_path):
+        """--split test should use holdout_test subjects from splits JSON."""
+        splits = {
+            "holdout_test": ["S1", "S2"],
+            "train_val_pool": ["S3", "S4", "S5"],
+            "folds": [{"train": ["S3", "S4"], "val": ["S5"]}],
+            "metadata": {},
+        }
+        splits_path = tmp_path / "splits.json"
+        import json
+        splits_path.write_text(json.dumps(splits))
+
+        from src.data.splits import load_splits, get_fold_subjects
+        loaded = load_splits(splits_path)
+        result = get_fold_subjects(loaded, fold_idx=0, split_type="test")
+        assert result == ["S1", "S2"]
+
+    def test_split_val_uses_fold_idx(self, tmp_path):
+        """--split val should use val subjects from the specified fold."""
+        splits = {
+            "holdout_test": ["S1"],
+            "folds": [
+                {"train": ["S2", "S3"], "val": ["S4"]},
+                {"train": ["S2", "S4"], "val": ["S3"]},
+            ],
+            "metadata": {},
+        }
+        splits_path = tmp_path / "splits.json"
+        import json
+        splits_path.write_text(json.dumps(splits))
+
+        from src.data.splits import load_splits, get_fold_subjects
+        loaded = load_splits(splits_path)
+        assert get_fold_subjects(loaded, fold_idx=0, split_type="val") == ["S4"]
+        assert get_fold_subjects(loaded, fold_idx=1, split_type="val") == ["S3"]
+
+
 class TestRunInferenceScriptConfigRecovery:
     """Verify config can be recovered from checkpoint for data loading."""
 

@@ -61,6 +61,14 @@ class BetaNLLLoss(nn.Module):
         if (std <= 0).any():
             raise ValueError("std must be strictly positive everywhere")
 
+        # Upcast to float32 for numerical stability under AMP.
+        # Under torch.autocast("cuda", dtype=float16), the inputs may be float16.
+        # Operations like std², log(var), and var**β are numerically unstable in
+        # float16 (underflow for small std, overflow for fractional powers).
+        mean = mean.float()
+        std = std.float()
+        target = target.float()
+
         var = std ** 2
         var = torch.clamp(var, min=1e-12)  # Floor for log-variance stability
 

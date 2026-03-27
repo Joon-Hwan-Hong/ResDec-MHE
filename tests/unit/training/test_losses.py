@@ -205,6 +205,40 @@ class TestBetaNLLLoss:
             )
 
 
+class TestBetaNLLAMPSafety:
+    """Test BetaNLL loss under mixed-precision conditions."""
+
+    def test_float16_inputs_produce_finite_loss(self):
+        """BetaNLL should produce finite loss even with float16 inputs."""
+        from src.training.losses import BetaNLLLoss
+        loss_fn = BetaNLLLoss(beta=0.5)
+        mean = torch.tensor([[1.0], [2.0]], dtype=torch.float16)
+        std = torch.tensor([[0.01], [0.1]], dtype=torch.float16)
+        target = torch.tensor([[1.5], [1.8]], dtype=torch.float16)
+        result = loss_fn(mean, std, target)
+        assert torch.isfinite(result), f"Loss is not finite: {result}"
+
+    def test_very_small_std_float16(self):
+        """Very small std in float16 should not produce NaN."""
+        from src.training.losses import BetaNLLLoss
+        loss_fn = BetaNLLLoss(beta=0.5)
+        mean = torch.tensor([[1.0]], dtype=torch.float16)
+        std = torch.tensor([[0.008]], dtype=torch.float16)
+        target = torch.tensor([[1.1]], dtype=torch.float16)
+        result = loss_fn(mean, std, target)
+        assert torch.isfinite(result), f"Loss is not finite: {result}"
+
+    def test_output_dtype_is_float32(self):
+        """Loss should return float32 even with float16 inputs."""
+        from src.training.losses import BetaNLLLoss
+        loss_fn = BetaNLLLoss(beta=0.5)
+        mean = torch.tensor([[1.0]], dtype=torch.float16)
+        std = torch.tensor([[0.1]], dtype=torch.float16)
+        target = torch.tensor([[1.5]], dtype=torch.float16)
+        result = loss_fn(mean, std, target)
+        assert result.dtype == torch.float32
+
+
 class TestMSEFallback:
     """Tests for MSE loss fallback used with deterministic head."""
 

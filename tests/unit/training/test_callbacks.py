@@ -502,21 +502,16 @@ class TestPyroCheckpointRestore:
         return callback, trainer, pl_module, checkpoint
 
     def test_pyro_param_store_restored_with_device_migration(self):
-        """Pyro param store loaded to CPU in on_load_checkpoint, migrated in on_train_start.
+        """Pyro param store loaded to CPU in on_load_checkpoint, then re-synced in on_train_start.
 
         Note: This is a callback-direct test with mocks — it manually calls hooks
         in the expected Lightning order (on_load_checkpoint → configure_optimizers →
         on_train_start) rather than running a real Trainer.fit(ckpt_path=...).
 
-        A real Trainer lifecycle test would additionally verify:
-        - Lightning actually calls hooks in this order during resume
-        - Pyro param store tensors survive guide autograd graph rewiring
-        - Loss continuity after resume matches uninterrupted training
-
-        This is intentional: a real Trainer test requires Pyro SVI training with
-        real data (~seconds per invocation), which is too heavy for unit tests.
-        The mock test verifies our callback logic is correct given the documented
-        Lightning hook order. Framework-level integration is trusted.
+        After the tensor identity fix, on_train_start re-syncs the param store
+        from the guide's nn.Parameters (which are the objects the optimizer tracks).
+        The checkpoint values loaded by on_load_checkpoint are effectively replaced
+        by the guide's authoritative tensors.
         """
         import pyro
 
@@ -530,7 +525,7 @@ class TestPyroCheckpointRestore:
             }
         }
 
-        # Step 1: on_load_checkpoint puts params on CPU
+        # Step 1: on_load_checkpoint puts params on CPU and sets resume flag
         callback.on_load_checkpoint(trainer, pl_module, checkpoint)
 
         store = pyro.get_param_store()
@@ -544,17 +539,36 @@ class TestPyroCheckpointRestore:
         assert torch.allclose(store["auto_loc"], torch.tensor([1.0, 2.0, 3.0]))
         assert torch.allclose(store["auto_scale"], torch.tensor([0.1, 0.2, 0.3]))
 
-        # Step 2: on_train_start migrates to training device
-        pl_module.guide = MagicMock()
+        # Step 2: on_train_start re-syncs param store from guide's nn.Parameters.
+        # Use a real nn.Module guide (not MagicMock) since the resync path
+        # iterates guide._parameters.
+        guide = nn.Module()
+        guide.auto_loc = nn.Parameter(torch.tensor([1.0, 2.0, 3.0]))
+        guide.auto_scale = nn.Parameter(torch.tensor([0.1, 0.2, 0.3]))
+
+        # Add Pyro naming attributes (simulating AutoDiagonalNormal guide)
+        guide._pyro_name = "AutoDiagonalNormal"
+        guide._pyro_params = {}  # No PyroParams in mock
+
+        def _pyro_get_fullname(name):
+            return f"AutoDiagonalNormal.{name}"
+
+        guide._pyro_get_fullname = _pyro_get_fullname
+
+        pl_module.guide = guide
         pl_module.device = torch.device("cpu")
         callback.on_train_start(trainer, pl_module)
 
-        # After on_train_start, params should be on the training device (cpu here)
-        for k in ["auto_loc", "auto_scale"]:
-            param = store[k]
+        # After on_train_start, param store entries should be the guide's
+        # actual nn.Parameters (same Python objects), stored under fullnames
+        store = pyro.get_param_store()
+        for k in ["AutoDiagonalNormal.auto_loc", "AutoDiagonalNormal.auto_scale"]:
+            param = store._params[k]
             assert param.device == torch.device("cpu"), (
                 f"Param {k} should be on cpu after on_train_start, got {param.device}"
             )
+        assert store._params["AutoDiagonalNormal.auto_loc"] is guide.auto_loc
+        assert store._params["AutoDiagonalNormal.auto_scale"] is guide.auto_scale
 
     def test_legacy_checkpoint_without_rng_states_still_restores_pyro(self):
         """Legacy checkpoint without rng_states still restores Pyro param store."""
@@ -585,12 +599,14 @@ class TestPyroCheckpointRestore:
         assert torch.allclose(store["auto_loc"], torch.tensor([1.0, 2.0]))
 
     def test_on_train_start_migrates_pyro_params_to_device(self):
-        """on_train_start migrates Pyro param store to training device."""
+        """on_train_start migrates Pyro param store to training device (normal startup)."""
         import pyro
 
         callback, trainer, pl_module, _ = self._make_checkpoint_context()
         pl_module.guide = MagicMock()
         pl_module.device = torch.device("cpu")
+        # Explicitly mark as NOT resuming — MagicMock returns truthy for any attr
+        pl_module._pyro_resuming_from_checkpoint = False
 
         pyro.clear_param_store()
         pyro.get_param_store().setdefault("test_param", torch.tensor([1.0]))
@@ -598,6 +614,138 @@ class TestPyroCheckpointRestore:
         callback.on_train_start(trainer, pl_module)
 
         assert pyro.get_param_store()["test_param"].device == torch.device("cpu")
+
+
+class TestPyroParamStoreResync:
+    """Tests for Pyro param store tensor identity re-sync on checkpoint resume.
+
+    When resuming from a checkpoint, Lightning's load_state_dict() copies values
+    into the guide's nn.Parameters in-place, but on_load_checkpoint() puts
+    different tensor objects into the Pyro param store. This creates a tensor
+    identity mismatch: the optimizer tracks tensor A, but the param store holds
+    tensor B. The on_train_start re-sync fix must replace param store entries
+    with the guide's actual nn.Parameter tensors.
+    """
+
+    def _make_checkpoint_context(self):
+        """Create mock trainer, module, and checkpoint dict."""
+        from src.training.callbacks import ResilienceModelCheckpoint
+        from omegaconf import OmegaConf
+
+        callback = ResilienceModelCheckpoint()
+        trainer = MagicMock()
+        pl_module = MagicMock()
+        pl_module.config = OmegaConf.create({
+            "model": {
+                "n_genes": 50,
+                "d_embed": 32,
+                "head": {"type": "bayesian"},
+            },
+            "training": {"max_epochs": 10},
+        })
+        checkpoint = {}
+        return callback, trainer, pl_module, checkpoint
+
+    def test_on_train_start_resyncs_param_store_after_resume(self):
+        """on_train_start replaces param store entries with guide's nn.Parameters.
+
+        Simulates the tensor identity mismatch that occurs during checkpoint resume:
+        1. Guide has nn.Parameters (tensors A) — these are what the optimizer tracks
+        2. Param store has cloned tensors (tensors B) — different Python objects
+        3. After on_train_start, param store should point to guide's tensors (A)
+        """
+        import pyro
+
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+
+        # Create a real nn.Module as the guide with named parameters
+        guide = nn.Module()
+        guide.auto_loc = nn.Parameter(torch.tensor([1.0, 2.0, 3.0]))
+        guide.auto_scale = nn.Parameter(torch.tensor([0.1, 0.2, 0.3]))
+
+        # Add Pyro naming attributes (simulating AutoDiagonalNormal guide)
+        guide._pyro_name = "AutoDiagonalNormal"
+        guide._pyro_params = {}  # No PyroParams in mock (both are regular nn.Parameters)
+
+        def _pyro_get_fullname(name):
+            return f"AutoDiagonalNormal.{name}"
+
+        guide._pyro_get_fullname = _pyro_get_fullname
+
+        pl_module.guide = guide
+        pl_module.device = torch.device("cpu")
+
+        # Simulate on_load_checkpoint: clear param store and add CLONED tensors
+        # (different Python objects, simulating tensor identity mismatch)
+        pyro.clear_param_store()
+        store = pyro.get_param_store()
+        store.setdefault("AutoDiagonalNormal.auto_loc", guide.auto_loc.data.clone())
+        store.setdefault("AutoDiagonalNormal.auto_scale", guide.auto_scale.data.clone())
+
+        # Verify: param store tensors are NOT the same objects as guide params
+        assert store._params["AutoDiagonalNormal.auto_loc"] is not guide.auto_loc
+        assert store._params["AutoDiagonalNormal.auto_scale"] is not guide.auto_scale
+
+        # Set the resume flag (normally set by on_load_checkpoint)
+        pl_module._pyro_resuming_from_checkpoint = True
+
+        # Call on_train_start — should re-sync param store
+        callback.on_train_start(trainer, pl_module)
+
+        # Verify: flag is cleared
+        assert pl_module._pyro_resuming_from_checkpoint is False
+
+        # Verify: param store now has entries (re-synced from guide)
+        store = pyro.get_param_store()
+        assert len(store._params) == 2
+
+        # Verify: param store tensors ARE the same objects as guide's parameters
+        assert store._params["AutoDiagonalNormal.auto_loc"] is guide.auto_loc
+        assert store._params["AutoDiagonalNormal.auto_scale"] is guide.auto_scale
+
+    def test_on_load_checkpoint_sets_resume_flag(self):
+        """on_load_checkpoint sets _pyro_resuming_from_checkpoint flag."""
+        import pyro
+
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+
+        checkpoint = {
+            "pyro_param_store": {
+                "auto_loc": torch.tensor([1.0, 2.0]),
+                "auto_scale": torch.tensor([0.5, 0.5]),
+            }
+        }
+
+        callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+
+        assert getattr(pl_module, '_pyro_resuming_from_checkpoint', False) is True
+
+    def test_normal_startup_does_not_resync(self):
+        """on_train_start without resume flag just migrates device, does not clear store."""
+        import pyro
+
+        callback, trainer, pl_module, _ = self._make_checkpoint_context()
+
+        guide = nn.Module()
+        guide.test_param = nn.Parameter(torch.tensor([1.0]))
+        pl_module.guide = guide
+        pl_module.device = torch.device("cpu")
+        # Explicitly mark as NOT resuming — MagicMock returns truthy for any attr
+        pl_module._pyro_resuming_from_checkpoint = False
+
+        # Populate param store without setting resume flag
+        pyro.clear_param_store()
+        store = pyro.get_param_store()
+        original_tensor = torch.tensor([42.0])
+        store.setdefault("existing_param", original_tensor)
+
+        # No resume flag set — should NOT clear and re-sync
+        callback.on_train_start(trainer, pl_module)
+
+        # Param store should still have the original entry (not guide's params)
+        store = pyro.get_param_store()
+        assert "existing_param" in store
+        assert torch.allclose(store["existing_param"], torch.tensor([42.0]))
 
 
 class TestModelCheckpoint:

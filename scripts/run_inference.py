@@ -74,6 +74,13 @@ def parse_args() -> argparse.Namespace:
              "Use 'test' for holdout evaluation.",
     )
     parser.add_argument(
+        "--fold",
+        type=int,
+        default=0,
+        help="Fold index for train/val split selection (default: 0). "
+             "Only used with --split train or --split val.",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=None,
@@ -126,6 +133,7 @@ def parse_args() -> argparse.Namespace:
 def build_dataloader(
     config, data_path: str | None, batch_size: int,
     splits_path: str | None = None, split: str | None = None,
+    fold: int = 0,
 ) -> DataLoader:
     """Build inference DataLoader from config and data path.
 
@@ -190,9 +198,9 @@ def build_dataloader(
 
         # Filter subjects to split if requested
         if splits_path and split:
-            from src.data.splits import load_splits
+            from src.data.splits import load_splits, get_fold_subjects
             splits = load_splits(splits_path)
-            split_subjects = set(splits.get(split, []))
+            split_subjects = set(get_fold_subjects(splits, fold_idx=fold, split_type=split))
             if not split_subjects:
                 raise ValueError(f"Split '{split}' not found or empty in {splits_path}")
             original_count = len(subject_ids)
@@ -225,9 +233,9 @@ def build_dataloader(
 
         # Filter subjects to split if requested
         if splits_path and split:
-            from src.data.splits import load_splits
+            from src.data.splits import load_splits, get_fold_subjects
             splits = load_splits(splits_path)
-            split_subjects = set(splits.get(split, []))
+            split_subjects = set(get_fold_subjects(splits, fold_idx=fold, split_type=split))
             if not split_subjects:
                 raise ValueError(f"Split '{split}' not found or empty in {splits_path}")
             original_count = len(subject_ids)
@@ -329,6 +337,7 @@ def main():
     dataloader = build_dataloader(
         config, data_path, batch_size,
         splits_path=args.splits_path, split=args.split,
+        fold=args.fold,
     )
     logger.info(f"DataLoader ready: {len(dataloader.dataset)} subjects, batch_size={batch_size}")
 

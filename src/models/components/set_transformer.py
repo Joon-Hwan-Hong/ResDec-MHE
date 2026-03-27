@@ -408,6 +408,10 @@ class SetTransformerEncoder(nn.Module):
             x_valid = x[valid_indices]
             mask_valid = mask[valid_indices]
 
+            # Zero masked positions before input_proj to prevent NaN propagation
+            # (NaN * 0 = NaN in IEEE 754, so use masked_fill instead of multiply)
+            x_valid = x_valid.masked_fill(~mask_valid.unsqueeze(-1), 0.0)
+
             h_valid = self.input_proj(x_valid)
             for isab in self.isab_layers:
                 h_valid = isab(h_valid, mask_valid)
@@ -439,6 +443,10 @@ class SetTransformerEncoder(nn.Module):
                 attention[valid_indices] = attention_valid
         else:
             # All samples have valid cells — process entire batch
+            # Zero masked positions before input_proj to prevent NaN propagation
+            # (NaN * 0 = NaN in IEEE 754, so use masked_fill instead of multiply)
+            if mask is not None:
+                x = x.masked_fill(~mask.unsqueeze(-1), 0.0)
             h = self.input_proj(x)
             for isab in self.isab_layers:
                 h = isab(h, mask)
