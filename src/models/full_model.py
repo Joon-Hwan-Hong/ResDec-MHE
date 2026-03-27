@@ -159,6 +159,7 @@ class CognitiveResilienceModel(PyroModule):
         self.d_cond = d_cond
         self.n_regions = n_regions
         self.use_bayesian_head = use_bayesian_head
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         # Node and edge type configuration
         self.node_types = node_types if node_types is not None else list(CELL_TYPE_ORDER)
@@ -257,6 +258,7 @@ class CognitiveResilienceModel(PyroModule):
             self.pseudobulk_encoder = torch.compile(self.pseudobulk_encoder)
             self.fusion_layer = torch.compile(self.fusion_layer)
             self.pathology_encoder = torch.compile(self.pathology_encoder)
+            self.hgt_encoder = torch.compile(self.hgt_encoder)
             if not use_bayesian_head:
                 self.prediction_head = torch.compile(self.prediction_head)
 
@@ -314,9 +316,12 @@ class CognitiveResilienceModel(PyroModule):
         ccc_edge_type: Optional[torch.Tensor] = None,      # [B, max_edges]
         ccc_edge_attr: Optional[torch.Tensor] = None,      # [B, max_edges, edge_dim]
         ccc_edge_counts: Optional[torch.Tensor] = None,    # [B]
-        # Cell-level inputs
+        # Cell-level inputs (padded format)
         cells: Optional[torch.Tensor] = None,              # [B, n_cell_types, max_cells, n_genes]
         cell_mask: Optional[torch.Tensor] = None,          # [B, n_cell_types, max_cells]
+        # Cell-level inputs (flat format — preferred when available)
+        cell_data: Optional[torch.Tensor] = None,          # [total_cells, n_genes]
+        cell_offsets: Optional[torch.Tensor] = None,        # [B, n_types + 1]
         cell_type_mask: Optional[torch.Tensor] = None,     # [B, n_cell_types] (optional)
         # Pathology and target
         pathology: Optional[torch.Tensor] = None,          # [B, 3]
@@ -405,13 +410,14 @@ class CognitiveResilienceModel(PyroModule):
                 f"got {list(cell_type_mask.shape)}"
             )
 
-        # Validate required inputs — these should always come from the collate function.
-        # Explicit checks here provide clear error messages if a data pipeline bug
-        # passes None instead of a tensor.
-        if cells is None:
-            raise ValueError("cells tensor is required but got None — check collate function output")
-        if cell_mask is None:
-            raise ValueError("cell_mask tensor is required but got None — check collate function output")
+        # Validate cell inputs — need either flat (cell_data+cell_offsets) or padded (cells+cell_mask)
+        has_flat = cell_data is not None and cell_offsets is not None
+        has_padded = cells is not None and cell_mask is not None
+        if not has_flat and not has_padded:
+            raise ValueError(
+                "Must provide either (cell_data, cell_offsets) or (cells, cell_mask) — "
+                "check collate function output"
+            )
         if pathology is None:
             raise ValueError("pathology tensor is required but got None — check collate function output")
 
@@ -452,10 +458,38 @@ class CognitiveResilienceModel(PyroModule):
         # ─────────────────────────────────────────────────────────────────────
         # Branch 3: Cell transformer (cell-level heterogeneity)
         # ─────────────────────────────────────────────────────────────────────
-        # [B, n_cell_types, max_cells, n_genes] -> [B, n_cell_types, d_embed]
-        cell_emb, selection_weights, pma_attention = self.cell_transformer(
-            cells, cell_mask, return_attention=return_pma_attention, apply_selection_weights=True
-        )
+        # Supports flat format (cell_data + cell_offsets) or padded format
+        # (cells + cell_mask). Flat format avoids the 4D padded tensor
+        # (~9.5 GB) by reconstructing only the needed padded slices inside
+        # forward_flat.
+        if has_flat:
+            if self.use_gradient_checkpointing and self.training:
+                cell_emb, selection_weights, pma_attention = torch.utils.checkpoint.checkpoint(
+                    self.cell_transformer.forward_flat,
+                    cell_data, cell_offsets,
+                    use_reentrant=False,
+                    return_attention=return_pma_attention,
+                    apply_selection_weights=True,
+                )
+            else:
+                cell_emb, selection_weights, pma_attention = self.cell_transformer.forward_flat(
+                    cell_data, cell_offsets,
+                    return_attention=return_pma_attention,
+                    apply_selection_weights=True,
+                )
+        else:
+            if self.use_gradient_checkpointing and self.training:
+                cell_emb, selection_weights, pma_attention = torch.utils.checkpoint.checkpoint(
+                    self.cell_transformer,
+                    cells, cell_mask,
+                    use_reentrant=False,
+                    return_attention=return_pma_attention,
+                    apply_selection_weights=True,
+                )
+            else:
+                cell_emb, selection_weights, pma_attention = self.cell_transformer(
+                    cells, cell_mask, return_attention=return_pma_attention, apply_selection_weights=True
+                )
 
         # ─────────────────────────────────────────────────────────────────────
         # Fusion: combine all three branches
@@ -522,6 +556,8 @@ class CognitiveResilienceModel(PyroModule):
         ccc_edge_counts=None,
         cells=None,
         cell_mask=None,
+        cell_data=None,
+        cell_offsets=None,
         cell_type_mask=None,
         pathology=None,
     ) -> dict[str, torch.Tensor]:
@@ -558,10 +594,13 @@ class CognitiveResilienceModel(PyroModule):
                 f"cell_type_mask shape must be [{B}, {self.n_cell_types}], "
                 f"got {list(cell_type_mask.shape)}"
             )
-        if cells is None:
-            raise ValueError("cells tensor is required")
-        if cell_mask is None:
-            raise ValueError("cell_mask tensor is required")
+
+        has_flat = cell_data is not None and cell_offsets is not None
+        has_padded = cells is not None and cell_mask is not None
+        if not has_flat and not has_padded:
+            raise ValueError(
+                "Must provide either (cell_data, cell_offsets) or (cells, cell_mask)"
+            )
         if pathology is None:
             raise ValueError("pathology tensor is required")
 
@@ -581,9 +620,14 @@ class CognitiveResilienceModel(PyroModule):
         )
 
         # Branch 3: Cell transformer
-        cell_emb, _, _ = self.cell_transformer(
-            cells, cell_mask, return_attention=False, apply_selection_weights=True,
-        )
+        if has_flat:
+            cell_emb, _, _ = self.cell_transformer.forward_flat(
+                cell_data, cell_offsets, return_attention=False, apply_selection_weights=True,
+            )
+        else:
+            cell_emb, _, _ = self.cell_transformer(
+                cells, cell_mask, return_attention=False, apply_selection_weights=True,
+            )
 
         # Fusion + pathology + attention
         fused = self.fusion_layer(pseudobulk_emb, hgt_emb, cell_emb)

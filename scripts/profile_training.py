@@ -198,6 +198,10 @@ def main() -> None:
         help="DataLoader workers (0 = in-process, avoids shared memory issues)",
     )
     parser.add_argument(
+        "--profile-subset", type=str, default=None,
+        help="Path to profile_subset.json for reproducible subject selection",
+    )
+    parser.add_argument(
         "overrides", nargs="*",
         help="Config overrides in dotlist format (e.g., data.dataloader.batch_size=8)",
     )
@@ -281,6 +285,18 @@ def main() -> None:
     from src.data.collate import create_dataloader
 
     train_ds = dm._train_ds
+
+    # Apply profiling subset if provided
+    if args.profile_subset:
+        from scripts.profiling_subset import load_profiling_subset
+        subset_ids = set(load_profiling_subset(Path(args.profile_subset)))
+        original_n = len(train_ds.subject_ids)
+        train_ds.subject_ids = [s for s in train_ds.subject_ids if s in subset_ids]
+        logger.info(
+            "Profile subset: %d -> %d subjects (from %s)",
+            original_n, len(train_ds.subject_ids), args.profile_subset,
+        )
+
     dl_kwargs = dict(
         batch_size=config.data.dataloader.batch_size,
         shuffle=True,
@@ -310,6 +326,7 @@ def main() -> None:
     )
 
     batch_iter = iter(train_dl)
+    edge_counts_per_step: list[int] = []
     for step_idx in range(total_steps):
         # ── Data loading ──
         timer.start()
@@ -322,6 +339,10 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.synchronize()
         timer.stop("data_load+transfer")
+
+        # Track max edge count per batch (explains step time variance)
+        if "ccc_edge_counts" in batch:
+            edge_counts_per_step.append(batch["ccc_edge_counts"].max().item())
 
         # ── Forward ──
         timer.start()
@@ -391,14 +412,18 @@ def main() -> None:
     print(f"\nSaved to {summary_path}")
 
     # Per-step breakdown
-    print(f"\n{'='*80}")
+    has_edges = len(edge_counts_per_step) == total_steps
+    print(f"\n{'='*90}")
     print("PER-STEP BREAKDOWN (ms)")
-    print(f"{'='*80}")
-    print(
+    print(f"{'='*90}")
+    header = (
         f"{'Step':>5} {'Data':>10} {'Forward':>10} {'Backward':>10} "
-        f"{'Optim':>10} {'Total':>10} {'Loss':>12}"
+        f"{'Optim':>10} {'Total':>10}"
     )
-    print("-" * 80)
+    if has_edges:
+        header += f" {'MaxEdges':>10}"
+    print(header)
+    print("-" * 90)
     for i in range(total_steps):
         marker = " *" if i < args.warmup_steps else ""
         data_t = timer.timings["data_load+transfer"][i]
@@ -406,11 +431,24 @@ def main() -> None:
         bwd_t = timer.timings["backward"][i]
         opt_t = timer.timings["optimizer_step"][i]
         tot_t = timer.timings["total_step"][i]
-        print(
+        line = (
             f"{i+1:>5} {data_t:>10.0f} {fwd_t:>10.0f} {bwd_t:>10.0f} "
-            f"{opt_t:>10.0f} {tot_t:>10.0f}{marker}"
+            f"{opt_t:>10.0f} {tot_t:>10.0f}"
         )
+        if has_edges:
+            line += f" {edge_counts_per_step[i]:>10,}"
+        print(f"{line}{marker}")
     print("(* = warmup step, excluded from averages)")
+
+    # Edge count correlation
+    if has_edges:
+        import numpy as np
+        skip = args.warmup_steps
+        meas_edges = np.array(edge_counts_per_step[skip:])
+        meas_times = np.array(timer.timings["total_step"][skip:])
+        if len(meas_edges) > 2:
+            corr = np.corrcoef(meas_edges, meas_times)[0, 1]
+            print(f"\nCorrelation (max_edges vs step_time): {corr:.3f}")
 
     print(f"\nFor kernel-level profiling, use NVIDIA Nsight Systems:")
     print(f"  nsys profile -o outputs/profiling/nsys_report \\")

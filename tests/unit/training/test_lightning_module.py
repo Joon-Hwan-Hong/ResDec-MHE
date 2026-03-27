@@ -671,6 +671,78 @@ class TestParameterWiring:
         assert module.model.cell_transformer.set_encoder.n_pma_seeds == 1
 
 
+class TestBatchToModelKwargs:
+    """Tests for _batch_to_model_kwargs flat cell format support."""
+
+    def test_flat_keys_preferred_over_padded(self, base_config):
+        """When batch has both flat and padded keys, flat keys are passed to model."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+
+        batch = _make_batch(n_genes=50)
+        # Add flat keys (simulating collation that produces both)
+        batch["cell_data"] = torch.randn(100, 50)
+        batch["cell_offsets"] = torch.zeros(2, N_CELL_TYPES + 1, dtype=torch.long)
+
+        kwargs = module._batch_to_model_kwargs(batch)
+        assert "cell_data" in kwargs, "Flat cell_data missing from model kwargs"
+        assert "cell_offsets" in kwargs, "Flat cell_offsets missing from model kwargs"
+        assert "cells" not in kwargs, "Padded cells should not be passed when flat keys present"
+        assert "cell_mask" not in kwargs, "Padded cell_mask should not be passed when flat keys present"
+
+    def test_padded_fallback_when_no_flat_keys(self, base_config):
+        """When batch only has padded keys, padded format is passed to model."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+
+        batch = _make_batch(n_genes=50)
+        # No flat keys — standard padded batch
+        assert "cell_data" not in batch
+
+        kwargs = module._batch_to_model_kwargs(batch)
+        assert "cells" in kwargs, "Padded cells missing from model kwargs"
+        assert "cell_mask" in kwargs, "Padded cell_mask missing from model kwargs"
+        assert "cell_data" not in kwargs, "cell_data should not be present for padded-only batch"
+        assert "cell_offsets" not in kwargs, "cell_offsets should not be present for padded-only batch"
+
+    def test_flat_kwargs_forward_pass_works(self, base_config):
+        """Full forward pass works when _batch_to_model_kwargs passes flat keys."""
+        from src.training.lightning_module import CognitiveResilienceLightningModule
+        module = CognitiveResilienceLightningModule(base_config)
+        module.log = lambda *args, **kwargs: None
+
+        n_genes = 50
+        batch_size = 2
+
+        # Build a batch with flat cell format
+        n_types = N_CELL_TYPES
+        # 5 cells for type 0, 3 cells for type 1, 0 for rest
+        cell_counts = [5, 3] + [0] * (n_types - 2)
+        total_cells_per_sample = sum(cell_counts)
+
+        all_cell_data = []
+        all_offsets = []
+        running_offset = 0
+        for _ in range(batch_size):
+            cell_data_s = torch.randn(total_cells_per_sample, n_genes)
+            all_cell_data.append(cell_data_s)
+            offsets_s = torch.zeros(n_types + 1, dtype=torch.long)
+            for ct in range(n_types):
+                offsets_s[ct + 1] = offsets_s[ct] + cell_counts[ct]
+            offsets_s += running_offset
+            all_offsets.append(offsets_s)
+            running_offset += total_cells_per_sample
+
+        batch = _make_batch(batch_size=batch_size, n_genes=n_genes)
+        batch["cell_data"] = torch.cat(all_cell_data, dim=0)
+        batch["cell_offsets"] = torch.stack(all_offsets, dim=0)
+
+        # Should run without error using flat path
+        loss = module.training_step(batch, batch_idx=0)
+        assert isinstance(loss, torch.Tensor)
+        assert torch.isfinite(loss)
+
+
 class _SyntheticDataset(torch.utils.data.Dataset):
     """Tiny dataset that returns pre-built batches for integration testing."""
 

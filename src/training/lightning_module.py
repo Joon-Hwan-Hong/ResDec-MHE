@@ -186,8 +186,11 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         Single source of truth for batch -> model argument mapping.
         Used by _forward_batch, _svi_forward, and _forward_batch_posterior.
+
+        Prefers flat cell format (cell_data + cell_offsets) over padded
+        (cells + cell_mask) when both are present in the batch.
         """
-        return {
+        kwargs = {
             "region_pseudobulk": batch.get("region_pseudobulk"),
             "region_mask": batch.get("region_mask"),
             "pseudobulk": batch.get("pseudobulk"),
@@ -195,12 +198,19 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             "ccc_edge_type": batch.get("ccc_edge_type"),
             "ccc_edge_attr": batch.get("ccc_edge_attr"),
             "ccc_edge_counts": batch.get("ccc_edge_counts"),
-            "cells": batch.get("cells"),
-            "cell_mask": batch.get("cell_mask"),
             "cell_type_mask": batch.get("cell_type_mask"),
             "pathology": batch.get("pathology"),
             "cognition": batch.get("cognition"),
         }
+        # Flat cell format (preferred — less memory)
+        if "cell_data" in batch:
+            kwargs["cell_data"] = batch["cell_data"]
+            kwargs["cell_offsets"] = batch["cell_offsets"]
+        else:
+            # Legacy padded format
+            kwargs["cells"] = batch.get("cells")
+            kwargs["cell_mask"] = batch.get("cell_mask")
+        return kwargs
 
     def _forward_batch(self, batch: dict) -> dict:
         """Run forward pass extracting inputs from batch dict."""

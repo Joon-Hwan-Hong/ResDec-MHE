@@ -388,8 +388,6 @@ class Predictor:
             ccc_edge_type=batch.get("ccc_edge_type"),
             ccc_edge_attr=batch.get("ccc_edge_attr"),
             ccc_edge_counts=batch.get("ccc_edge_counts"),
-            cells=batch.get("cells"),
-            cell_mask=batch.get("cell_mask"),
             cell_type_mask=batch.get("cell_type_mask"),
             pathology=batch.get("pathology"),
             return_hgt_attention=return_hgt_attention,
@@ -397,6 +395,13 @@ class Predictor:
             return_region_attention=return_region_attention,
             return_embeddings=return_embeddings,
         )
+        # Prefer flat cell format when available
+        if "cell_data" in batch:
+            model_kwargs["cell_data"] = batch["cell_data"]
+            model_kwargs["cell_offsets"] = batch["cell_offsets"]
+        else:
+            model_kwargs["cells"] = batch.get("cells")
+            model_kwargs["cell_mask"] = batch.get("cell_mask")
 
         # Point estimate from posterior median (full forward pass — once)
         median = self.guide.median()
@@ -454,28 +459,52 @@ class Predictor:
             site_slices.append((name, idx, shape))
             idx += numel
 
-        means = []
-        for i in range(num_samples):
-            flat_sample = all_flat_samples[i]
-
-            # Unpack flat sample vector into per-site tensors
-            head_data = {}
-            for name, start, shape in site_slices:
-                numel = 1
-                for s in shape:
-                    numel *= s
-                value = flat_sample[start:start + numel].reshape(shape)
-                if name.startswith("prediction_head."):
-                    head_data[name[len("prediction_head."):]] = value
-
-            head_conditioned = pyro.poutine.condition(
-                self.model.prediction_head, data=head_data
+        # Extract head weight tensors for all samples at once: [S, *shape]
+        # Site names are fully qualified (e.g. "cognitive_resilience_model.prediction_head.fc1.weight")
+        # so we find "prediction_head." anywhere in the name and strip everything before it.
+        head_weights: dict[str, torch.Tensor] = {}
+        HEAD_PREFIX = "prediction_head."
+        for name, start, shape in site_slices:
+            prefix_pos = name.find(HEAD_PREFIX)
+            if prefix_pos < 0:
+                continue
+            key = name[prefix_pos + len(HEAD_PREFIX):]
+            numel = 1
+            for s in shape:
+                numel *= s
+            head_weights[key] = all_flat_samples[:, start:start + numel].reshape(
+                num_samples, *shape
             )
-            mean, _std = head_conditioned(attended)
-            means.append(mean.detach().cpu())
 
-        means_stacked = torch.stack(means, dim=0)  # [num_samples, B, 1]
-        epistemic_std = means_stacked.std(dim=0)    # [B, 1]
+        # Batched forward pass: run all posterior samples simultaneously
+        # via batched matmul instead of num_samples sequential head calls.
+        # attended: [B, d] -> [S, B, d]
+        x = attended.unsqueeze(0).expand(num_samples, -1, -1)
+
+        # fc1: [S, B, d_input] @ [S, d_input, d_hidden] + [S, 1, d_hidden]
+        h = torch.baddbmm(
+            head_weights["fc1.bias"].unsqueeze(1),
+            x,
+            head_weights["fc1.weight"].transpose(-1, -2),
+        )
+        h = torch.nn.functional.gelu(h)
+
+        # fc2: [S, B, d_hidden] @ [S, d_hidden, d_hidden] + [S, 1, d_hidden]
+        h = torch.baddbmm(
+            head_weights["fc2.bias"].unsqueeze(1),
+            h,
+            head_weights["fc2.weight"].transpose(-1, -2),
+        )
+        h = torch.nn.functional.gelu(h)
+
+        # fc_mean: [S, B, d_hidden] @ [S, d_hidden, 1] + [S, 1, 1]
+        means_all = torch.baddbmm(
+            head_weights["fc_mean.bias"].unsqueeze(1),
+            h,
+            head_weights["fc_mean.weight"].transpose(-1, -2),
+        )  # [S, B, 1]
+
+        epistemic_std = means_all.detach().cpu().std(dim=0)  # [B, 1]
 
         result = {
             "mean": output_median["mean"].cpu().numpy(),
@@ -501,8 +530,9 @@ class Predictor:
             result["hgt_attention"] = _hgt_attention_to_cpu(output_median["hgt_attention"])
 
         if return_pma_attention and "pma_attention" in output_median:
+            pma = output_median["pma_attention"]
             result["pma_attention"] = [
-                attn.cpu().numpy() for attn in output_median["pma_attention"]
+                pma[:, ct_idx].cpu().numpy() for ct_idx in range(pma.shape[1])
             ]
 
         if return_region_attention and "region_attention" in output_median:
@@ -567,7 +597,7 @@ class Predictor:
 
         batch = self._move_batch_to_device(batch)
 
-        output = self.model(
+        model_kwargs = dict(
             region_pseudobulk=batch.get("region_pseudobulk"),
             region_mask=batch.get("region_mask"),
             pseudobulk=batch.get("pseudobulk"),
@@ -575,8 +605,6 @@ class Predictor:
             ccc_edge_type=batch.get("ccc_edge_type"),
             ccc_edge_attr=batch.get("ccc_edge_attr"),
             ccc_edge_counts=batch.get("ccc_edge_counts"),
-            cells=batch.get("cells"),
-            cell_mask=batch.get("cell_mask"),
             cell_type_mask=batch.get("cell_type_mask"),
             pathology=batch.get("pathology"),
             return_hgt_attention=extract_hgt_attention,
@@ -584,6 +612,13 @@ class Predictor:
             return_region_attention=extract_region_attention,
             return_embeddings=extract_embeddings,
         )
+        if "cell_data" in batch:
+            model_kwargs["cell_data"] = batch["cell_data"]
+            model_kwargs["cell_offsets"] = batch["cell_offsets"]
+        else:
+            model_kwargs["cells"] = batch.get("cells")
+            model_kwargs["cell_mask"] = batch.get("cell_mask")
+        output = self.model(**model_kwargs)
 
         result = {
             "mean": output["mean"].cpu().numpy(),

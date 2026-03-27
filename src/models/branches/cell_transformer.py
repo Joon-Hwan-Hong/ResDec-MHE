@@ -199,6 +199,78 @@ class CellTransformer(nn.Module):
 
         return embeddings, selection_weights.detach(), attention_out
 
+    def forward_flat(
+        self,
+        cell_data: torch.Tensor,       # [total_cells, n_genes]
+        cell_offsets: torch.Tensor,     # [B, n_types + 1]
+        return_attention: bool = False,
+        apply_selection_weights: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Forward pass from flat cell representation.
+
+        Reconstructs padded tensor from flat representation and delegates
+        to the SetTransformerEncoder. Mathematically identical to forward().
+
+        Args:
+            cell_data: [total_cells, n_genes] concatenated cell expressions
+            cell_offsets: [B, n_types + 1] absolute offsets into cell_data
+            return_attention: Whether to return PMA attention weights
+            apply_selection_weights: Whether to scale embeddings by selection weights
+
+        Returns:
+            embeddings: (B, n_cell_types, d_model) weighted embeddings
+            selection_weights: (n_cell_types,) soft attention weights (sum to 1)
+            attention: Attention weights (if requested)
+        """
+        B = cell_offsets.shape[0]
+        n_types = self.n_cell_types
+        device = cell_data.device
+
+        # Get soft selection weights
+        selection_weights = self.selector.get_selection_weights()
+
+        # Compute per-(sample, type) cell counts
+        counts = cell_offsets[:, 1:] - cell_offsets[:, :-1]  # [B, n_types]
+        max_cells = max(int(counts.max().item()), 1) if counts.numel() > 0 else 1
+
+        # Build padded tensor [B * n_types, max_cells, n_genes]
+        n_genes = cell_data.shape[1] if cell_data.shape[0] > 0 else self.n_genes
+        cells_grouped = torch.zeros(
+            B * n_types, max_cells, n_genes,
+            device=device, dtype=cell_data.dtype,
+        )
+        mask_grouped = torch.zeros(
+            B * n_types, max_cells,
+            device=device, dtype=torch.bool,
+        )
+
+        for b in range(B):
+            for t in range(n_types):
+                start = int(cell_offsets[b, t])
+                end = int(cell_offsets[b, t + 1])
+                n = end - start
+                if n > 0:
+                    cells_grouped[b * n_types + t, :n] = cell_data[start:end]
+                    mask_grouped[b * n_types + t, :n] = True
+
+        # SetTransformerEncoder forward
+        embeddings_flat, attention_flat = self.set_encoder(
+            cells_grouped, mask=mask_grouped, return_attention=return_attention
+        )
+
+        embeddings = embeddings_flat.view(B, n_types, self.d_model)
+
+        attention_out = None
+        if return_attention and attention_flat is not None:
+            attn_shape = attention_flat.shape[1:]
+            attention_out = attention_flat.view(B, n_types, *attn_shape)
+
+        if apply_selection_weights:
+            weights = selection_weights.view(1, -1, 1)
+            embeddings = embeddings * weights
+
+        return embeddings, selection_weights.detach(), attention_out
+
     def get_selection_weights(self) -> torch.Tensor:
         """
         Get soft selection weights for all cell types.

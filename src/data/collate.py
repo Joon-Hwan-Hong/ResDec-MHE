@@ -57,64 +57,78 @@ def _pad_and_stack_cells(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Pad cells/cell_mask to batch actual max and stack.
 
+    Supports both flat format (cell_data + cell_offsets) and legacy
+    padded format (cells + cell_mask).
+
     Pre-computes actual max valid cell index to avoid over-allocation
     and eliminate the separate trim pass.
     """
-    n_cell_types = batch[0]["cells"].shape[0]
-    n_genes = batch[0]["cells"].shape[2]
     batch_size = len(batch)
 
-    # Compute actual max valid cells across all samples to avoid
-    # over-allocating and then trimming.
-    actual_max = 0
-    for s in batch:
-        mask = s["cell_mask"]  # [n_cell_types, nc]
-        if mask.any():
-            # Find highest valid cell index across all cell types
-            valid_per_col = mask.any(dim=0)  # [nc]
-            if valid_per_col.any():
-                last_valid = valid_per_col.nonzero()[-1].item() + 1
-                actual_max = max(actual_max, last_valid)
-    actual_max = max(actual_max, 1)  # At least 1
+    if "cell_data" in batch[0]:
+        # ── Flat format: reconstruct padded tensor from cell_data + cell_offsets
+        n_types = batch[0]["cell_offsets"].shape[0] - 1
+        # Get n_genes from first non-empty sample
+        n_genes = 0
+        for s in batch:
+            if s["cell_data"].shape[0] > 0:
+                n_genes = s["cell_data"].shape[1]
+                break
+        if n_genes == 0:
+            n_genes = batch[0]["pseudobulk"].shape[1]
 
-    # Allocate directly to actual_max (zero-filled = correct padding)
-    cells = torch.zeros(batch_size, n_cell_types, actual_max, n_genes)
-    cell_mask = torch.zeros(batch_size, n_cell_types, actual_max, dtype=torch.bool)
+        # Find max cells per type across batch
+        max_cells = 0
+        for s in batch:
+            offsets = s["cell_offsets"]
+            for ct in range(n_types):
+                n = int(offsets[ct + 1] - offsets[ct])
+                max_cells = max(max_cells, n)
+        max_cells = max(max_cells, 1)
 
-    for i, s in enumerate(batch):
-        nc = min(s["cells"].shape[1], actual_max)
-        cells[i, :, :nc, :] = s["cells"][:, :nc, :]
-        cell_mask[i, :, :nc] = s["cell_mask"][:, :nc]
+        cells = torch.zeros(batch_size, n_types, max_cells, n_genes)
+        cell_mask = torch.zeros(batch_size, n_types, max_cells, dtype=torch.bool)
 
-    return cells, cell_mask
+        for i, s in enumerate(batch):
+            data = s["cell_data"]
+            offsets = s["cell_offsets"]
+            for ct in range(n_types):
+                start = int(offsets[ct])
+                end = int(offsets[ct + 1])
+                n = end - start
+                if n > 0:
+                    cells[i, ct, :n] = data[start:end]
+                    cell_mask[i, ct, :n] = True
 
-
-def _trim_cells_to_actual_max(
-    cells: torch.Tensor,
-    cell_mask: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Trim cells and cell_mask to the actual max cell count used in the batch.
-
-    After padding to batch max, many trailing columns may be entirely unused
-    (all-False in mask). This trims them to save memory.
-
-    Args:
-        cells: [B, n_cell_types, max_cells, n_genes]
-        cell_mask: [B, n_cell_types, max_cells]
-
-    Returns:
-        Trimmed (cells, cell_mask) — same tensors if no trim needed.
-    """
-    if not cell_mask.any():
         return cells, cell_mask
-    # Find highest valid cell index across all samples and cell types
-    max_valid = cell_mask.any(dim=0).any(dim=0).long()  # [max_cells] bool
-    if max_valid.any():
-        actual_max = max_valid.nonzero()[-1].item() + 1
-        if actual_max < cell_mask.shape[2]:
-            cells = cells[:, :, :actual_max, :]
-            cell_mask = cell_mask[:, :, :actual_max]
-    return cells, cell_mask
+    else:
+        # ── Legacy padded format
+        n_cell_types = batch[0]["cells"].shape[0]
+        n_genes = batch[0]["cells"].shape[2]
+
+        # Compute actual max valid cells across all samples to avoid
+        # over-allocating and then trimming.
+        actual_max = 0
+        for s in batch:
+            mask = s["cell_mask"]  # [n_cell_types, nc]
+            if mask.any():
+                # Find highest valid cell index across all cell types
+                valid_per_col = mask.any(dim=0)  # [nc]
+                if valid_per_col.any():
+                    last_valid = valid_per_col.nonzero()[-1].item() + 1
+                    actual_max = max(actual_max, last_valid)
+        actual_max = max(actual_max, 1)  # At least 1
+
+        # Allocate directly to actual_max (zero-filled = correct padding)
+        cells = torch.zeros(batch_size, n_cell_types, actual_max, n_genes)
+        cell_mask = torch.zeros(batch_size, n_cell_types, actual_max, dtype=torch.bool)
+
+        for i, s in enumerate(batch):
+            nc = min(s["cells"].shape[1], actual_max)
+            cells[i, :, :nc, :] = s["cells"][:, :nc, :]
+            cell_mask[i, :, :nc] = s["cell_mask"][:, :nc]
+
+        return cells, cell_mask
 
 
 def _assemble_region_tensors(
@@ -380,7 +394,28 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
         if not skip_region_mask:
             region_mask[i] = s["region_mask"]
 
-    cells, cell_mask = _pad_and_stack_cells(batch)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Cell-level data: flat format (preferred) or padded (legacy)
+    # Flat format avoids constructing the ~9.5 GB padded 4D tensor entirely.
+    # ─────────────────────────────────────────────────────────────────────────
+    use_flat = "cell_data" in batch[0]
+
+    if use_flat:
+        all_data = []
+        batch_offsets = []
+        cumulative = 0
+        for s in batch:
+            sample_offsets = s["cell_offsets"]  # [n_types + 1]
+            batch_offsets.append(sample_offsets + cumulative)
+            cumulative += int(sample_offsets[-1])
+            if s["cell_data"].shape[0] > 0:
+                all_data.append(s["cell_data"])
+
+        n_genes_flat = batch[0]["pseudobulk"].shape[1]
+        cell_data = torch.cat(all_data) if all_data else torch.empty(0, n_genes_flat)
+        cell_offsets = torch.stack(batch_offsets)  # [B, n_types + 1]
+    else:
+        cells, cell_mask = _pad_and_stack_cells(batch)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Build padded edge tensors for HGTEncoderTensor
@@ -423,13 +458,19 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
         "ccc_edge_type": ccc_edge_type,
         "ccc_edge_attr": ccc_edge_attr,
         "ccc_edge_counts": edge_counts,
-        # Cell-level data (all 31 cell types)
-        "cells": cells,
-        "cell_mask": cell_mask,
         # Metadata
         "subject_ids": subject_ids,
         "batch_size": batch_size,
     }
+
+    # Cell-level data: only one format in the batch
+    if use_flat:
+        result["cell_data"] = cell_data
+        result["cell_offsets"] = cell_offsets
+    else:
+        result["cells"] = cells
+        result["cell_mask"] = cell_mask
+
     if not skip_region_mask:
         result["region_mask"] = region_mask
 

@@ -682,3 +682,104 @@ class TestNaNInputHandling:
 
         embeddings, _, _ = nan_transformer(cells, cell_mask)
         assert torch.isnan(embeddings).any(), "Expected NaN propagation from valid-position NaN"
+
+
+# ============================================================================
+# Task 4: forward_flat tests
+# ============================================================================
+
+
+class TestCellTransformerFlatInput:
+    """Test forward_flat with flat cell representation."""
+
+    def test_forward_flat_output_shape(self):
+        """forward_flat produces correct output shape."""
+        n_genes, n_types, d_model = 20, 31, 16
+        ct = CellTransformer(
+            n_genes=n_genes, n_cell_types=n_types, d_model=d_model,
+            n_heads=2, n_isab_layers=1, n_inducing=4,
+        )
+        ct.eval()
+
+        B = 2
+        # Sample 0: type 0 has 5 cells, type 1 has 3 -> 8 total
+        # Sample 1: type 0 has 8 cells -> 8 total
+        cell_data = torch.randn(16, n_genes)  # 8+8=16 cells total
+        cell_offsets = torch.zeros(B, n_types + 1, dtype=torch.long)
+        # Sample 0
+        cell_offsets[0, 1] = 5
+        cell_offsets[0, 2:] = 8
+        # Sample 1 (offset from 8)
+        cell_offsets[1, :] = 8  # start at 8
+        cell_offsets[1, 1:] = 16  # type 0 has 8 cells
+
+        with torch.no_grad():
+            emb, sel, attn = ct.forward_flat(cell_data, cell_offsets)
+
+        assert emb.shape == (B, n_types, d_model)
+        assert sel.shape == (n_types,)
+
+    def test_forward_flat_matches_padded(self):
+        """forward_flat produces identical output to forward with equivalent input."""
+        n_genes, n_types, d_model = 20, 31, 16
+        ct = CellTransformer(
+            n_genes=n_genes, n_cell_types=n_types, d_model=d_model,
+            n_heads=2, n_isab_layers=1, n_inducing=4,
+        )
+        ct.eval()
+
+        B = 2
+        # Create padded input
+        cells_padded = torch.zeros(B, n_types, 10, n_genes)
+        cell_mask = torch.zeros(B, n_types, 10, dtype=torch.bool)
+
+        # Sample 0: type 0 has 5 cells, type 1 has 3
+        data_0_0 = torch.randn(5, n_genes)
+        data_0_1 = torch.randn(3, n_genes)
+        cells_padded[0, 0, :5] = data_0_0
+        cells_padded[0, 1, :3] = data_0_1
+        cell_mask[0, 0, :5] = True
+        cell_mask[0, 1, :3] = True
+
+        # Sample 1: type 0 has 8 cells
+        data_1_0 = torch.randn(8, n_genes)
+        cells_padded[1, 0, :8] = data_1_0
+        cell_mask[1, 0, :8] = True
+
+        with torch.no_grad():
+            emb_padded, sel_padded, _ = ct(cells_padded, cell_mask)
+
+        # Create equivalent flat input
+        cell_data = torch.cat([data_0_0, data_0_1, data_1_0], dim=0)  # [16, n_genes]
+        cell_offsets = torch.zeros(B, n_types + 1, dtype=torch.long)
+        cell_offsets[0, 1] = 5
+        cell_offsets[0, 2:] = 8
+        cell_offsets[1, :] = 8
+        cell_offsets[1, 1:] = 16
+
+        with torch.no_grad():
+            emb_flat, sel_flat, _ = ct.forward_flat(cell_data, cell_offsets)
+
+        torch.testing.assert_close(emb_flat, emb_padded, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(sel_flat, sel_padded)
+
+    def test_forward_flat_gradient_flow(self):
+        """Gradients flow through forward_flat to cell_data."""
+        n_genes, n_types, d_model = 20, 8, 16
+        ct = CellTransformer(
+            n_genes=n_genes, n_cell_types=n_types, d_model=d_model,
+            n_heads=2, n_isab_layers=1, n_inducing=4,
+        )
+        ct.train()
+
+        cell_data = torch.randn(10, n_genes, requires_grad=True)
+        cell_offsets = torch.zeros(1, n_types + 1, dtype=torch.long)
+        cell_offsets[0, 1] = 5
+        cell_offsets[0, 2:] = 10
+
+        emb, _, _ = ct.forward_flat(cell_data, cell_offsets)
+        loss = emb.sum()
+        loss.backward()
+
+        assert cell_data.grad is not None
+        assert not torch.all(cell_data.grad == 0)

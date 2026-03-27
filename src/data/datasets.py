@@ -750,7 +750,7 @@ class PrecomputedDataset(Dataset):
                     "cell_type_mask": cached["cell_type_mask"],
                     "cell_counts": cached["cell_counts"],
                     "region_mask": cached["region_mask"],
-                    "cell_mask": cached["cell_mask"],
+                    "cell_offsets": cached["cell_offsets"],
                     "ccc_edge_index": cached["ccc_edge_index"],
                     "ccc_edge_type": cached["ccc_edge_type"],
                     "ccc_edge_attr": cached["ccc_edge_attr"],
@@ -779,12 +779,26 @@ class PrecomputedDataset(Dataset):
                 entry: dict[str, Any] = {}
                 entry["pseudobulk"] = torch.from_numpy(npz_data["pseudobulk"]).float()
                 entry["cell_type_mask"] = torch.from_numpy(npz_data["cell_type_mask"]).bool()
-                entry["cell_mask"] = torch.from_numpy(npz_data["cell_mask"]).bool()
+                if "cell_offsets" in npz_data:
+                    entry["cell_offsets"] = torch.from_numpy(npz_data["cell_offsets"]).long()
+                else:
+                    # Backward compat: convert old cell_mask to offsets
+                    cell_mask = npz_data["cell_mask"]  # [n_types, max_cells]
+                    n_types = cell_mask.shape[0]
+                    offsets = np.zeros(n_types + 1, dtype=np.int64)
+                    for ct in range(n_types):
+                        offsets[ct + 1] = offsets[ct] + int(cell_mask[ct].sum())
+                    entry["cell_offsets"] = torch.from_numpy(offsets).long()
                 entry["ccc_edge_index"] = torch.from_numpy(npz_data["edge_index"]).long()
                 entry["ccc_edge_type"] = torch.from_numpy(npz_data["edge_type"]).long()
                 entry["ccc_edge_attr"] = torch.from_numpy(npz_data["edge_attr"]).float()
                 if "cell_counts" in npz_data:
                     entry["cell_counts"] = torch.from_numpy(npz_data["cell_counts"]).long()
+                elif "cell_offsets" in npz_data:
+                    offsets = npz_data["cell_offsets"]
+                    entry["cell_counts"] = torch.from_numpy(
+                        (offsets[1:] - offsets[:-1]).astype(np.int64)
+                    )
                 else:
                     entry["cell_counts"] = torch.from_numpy(
                         npz_data["cell_mask"].sum(axis=1).astype(np.int64)
@@ -810,12 +824,35 @@ class PrecomputedDataset(Dataset):
         )
 
     def _validate_files(self):
-        """Check that feature files exist for all subjects."""
+        """Check that feature files exist for all subjects.
+
+        Also removes degenerate subjects with fewer than 2 active cell types,
+        since CCC edges require at least 2 cell types interacting and the
+        model cannot learn from subjects with no inter-type communication.
+        """
         valid_subjects = []
+        degenerate = []
+        edge_counts = {}
         for sid in self.subject_ids:
             feature_file = self.feature_dir / f"{sid}.npz"
-            if feature_file.exists() and sid in self.metadata.index:
-                valid_subjects.append(sid)
+            if not (feature_file.exists() and sid in self.metadata.index):
+                continue
+            # Check for degenerate subjects (< 2 active cell types)
+            with np.load(feature_file, allow_pickle=True) as npz:
+                n_active = int(npz["cell_type_mask"].sum())
+                n_edges = int(npz["edge_index"].shape[1])
+            if n_active < 2:
+                degenerate.append(sid)
+                continue
+            valid_subjects.append(sid)
+            edge_counts[sid] = n_edges
+
+        if degenerate:
+            warnings.warn(
+                f"Removed {len(degenerate)} degenerate subjects with <2 active "
+                f"cell types (no CCC edges possible): {degenerate}",
+                stacklevel=2,
+            )
 
         if len(valid_subjects) < len(self.subject_ids):
             n_removed = len(self.subject_ids) - len(valid_subjects)
@@ -838,6 +875,11 @@ class PrecomputedDataset(Dataset):
             )
 
         self.subject_ids = valid_subjects
+        self._edge_counts = edge_counts
+
+    def get_edge_counts(self) -> list[int]:
+        """Return edge counts in subject_ids order (for bucket batching)."""
+        return [self._edge_counts[sid] for sid in self.subject_ids]
 
     def _validate_gene_names(self):
         """Validate gene_names.npy gene count matches pseudobulk gene dimension."""
@@ -913,11 +955,28 @@ class PrecomputedDataset(Dataset):
     def _load_npz_with_cache(
         self, subject_id: str, feature_file: Path, idx: int
     ) -> dict[str, torch.Tensor]:
-        """Load cells from disk, combine with pre-built template."""
+        """Load cell data from disk, combine with pre-built template."""
         sample = self._sample_templates[subject_id].copy()  # shallow copy
-        # Only load the cells array from disk (the expensive part)
+        # Only load the cell data array from disk (the expensive part)
         with np.load(feature_file, allow_pickle=True) as npz_data:
-            sample["cells"] = torch.from_numpy(npz_data["cells"]).float()
+            if "cell_data" in npz_data:
+                sample["cell_data"] = torch.from_numpy(npz_data["cell_data"]).float()
+            else:
+                # Backward compat: convert old padded format on-the-fly
+                cells = npz_data["cells"]
+                cell_mask = npz_data["cell_mask"]
+                n_types = cells.shape[0]
+                offsets = np.zeros(n_types + 1, dtype=np.int64)
+                flat_parts = []
+                for ct in range(n_types):
+                    n_cells = int(cell_mask[ct].sum())
+                    if n_cells > 0:
+                        flat_parts.append(cells[ct, :n_cells])
+                    offsets[ct + 1] = offsets[ct] + n_cells
+                sample["cell_data"] = torch.from_numpy(
+                    np.concatenate(flat_parts) if flat_parts else np.empty((0, cells.shape[2]), dtype=np.float32)
+                ).float()
+                sample["cell_offsets"] = torch.from_numpy(offsets).long()
         return sample
 
     def _load_npz(self, subject_id: str, feature_file: Path, idx: int) -> dict[str, torch.Tensor]:
@@ -926,17 +985,24 @@ class PrecomputedDataset(Dataset):
         # allow_pickle=True required for object-dtype arrays (cell_type_order).
         # Safe here: .npz files are self-generated by save_precomputed_features().
         with np.load(feature_file, allow_pickle=True) as npz_data:
-            # Validate required keys
-            required_keys = {
-                "pseudobulk", "cell_type_mask", "cells", "cell_mask",
-                "edge_index", "edge_type", "edge_attr",
-            }
-            missing_keys = required_keys - set(npz_data.files)
-            if missing_keys:
+            file_keys = set(npz_data.files)
+            has_flat = "cell_data" in file_keys and "cell_offsets" in file_keys
+            has_padded = "cells" in file_keys and "cell_mask" in file_keys
+
+            # Validate required keys (accept either flat or padded cell format)
+            base_required = {"pseudobulk", "cell_type_mask", "edge_index", "edge_type", "edge_attr"}
+            missing_base = base_required - file_keys
+            if missing_base:
                 raise KeyError(
-                    f"Missing required keys: {missing_keys}. "
+                    f"Missing required keys: {missing_base}. "
                     f"Available: {list(npz_data.files)}"
                 )
+            if not has_flat and not has_padded:
+                raise KeyError(
+                    f"Missing cell data keys: need either {{cell_data, cell_offsets}} "
+                    f"or {{cells, cell_mask}}. Available: {list(npz_data.files)}"
+                )
+
             # Validate cell_type_order matches (if stored in file)
             if "cell_type_order" in npz_data:
                 saved_order = list(npz_data["cell_type_order"])
@@ -953,8 +1019,7 @@ class PrecomputedDataset(Dataset):
             if "cell_counts" in npz_data:
                 cell_counts = torch.from_numpy(npz_data["cell_counts"]).long()
             else:
-                # Derive cell_counts from cell_mask: sum valid cells per cell type
-                # cell_mask shape: [n_cell_types, max_cells] -> sum along dim=1
+                # Derive cell_counts from cell_mask (only available in padded format)
                 cell_mask_np = npz_data["cell_mask"]  # [n_cell_types, max_cells] bool
                 cell_counts = torch.from_numpy(cell_mask_np.sum(axis=1).astype(np.int64))
 
@@ -966,31 +1031,61 @@ class PrecomputedDataset(Dataset):
                 region_mask = torch.zeros(len(REGION_ORDER), dtype=torch.bool)
                 region_mask[0] = True
 
-            # Extract all arrays into tensors while file is open
+            # Extract common arrays into tensors while file is open
             pseudobulk = torch.from_numpy(npz_data["pseudobulk"]).float()
             cell_type_mask = torch.from_numpy(npz_data["cell_type_mask"]).bool()
-            cells = torch.from_numpy(npz_data["cells"]).float()
-            cell_mask = torch.from_numpy(npz_data["cell_mask"]).bool()
             ccc_edge_index = torch.from_numpy(npz_data["edge_index"]).long()
             ccc_edge_type = torch.from_numpy(npz_data["edge_type"]).long()
             ccc_edge_attr = torch.from_numpy(npz_data["edge_attr"]).float()
 
-            # Shape validation: pseudobulk must be [n_cell_types, n_genes]
+            # Load cell data (flat format preferred, padded converted on-the-fly)
+            if has_flat:
+                cell_data = torch.from_numpy(npz_data["cell_data"]).float()
+                cell_offsets = torch.from_numpy(npz_data["cell_offsets"]).long()
+            else:
+                # Backward compat: convert old padded format on-the-fly
+                cells_np = npz_data["cells"]
+                cell_mask_np = npz_data["cell_mask"]
+                n_types = cells_np.shape[0]
+                offsets = np.zeros(n_types + 1, dtype=np.int64)
+                flat_parts = []
+                for ct in range(n_types):
+                    n_cells = int(cell_mask_np[ct].sum())
+                    if n_cells > 0:
+                        flat_parts.append(cells_np[ct, :n_cells])
+                    offsets[ct + 1] = offsets[ct] + n_cells
+                cell_data = torch.from_numpy(
+                    np.concatenate(flat_parts) if flat_parts
+                    else np.empty((0, cells_np.shape[2]), dtype=np.float32)
+                ).float()
+                cell_offsets = torch.from_numpy(offsets).long()
+
+            # Shape validation
             n_ct = len(self.cell_type_order)
             if pseudobulk.ndim != 2 or pseudobulk.shape[0] != n_ct:
                 raise ValueError(
                     f"pseudobulk shape {tuple(pseudobulk.shape)}: expected "
                     f"[{n_ct}, n_genes], got wrong n_cell_types dim"
                 )
-            if cells.ndim != 3 or cells.shape[0] != n_ct:
+            if cell_data.ndim != 2:
                 raise ValueError(
-                    f"cells shape {tuple(cells.shape)}: expected "
-                    f"[{n_ct}, max_cells, n_genes], got wrong n_cell_types dim"
+                    f"cell_data should be 2D [total_cells, n_genes], "
+                    f"got {cell_data.ndim}D shape {tuple(cell_data.shape)}"
                 )
-            if pseudobulk.shape[1] != cells.shape[2]:
+            if cell_offsets.shape[0] != n_ct + 1:
+                raise ValueError(
+                    f"cell_offsets length {cell_offsets.shape[0]}: expected "
+                    f"{n_ct + 1} (n_cell_types + 1)"
+                )
+            if int(cell_offsets[-1].item()) != cell_data.shape[0]:
+                raise ValueError(
+                    f"cell_offsets[-1]={int(cell_offsets[-1].item())} != "
+                    f"cell_data.shape[0]={cell_data.shape[0]}: offset/data mismatch"
+                )
+            if cell_data.shape[0] > 0 and pseudobulk.shape[1] != cell_data.shape[1]:
                 raise ValueError(
                     f"Gene dimension mismatch: pseudobulk has {pseudobulk.shape[1]} genes "
-                    f"but cells has {cells.shape[2]} genes"
+                    f"but cell_data has {cell_data.shape[1]} genes"
                 )
 
             # Load multi-region pseudobulk data (if present in file)
@@ -1014,8 +1109,8 @@ class PrecomputedDataset(Dataset):
             "cell_type_mask": cell_type_mask,
             "cell_counts": cell_counts,
             "region_mask": region_mask,
-            "cells": cells,
-            "cell_mask": cell_mask,
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             # Graph features (CCC = cell-cell communication)
             "ccc_edge_index": ccc_edge_index,
             "ccc_edge_type": ccc_edge_type,
@@ -1078,6 +1173,26 @@ def save_precomputed_features(
 
         output_file = output_dir / f"{subject_id}.npz"
 
+        # Convert padded cells [n_types, max_cells, n_genes] to flat format
+        # cell_data [total_real_cells, n_genes] + cell_offsets [n_types+1]
+        cells_padded = sample["cells"].numpy()
+        cell_mask_padded = sample["cell_mask"].numpy()
+        n_types = cells_padded.shape[0]
+
+        cell_offsets = np.zeros(n_types + 1, dtype=np.int64)
+        flat_parts = []
+        for ct in range(n_types):
+            n = int(cell_mask_padded[ct].sum())
+            if n > 0:
+                flat_parts.append(cells_padded[ct, :n])
+            cell_offsets[ct + 1] = cell_offsets[ct] + n
+
+        cell_data = (
+            np.concatenate(flat_parts, axis=0)
+            if flat_parts
+            else np.empty((0, cells_padded.shape[2]), dtype=np.float32)
+        )
+
         # Build save dict with core features
         save_data = {
             "pseudobulk": sample["pseudobulk"].numpy(),
@@ -1090,8 +1205,8 @@ def save_precomputed_features(
             "edge_index": sample["ccc_edge_index"].numpy(),
             "edge_type": sample["ccc_edge_type"].numpy(),
             "edge_attr": sample["ccc_edge_attr"].numpy(),
-            "cells": sample["cells"].numpy(),
-            "cell_mask": sample["cell_mask"].numpy(),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
             # Store ordering metadata for validation on load
             "cell_type_order": np.array(dataset.cell_type_order, dtype=object),
         }
@@ -1105,10 +1220,9 @@ def save_precomputed_features(
             save_data["available_regions"] = np.array(sample["available_regions"])
 
         # Atomic write: save to temp file then rename to prevent partial files on crash.
-        # np.savez_compressed: the cells array (n_cell_types × max_cells × n_genes)
-        # is ~900 MB dense but compresses ~6x due to zero-padded sparse cell types.
-        # Despite zlib CPU cost, compressed reads are faster because disk I/O is the
-        # bottleneck (reading 150 MB + decompress beats reading 900 MB sequentially).
+        # Flat cell format eliminates ~87% zero padding vs the old 3D padded layout,
+        # so the uncompressed size is already much smaller.  We still use
+        # savez_compressed for the remaining arrays (pseudobulk, edges, etc.).
         with tempfile.NamedTemporaryFile(
             dir=output_dir, suffix=".npz", delete=False
         ) as tmp_f:
