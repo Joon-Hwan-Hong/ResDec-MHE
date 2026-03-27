@@ -81,6 +81,8 @@ def _forward_kwargs(batch: dict) -> dict:
         ccc_edge_index=batch.get("ccc_edge_index"),
         ccc_edge_type=batch.get("ccc_edge_type"),
         ccc_edge_attr=batch.get("ccc_edge_attr"),
+        cell_data=batch.get("cell_data"),
+        cell_offsets=batch.get("cell_offsets"),
         cells=batch.get("cells"),
         cell_mask=batch.get("cell_mask"),
         cell_type_mask=batch.get("cell_type_mask"),

@@ -53,8 +53,9 @@ data:
     min_cells_threshold: 50
     sampling_strategy: "random"  # "random", "stratified", "importance"
 
-  # Pre-load all .npz files to RAM at startup (eliminates disk I/O during training).
-  # Costs ~20 GB RAM for full ROSMAP dataset. Recommended for machines with 64+ GB.
+  # Pre-load all .npz files (including cell_data) to shared memory at startup.
+  # Eliminates all disk I/O during training. Costs ~41 GB RAM for full ROSMAP dataset.
+  # Tensors are placed in shared memory for zero-copy DataLoader worker access.
   preload_to_ram: true
 
   # Fraction of subjects allowed to be missing from splits before raising an error
@@ -155,7 +156,7 @@ training:
   early_stopping:
     patience: 15
     min_delta: 0.0001
-    min_epochs: 20               # Don't stop before warmup + stabilization (passed to Trainer, not EarlyStopping)
+    min_epochs: 55               # Don't stop before temperature annealing completes (5 warmup + 50 anneal)
     monitor: "val_loss"
     mode: "min"
 
@@ -220,7 +221,7 @@ training:
 
 optuna:
   n_trials: 100
-  timeout: 86400  # 24 hours
+  timeout: 432000  # 5 days (100 trials × 5-fold CV worst case)
   pruner:
     type: "median"
     n_startup_trials: 5

@@ -658,12 +658,11 @@ class PrecomputedDataset(Dataset):
 
     Use this for faster training after initial preprocessing.
 
-    When ``preload_to_ram=True``, all .npz files are decompressed and
-    converted to torch tensors at init time.  Subsequent ``__getitem__``
-    calls return from the in-memory cache (microseconds) instead of
-    hitting disk (~1.6 s per subject).  Total RAM cost is ~20 GB for the
-    full ROSMAP dataset (517 subjects), which fits easily on machines with
-    64+ GB RAM.
+    When ``preload_to_ram=True``, all .npz files (including cell_data) are
+    decompressed and converted to torch tensors at init time.  Subsequent
+    ``__getitem__`` calls return from the in-memory cache (microseconds)
+    with zero disk I/O.  Total RAM cost is ~41 GB for the full ROSMAP
+    dataset (465 subjects), which fits on machines with 64+ GB RAM.
     """
 
     def __init__(
@@ -730,14 +729,12 @@ class PrecomputedDataset(Dataset):
             self._target_array, dtype=torch.float32
         ).unsqueeze(1)  # [N_subjects, 1]
 
-        # Pre-load small arrays to RAM (optional).  The cells array is too
-        # large to fit all subjects in memory (~545 MB/subject × 465 = 254 GB),
-        # so only metadata/masks/edges/pseudobulk are cached (~1.7 MB/subject).
-        # The cells array is still loaded from disk per __getitem__ call;
-        # use num_workers > 0 to overlap cells decompression with GPU compute.
+        # Pre-load all arrays to RAM (optional).  Caches everything including
+        # cell_data (~87 MB/subject avg, ~41 GB total for 465 subjects).
+        # Eliminates all disk I/O during training.
         self._small_cache: dict[str, dict[str, Any]] | None = None
         if preload_to_ram:
-            self._preload_small_arrays()
+            self._preload_all_arrays()
 
         # Pre-build sample templates for cached mode (avoids dict construction per __getitem__)
         if self._small_cache is not None:
@@ -754,25 +751,45 @@ class PrecomputedDataset(Dataset):
                     "ccc_edge_index": cached["ccc_edge_index"],
                     "ccc_edge_type": cached["ccc_edge_type"],
                     "ccc_edge_attr": cached["ccc_edge_attr"],
-                    "pathology": torch.from_numpy(self._pathology_array[i]).float().clone(),
-                    "cognition": self._cognition_tensors[i],
+                    "cell_data": cached["cell_data"],
+                    "pathology": torch.from_numpy(self._pathology_array[i]).float().clone().share_memory_(),
+                    "cognition": self._cognition_tensors[i].clone().share_memory_(),
                 }
-                # Add region pseudobulks
-                for key, val in cached.items():
-                    if key.startswith("region_") and key.endswith("_pseudobulk"):
-                        template[key] = val
-                if "available_regions" in cached:
-                    template["available_regions"] = cached["available_regions"]
+                # Pre-stack region pseudobulks into [n_regions, n_cell_types, n_genes]
+                # so collation can torch.stack directly instead of allocating zeros
+                # + nested fill loop over the 36 MB region_pseudobulk tensor.
+                from src.data.constants import N_REGIONS, PFC_REGION_IDX
+                n_ct, n_genes = cached["pseudobulk"].shape
+                region_pb = torch.zeros(N_REGIONS, n_ct, n_genes)
+                region_msk = torch.zeros(N_REGIONS, dtype=torch.bool)
+                avail = cached.get("available_regions", [PFC_REGION_IDX])
+                for ridx in avail:
+                    rkey = f"region_{ridx}_pseudobulk"
+                    if rkey in cached:
+                        region_pb[ridx] = cached[rkey]
+                        region_msk[ridx] = True
+                    elif ridx == PFC_REGION_IDX:
+                        region_pb[ridx] = cached["pseudobulk"]
+                        region_msk[ridx] = True
+                region_pb.share_memory_()
+                region_msk.share_memory_()
+                template["region_pseudobulk"] = region_pb
+                template["region_mask"] = region_msk
                 self._sample_templates[subject_id] = template
         else:
             self._sample_templates = None
 
-    def _preload_small_arrays(self) -> None:
-        """Pre-load everything except the cells array into memory."""
+    def _preload_all_arrays(self) -> None:
+        """Pre-load all arrays (including cell_data) into memory.
+
+        Caches ~87 MB/subject on average (~41 GB total for 465 subjects).
+        Eliminates all disk I/O during training.
+        """
         import time as _time
 
         t0 = _time.monotonic()
         self._small_cache = {}
+        total_cell_bytes = 0
         for sid in self.subject_ids:
             feature_file = self.feature_dir / f"{sid}.npz"
             with np.load(feature_file, allow_pickle=True) as npz_data:
@@ -816,11 +833,36 @@ class PrecomputedDataset(Dataset):
                         entry[key] = torch.from_numpy(npz_data[key]).float()
                 if "available_regions" in npz_data:
                     entry["available_regions"] = npz_data["available_regions"].tolist()
+                # Cell data — the largest array per subject
+                if "cell_data" in npz_data:
+                    cell_tensor = torch.from_numpy(npz_data["cell_data"]).float()
+                else:
+                    # Backward compat: convert old padded format on-the-fly
+                    cells = npz_data["cells"]
+                    cell_mask_arr = npz_data["cell_mask"]
+                    n_types = cells.shape[0]
+                    flat_parts = []
+                    for ct in range(n_types):
+                        n_cells = int(cell_mask_arr[ct].sum())
+                        if n_cells > 0:
+                            flat_parts.append(cells[ct, :n_cells])
+                    cell_tensor = torch.from_numpy(
+                        np.concatenate(flat_parts) if flat_parts else np.empty((0, cells.shape[2]), dtype=np.float32)
+                    ).float()
+                entry["cell_data"] = cell_tensor
+                total_cell_bytes += cell_tensor.nelement() * cell_tensor.element_size()
                 self._small_cache[sid] = entry
+        # Move all tensors to shared memory so DataLoader worker forks
+        # share the same physical pages (avoids overcommit failures with
+        # 12 workers × 30+ GB cached data).
+        for entry in self._small_cache.values():
+            for key, val in entry.items():
+                if isinstance(val, torch.Tensor):
+                    val.share_memory_()
         elapsed = _time.monotonic() - t0
         logger.info(
-            "Pre-loaded small arrays for %d subjects to RAM in %.1f s",
-            len(self.subject_ids), elapsed,
+            "Pre-loaded all arrays for %d subjects to RAM in %.1f s (cell_data: %.1f GB)",
+            len(self.subject_ids), elapsed, total_cell_bytes / (1024**3),
         )
 
     def _validate_files(self):
@@ -935,9 +977,8 @@ class PrecomputedDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         """Load precomputed features for a subject.
 
-        When preload_to_ram is enabled, small arrays (pseudobulk, masks, edges)
-        are returned from the in-memory cache.  Only the cells array (~545 MB)
-        is loaded from disk.
+        When preload_to_ram is enabled, all arrays (including cell_data) are
+        returned from the in-memory cache with zero disk I/O.
         """
         subject_id = self.subject_ids[idx]
         feature_file = self.feature_dir / f"{subject_id}.npz"
@@ -955,29 +996,12 @@ class PrecomputedDataset(Dataset):
     def _load_npz_with_cache(
         self, subject_id: str, feature_file: Path, idx: int
     ) -> dict[str, torch.Tensor]:
-        """Load cell data from disk, combine with pre-built template."""
-        sample = self._sample_templates[subject_id].copy()  # shallow copy
-        # Only load the cell data array from disk (the expensive part)
-        with np.load(feature_file, allow_pickle=True) as npz_data:
-            if "cell_data" in npz_data:
-                sample["cell_data"] = torch.from_numpy(npz_data["cell_data"]).float()
-            else:
-                # Backward compat: convert old padded format on-the-fly
-                cells = npz_data["cells"]
-                cell_mask = npz_data["cell_mask"]
-                n_types = cells.shape[0]
-                offsets = np.zeros(n_types + 1, dtype=np.int64)
-                flat_parts = []
-                for ct in range(n_types):
-                    n_cells = int(cell_mask[ct].sum())
-                    if n_cells > 0:
-                        flat_parts.append(cells[ct, :n_cells])
-                    offsets[ct + 1] = offsets[ct] + n_cells
-                sample["cell_data"] = torch.from_numpy(
-                    np.concatenate(flat_parts) if flat_parts else np.empty((0, cells.shape[2]), dtype=np.float32)
-                ).float()
-                sample["cell_offsets"] = torch.from_numpy(offsets).long()
-        return sample
+        """Return pre-built template (all arrays already in RAM, zero disk I/O).
+
+        Returns the template dict directly (no copy). Safe because collation
+        only reads dict values — it never mutates the input sample dicts.
+        """
+        return self._sample_templates[subject_id]
 
     def _load_npz(self, subject_id: str, feature_file: Path, idx: int) -> dict[str, torch.Tensor]:
         """Load and validate a single .npz file. Called by __getitem__."""

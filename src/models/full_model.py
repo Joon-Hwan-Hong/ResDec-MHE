@@ -257,6 +257,7 @@ class CognitiveResilienceModel(PyroModule):
             self.fusion_layer = torch.compile(self.fusion_layer)
             self.pathology_encoder = torch.compile(self.pathology_encoder)
             self.hgt_encoder = torch.compile(self.hgt_encoder)
+            self.cell_transformer = torch.compile(self.cell_transformer)
             if not use_bayesian_head:
                 self.prediction_head = torch.compile(self.prediction_head)
 

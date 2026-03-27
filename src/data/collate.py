@@ -546,29 +546,46 @@ def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
         - region_mask: [batch, n_regions] bool mask (overrides inherited version
           with actual data presence check)
     """
-    # Check only first sample — all samples in a batch come from the same
-    # dataset and should have the same key structure.
-    has_regions = (
-        "region_pseudobulk" in batch[0]
-        or bool(_derive_available_regions_from_keys(batch[0]))
+    # Check if samples have pre-stacked region_pseudobulk [n_regions, C, G]
+    # (produced by PrecomputedDataset with preload_to_ram=True).
+    # If so, torch.stack is ~100x faster than _assemble_region_tensors
+    # (which allocates 36 MB zeros + nested fill loop).
+    s0 = batch[0]
+    pre_stacked = (
+        "region_pseudobulk" in s0
+        and isinstance(s0["region_pseudobulk"], torch.Tensor)
+        and s0["region_pseudobulk"].ndim == 3  # [n_regions, C, G]
     )
 
-    # Start with HGT format collate; skip region_mask stacking when
-    # _assemble_region_tensors will compute it from scratch anyway.
-    result = collate_for_hgt(batch, skip_region_mask=has_regions)
-
-    if has_regions:
-        batch_size = len(batch)
-        n_cell_types = batch[0]["pseudobulk"].shape[0]
-        n_genes = batch[0]["pseudobulk"].shape[1]
-
-        region_pseudobulk, region_mask = _assemble_region_tensors(
-            batch, batch_size, n_cell_types, n_genes,
-            n_regions=N_REGIONS, auto_derive_regions=True,
+    if pre_stacked:
+        # Fast path: all region data pre-stacked in templates
+        result = collate_for_hgt(batch, skip_region_mask=True)
+        result["region_pseudobulk"] = torch.stack(
+            [s["region_pseudobulk"] for s in batch]
         )
+        result["region_mask"] = torch.stack(
+            [s["region_mask"] for s in batch]
+        )
+    else:
+        # Slow path: assemble from per-region keys
+        has_regions = (
+            "region_pseudobulk" in s0
+            or bool(_derive_available_regions_from_keys(s0))
+        )
+        result = collate_for_hgt(batch, skip_region_mask=has_regions)
 
-        result["region_pseudobulk"] = region_pseudobulk
-        result["region_mask"] = region_mask
+        if has_regions:
+            batch_size = len(batch)
+            n_cell_types = s0["pseudobulk"].shape[0]
+            n_genes = s0["pseudobulk"].shape[1]
+
+            region_pseudobulk, region_mask = _assemble_region_tensors(
+                batch, batch_size, n_cell_types, n_genes,
+                n_regions=N_REGIONS, auto_derive_regions=True,
+            )
+
+            result["region_pseudobulk"] = region_pseudobulk
+            result["region_mask"] = region_mask
 
     return result
 
