@@ -136,7 +136,7 @@ class PseudobulkEncoder(nn.Module):
 
         # Reshape for batch processing through MLP
         # [batch, n_cell_types, n_genes] → [batch * n_cell_types, n_genes]
-        gated_flat = gated.view(-1, self.n_genes)
+        gated_flat = gated.reshape(-1, self.n_genes)
 
         # Apply MLP
         embeddings_flat = self.shared_mlp(gated_flat)

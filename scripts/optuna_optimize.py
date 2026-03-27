@@ -480,14 +480,25 @@ def main() -> None:
             env = os.environ.copy()
             env["CUDA_VISIBLE_DEVICES"] = str(i)
 
-            logger.info(f"Spawning worker on GPU {i} (CUDA_VISIBLE_DEVICES={i}): {gpu_trials} trials")
-            proc = subprocess.Popen(cmd, env=env)
-            workers.append((i, proc))
+            log_dir = Path(config.paths.get("logs_dir", "outputs/logs"))
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stdout_path = log_dir / f"optuna_gpu{i}_stdout.log"
+            stderr_path = log_dir / f"optuna_gpu{i}_stderr.log"
+            logger.info(
+                f"Spawning worker on GPU {i} (CUDA_VISIBLE_DEVICES={i}): "
+                f"{gpu_trials} trials, logs: {stdout_path}"
+            )
+            stdout_f = open(stdout_path, "w")
+            stderr_f = open(stderr_path, "w")
+            proc = subprocess.Popen(cmd, env=env, stdout=stdout_f, stderr=stderr_f)
+            workers.append((i, proc, stdout_f, stderr_f))
 
         # Wait for all workers
         failed = []
-        for gpu_idx, proc in workers:
+        for gpu_idx, proc, stdout_f, stderr_f in workers:
             returncode = proc.wait()
+            stdout_f.close()
+            stderr_f.close()
             if returncode != 0:
                 failed.append(gpu_idx)
                 logger.error(f"Worker on GPU {gpu_idx} failed with code {returncode}")

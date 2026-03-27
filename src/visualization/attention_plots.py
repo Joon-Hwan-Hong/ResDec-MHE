@@ -10,7 +10,6 @@ Provides publication-quality plots for:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,8 +17,6 @@ import pandas as pd
 import seaborn as sns
 
 from src.visualization.config import (
-    FIGURE_DPI,
-    FIGURE_FORMAT,
     get_sequential_cmap,
     get_diverging_cmap,
     get_cell_type_color,

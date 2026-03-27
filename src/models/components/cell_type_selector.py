@@ -46,7 +46,7 @@ class CellTypeSelector(nn.Module):
             raise ValueError(f"temperature must be positive, got {temperature}")
 
         self.n_cell_types = n_cell_types
-        self._temperature = temperature
+        self.register_buffer("_temperature_buf", torch.tensor(float(temperature)))
 
         # Selection logits: learned importance for each cell type
         if init_uniform:
@@ -59,14 +59,14 @@ class CellTypeSelector(nn.Module):
     @property
     def temperature(self) -> float:
         """Current temperature value."""
-        return self._temperature
+        return self._temperature_buf.item()
 
     @temperature.setter
     def temperature(self, value: float) -> None:
         """Set temperature (with validation)."""
         if value <= 0:
             raise ValueError(f"temperature must be positive, got {value}")
-        self._temperature = value
+        self._temperature_buf.fill_(value)
 
     def forward(self) -> torch.Tensor:
         """
@@ -84,7 +84,7 @@ class CellTypeSelector(nn.Module):
         Returns:
             Tensor of shape (n_cell_types,) with selection probabilities
         """
-        return F.softmax(self.selection_logits / self._temperature, dim=0)
+        return F.softmax(self.selection_logits / self._temperature_buf, dim=0)
 
     def get_selected_types(self, k: int) -> torch.Tensor:
         """
@@ -117,4 +117,4 @@ class CellTypeSelector(nn.Module):
         return indices
 
     def extra_repr(self) -> str:
-        return f"n_cell_types={self.n_cell_types}, temperature={self._temperature}"
+        return f"n_cell_types={self.n_cell_types}, temperature={self._temperature_buf.item()}"

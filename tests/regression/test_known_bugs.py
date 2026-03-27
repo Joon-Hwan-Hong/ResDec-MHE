@@ -700,11 +700,13 @@ class TestFinalModeDoesNotUseHoldoutForSelection:
             mock_trainer.max_epochs = 100
             mock_setup_trainer.return_value = mock_trainer
 
-            # Metadata + adata mock -- patch Path, pd.read_csv, sc.read_h5ad
+            # Metadata + adata mock -- patch Path, pd.read_csv, scanpy.read_h5ad
+            # Note: scanpy is imported lazily inside train.py functions,
+            # so we patch the scanpy module directly rather than scripts.train.sc
             with (
                 patch("scripts.train.Path") as mock_path_cls,
                 patch("scripts.train.pd") as mock_pd,
-                patch("scripts.train.sc") as mock_sc,
+                patch("scanpy.read_h5ad") as mock_read_h5ad,
             ):
                 mock_path_instance = MagicMock()
                 mock_path_cls.return_value = mock_path_instance
@@ -712,7 +714,7 @@ class TestFinalModeDoesNotUseHoldoutForSelection:
                 mock_csv_path.exists.return_value = True
                 mock_path_instance.__truediv__ = MagicMock(return_value=mock_csv_path)
                 mock_pd.read_csv.return_value = MagicMock(name="metadata_df")
-                mock_sc.read_h5ad.return_value = MagicMock(name="adata")
+                mock_read_h5ad.return_value = MagicMock(name="adata")
 
                 # Simulate CLI args: --final --splits-path /fake/splits.json
                 test_args = [

@@ -562,9 +562,12 @@ class Predictor:
         if extract_pma_attention:
             all_pma_attention = [[] for _ in range(self.model.n_cell_types)]
 
-        # Region pseudobulk accumulation for regional analysis
-        all_region_pseudobulk = []
+        # Incremental region pseudobulk aggregation (avoid storing all raw data)
+        region_pseudobulk_sum = None   # Running sum for mean computation
+        region_pseudobulk_count = None # Per-region count of valid subjects
+        region_pseudobulk_has_mask = False  # Whether any mask was seen
         all_region_mask = []  # Track which regions are valid per subject
+        per_subject_pseudobulk_parts = []  # Per-subject mean across regions (small)
         all_region_attention = [] if extract_region_attention else None
         all_cell_barcodes = []
         all_cell_counts = []
@@ -634,26 +637,62 @@ class Predictor:
                     if name in result["embeddings"]:
                         all_embeddings[name].append(result["embeddings"][name])
 
-            # Accumulate region pseudobulk and mask (input data, for regional analysis)
+            # Incremental region pseudobulk aggregation (avoid storing all raw data)
             if "region_pseudobulk" in batch:
                 rpb = batch["region_pseudobulk"]
                 if isinstance(rpb, torch.Tensor):
                     rpb = rpb.cpu().numpy()
-                all_region_pseudobulk.append(rpb)
                 # Capture region_mask to know which regions are valid per subject
+                rmask = None
                 if "region_mask" in batch:
                     rm = batch["region_mask"]
                     if isinstance(rm, torch.Tensor):
                         rm = rm.cpu().numpy()
+                    rmask = rm
                     all_region_mask.append(rm)
-            elif "region_pseudobulk" not in batch and "pseudobulk" in batch:
+                    region_pseudobulk_has_mask = True
+                # Accumulate running sum/count for region_pseudobulk_mean
+                if rmask is not None:
+                    mask_expanded = rmask[:, :, np.newaxis, np.newaxis]
+                    masked_rpb = np.where(mask_expanded, rpb, 0.0)
+                    batch_sum = masked_rpb.sum(axis=0)
+                    batch_count = mask_expanded.sum(axis=0)
+                    # Per-subject pseudobulk: mean across valid regions
+                    masked_nan = np.where(mask_expanded, rpb, np.nan)
+                    per_subj = np.nanmean(masked_nan, axis=1)
+                    per_subj = np.nan_to_num(per_subj, nan=0.0)
+                    per_subject_pseudobulk_parts.append(per_subj)
+                else:
+                    batch_sum = rpb.sum(axis=0)
+                    batch_count = rpb.shape[0]
+                    per_subject_pseudobulk_parts.append(rpb.mean(axis=1))
+                if region_pseudobulk_sum is None:
+                    region_pseudobulk_sum = batch_sum
+                    region_pseudobulk_count = batch_count
+                else:
+                    region_pseudobulk_sum += batch_sum
+                    region_pseudobulk_count += batch_count
+            elif "pseudobulk" in batch:
                 # Single-region fallback: wrap pseudobulk as 1-region
                 pb = batch["pseudobulk"]
                 if isinstance(pb, torch.Tensor):
                     pb = pb.cpu().numpy()
-                # [B, n_cell_types, n_genes] -> [B, 1, n_cell_types, n_genes]
-                all_region_pseudobulk.append(pb[:, np.newaxis, :, :])
-                all_region_mask.append(np.ones((pb.shape[0], 1), dtype=bool))
+                rpb = pb[:, np.newaxis, :, :]
+                rmask = np.ones((pb.shape[0], 1), dtype=bool)
+                all_region_mask.append(rmask)
+                region_pseudobulk_has_mask = True
+                mask_expanded = rmask[:, :, np.newaxis, np.newaxis]
+                masked_rpb = np.where(mask_expanded, rpb, 0.0)
+                batch_sum = masked_rpb.sum(axis=0)
+                batch_count = mask_expanded.sum(axis=0)
+                if region_pseudobulk_sum is None:
+                    region_pseudobulk_sum = batch_sum
+                    region_pseudobulk_count = batch_count
+                else:
+                    region_pseudobulk_sum += batch_sum
+                    region_pseudobulk_count += batch_count
+                # Per-subject pseudobulk: for single region, just the pseudobulk itself
+                per_subject_pseudobulk_parts.append(pb)
 
         # Guard: if all batches were skipped, provide actionable error
         if not all_mean:
@@ -720,62 +759,23 @@ class Predictor:
         if extract_region_attention and all_region_attention:
             region_attention = np.concatenate(all_region_attention, axis=0)  # [N, n_regions]
 
-        # Compute mean region_pseudobulk across subjects for regional analysis
-        # Use region_mask to exclude zero-padded missing regions from the mean.
-        # Incremental accumulation avoids stacking all subjects into a single ~1.78 GB array.
+        # Compute mean region_pseudobulk from incrementally accumulated sum/count
         region_pseudobulk_mean = None
-        if all_region_pseudobulk:
-            if all_region_mask:
-                # Accumulate sum and count batch-by-batch to avoid a full concatenation.
-                region_sum = None
-                region_count = None
-                for rpb, rmask in zip(all_region_pseudobulk, all_region_mask):
-                    # rpb:   [batch, n_regions, n_cell_types, n_genes]
-                    # rmask: [batch, n_regions]
-                    mask_expanded = rmask[:, :, np.newaxis, np.newaxis]  # [batch, n_regions, 1, 1]
-                    masked_rpb = np.where(mask_expanded, rpb, 0.0)
-                    batch_sum = masked_rpb.sum(axis=0)       # [n_regions, n_cell_types, n_genes]
-                    batch_count = mask_expanded.sum(axis=0)  # [n_regions, 1, 1] — broadcasts correctly
-                    if region_sum is None:
-                        region_sum = batch_sum
-                        region_count = batch_count
-                    else:
-                        region_sum += batch_sum
-                        region_count += batch_count
+        if region_pseudobulk_sum is not None:
+            if region_pseudobulk_has_mask:
                 # Divide accumulated sum by count; use 0 where no valid subjects existed
                 region_pseudobulk_mean = np.where(
-                    region_count > 0, region_sum / region_count, 0.0
+                    region_pseudobulk_count > 0,
+                    region_pseudobulk_sum / region_pseudobulk_count,
+                    0.0,
                 )
             else:
-                # Fallback if no mask available (shouldn't happen with proper collate)
-                region_sum = None
-                n_total = 0
-                for rpb in all_region_pseudobulk:
-                    if region_sum is None:
-                        region_sum = rpb.sum(axis=0)
-                    else:
-                        region_sum += rpb.sum(axis=0)
-                    n_total += rpb.shape[0]
-                region_pseudobulk_mean = region_sum / max(n_total, 1)
+                region_pseudobulk_mean = region_pseudobulk_sum / max(region_pseudobulk_count, 1)
 
-        # Compute per-subject pseudobulk averaged across valid regions
-        # Shape: [n_subjects, n_cell_types, n_genes] — for differential expression analysis.
-        # Process batch-by-batch (axis=1 mean within each batch) then concatenate the
-        # smaller per-subject arrays, avoiding recreating the full stacked array.
+        # Per-subject pseudobulk was computed incrementally in the batch loop
         per_subject_pseudobulk = None
-        if all_region_pseudobulk:
-            per_subject_parts = []
-            if all_region_mask:
-                for rpb, rmask in zip(all_region_pseudobulk, all_region_mask):
-                    mask_expanded = rmask[:, :, np.newaxis, np.newaxis]
-                    masked = np.where(mask_expanded, rpb, np.nan)
-                    per_subj = np.nanmean(masked, axis=1)  # [batch, n_cell_types, n_genes]
-                    per_subj = np.nan_to_num(per_subj, nan=0.0)
-                    per_subject_parts.append(per_subj)
-            else:
-                for rpb in all_region_pseudobulk:
-                    per_subject_parts.append(rpb.mean(axis=1))  # [batch, n_cell_types, n_genes]
-            per_subject_pseudobulk = np.concatenate(per_subject_parts, axis=0)  # [N, n_cell_types, n_genes]
+        if per_subject_pseudobulk_parts:
+            per_subject_pseudobulk = np.concatenate(per_subject_pseudobulk_parts, axis=0)
 
         # Concatenate embeddings
         embeddings_dict = None

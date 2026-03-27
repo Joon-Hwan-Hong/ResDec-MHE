@@ -60,6 +60,20 @@ def parse_args() -> argparse.Namespace:
         help="Path to preprocessed data directory (overrides config)",
     )
     parser.add_argument(
+        "--splits-path",
+        type=str,
+        default=None,
+        help="Path to splits JSON file (for restricting inference to a specific split)",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default=None,
+        choices=["test", "train", "val"],
+        help="Which split to run inference on (requires --splits-path). "
+             "Use 'test' for holdout evaluation.",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=None,
@@ -110,7 +124,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_dataloader(
-    config, data_path: str | None, batch_size: int
+    config, data_path: str | None, batch_size: int,
+    splits_path: str | None = None, split: str | None = None,
 ) -> DataLoader:
     """Build inference DataLoader from config and data path.
 
@@ -172,6 +187,20 @@ def build_dataloader(
             "Found %d subjects in precomputed directory: %s",
             len(subject_ids), precomputed_dir,
         )
+
+        # Filter subjects to split if requested
+        if splits_path and split:
+            from src.data.splits import load_splits
+            splits = load_splits(splits_path)
+            split_subjects = set(splits.get(split, []))
+            if not split_subjects:
+                raise ValueError(f"Split '{split}' not found or empty in {splits_path}")
+            original_count = len(subject_ids)
+            subject_ids = [s for s in subject_ids if s in split_subjects]
+            logger.info("Filtered to %d/%d subjects for '%s' split", len(subject_ids), original_count, split)
+            if not subject_ids:
+                raise ValueError(f"No subjects found in '{split}' split after filtering")
+
         dataset = PrecomputedDataset(
             feature_dir=precomputed_dir,
             subject_ids=subject_ids,
@@ -193,6 +222,20 @@ def build_dataloader(
         adata = sc.read_h5ad(adata_path)
         # Use all subjects present in metadata
         subject_ids = metadata[subject_column].unique().tolist()
+
+        # Filter subjects to split if requested
+        if splits_path and split:
+            from src.data.splits import load_splits
+            splits = load_splits(splits_path)
+            split_subjects = set(splits.get(split, []))
+            if not split_subjects:
+                raise ValueError(f"Split '{split}' not found or empty in {splits_path}")
+            original_count = len(subject_ids)
+            subject_ids = [s for s in subject_ids if s in split_subjects]
+            logger.info("Filtered to %d/%d subjects for '%s' split", len(subject_ids), original_count, split)
+            if not subject_ids:
+                raise ValueError(f"No subjects found in '{split}' split after filtering")
+
         dataset = CognitiveResilienceDataset(
             adata=adata,
             metadata=metadata,
@@ -275,12 +318,18 @@ def main():
     from src.utils.config import validate_config
     validate_config(config, required_keys=["model", "data"])
 
+    if args.split and not args.splits_path:
+        raise ValueError("--split requires --splits-path")
+
     data_path = args.data_path
     batch_size = args.batch_size
     if batch_size is None:
         batch_size = config.inference.get("batch_size", 32) if hasattr(config, "inference") else 32
     logger.info("Building inference DataLoader...")
-    dataloader = build_dataloader(config, data_path, batch_size)
+    dataloader = build_dataloader(
+        config, data_path, batch_size,
+        splits_path=args.splits_path, split=args.split,
+    )
     logger.info(f"DataLoader ready: {len(dataloader.dataset)} subjects, batch_size={batch_size}")
 
     # Determine extraction flags

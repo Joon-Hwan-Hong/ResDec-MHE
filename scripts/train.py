@@ -22,7 +22,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import torch
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import (
@@ -357,6 +356,7 @@ def main() -> None:
         splits = load_splits(args.splits_path)
         logger.info("Loaded splits from %s", args.splits_path)
     else:
+        import scanpy as sc
         adata = sc.read_h5ad(data_cfg.adata_path)
         metadata_path = Path(data_cfg.metadata_path)
         metadata_csv = metadata_path / "metadata.csv"
@@ -389,6 +389,7 @@ def main() -> None:
         metadata = pd.read_csv(metadata_csv)
 
     if adata is None and not args.precomputed_dir:
+        import scanpy as sc
         adata = sc.read_h5ad(data_cfg.adata_path)
 
     if args.final:

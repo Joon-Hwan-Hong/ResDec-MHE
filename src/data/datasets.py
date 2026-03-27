@@ -660,7 +660,7 @@ class PrecomputedDataset(Dataset):
                     region_pseudobulks[key] = torch.from_numpy(npz_data[key]).float()
 
             available_regions = (
-                list(npz_data["available_regions"])
+                npz_data["available_regions"].tolist()
                 if "available_regions" in npz_data
                 else None
             )

@@ -557,7 +557,7 @@ def load_dataframe(
             # Unknown extension, try to infer
             try:
                 return pd.read_parquet(path)
-            except Exception:
+            except (ValueError, OSError):
                 return pd.read_csv(path)
 
     # Try adding extensions

@@ -7,10 +7,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any
 
-import yaml
-
 from src.utils.hashing import generate_experiment_hash
-from src.utils.config import save_config
+from src.utils.config import load_config, save_config
 
 
 @dataclass
@@ -132,8 +130,7 @@ class ExperimentManager:
             raise FileNotFoundError(f"Experiment not found: {exp_hash}")
 
         config_path = exp_dir / "config.yaml"
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
+        config = load_config(config_path)
 
         return Experiment(
             exp_dir=exp_dir,

@@ -47,7 +47,7 @@ class GeneAttentionGate(nn.Module):
 
         self.n_cell_types = n_cell_types
         self.n_genes = n_genes
-        self._temperature = temperature
+        self.register_buffer("_temperature_buf", torch.tensor(max(float(temperature), 0.05)))
 
         # Gate logits: learned parameter for each (cell_type, gene) pair
         # Initialize to zeros for uniform attention at start
@@ -61,14 +61,14 @@ class GeneAttentionGate(nn.Module):
     @property
     def temperature(self) -> float:
         """Current temperature value."""
-        return self._temperature
+        return self._temperature_buf.item()
 
     @temperature.setter
     def temperature(self, value: float) -> None:
-        """Set temperature (with validation)."""
+        """Set temperature (with validation). Clamped to minimum 0.05."""
         if value <= 0:
             raise ValueError(f"temperature must be positive, got {value}")
-        self._temperature = value
+        self._temperature_buf.fill_(max(value, 0.05))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -116,10 +116,7 @@ class GeneAttentionGate(nn.Module):
         Returns:
             Gate weights of shape (n_cell_types, n_genes), each row sums to 1
         """
-        # Floor temperature at 0.05 for numerical stability: with n_genes~3000,
-        # logits / tau can exceed ~60 when tau < 0.05, causing softmax to
-        # saturate and gradients to vanish for non-max genes ("gate freeze").
-        tau = max(self._temperature, 0.05)
+        tau = self._temperature_buf.item()
         return F.softmax(self.gate_logits / tau, dim=-1)
 
     def get_top_genes_per_cell_type(
@@ -162,5 +159,5 @@ class GeneAttentionGate(nn.Module):
         return (
             f"n_cell_types={self.n_cell_types}, "
             f"n_genes={self.n_genes}, "
-            f"temperature={self._temperature}"
+            f"temperature={self._temperature_buf.item()}"
         )

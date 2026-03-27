@@ -14,7 +14,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from scipy import stats
 
 from src.visualization.config import (
@@ -220,6 +219,15 @@ def plot_residuals(
     """
     setup_seaborn_style()
 
+    # Filter NaN values
+    valid_mask = np.isfinite(actual) & np.isfinite(predicted_mean)
+    if predicted_std is not None:
+        valid_mask &= np.isfinite(predicted_std)
+    actual = actual[valid_mask]
+    predicted_mean = predicted_mean[valid_mask]
+    if predicted_std is not None:
+        predicted_std = predicted_std[valid_mask]
+
     residuals = actual - predicted_mean
 
     fig, axes = plt.subplots(1, 2, figsize=figsize)
@@ -288,6 +296,12 @@ def plot_uncertainty_vs_error(
         Matplotlib Figure
     """
     setup_seaborn_style()
+
+    # Filter NaN values
+    valid_mask = np.isfinite(actual) & np.isfinite(predicted_mean) & np.isfinite(predicted_std)
+    actual = actual[valid_mask]
+    predicted_mean = predicted_mean[valid_mask]
+    predicted_std = predicted_std[valid_mask]
 
     absolute_error = np.abs(actual - predicted_mean)
 

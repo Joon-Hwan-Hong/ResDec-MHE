@@ -9,7 +9,6 @@ Provides common statistical computations used across training and analysis modul
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -181,6 +180,8 @@ def cohens_d(
         Cohen's d (positive = group1 > group2)
     """
     n1, n2 = len(group1), len(group2)
+    if n1 + n2 < 3:
+        return 0.0
     mean1, mean2 = np.mean(group1), np.mean(group2)
     var1, var2 = np.var(group1, ddof=1), np.var(group2, ddof=1)
 
@@ -212,6 +213,8 @@ def cohens_d_with_ci(
 
     d = cohens_d(group1, group2)
     n1, n2 = len(group1), len(group2)
+    if n1 + n2 < 3:
+        return 0.0, float('-inf'), float('inf')
 
     # Standard error of d
     se = np.sqrt((n1 + n2) / (n1 * n2) + d**2 / (2 * (n1 + n2)))
@@ -417,7 +420,8 @@ def attention_entropy(
 
         # Normalize to probability distribution
         p = values / values.sum()
-        return float(-np.sum(p * np.log(p + epsilon)))
+        p = np.clip(p, epsilon, 1.0)
+        return float(-np.sum(p * np.log(p)))
     else:
         # Compute entropy along axis
         # Normalize along axis
