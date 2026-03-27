@@ -1,4 +1,9 @@
-"""Visualization and plotting modules."""
+"""Visualization and plotting modules.
+
+All plot_* functions return matplotlib Figure objects. Callers are responsible
+for calling plt.close(fig) after saving/displaying to prevent memory leaks
+in batch contexts.
+"""
 
 from src.visualization.config import (
     FIGURE_DPI,

@@ -27,11 +27,9 @@ from scipy.spatial.distance import pdist, squareform
 from sklearn.cluster import KMeans, AgglomerativeClustering
 from sklearn.decomposition import PCA
 from sklearn.linear_model import Ridge, LogisticRegression
-from sklearn.metrics import r2_score, accuracy_score, silhouette_score
+from sklearn.metrics import silhouette_score
 from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 from sklearn.neighbors import LocalOutlierFactor
-from sklearn.preprocessing import StandardScaler
-
 from src.data.constants import EPSILON_DIVISION
 from src.utils.io import save_dataframe
 
@@ -353,7 +351,7 @@ class EmbeddingAnalyzer:
         self,
         n_folds: int = 5,
         random_seed: int = 42,
-    ) -> pd.DataFrame:
+    ) -> pd.DataFrame | None:
         """
         Run linear probes to assess embedding quality.
 
@@ -395,10 +393,8 @@ class EmbeddingAnalyzer:
 
                 rows.append({
                     "target": col,
-                    "covariate": col,
                     "task_type": task_type,
                     "metric": "r2",
-                    "r2_score": float(scores.mean()),
                     "score_mean": float(scores.mean()),
                     "score_std": float(scores.std()),
                     "n_samples": int(valid_mask.sum()),
@@ -418,10 +414,8 @@ class EmbeddingAnalyzer:
                     scores = cross_val_score(model, X, y_valid, cv=cv, scoring="accuracy")
                     rows.append({
                         "target": col,
-                        "covariate": col,
                         "task_type": task_type,
                         "metric": "accuracy",
-                        "r2_score": np.nan,  # Not R² for classification; use score_mean
                         "score_mean": float(scores.mean()),
                         "score_std": float(scores.std()),
                         "n_samples": int(valid_mask.sum()),
@@ -539,7 +533,7 @@ class EmbeddingAnalyzer:
     def _assess_batch_effect(
         self,
         random_seed: int = 42,
-    ) -> pd.DataFrame:
+    ) -> pd.DataFrame | None:
         """
         Assess batch effects in embeddings.
 

@@ -60,6 +60,8 @@ def create_stratification_variable(
                 raise ValueError(f"Only got {actual_bins} bins")
             return binned
         except (ValueError, IndexError):
+            # IndexError: pd.qcut edge case when duplicates="drop" produces
+            # degenerate bin edges with label array length mismatch.
             # Fall back to median split
             warnings.warn(
                 f"Could not create {n_bins} bins for {col_name}, falling back to "

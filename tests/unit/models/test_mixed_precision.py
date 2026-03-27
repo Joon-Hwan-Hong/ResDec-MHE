@@ -422,7 +422,8 @@ class TestDtypeConversion:
             attended, weights = attn(cell_emb, path_emb)
 
         assert attended.dtype == torch.float16
-        assert weights.dtype == torch.float16
+        # Attention weights stay float32 from softmax promotion for precision
+        assert weights.dtype == torch.float32
         assert not torch.isnan(attended).any()
         assert not torch.isinf(attended).any()
 

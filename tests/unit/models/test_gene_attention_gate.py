@@ -663,7 +663,10 @@ class TestNumericalStability:
         gate.gate_logits.data = gate.gate_logits.data.half()
         weights = gate.get_gate_weights()
         assert torch.isfinite(weights).all(), "NaN/Inf in gate weights"
-        assert weights.dtype == torch.float16, "Should return same dtype as input"
+        # gate_logits is nn.Parameter (always float32 internally), so get_gate_weights()
+        # returns float32 regardless of any manual .half() cast on the data tensor.
+        # The softmax is computed in float32 for precision.
+        assert weights.dtype == torch.float32, "Gate weights should stay float32 for precision"
 
 
 # =============================================================================

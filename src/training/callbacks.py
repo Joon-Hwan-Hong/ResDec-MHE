@@ -163,7 +163,16 @@ class TemperatureAnnealing(pl.Callback):
         """Set gene gate temperature at the start of each epoch."""
         epoch = trainer.current_epoch
         tau = self.get_temperature(epoch)
-        pl_module.model.pseudobulk_encoder.gene_gate.temperature = tau
+        gate = getattr(
+            getattr(getattr(pl_module, "model", None), "pseudobulk_encoder", None),
+            "gene_gate", None,
+        )
+        if gate is None:
+            raise AttributeError(
+                "TemperatureAnnealing requires model.pseudobulk_encoder.gene_gate "
+                "but the attribute path does not exist on the current model."
+            )
+        gate.temperature = tau
         pl_module.log("gene_gate_temperature", tau, sync_dist=True)
 
     def __repr__(self) -> str:
@@ -196,12 +205,23 @@ class GradientNormLogger(pl.Callback):
         self,
         warning_threshold: float = 3.0,
         critical_threshold: float = 10.0,
-        log_every_n_steps: int = 10,
+        log_every_n_steps: int = 50,
     ):
         super().__init__()
         self.warning_threshold = warning_threshold
         self.critical_threshold = critical_threshold
         self.log_every_n_steps = log_every_n_steps
+        # Cached parameter-to-branch mapping (built on first call)
+        self._branch_params: dict[str, list[torch.nn.Parameter]] | None = None
+
+    def _build_param_cache(self, model: torch.nn.Module) -> None:
+        """Build parameter-to-branch mapping once, reused every call."""
+        self._branch_params = {name: [] for name in BRANCH_NAMES}
+        for param_name, param in model.named_parameters():
+            for branch_name in BRANCH_NAMES:
+                if branch_name in param_name:
+                    self._branch_params[branch_name].append(param)
+                    break
 
     def compute_branch_norms(self, model: torch.nn.Module) -> dict[str, float]:
         """
@@ -213,15 +233,15 @@ class GradientNormLogger(pl.Callback):
         Returns:
             Dict mapping branch name to L2 gradient norm
         """
+        if self._branch_params is None:
+            self._build_param_cache(model)
+
         branch_norms = {}
-        for branch_name in BRANCH_NAMES:
-            branch_params = [
-                p for n, p in model.named_parameters()
-                if branch_name in n and p.grad is not None
-            ]
-            if branch_params:
+        for branch_name, params in self._branch_params.items():
+            grad_params = [p for p in params if p.grad is not None]
+            if grad_params:
                 total_norm = torch.sqrt(
-                    sum(p.grad.data.norm(2) ** 2 for p in branch_params)
+                    sum(p.grad.data.norm(2) ** 2 for p in grad_params)
                 )
                 branch_norms[branch_name] = total_norm.item()
             else:
@@ -414,6 +434,8 @@ class ResilienceModelCheckpoint(pl.Callback):
                 # build correct keys. We also directly set store._params to avoid
                 # going through constraint transforms which would create new tensors
                 # and break the identity link with the optimizer.
+                # Tested against Pyro 1.9.x — store._params and store._param_to_name
+                # are private but no public API preserves tensor identity with optimizer.
                 guide = pl_module.guide
 
                 # Clean slate: remove all old entries before re-registering

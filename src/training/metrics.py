@@ -13,7 +13,7 @@ import torch
 from scipy.special import erf as scipy_erf
 from scipy.stats import pearsonr, spearmanr
 
-from src.data.constants import EPSILON_DIVISION, EPSILON_SOFTMAX
+from src.data.constants import EPSILON_DIVISION, EPSILON_POSITIVE_FLOOR
 from src.utils.statistics import calibration_error as _shared_calibration_error
 
 
@@ -55,7 +55,7 @@ class ResilienceMetrics:
         mae = float(np.mean(np.abs(residuals)))
 
         # Correlation
-        if len(mean_np) >= 3 and np.std(mean_np) > EPSILON_SOFTMAX and np.std(target_np) > EPSILON_SOFTMAX:
+        if len(mean_np) >= 3 and np.std(mean_np) > EPSILON_POSITIVE_FLOOR and np.std(target_np) > EPSILON_POSITIVE_FLOOR:
             pearson_r_val = float(pearsonr(mean_np, target_np)[0])
             spearman_rho_val = float(spearmanr(mean_np, target_np)[0])
         else:

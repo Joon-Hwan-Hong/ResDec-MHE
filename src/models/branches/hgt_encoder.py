@@ -235,8 +235,7 @@ class HGTEncoder(nn.Module):
                 h = self.dropout(h)
                 h_dict[node_type] = h
             else:
-                # Node type not in our learned types, skip
-                pass
+                logger.debug("Skipping node type with no input_proj: %s", node_type)
 
         # Apply HGT layers with Pre-LN + LayerScale
         # Pre-LN: normalize BEFORE the HGT layer, add after (no norm on residual path)

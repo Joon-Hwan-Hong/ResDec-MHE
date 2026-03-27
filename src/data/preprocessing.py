@@ -17,7 +17,7 @@ from anndata import AnnData
 
 logger = logging.getLogger(__name__)
 
-from src.data.constants import CELLCHATDB_PATH, GROUP_SEPARATOR
+from src.data.constants import CELLCHATDB_PATH
 
 
 def get_lr_genes_from_cellchatdb(cellchatdb_path: str | Path) -> set[str]:

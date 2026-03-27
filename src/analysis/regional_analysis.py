@@ -246,7 +246,9 @@ class RegionalAnalyzer:
         df = df.sort_values("weight", ascending=False).reset_index(drop=True)
         df["rank"] = range(1, len(df) + 1)
 
-        # Normalize weights (softmax-like interpretation)
+        # Normalize weights for display only — raw weights are pre-softmax
+        # nn.Parameter logits. The model applies proper softmax in RegionHandler.forward().
+        # This simple normalization is for ranking/display, not exact probabilities.
         total = df["weight"].sum()
         df["normalized_weight"] = df["weight"] / total if total > 0 else 0.0
 

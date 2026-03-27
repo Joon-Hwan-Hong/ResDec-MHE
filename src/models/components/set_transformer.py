@@ -13,6 +13,7 @@ Key components:
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 import torch.nn.functional as F
 from typing import Optional
 
@@ -316,12 +317,14 @@ class SetTransformerEncoder(nn.Module):
         n_inducing: int = 32,
         n_pma_seeds: int = 1,
         dropout: float = 0.1,
+        use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
 
         self.d_input = d_input
         self.d_model = d_model
         self.n_pma_seeds = n_pma_seeds
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         # Input embedding
         self.input_proj = nn.Sequential(
@@ -412,25 +415,34 @@ class SetTransformerEncoder(nn.Module):
             # (NaN * 0 = NaN in IEEE 754, so use masked_fill instead of multiply)
             x_valid = x_valid.masked_fill(~mask_valid.unsqueeze(-1), 0.0)
 
-            h_valid = self.input_proj(x_valid)
-            for isab in self.isab_layers:
-                h_valid = isab(h_valid, mask_valid)
+            if self.use_gradient_checkpointing and self.training:
+                h_valid = grad_checkpoint(self.input_proj, x_valid, use_reentrant=False)
+                for isab in self.isab_layers:
+                    h_valid = grad_checkpoint(isab, h_valid, mask_valid, use_reentrant=False)
+            else:
+                h_valid = self.input_proj(x_valid)
+                for isab in self.isab_layers:
+                    h_valid = isab(h_valid, mask_valid)
             pooled_valid, attention_valid = self.pma(
                 h_valid, mask_valid, return_attention=return_attention
             )
             if self.n_pma_seeds == 1:
                 pooled_valid = pooled_valid.squeeze(1)  # (n_valid, d_model)
 
-            # Allocate full-batch output with empty_embedding for all samples
+            # Build full-batch output: valid samples get pooled_valid, empty
+            # samples get empty_embedding. Uses index_copy_ on a new tensor to
+            # avoid in-place modification of gradient-tracked tensors (which
+            # would fail under gradient checkpointing recomputation).
             if self.n_pma_seeds == 1:
-                pooled = self.empty_embedding.unsqueeze(0).expand(batch_size, -1).clone()
+                empty_expanded = self.empty_embedding.unsqueeze(0).expand(batch_size, -1)
+                pooled = empty_expanded.clone()
+                pooled.index_copy_(0, valid_indices, pooled_valid)
             else:
-                pooled = self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
+                empty_expanded = self.empty_embedding.unsqueeze(0).unsqueeze(0).expand(
                     batch_size, self.n_pma_seeds, -1
-                ).clone()
-
-            # Scatter valid results back into full-batch tensor
-            pooled[valid_indices] = pooled_valid
+                )
+                pooled = empty_expanded.clone()
+                pooled.index_copy_(0, valid_indices, pooled_valid)
 
             # Handle attention
             attention = None
@@ -447,9 +459,14 @@ class SetTransformerEncoder(nn.Module):
             # (NaN * 0 = NaN in IEEE 754, so use masked_fill instead of multiply)
             if mask is not None:
                 x = x.masked_fill(~mask.unsqueeze(-1), 0.0)
-            h = self.input_proj(x)
-            for isab in self.isab_layers:
-                h = isab(h, mask)
+            if self.use_gradient_checkpointing and self.training:
+                h = grad_checkpoint(self.input_proj, x, use_reentrant=False)
+                for isab in self.isab_layers:
+                    h = grad_checkpoint(isab, h, mask, use_reentrant=False)
+            else:
+                h = self.input_proj(x)
+                for isab in self.isab_layers:
+                    h = isab(h, mask)
             pooled, attention = self.pma(h, mask, return_attention=return_attention)
             if self.n_pma_seeds == 1:
                 pooled = pooled.squeeze(1)  # (batch, d_model)

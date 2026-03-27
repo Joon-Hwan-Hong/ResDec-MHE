@@ -120,7 +120,7 @@ class GeneAttentionGate(nn.Module):
         # Promote to float32 for softmax stability under AMP.
         # At low temperature (tau→0.05), logits/tau amplifies by 20x.
         # Float16 exp() overflows at ~11.09 — any logit > 0.55 would produce NaN.
-        return F.softmax((self.gate_logits / tau).float(), dim=-1).to(self.gate_logits.dtype)
+        return F.softmax((self.gate_logits / tau).float(), dim=-1)
 
     def get_top_genes_per_cell_type(
         self, k: int = 100, gene_names: list[str] | None = None

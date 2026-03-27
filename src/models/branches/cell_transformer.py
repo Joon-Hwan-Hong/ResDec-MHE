@@ -67,6 +67,7 @@ class CellTransformer(nn.Module):
         n_pma_seeds: int = 1,
         dropout: float = 0.1,
         selection_temperature: float = 1.0,
+        use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
 
@@ -94,6 +95,7 @@ class CellTransformer(nn.Module):
             n_inducing=n_inducing,
             n_pma_seeds=n_pma_seeds,
             dropout=dropout,
+            use_gradient_checkpointing=use_gradient_checkpointing,
         )
 
     @property

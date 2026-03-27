@@ -299,16 +299,23 @@ class CCCImportanceAnalyzer:
 
             # Combine with edge metadata
             if self.edge_metadata is not None:
-                for idx, row in self.edge_metadata.iterrows():
-                    if idx < len(mean_attention):
-                        rows.append({
-                            "region": region_str,
-                            "source": row.get("source", f"cell_{idx}"),
-                            "target": row.get("target", f"cell_{idx}"),
-                            "edge_type": row.get("edge_type", "unknown"),
-                            "mean_attention": float(mean_attention[idx]),
-                            "n_subjects": int(n_in_group),
-                        })
+                n_attention = len(mean_attention)
+                n_metadata = len(self.edge_metadata)
+                if n_attention != n_metadata:
+                    raise ValueError(
+                        f"Region '{region_str}' attention length ({n_attention}) does not match "
+                        f"edge metadata length ({n_metadata}). Ensure edge_metadata was computed "
+                        f"from the same HGT attention data."
+                    )
+                for pos, (_idx, row) in enumerate(self.edge_metadata.iterrows()):
+                    rows.append({
+                        "region": region_str,
+                        "source": row.get("source", f"edge_{pos}"),
+                        "target": row.get("target", f"edge_{pos}"),
+                        "edge_type": row.get("edge_type", "unknown"),
+                        "mean_attention": float(mean_attention[pos]),
+                        "n_subjects": int(n_in_group),
+                    })
 
         return pd.DataFrame(rows)
 

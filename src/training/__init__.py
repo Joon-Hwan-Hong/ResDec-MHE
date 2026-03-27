@@ -3,7 +3,7 @@
 from src.training.losses import BetaNLLLoss, mse_loss
 from src.training.metrics import ResilienceMetrics
 from src.training.lightning_module import CognitiveResilienceLightningModule
-from src.training.callbacks import TemperatureAnnealing, GradientNormLogger, ResilienceModelCheckpoint
+from src.training.callbacks import TemperatureAnnealing, GradientNormLogger, ResilienceModelCheckpoint, MinEpochEarlyStopping
 
 __all__ = [
     "BetaNLLLoss",
@@ -13,4 +13,5 @@ __all__ = [
     "TemperatureAnnealing",
     "GradientNormLogger",
     "ResilienceModelCheckpoint",
+    "MinEpochEarlyStopping",
 ]

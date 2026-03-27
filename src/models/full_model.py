@@ -127,6 +127,7 @@ class CognitiveResilienceModel(PyroModule):
         use_layer_norm: bool = True,
         node_types: Optional[list[str]] = None,
         edge_categories: Optional[list[str]] = None,
+        use_gradient_checkpointing: bool = False,
     ):
         super().__init__("cognitive_resilience_model")
 
@@ -194,6 +195,7 @@ class CognitiveResilienceModel(PyroModule):
             edge_dim=1,  # LIANA magnitude scores
             node_types=self.node_types,
             edge_categories=self.edge_categories,
+            use_gradient_checkpointing=use_gradient_checkpointing,
         )
 
         # Branch 3: Cell Transformer (cell-level heterogeneity)
@@ -207,6 +209,7 @@ class CognitiveResilienceModel(PyroModule):
             n_pma_seeds=n_pma_seeds,
             dropout=dropout,
             selection_temperature=selection_temperature,
+            use_gradient_checkpointing=use_gradient_checkpointing,
         )
 
         # Fusion Layer
@@ -327,7 +330,7 @@ class CognitiveResilienceModel(PyroModule):
             else:
                 # Unknown node type — should not happen since HGT uses the same
                 # node_types list. Log for debugging if it does.
-                logger.debug("Skipping unknown HGT output key: %s", node_type)
+                logger.warning("Skipping unknown HGT output key: %s", node_type)
                 continue
 
             emb = hgt_out_dict[node_type]  # [B, 1, d_embed]
@@ -346,11 +349,11 @@ class CognitiveResilienceModel(PyroModule):
         edge_index_dict_list: Optional[list[dict]] = None,
         edge_attr_dict_list: Optional[list[dict]] = None,
         # Cell-level inputs
-        cells: torch.Tensor = None,                        # [B, n_cell_types, max_cells, n_genes]
-        cell_mask: torch.Tensor = None,                    # [B, n_cell_types, max_cells]
+        cells: Optional[torch.Tensor] = None,              # [B, n_cell_types, max_cells, n_genes]
+        cell_mask: Optional[torch.Tensor] = None,          # [B, n_cell_types, max_cells]
         cell_type_mask: Optional[torch.Tensor] = None,     # [B, n_cell_types] (optional)
         # Pathology and target
-        pathology: torch.Tensor = None,                    # [B, 3]
+        pathology: Optional[torch.Tensor] = None,          # [B, 3]
         cognition: Optional[torch.Tensor] = None,          # [B, 1] for training
         # Interpretability options
         return_hgt_attention: bool = False,
@@ -520,7 +523,7 @@ class CognitiveResilienceModel(PyroModule):
         # ─────────────────────────────────────────────────────────────────────
         # Prediction
         # ─────────────────────────────────────────────────────────────────────
-        output = {'attention_weights': attention_weights}
+        output = {'attention_weights': attention_weights, 'attended': attended}
 
         if return_hgt_attention and hgt_attention is not None:
             output['hgt_attention'] = hgt_attention
@@ -653,6 +656,9 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
     """
     head_type = model_cfg.get("head", {}).get("type", "deterministic")
     use_bayesian = head_type == "bayesian"
+    # node_types and edge_categories are intentionally not configurable —
+    # they are fixed to the 31 Allen ABC cell types (CELL_TYPE_ORDER) and
+    # 5 CellChatDB edge categories (ALL_EDGE_TYPES) from constants.py.
     return CognitiveResilienceModel(
         n_genes=model_cfg.n_genes,
         n_cell_types=model_cfg.n_cell_types,

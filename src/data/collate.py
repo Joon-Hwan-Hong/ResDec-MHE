@@ -636,9 +636,13 @@ def _deterministic_worker_init_fn(worker_id: int) -> None:
     """
     Deterministic seeding for val/test workers — same samples every epoch.
 
-    Unlike _worker_init_fn, uses a fixed seed that doesn't change between
-    epochs. This ensures validation/test cell sampling is consistent across
-    epochs, preventing stochastic variation in validation metrics.
+    Uses a fixed seed so validation/test cell sampling is reproducible.
+    Note: with persistent_workers=True (default), this init runs once at
+    worker creation, not per-epoch. The RNG advances as samples are drawn,
+    so exact sample-level reproducibility holds only within a single run
+    (same worker processes same subjects in same order). Cross-run
+    reproducibility requires identical DataLoader configuration.
+    For PrecomputedDataset, cell sampling does not apply.
 
     Args:
         worker_id: Worker process index (0 to num_workers-1)

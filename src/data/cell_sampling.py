@@ -154,6 +154,10 @@ class CellSampler:
                 if excess == 0:
                     break
 
+        # Note: if a stratum has fewer cells than its allocated quota, we take
+        # all available cells. The shortfall is NOT redistributed to other strata,
+        # so the final count may be less than max_cells_per_type. This is acceptable
+        # because downstream padding handles variable-length cell arrays.
         sampled = []
         for stratum, n_samples in zip(unique_strata, samples_per_stratum):
             stratum_mask = strata == stratum
@@ -195,6 +199,10 @@ class CellSampler:
             scores = adata.obs.loc[mask, "n_genes"].values
         else:
             # Fall back to random
+            return self._random_sample(indices)
+
+        # Guard against NaN in user-provided importance_score column
+        if np.isnan(scores).any():
             return self._random_sample(indices)
 
         # Convert to probabilities (higher score = higher probability)

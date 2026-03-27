@@ -291,15 +291,15 @@ def objective(
             min_epochs=config.training.early_stopping.get("min_epochs", 1),
             accelerator=accelerator,
             devices=devices,
-            precision=config.training.get("precision", "32"),
+            precision=config.training.get("precision", "32-true"),
             gradient_clip_val=config.training.get("gradient_clip_val", None),
             callbacks=callbacks,
             enable_progress_bar=False,
             enable_model_summary=False,
             enable_checkpointing=False,
             logger=False,
-            deterministic=config.get("reproducibility", {}).get("deterministic", True),
-            benchmark=config.get("reproducibility", {}).get("benchmark", False),
+            deterministic=False,   # Speed over reproducibility for HP search
+            benchmark=True,        # Enable cuDNN autotuner for HP search
         )
 
         # Data loading for this fold — fail-fast on missing inputs.

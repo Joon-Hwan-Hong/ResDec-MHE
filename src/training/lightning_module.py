@@ -9,6 +9,7 @@ Handles:
 """
 
 import logging
+import math
 from typing import Any
 
 import torch
@@ -104,6 +105,20 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         # Metrics
         self.metrics = ResilienceMetrics()
+
+        # Epoch-level accumulators for validation metrics (P3, P15)
+        self._val_means: list[torch.Tensor] = []
+        self._val_targets: list[torch.Tensor] = []
+        self._val_stds: list[torch.Tensor] = []
+        self._val_elbos: list[float] = []
+
+        # Epoch-level accumulators for test metrics (same pattern as val)
+        self._test_means: list[torch.Tensor] = []
+        self._test_targets: list[torch.Tensor] = []
+        self._test_stds: list[torch.Tensor] = []
+
+        # Cache last training batch for epoch-end NLL computation (P7)
+        self._last_train_batch: dict | None = None
 
     def _compute_loss(self, output: dict, cognition: torch.Tensor) -> torch.Tensor:
         """Compute loss with branching based on head type."""
@@ -241,43 +256,106 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         bs = batch["cognition"].shape[0]
         self.log("train_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        # For Bayesian path, periodically log NLL (comparable scale to val_loss).
-        # Only every 50 steps to avoid doubling training time — each NLL computation
-        # requires a full posterior-median forward pass through all three branches.
-        if self._use_bayesian_svi and (batch_idx % 50 == 0):
-            with torch.no_grad():
-                nll_output = self._forward_batch_posterior(batch)
-                nll_loss = self._compute_loss(nll_output, batch["cognition"])
-            self.log("train_loss_nll", nll_loss, sync_dist=True, batch_size=bs)
+        # Flag last batch for epoch-end NLL computation (avoids per-step overhead).
+        # Store batch_idx; on_train_epoch_end re-runs forward on the last batch
+        # from the dataloader rather than caching the full batch in GPU memory.
+        if self._use_bayesian_svi:
+            self._last_train_batch = batch
 
         return loss
 
+    def on_train_epoch_end(self) -> None:
+        """Compute NLL on last training batch once per epoch (Bayesian only)."""
+        if self._use_bayesian_svi and self._last_train_batch is not None:
+            with torch.no_grad():
+                nll_output = self._forward_batch_posterior(self._last_train_batch)
+                nll_loss = self._compute_loss(nll_output, self._last_train_batch["cognition"])
+            bs = self._last_train_batch["cognition"].shape[0]
+            self.log("train_loss_nll", nll_loss, sync_dist=True, batch_size=bs)
+            self._last_train_batch = None
+
     def validation_step(self, batch: dict, batch_idx: int) -> None:
-        """Validation step using posterior median for Bayesian head."""
+        """Validation step — accumulates predictions for epoch-level metrics."""
         if self._use_bayesian_svi:
             output = self._forward_batch_posterior(batch)
-            # Log ELBO for monitoring posterior convergence (F2).
-            # val_loss (beta-NLL) remains primary metric for model selection.
-            # Only compute on first val batch to avoid doubling validation time.
-            if batch_idx == 0:
-                with torch.no_grad():
-                    val_elbo = self._svi_forward(batch)
-                bs = batch["cognition"].shape[0]
-                self.log("val_elbo", val_elbo, prog_bar=False, sync_dist=True, batch_size=bs)
+            # Accumulate ELBO across all val batches for robust monitoring
+            with torch.no_grad():
+                val_elbo = self._svi_forward(batch)
+            self._val_elbos.append(float(val_elbo))
         else:
             output = self._forward_batch(batch)
         loss = self._compute_loss(output, batch["cognition"])
         bs = batch["cognition"].shape[0]
         self.log("val_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        std = output.get("std")
-        metrics = self.metrics.compute(output["mean"], std, batch["cognition"])
-        for name, value in metrics.items():
-            if not (isinstance(value, float) and value != value):
-                self.log(f"val_{name}", value, sync_dist=True, batch_size=bs)
+        # Accumulate predictions for epoch-level correlation metrics
+        self._val_means.append(output["mean"].detach())
+        self._val_targets.append(batch["cognition"].detach())
+        if output.get("std") is not None:
+            self._val_stds.append(output["std"].detach())
+
+    def _gather_and_compute_metrics(
+        self,
+        means_list: list[torch.Tensor],
+        targets_list: list[torch.Tensor],
+        stds_list: list[torch.Tensor],
+        prefix: str,
+    ) -> None:
+        """Gather predictions across DDP ranks and compute epoch-level metrics.
+
+        Under DDP, each rank only sees its shard of the data. Correlation metrics
+        (Pearson r, Spearman rho, R²) computed on partial data and then averaged
+        are biased. Instead, we all_gather predictions and compute once on the
+        full dataset (rank 0 only to avoid duplicate logging).
+        """
+        if not means_list:
+            return
+
+        all_means = torch.cat(means_list, dim=0)
+        all_targets = torch.cat(targets_list, dim=0)
+        all_stds = torch.cat(stds_list, dim=0) if stds_list else None
+
+        # Gather across DDP ranks for correct correlation computation
+        try:
+            world_size = self.trainer.world_size
+            is_global_zero = self.trainer.is_global_zero
+        except RuntimeError:
+            # Module not attached to Trainer (unit tests)
+            world_size = 1
+            is_global_zero = True
+
+        if world_size > 1:
+            all_means = self.all_gather(all_means).reshape(-1, all_means.shape[-1])
+            all_targets = self.all_gather(all_targets).reshape(-1, all_targets.shape[-1])
+            if all_stds is not None:
+                all_stds = self.all_gather(all_stds).reshape(-1, all_stds.shape[-1])
+
+        # Compute on rank 0 only to avoid duplicate logs
+        if is_global_zero:
+            metrics = self.metrics.compute(all_means, all_stds, all_targets)
+            for name, value in metrics.items():
+                if not (isinstance(value, float) and math.isnan(value)):
+                    self.log(f"{prefix}_{name}", value, rank_zero_only=True)
+
+    def on_validation_epoch_end(self) -> None:
+        """Compute epoch-level metrics from accumulated predictions."""
+        self._gather_and_compute_metrics(
+            self._val_means, self._val_targets, self._val_stds, "val",
+        )
+
+        # Log mean ELBO across all validation batches
+        if self._val_elbos:
+            mean_elbo = sum(self._val_elbos) / len(self._val_elbos)
+            self.log("val_elbo", mean_elbo, prog_bar=False, sync_dist=True)
+
+        # Clear accumulators
+        self._val_means.clear()
+        self._val_targets.clear()
+        self._val_stds.clear()
+        self._val_elbos.clear()
 
     def test_step(self, batch: dict, batch_idx: int) -> None:
-        """Test step using posterior median for Bayesian head."""
+        """Test step — accumulates predictions for epoch-level metrics."""
         if self._use_bayesian_svi:
             output = self._forward_batch_posterior(batch)
         else:
@@ -286,11 +364,20 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         bs = batch["cognition"].shape[0]
         self.log("test_loss", loss, prog_bar=True, sync_dist=True, batch_size=bs)
 
-        std = output.get("std")
-        metrics = self.metrics.compute(output["mean"], std, batch["cognition"])
-        for name, value in metrics.items():
-            if not (isinstance(value, float) and value != value):
-                self.log(f"test_{name}", value, sync_dist=True, batch_size=bs)
+        # Accumulate for epoch-level computation (same as validation)
+        self._test_means.append(output["mean"].detach())
+        self._test_targets.append(batch["cognition"].detach())
+        if output.get("std") is not None:
+            self._test_stds.append(output["std"].detach())
+
+    def on_test_epoch_end(self) -> None:
+        """Compute epoch-level test metrics from accumulated predictions."""
+        self._gather_and_compute_metrics(
+            self._test_means, self._test_targets, self._test_stds, "test",
+        )
+        self._test_means.clear()
+        self._test_targets.clear()
+        self._test_stds.clear()
 
     def predict_step(self, batch: dict, batch_idx: int) -> dict[str, Any]:
         """Predict step using posterior median for Bayesian head.

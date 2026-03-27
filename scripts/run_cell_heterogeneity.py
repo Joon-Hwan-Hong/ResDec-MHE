@@ -94,8 +94,8 @@ def parse_args() -> argparse.Namespace:
     param_group.add_argument(
         "--subject-column",
         type=str,
-        default="subject_id",
-        help="Column name for subject ID in adata.obs (default: subject_id)",
+        default="ROSMAP_IndividualID",
+        help="Column name for subject ID in adata.obs (default: ROSMAP_IndividualID)",
     )
 
     # Output formats
@@ -261,7 +261,10 @@ def main():
     logger.info(f"\nCell Heterogeneity Summary:")
     logger.info(f"  Cell types analyzed: {len(summary_df)}")
     logger.info(f"  High-attention cells identified: {len(result.high_attention_cells)}")
-    logger.info(f"  Total cells with scores: {len(result.all_scores)}")
+    if result.all_scores is not None:
+        logger.info(f"  Total cells with scores: {len(result.all_scores)}")
+    else:
+        logger.info(f"  Total cells with scores: (not saved, use save_all_scores=True)")
 
     if len(summary_df) > 0:
         logger.info(f"\nMost heterogeneous cell types (by Gini coefficient):")

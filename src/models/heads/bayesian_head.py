@@ -150,7 +150,9 @@ class BayesianPredictionHead(PyroModule):
                     f"Expected y feature dim=1, got {y.size(1)}"
                 )
 
-        # Forward pass
+        # Forward pass — no dropout: Bayesian weight priors provide
+        # regularization via variational inference, making dropout
+        # unnecessary and potentially counterproductive with SVI.
         h = F.gelu(self.fc1(x))
         h = F.gelu(self.fc2(h))
 

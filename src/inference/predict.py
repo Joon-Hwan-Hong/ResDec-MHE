@@ -68,7 +68,7 @@ class PredictionResult:
         mean: Predicted mean values [n_subjects, 1]
         std: Predicted uncertainty (std) [n_subjects, 1], None if deterministic head
         actual: Actual cognition values [n_subjects, 1], None if not provided
-        pathology: Pathology features [n_subjects, 3]
+        pathology: Pathology features [n_subjects, 3], or None if not available
         attention_weights: Pathology attention [n_subjects, n_heads, n_cell_types]
         gene_gate_weights: Static gene gate weights [n_cell_types, n_genes] (shared)
         hgt_attention: List of per-sample HGT attention dicts, None if not extracted
@@ -152,10 +152,8 @@ class Predictor:
             self.device = torch.device(device)
 
         # Error handling policy for inference
-        error_cfg = {}
-        if hasattr(config, "error_handling") and hasattr(config.error_handling, "inference"):
-            error_cfg = config.error_handling.inference
-        self._missing_field_policy = error_cfg.get("missing_field", "skip") if error_cfg else "skip"
+        error_cfg = config.get("error_handling", {}).get("inference", {})
+        self._missing_field_policy = error_cfg.get("missing_field", "skip")
 
         self.model = model.to(self.device)
         self.model.eval()
@@ -389,25 +387,53 @@ class Predictor:
             return_embeddings=return_embeddings,
         )
 
-        # Point estimate from posterior median
+        # Point estimate from posterior median (full forward pass — once)
         median = self.guide.median()
         conditioned = pyro.poutine.condition(self.model, data=median)
         output_median = conditioned(**model_kwargs)
 
-        # Collect posterior samples for epistemic uncertainty.
-        # Safe under @torch.no_grad(): AutoDiagonalNormal.forward() samples
-        # via rsample() which computes values without needing gradients.
-        # Pyro's trace/replay creates fresh Trace objects per call with no
-        # persistent state that would affect subsequent training steps.
+        # Extract the attended vector for head-only posterior sampling.
+        # The attended vector [B, d_fused] is the output of the deterministic
+        # path (pseudobulk + HGT + CellTransformer → fusion → pathology attention).
+        # Only the Bayesian head has stochastic weights, so we run the expensive
+        # encoder branches once and sample only the head for epistemic uncertainty.
+        attended = output_median["attended"]
+
+        # Collect posterior samples — head-only, not full model.
+        # AutoDiagonalNormal guide registers individual parameter sites
+        # (e.g., "prediction_head.fc1.weight") via pyro.sample with Delta dists.
+        # We extract head-specific sites, strip the prefix, and condition the
+        # head directly on sampled weights.
+        # Strip extraction flags from guide kwargs — the guide runs the full model
+        # internally to discover sample sites, but we only need head params.
+        # Keeping flags True wastes memory on discarded attention tensors.
+        guide_kwargs = {**model_kwargs}
+        guide_kwargs.update({
+            "return_hgt_attention": False,
+            "return_pma_attention": False,
+            "return_region_attention": False,
+            "return_embeddings": False,
+        })
+
         means = []
         for _ in range(num_samples):
-            guide_trace = pyro.poutine.trace(self.guide).get_trace(**model_kwargs)
-            conditioned_sample = pyro.poutine.replay(self.model, trace=guide_trace)
-            with torch.no_grad():  # Redundant with @torch.no_grad() on method, but harmless and explicit
-                out = conditioned_sample(**model_kwargs)
-            means.append(out["mean"].detach().clone())
-            # Free Pyro trace objects and model output to prevent GPU memory accumulation
-            del out, guide_trace, conditioned_sample
+            guide_trace = pyro.poutine.trace(self.guide).get_trace(**guide_kwargs)
+
+            # Extract head parameter values from guide trace, strip module prefix
+            head_data = {}
+            for name, site in guide_trace.nodes.items():
+                if (isinstance(site, dict)
+                        and site.get("type") == "sample"
+                        and name.startswith("prediction_head.")):
+                    head_data[name[len("prediction_head."):]] = site["value"]
+
+            # Condition only the head on sampled weights (3 Linear layers on [B, 128])
+            head_conditioned = pyro.poutine.condition(
+                self.model.prediction_head, data=head_data
+            )
+            mean, _std = head_conditioned(attended)
+            means.append(mean.detach().cpu())
+            del mean, _std, head_data, guide_trace, head_conditioned
 
         means_stacked = torch.stack(means, dim=0)  # [num_samples, B, 1]
         epistemic_std = means_stacked.std(dim=0)    # [B, 1]

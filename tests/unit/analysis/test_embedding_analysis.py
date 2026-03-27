@@ -292,7 +292,7 @@ class TestLinearProbes:
             run_trajectory=False,
             run_batch_effect=False,
         )
-        expected_cols = {"target", "covariate", "task_type", "metric", "r2_score", "score_mean", "score_std", "n_samples"}
+        expected_cols = {"target", "task_type", "metric", "score_mean", "score_std", "n_samples"}
         assert set(result.linear_probe_results.columns) == expected_cols
 
     def test_linear_probes_none_without_covariates(self, basic_analyzer):
@@ -648,8 +648,8 @@ class TestSchemaCompat:
             "Plotters expect a 'cluster' column in cluster_assignments"
         )
 
-    def test_linear_probe_output_has_target_and_r2_score(self):
-        """Linear probe results must include 'target' and 'r2_score' columns for plotters."""
+    def test_linear_probe_output_has_target_and_score_mean(self):
+        """Linear probe results must include 'target' and 'score_mean' columns for plotters."""
         np.random.seed(42)
         embeddings = np.random.rand(50, 16).astype(np.float32)
         covariates = pd.DataFrame({
@@ -673,6 +673,6 @@ class TestSchemaCompat:
         assert "target" in result.linear_probe_results.columns, (
             "Plotters expect a 'target' column in linear_probe_results"
         )
-        assert "r2_score" in result.linear_probe_results.columns, (
-            "Plotters expect an 'r2_score' column in linear_probe_results"
+        assert "score_mean" in result.linear_probe_results.columns, (
+            "Plotters expect a 'score_mean' column in linear_probe_results"
         )

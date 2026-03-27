@@ -176,7 +176,7 @@ class PathologyStratifiedAttention(nn.Module):
         # Softmax and attend
         if scores.size(2) != 1:
             raise RuntimeError(f"Expected query dim 1, got {scores.size(2)}")
-        attention_weights = F.softmax(scores.float(), dim=-1).to(scores.dtype)[:, :, 0, :]  # [B, n_heads, n_cell_types]
+        attention_weights = F.softmax(scores.float(), dim=-1)[:, :, 0, :]  # [B, n_heads, n_cell_types]
 
         # Zero out attention for fully-masked samples (softmax gave near-uniform,
         # but these samples should contribute nothing)
@@ -187,7 +187,12 @@ class PathologyStratifiedAttention(nn.Module):
             )
 
         values = values.permute(0, 2, 1, 3)  # [B, n_heads, n_cell_types, d_head]
-        attended = torch.einsum('bhk,bhkd->bhd', attention_weights, values)
+        # Compute weighted sum in float32 for precision — attention_weights are float32
+        # from softmax promotion, values may be float16 under AMP.
+        # einsum does not auto-promote mixed dtypes, so cast values up explicitly.
+        # Cast result back to input dtype before out_proj (Linear layer stays in AMP dtype).
+        attended = torch.einsum('bhk,bhkd->bhd', attention_weights, values.to(attention_weights.dtype))
+        attended = attended.to(cell_type_embeddings.dtype)
         attended = attended.reshape(B, self.d_fused)
         attended = self.out_proj(attended)
 

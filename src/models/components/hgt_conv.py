@@ -223,10 +223,14 @@ class HGTConvWithEdgeAttr(nn.Module):
             out_dict: Updated node features {node_type: (n_nodes, out_channels)}
             attn_dict: Attention weights per edge type (if return_attention=True)
         """
-        # Initialize output accumulators for each node type
+        # Initialize output accumulators in float32 for precision — attention weights
+        # from _softmax_by_target are float32, so messages are float32. Accumulating
+        # in float32 avoids implicit downcast during scatter_add under AMP.
+        # Cast back to input dtype before out_lin projection.
+        input_dtypes = {node_type: x.dtype for node_type, x in x_dict.items()}
         out_dict = {
             node_type: torch.zeros(
-                x.size(0), self.out_channels, device=x.device, dtype=x.dtype
+                x.size(0), self.out_channels, device=x.device, dtype=torch.float32
             )
             for node_type, x in x_dict.items()
         }
@@ -372,6 +376,12 @@ class HGTConvWithEdgeAttr(nn.Module):
 
         received_messages = received_nodes
 
+        # Cast accumulated float32 output back to input dtype before out_lin
+        out_dict = {
+            node_type: out.to(input_dtypes[node_type])
+            for node_type, out in out_dict.items()
+        }
+
         # Apply output projection
         out_dict = {
             node_type: self.out_lin(out)
@@ -413,7 +423,6 @@ class HGTConvWithEdgeAttr(nn.Module):
         """
         n_heads = scores.size(1)
         device = scores.device
-        dtype = scores.dtype
 
         # Promote to float32 for numerical stability under AMP
         scores_f32 = scores.float()

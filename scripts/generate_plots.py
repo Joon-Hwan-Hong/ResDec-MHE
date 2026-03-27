@@ -28,7 +28,6 @@ from src.visualization import (
     setup_seaborn_style,
     setup_matplotlib_defaults,
     save_figure,
-    FIGURE_FORMAT,
     # Attention plots
     plot_cell_type_attention_heatmap,
     plot_cell_type_importance_bar,

@@ -63,6 +63,11 @@ def _export_weights(module, model_dir: Path, is_bayesian: bool, best_ckpt_path: 
         state_dict = checkpoint.get("state_dict", {})
         # Strip 'model.' prefix from Lightning state dict
         model_state = {k[6:]: v for k, v in state_dict.items() if k.startswith("model.")}
+        if not model_state:
+            raise RuntimeError(
+                f"No 'model.*' keys found in checkpoint state_dict from {best_ckpt_path}. "
+                f"Keys present: {list(state_dict.keys())[:5]}"
+            )
         logger.info("Loading best checkpoint weights from %s", best_ckpt_path)
     else:
         model_state = module.model.state_dict()
@@ -230,7 +235,7 @@ def setup_trainer(
         accelerator=accelerator,
         devices=devices,
         strategy=strategy,
-        precision=train_cfg.get("precision", "32"),
+        precision=train_cfg.get("precision", "32-true"),
         gradient_clip_val=train_cfg.get("gradient_clip_val", None),
         callbacks=callbacks,
         logger=tb_logger,
@@ -294,6 +299,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.final and not args.splits_path:
+        raise ValueError(
+            "Final training mode (--final) requires --splits-path to ensure "
+            "the holdout test set matches the one used during HP optimization."
+        )
+
     if args.resume_from and not Path(args.resume_from).exists():
         raise FileNotFoundError(f"Resume checkpoint not found: {args.resume_from}")
 
@@ -332,10 +343,6 @@ def main() -> None:
     # Build Lightning module
     module = CognitiveResilienceLightningModule(config)
     logger.info("Model built: %s", type(module.model).__name__)
-
-    # Setup trainer
-    trainer = setup_trainer(config)
-    logger.info("Trainer configured: max_epochs=%d", trainer.max_epochs)
 
     # Data loading
     from src.data.splits import create_stratified_splits, load_splits
@@ -461,6 +468,9 @@ def main() -> None:
             adata=adata,
         )
         logger.info("Fold %d DataModule created", args.fold)
+
+        trainer = setup_trainer(config)
+        logger.info("Trainer configured: max_epochs=%d", trainer.max_epochs)
 
         # Train
         trainer.fit(module, datamodule=dm, ckpt_path=args.resume_from)

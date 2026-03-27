@@ -74,23 +74,6 @@ def save_config(config: DictConfig | dict, path: str | Path) -> None:
         yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
 
-def merge_configs(*configs: DictConfig | dict) -> DictConfig:
-    """
-    Merge multiple configurations (later configs override earlier).
-
-    Args:
-        *configs: Configuration dictionaries to merge
-
-    Returns:
-        Merged configuration
-    """
-    result = OmegaConf.create({})
-    for config in configs:
-        if isinstance(config, dict):
-            config = OmegaConf.create(config)
-        result = OmegaConf.merge(result, config)
-    return result
-
 
 def validate_config(config: DictConfig, required_keys: list[str]) -> None:
     """
@@ -158,6 +141,9 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         "training.temperature_annealing.tau_max": ((int, float), lambda v: v > 0),
         "training.temperature_annealing.tau_min": ((int, float), lambda v: v > 0),
         "training.temperature_annealing.schedule": (str, lambda v: v in ("exponential", "linear", "cosine")),
+        # Inference
+        "inference.num_posterior_samples": (int, lambda v: v > 0),
+        "inference.batch_size": (int, lambda v: v > 0),
     }
 
     for dotpath, (expected_type, validator) in _FIELD_RULES.items():

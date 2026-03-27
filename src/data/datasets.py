@@ -62,6 +62,12 @@ def _validate_no_nan_columns(
     """
     for col in columns:
         if col not in metadata.columns:
+            warnings.warn(
+                f"{column_type} column '{col}' not found in metadata. "
+                f"Values will default to 0.0 for all subjects.",
+                UserWarning,
+                stacklevel=3,
+            )
             continue
         values = metadata.loc[metadata.index.isin(subject_ids), col]
         nan_values = values[values.isna()]
@@ -169,12 +175,17 @@ class CognitiveResilienceDataset(Dataset):
         self._validate_subjects()
 
         # Pre-compute subject-to-row index mapping to avoid O(n_cells) string
-        # scan in __getitem__. Trades O(n_subjects * n_cells) init cost for O(1)
-        # per-sample lookup.
-        self._subject_indices = {}
-        obs_subjects = self.adata.obs[self.subject_column]
-        for sid in self.subject_ids:
-            self._subject_indices[sid] = np.where(obs_subjects.values == sid)[0]
+        # scan in __getitem__. Single-pass O(n_cells) groupby instead of
+        # O(n_subjects * n_cells) loop of np.where calls.
+        subject_id_set = set(self.subject_ids)
+        obs_values = self.adata.obs[self.subject_column].values
+        indices_by_subject: dict[str, list[int]] = {sid: [] for sid in self.subject_ids}
+        for i, sid in enumerate(obs_values):
+            if sid in subject_id_set:
+                indices_by_subject[sid].append(i)
+        self._subject_indices = {
+            sid: np.array(idxs, dtype=np.int64) for sid, idxs in indices_by_subject.items()
+        }
 
     def _validate_subjects(self):
         """Validate that all subject IDs exist in data and have valid targets/pathology."""
@@ -243,21 +254,22 @@ class CognitiveResilienceDataset(Dataset):
             adata_subject = self.adata[self._subject_indices[subject_id]]
 
         # ─────────────────────────────────────────────────────────────────────
-        # Densify expression matrix ONCE (avoids 3x .toarray() calls)
+        # Expression data — keep sparse for pseudobulk, densify only sampled cells.
+        # A subject with 20K+ cells would produce ~305MB dense array; sampling
+        # only ~1K cells per type keeps the dense allocation bounded.
         # ─────────────────────────────────────────────────────────────────────
-        X_dense = adata_subject.X
-        if hasattr(X_dense, "toarray"):
-            X_dense = X_dense.toarray()
+        X_sparse = adata_subject.X
+        X_is_sparse = hasattr(X_sparse, "toarray")
 
         # ─────────────────────────────────────────────────────────────────────
-        # Pseudobulk expression
+        # Pseudobulk expression (works on sparse or dense)
         # ─────────────────────────────────────────────────────────────────────
-        pseudobulk, cell_type_mask, cell_counts = self._compute_pseudobulk(adata_subject, X_dense)
+        pseudobulk, cell_type_mask, cell_counts = self._compute_pseudobulk(adata_subject, X_sparse)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Cell-level data for Set Transformer
+        # Cell-level data for Set Transformer (densifies only sampled rows)
         # ─────────────────────────────────────────────────────────────────────
-        cells, cell_mask, cell_barcodes = self._get_cell_level_data(adata_subject, X_dense)
+        cells, cell_mask, cell_barcodes = self._get_cell_level_data(adata_subject, X_sparse)
 
         # ─────────────────────────────────────────────────────────────────────
         # CCC graph features
@@ -268,7 +280,7 @@ class CognitiveResilienceDataset(Dataset):
         # Region mask and multi-region pseudobulk
         # ─────────────────────────────────────────────────────────────────────
         region_mask = self._get_region_mask(adata_subject)
-        region_pseudobulks, available_regions = self._compute_pseudobulk_by_region(adata_subject, X_dense)
+        region_pseudobulks, available_regions = self._compute_pseudobulk_by_region(adata_subject, X_sparse)
 
         # ─────────────────────────────────────────────────────────────────────
         # Phenotypes
@@ -309,34 +321,42 @@ class CognitiveResilienceDataset(Dataset):
         return sample
 
     def _compute_pseudobulk(
-        self, adata_subject: AnnData, X_dense: np.ndarray,
+        self, adata_subject: AnnData, X,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute pseudobulk expression and cell counts for each cell type.
 
+        Works with both sparse (scipy CSR) and dense numpy arrays. Using
+        sparse avoids densifying the full subject expression matrix (~305MB
+        for subjects with 20K+ cells).
+
         Args:
             adata_subject: AnnData subset for one subject
-            X_dense: Pre-densified expression matrix [n_cells, n_genes]
+            X: Expression matrix [n_cells, n_genes] — sparse or dense
         """
         pseudobulk = np.zeros((self.n_cell_types, self.n_genes), dtype=np.float32)
         cell_type_mask = np.zeros(self.n_cell_types, dtype=bool)
         cell_counts = np.zeros(self.n_cell_types, dtype=np.int64)
 
-        X = X_dense
-
-        for ct_idx, ct_name in enumerate(self.cell_type_order):
-            ct_mask = adata_subject.obs[self.cell_type_column] == ct_name
-            n_cells = ct_mask.sum()
-
+        # Single-pass groupby instead of per-cell-type boolean comparison
+        ct_col = adata_subject.obs[self.cell_type_column]
+        for ct_name, group in ct_col.groupby(ct_col):
+            if ct_name not in self.ct_to_idx:
+                continue
+            ct_idx = self.ct_to_idx[ct_name]
+            indices = group.index
+            n_cells = len(indices)
             cell_counts[ct_idx] = n_cells
-
             if n_cells > 0:
-                pseudobulk[ct_idx] = X[ct_mask.values].mean(axis=0)
+                pos = adata_subject.obs.index.get_indexer(indices)
+                # scipy sparse .mean() returns a matrix; squeeze to 1D
+                row_mean = X[pos].mean(axis=0)
+                pseudobulk[ct_idx] = np.asarray(row_mean, dtype=np.float32).ravel()
                 cell_type_mask[ct_idx] = True
 
         return pseudobulk, cell_type_mask, cell_counts
 
     def _compute_pseudobulk_by_region(
-        self, adata_subject: AnnData, X_dense: np.ndarray,
+        self, adata_subject: AnnData, X,
     ) -> tuple[dict[str, np.ndarray], list[int]]:
         """
         Compute per-region pseudobulk for multi-region data.
@@ -347,7 +367,7 @@ class CognitiveResilienceDataset(Dataset):
 
         Args:
             adata_subject: AnnData subset for one subject
-            X_dense: Pre-densified expression matrix [n_cells, n_genes]
+            X: Expression matrix [n_cells, n_genes] — sparse or dense
 
         Returns:
             region_pseudobulks: Dict mapping "region_{idx}_pseudobulk" -> [n_cell_types, n_genes]
@@ -360,28 +380,33 @@ class CognitiveResilienceDataset(Dataset):
         if self.region_column not in adata_subject.obs.columns:
             return region_pseudobulks, available_regions
 
-        X = X_dense
+        # Build region name → index lookup
+        region_to_idx = {name: idx for idx, name in enumerate(REGION_ORDER)}
 
-        for region_idx, region_name in enumerate(REGION_ORDER):
-            # Filter cells for this region
-            region_mask = adata_subject.obs[self.region_column] == region_name
-            if not region_mask.any():
+        # Group cells by (region, cell_type) in a single pass
+        obs = adata_subject.obs
+        regions_in_data = set()
+        grouped = obs.groupby([self.region_column, self.cell_type_column])
+        for (region_name, ct_name), group in grouped:
+            if region_name not in region_to_idx or ct_name not in self.ct_to_idx:
                 continue
+            region_idx = region_to_idx[region_name]
+            ct_idx = self.ct_to_idx[ct_name]
 
-            # Compute pseudobulk for this region
-            pseudobulk = np.zeros((self.n_cell_types, self.n_genes), dtype=np.float32)
-            X_region = X[region_mask.values]
-            obs_region = adata_subject.obs[region_mask]
+            # Lazily initialize region pseudobulk array
+            key = f"region_{region_idx}_pseudobulk"
+            if key not in region_pseudobulks:
+                region_pseudobulks[key] = np.zeros(
+                    (self.n_cell_types, self.n_genes), dtype=np.float32
+                )
+                regions_in_data.add(region_idx)
 
-            for ct_idx, ct_name in enumerate(self.cell_type_order):
-                ct_mask = obs_region[self.cell_type_column] == ct_name
-                if ct_mask.sum() > 0:
-                    pseudobulk[ct_idx] = X_region[ct_mask.values].mean(axis=0)
+            pos = obs.index.get_indexer(group.index)
+            row_mean = X[pos].mean(axis=0)
+            region_pseudobulks[key][ct_idx] = np.asarray(row_mean, dtype=np.float32).ravel()
 
-            region_pseudobulks[f"region_{region_idx}_pseudobulk"] = pseudobulk
-            available_regions.append(region_idx)
-
-        return region_pseudobulks, sorted(available_regions)
+        available_regions = sorted(regions_in_data)
+        return region_pseudobulks, available_regions
 
     def _get_region_mask(self, adata_subject: AnnData) -> np.ndarray:
         """Create boolean mask indicating which brain regions are present for this subject.
@@ -411,10 +436,14 @@ class CognitiveResilienceDataset(Dataset):
         return region_mask
 
     def _get_cell_level_data(
-        self, adata_subject: AnnData, X_dense: np.ndarray,
+        self, adata_subject: AnnData, X,
     ) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
         """
         Get cell-level expression for ALL cell types using CellSampler.
+
+        Only densifies the sampled rows (bounded by max_cells_per_type × 31),
+        not the entire subject expression matrix. This keeps memory bounded
+        even for subjects with 20K+ cells.
 
         Returns data for all 31 cell types. Cell types with fewer cells than
         min_cells_threshold will have empty data (all-False mask). The model's
@@ -422,7 +451,7 @@ class CognitiveResilienceDataset(Dataset):
 
         Args:
             adata_subject: AnnData subset for one subject
-            X_dense: Pre-densified expression matrix [n_cells, n_genes]
+            X: Expression matrix [n_cells, n_genes] — sparse or dense
 
         Returns:
             cells: [n_cell_types, max_cells, n_genes] expression data
@@ -449,7 +478,6 @@ class CognitiveResilienceDataset(Dataset):
         cells = np.zeros((self.n_cell_types, actual_max, self.n_genes), dtype=np.float32)
         cell_mask = np.zeros((self.n_cell_types, actual_max), dtype=bool)
 
-        X = X_dense
         obs_index = adata_subject.obs.index
 
         for i, ct_name in enumerate(self.cell_type_order):
@@ -457,7 +485,11 @@ class CognitiveResilienceDataset(Dataset):
             n_sampled = len(indices)
 
             if n_sampled > 0:
-                cells[i, :n_sampled] = X[indices]
+                # Densify only the sampled rows (bounded, not full subject)
+                rows = X[indices]
+                if hasattr(rows, "toarray"):
+                    rows = rows.toarray()
+                cells[i, :n_sampled] = np.asarray(rows, dtype=np.float32)
                 cell_mask[i, :n_sampled] = True
                 cell_barcodes[i] = [str(obs_index[idx]) for idx in indices]
 

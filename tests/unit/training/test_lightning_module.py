@@ -209,23 +209,23 @@ class TestTrainingStep:
         module = CognitiveResilienceLightningModule(bayesian_config)
         assert module.automatic_optimization is True
 
-    def test_train_loss_nll_logged_periodically(self, bayesian_config):
-        """train_loss_nll should only be logged every 50 steps, not every step."""
+    def test_train_loss_nll_logged_at_epoch_end(self, bayesian_config):
+        """train_loss_nll should be logged once per epoch in on_train_epoch_end."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(bayesian_config)
         module.log = MagicMock()
         batch = _make_batch(n_genes=50)
 
+        # Training step should NOT log NLL (moved to epoch end)
         module.training_step(batch, batch_idx=0)
-        logged_keys_0 = [call.args[0] for call in module.log.call_args_list]
+        logged_keys = [call.args[0] for call in module.log.call_args_list]
+        assert "train_loss_nll" not in logged_keys, "NLL should not be logged per-step"
 
+        # Epoch end should log NLL
         module.log.reset_mock()
-
-        module.training_step(batch, batch_idx=1)
-        logged_keys_1 = [call.args[0] for call in module.log.call_args_list]
-
-        assert "train_loss_nll" in logged_keys_0, "Should log train_loss_nll at batch_idx=0"
-        assert "train_loss_nll" not in logged_keys_1, "Should NOT log train_loss_nll at batch_idx=1"
+        module.on_train_epoch_end()
+        logged_keys = [call.args[0] for call in module.log.call_args_list]
+        assert "train_loss_nll" in logged_keys, "NLL should be logged at epoch end"
 
 
 class TestValidationStep:
@@ -242,7 +242,7 @@ class TestValidationStep:
         module.validation_step(batch, batch_idx=0)
 
     def test_validation_step_logs_metrics(self, base_config):
-        """validation_step logs val_loss and prediction quality metrics."""
+        """validation_step logs val_loss per-batch, metrics at epoch end."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         module.eval()
@@ -254,7 +254,9 @@ class TestValidationStep:
         module.validation_step(batch, batch_idx=0)
 
         assert "val_loss" in logged
-        # Should have prediction quality metrics
+
+        # Metrics are now accumulated and logged at epoch end
+        module.on_validation_epoch_end()
         metric_keys = [k for k in logged if k.startswith("val_") and k != "val_loss"]
         assert len(metric_keys) > 0
 
@@ -287,7 +289,7 @@ class TestTestStep:
         module.test_step(batch, batch_idx=0)
 
     def test_test_step_logs_with_test_prefix(self, base_config):
-        """test_step logs metrics with test_ prefix."""
+        """test_step accumulates predictions; epoch end logs metrics with test_ prefix."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         module.eval()
@@ -299,6 +301,9 @@ class TestTestStep:
         module.test_step(batch, batch_idx=0)
 
         assert "test_loss" in logged
+
+        # Metrics are now computed at epoch end (not per-batch)
+        module.on_test_epoch_end()
         test_metric_keys = [k for k in logged if k.startswith("test_") and k != "test_loss"]
         assert len(test_metric_keys) > 0
 
@@ -516,7 +521,7 @@ class TestBayesianValidationMetrics:
     """Tests for Bayesian head uncertainty metrics in validation."""
 
     def test_bayesian_validation_logs_uncertainty_metrics(self, bayesian_config):
-        """Bayesian head validation_step logs uncertainty metrics (mean_std, calibration_error, crps)."""
+        """Bayesian head validation logs uncertainty metrics (mean_std, crps) at epoch end."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(bayesian_config)
         module.eval()
@@ -526,8 +531,9 @@ class TestBayesianValidationMetrics:
 
         batch = _make_batch(n_genes=50)
         module.validation_step(batch, batch_idx=0)
+        module.on_validation_epoch_end()
 
-        # Bayesian head should produce std, so uncertainty metrics should be logged
+        # Bayesian head should produce std, so uncertainty metrics should be logged at epoch end
         assert "val_mean_std" in logged
         assert "val_crps" in logged
 

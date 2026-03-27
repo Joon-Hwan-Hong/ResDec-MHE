@@ -29,7 +29,6 @@ from src.data.constants import CELL_TYPE_ORDER, N_CELL_TYPES, EPSILON_DIVISION
 from src.utils.io import save_dataframe
 from src.utils.statistics import (
     benjamini_hochberg,
-    cohens_d_with_ci,
     cohens_d_vectorized,
     cohens_d_ci_vectorized,
     attention_entropy,
