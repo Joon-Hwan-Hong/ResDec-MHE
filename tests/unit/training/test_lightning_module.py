@@ -572,16 +572,16 @@ class TestNaNHandling:
         assert module._nan_loss_policy == "fail"
         assert module._nan_batch_policy == "skip"
 
-    def test_check_batch_nan_detects_nan_in_cells(self, base_config):
-        """_check_batch_nan detects NaN in cells tensor (corrupt preprocessing)."""
+    def test_check_batch_nan_skips_cells_tensor(self, base_config):
+        """_check_batch_nan skips cells tensor (validated at preprocessing)."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         module = CognitiveResilienceLightningModule(base_config)
         batch = {
-            "cells": torch.tensor([[[float("nan")]]]),  # NaN in cells — should be detected
+            "cells": torch.tensor([[[float("nan")]]]),  # NaN in cells — excluded from check
             "cell_mask": torch.ones(1, 1, dtype=torch.bool),
             "cognition": torch.tensor([[1.0]]),  # No NaN here
         }
-        assert module._check_batch_nan(batch)
+        assert not module._check_batch_nan(batch)
 
     def test_check_batch_nan_skips_mask_tensors(self, base_config):
         """_check_batch_nan skips boolean mask tensors (cell_mask, cell_type_mask, region_mask)."""
@@ -617,18 +617,18 @@ class TestNaNHandling:
         }
         assert module._check_batch_nan(batch)
 
-    def test_nan_cells_skipped_in_training_step(self, base_config):
-        """NaN in cells tensor triggers batch skip in training_step."""
+    def test_nan_pseudobulk_skipped_in_training_step(self, base_config):
+        """NaN in pseudobulk tensor triggers batch skip in training_step."""
         from src.training.lightning_module import CognitiveResilienceLightningModule
         base_config.error_handling = {"training": {"nan_loss": "fail", "nan_batch": "skip"}}
         module = CognitiveResilienceLightningModule(base_config)
 
         batch = _make_batch(n_genes=50)
-        # Inject NaN into cells tensor (simulating corrupt preprocessing)
-        batch["cells"][0, 0, 0, :] = float("nan")
+        # Inject NaN into region_pseudobulk tensor (simulating corrupt data source)
+        batch["region_pseudobulk"][0, 0, 0, :] = float("nan")
 
         result = module.training_step(batch, batch_idx=0)
-        assert result is None, "Expected None return when cells contain NaN and nan_batch=skip"
+        assert result is None, "Expected None return when pseudobulk contains NaN and nan_batch=skip"
 
     def test_nan_skip_rate_threshold(self, base_config):
         """Exceeding max_nan_skip_fraction raises RuntimeError at epoch end."""

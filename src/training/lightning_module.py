@@ -53,6 +53,12 @@ from src.training.metrics import ResilienceMetrics
 
 logger = logging.getLogger(__name__)
 
+# Float tensor keys that can contain NaN from data sources.
+# cells/cell_mask are validated at preprocessing (dataset construction).
+# Boolean masks and integer tensors cannot be NaN.
+_NAN_CHECK_KEYS = ("pseudobulk", "pathology", "cognition", "ccc_edge_attr",
+                    "region_pseudobulk")
+
 
 class CognitiveResilienceLightningModule(pl.LightningModule):
     """
@@ -174,22 +180,31 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
         return loss
 
+    @staticmethod
+    def _batch_to_model_kwargs(batch: dict) -> dict:
+        """Extract model forward-pass kwargs from batch dict.
+
+        Single source of truth for batch -> model argument mapping.
+        Used by _forward_batch, _svi_forward, and _forward_batch_posterior.
+        """
+        return {
+            "region_pseudobulk": batch.get("region_pseudobulk"),
+            "region_mask": batch.get("region_mask"),
+            "pseudobulk": batch.get("pseudobulk"),
+            "ccc_edge_index": batch.get("ccc_edge_index"),
+            "ccc_edge_type": batch.get("ccc_edge_type"),
+            "ccc_edge_attr": batch.get("ccc_edge_attr"),
+            "ccc_edge_counts": batch.get("ccc_edge_counts"),
+            "cells": batch.get("cells"),
+            "cell_mask": batch.get("cell_mask"),
+            "cell_type_mask": batch.get("cell_type_mask"),
+            "pathology": batch.get("pathology"),
+            "cognition": batch.get("cognition"),
+        }
+
     def _forward_batch(self, batch: dict) -> dict:
         """Run forward pass extracting inputs from batch dict."""
-        return self.model(
-            region_pseudobulk=batch.get("region_pseudobulk"),
-            region_mask=batch.get("region_mask"),
-            pseudobulk=batch.get("pseudobulk"),
-            ccc_edge_index=batch.get("ccc_edge_index"),
-            ccc_edge_type=batch.get("ccc_edge_type"),
-            ccc_edge_attr=batch.get("ccc_edge_attr"),
-            ccc_edge_counts=batch.get("ccc_edge_counts"),
-            cells=batch.get("cells"),
-            cell_mask=batch.get("cell_mask"),
-            cell_type_mask=batch.get("cell_type_mask"),
-            pathology=batch.get("pathology"),
-            cognition=batch.get("cognition"),
-        )
+        return self.model(**self._batch_to_model_kwargs(batch))
 
     def _svi_forward(self, batch: dict[str, Any]) -> torch.Tensor:
         """Compute differentiable ELBO loss for Bayesian training.
@@ -207,20 +222,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         device_type = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         with torch.amp.autocast(device_type, enabled=False):
             loss = self.elbo.differentiable_loss(
-                self.model,
-                self.guide,
-                region_pseudobulk=batch.get("region_pseudobulk"),
-                region_mask=batch.get("region_mask"),
-                pseudobulk=batch.get("pseudobulk"),
-                ccc_edge_index=batch.get("ccc_edge_index"),
-                ccc_edge_type=batch.get("ccc_edge_type"),
-                ccc_edge_attr=batch.get("ccc_edge_attr"),
-                ccc_edge_counts=batch.get("ccc_edge_counts"),
-                cells=batch.get("cells"),
-                cell_mask=batch.get("cell_mask"),
-                cell_type_mask=batch.get("cell_type_mask"),
-                pathology=batch.get("pathology"),
-                cognition=batch.get("cognition"),
+                self.model, self.guide,
+                **self._batch_to_model_kwargs(batch),
             )
         return loss
 
@@ -241,42 +244,20 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         (safety net only — guide is prototyped in configure_optimizers).
         """
         if getattr(self.guide, 'prototype_trace', None) is None:
-            # Guide hasn't been prototyped yet (no SVI step has run).
-            # Fall back to standard forward pass with prior samples.
             return self._forward_batch(batch)
         median = self.guide.median()
         conditioned = pyro.poutine.condition(self.model, data=median)
-        return conditioned(
-            region_pseudobulk=batch.get("region_pseudobulk"),
-            region_mask=batch.get("region_mask"),
-            pseudobulk=batch.get("pseudobulk"),
-            ccc_edge_index=batch.get("ccc_edge_index"),
-            ccc_edge_type=batch.get("ccc_edge_type"),
-            ccc_edge_attr=batch.get("ccc_edge_attr"),
-            ccc_edge_counts=batch.get("ccc_edge_counts"),
-            cells=batch.get("cells"),
-            cell_mask=batch.get("cell_mask"),
-            cell_type_mask=batch.get("cell_type_mask"),
-            pathology=batch.get("pathology"),
-            cognition=batch.get("cognition"),
-        )
+        return conditioned(**self._batch_to_model_kwargs(batch))
 
     def _check_batch_nan(self, batch: dict) -> bool:
-        """Check if batch contains NaN values. Returns True if NaN detected.
+        """Check if batch contains NaN values in data-source tensors.
 
-        Uses sum-based check (isfinite on sum) to avoid allocating a boolean
-        tensor the size of the input. Only checks tensors likely to contain NaN
-        from data loading — cells/cell_mask come from preprocessing and are
-        validated at dataset construction time.
+        Only checks float tensors from external data sources (metadata, LIANA
+        scores). Tensors validated at preprocessing (cells, cell_mask) are excluded.
         """
-        # Keys that are boolean masks (not data) — always 0/1, no NaN possible.
-        # ccc_edge_index and ccc_edge_type are integer tensors, no NaN possible.
-        _skip_keys = {"cell_mask", "cell_type_mask", "region_mask",
-                       "ccc_edge_index", "ccc_edge_type", "ccc_edge_counts"}
-        for key, value in batch.items():
-            if key in _skip_keys:
-                continue
-            if isinstance(value, torch.Tensor) and value.is_floating_point() and not torch.isfinite(value.sum()):
+        for key in _NAN_CHECK_KEYS:
+            value = batch.get(key)
+            if value is not None and not torch.isfinite(value.sum()):
                 return True
         return False
 

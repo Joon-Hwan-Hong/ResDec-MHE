@@ -137,7 +137,8 @@ class HGTConvTensor(nn.Module):
         scores_flat = scores.reshape(-1, H)  # [B*E, H]
         total_nodes = B * N
 
-        # Float32 for numerical stability
+        # Float32 for numerical stability. scores_f32 is reused in 3 places
+        # (scatter_reduce, subtraction, -inf guard), so it cannot be fused away.
         scores_f32 = scores_flat.float()
 
         # Max per target (numerically stable softmax)
@@ -280,8 +281,9 @@ class HGTConvTensor(nn.Module):
             messages_flat,
         )
 
-        # Received mask: only nodes that received at least one valid edge message
-        # Use scatter_add on a float tensor to count valid edges per dst node
+        # Received mask: nodes that received at least one valid edge message.
+        # Uses float scatter_add because scatter_ with bool src doesn't accumulate
+        # (it overwrites). With N=31, the float intermediate is negligible.
         received_count = torch.zeros(B, N, dtype=torch.float32, device=x.device)
         edge_mask_float = edge_mask.float()  # [B, E]
         received_count.scatter_add_(
