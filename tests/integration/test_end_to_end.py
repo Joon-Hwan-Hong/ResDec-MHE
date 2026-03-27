@@ -330,7 +330,7 @@ class TestRealCollateInference:
         assert "ccc_edge_index" in batch
         assert "ccc_edge_type" in batch
         assert "ccc_edge_attr" in batch
-        assert "ccc_edge_counts" in batch
+        assert "ccc_edge_counts" not in batch
 
         # Run through model (unpack batch like lightning module's _forward_batch)
         with torch.no_grad():
@@ -345,7 +345,6 @@ class TestRealCollateInference:
                 ccc_edge_index=batch.get("ccc_edge_index"),
                 ccc_edge_type=batch.get("ccc_edge_type"),
                 ccc_edge_attr=batch.get("ccc_edge_attr"),
-                ccc_edge_counts=batch.get("ccc_edge_counts"),
             )
 
         assert "mean" in output

@@ -62,7 +62,7 @@ def sample_inputs(cuda_device, make_edge_tensors):
     n_genes = 50
     max_cells = 10
 
-    ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B, device=cuda_device)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B, device=cuda_device)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
@@ -70,7 +70,6 @@ def sample_inputs(cuda_device, make_edge_tensors):
         'ccc_edge_index': ccc_edge_index,
         'ccc_edge_type': ccc_edge_type,
         'ccc_edge_attr': ccc_edge_attr,
-        'ccc_edge_counts': ccc_edge_counts,
         'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
         'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
         'pathology': torch.randn(B, 3, device=cuda_device),
@@ -473,13 +472,15 @@ class TestMultiGPU:
         n_edges = 10
 
         def create_inputs(device):
+            E = B * n_edges
+            src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=device) + b * n_cell_types for b in range(B)])
+            dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=device) + b * n_cell_types for b in range(B)])
             return {
                 'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=device),
                 'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=device),
-                'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=device),
-                'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=device),
-                'ccc_edge_attr': torch.rand(B, n_edges, 1, device=device),
-                'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=device),
+                'ccc_edge_index': torch.stack([src, dst]),
+                'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=device),
+                'ccc_edge_attr': torch.rand(E, 1, device=device),
                 'cells': torch.randn(B, n_cell_types, 10, n_genes, device=device),
                 'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=device),
                 'pathology': torch.randn(B, 3, device=device),
@@ -558,13 +559,15 @@ class TestCUDAMemory:
         n_cell_types = N_CELL_TYPES
         n_edges = 10
 
+        E = B * n_edges
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=cuda_device),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=cuda_device),
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
-            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
-            'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device),
-            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
+            'ccc_edge_attr': torch.rand(E, 1, device=cuda_device),
             'cells': torch.randn(B, n_cell_types, 10, n_genes, device=cuda_device),
             'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device),
@@ -602,13 +605,15 @@ class TestCUDAMemory:
         n_edges = 10
 
         def create_batch():
+            E = B * n_edges
+            src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+            dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
             return {
                 'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes, device=cuda_device),
                 'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool, device=cuda_device),
-                'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
-                'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
-                'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device),
-                'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
+                'ccc_edge_index': torch.stack([src, dst]),
+                'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
+                'ccc_edge_attr': torch.rand(E, 1, device=cuda_device),
                 'cells': torch.randn(B, n_cell_types, 10, n_genes, device=cuda_device),
                 'cell_mask': torch.ones(B, n_cell_types, 10, dtype=torch.bool, device=cuda_device),
                 'pathology': torch.randn(B, 3, device=cuda_device),
@@ -896,14 +901,19 @@ class TestHGTEncoderTensorCUDA:
 
     def test_forward_shape(self, encoder, cuda_device):
         """HGTEncoderTensor forward on GPU produces correct shape."""
-        B, E = 4, 20
+        B, E_per = 4, 20
         x = torch.randn(B, N_CELL_TYPES, 32, device=cuda_device)
-        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, E), device=cuda_device)
-        edge_type = torch.randint(0, N_EDGE_TYPES, (B, E), device=cuda_device)
-        edge_attr = torch.rand(B, E, 1, device=cuda_device)
-        edge_counts = torch.randint(5, E + 1, (B,), device=cuda_device)
+        src_parts, dst_parts, type_parts = [], [], []
+        for b in range(B):
+            offset = b * N_CELL_TYPES
+            src_parts.append(torch.randint(0, N_CELL_TYPES, (E_per,), device=cuda_device) + offset)
+            dst_parts.append(torch.randint(0, N_CELL_TYPES, (E_per,), device=cuda_device) + offset)
+            type_parts.append(torch.randint(0, N_EDGE_TYPES, (E_per,), device=cuda_device))
+        edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+        edge_type = torch.cat(type_parts)
+        edge_attr = torch.rand(B * E_per, 1, device=cuda_device)
 
-        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        out = encoder(x, edge_index, edge_type, edge_attr)
         assert out.shape == (B, N_CELL_TYPES, 32)
         assert torch.isfinite(out).all()
 
@@ -911,30 +921,11 @@ class TestHGTEncoderTensorCUDA:
         """Zero edges should produce finite output on GPU."""
         B = 2
         x = torch.randn(B, N_CELL_TYPES, 32, device=cuda_device)
-        edge_index = torch.zeros(B, 2, 0, dtype=torch.long, device=cuda_device)
-        edge_type = torch.zeros(B, 0, dtype=torch.long, device=cuda_device)
-        edge_attr = torch.zeros(B, 0, 1, device=cuda_device)
-        edge_counts = torch.zeros(B, dtype=torch.long, device=cuda_device)
+        edge_index = torch.zeros(2, 0, dtype=torch.long, device=cuda_device)
+        edge_type = torch.zeros(0, dtype=torch.long, device=cuda_device)
+        edge_attr = torch.zeros(0, 1, device=cuda_device)
 
-        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        out = encoder(x, edge_index, edge_type, edge_attr)
         assert out.shape == (B, N_CELL_TYPES, 32)
         assert torch.isfinite(out).all()
 
-    def test_padding_ignored_gpu(self, encoder, cuda_device):
-        """Padding edges beyond edge_counts should not affect output on GPU."""
-        B, E = 1, 10
-        x = torch.randn(B, N_CELL_TYPES, 32, device=cuda_device)
-        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, E), device=cuda_device)
-        edge_type = torch.randint(0, N_EDGE_TYPES, (B, E), device=cuda_device)
-        edge_attr = torch.rand(B, E, 1, device=cuda_device)
-        edge_counts = torch.tensor([5], device=cuda_device)
-
-        out_padded = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
-
-        # Trim to only valid edges
-        out_trimmed = encoder(
-            x, edge_index[:, :, :5], edge_type[:, :5],
-            edge_attr[:, :5, :], edge_counts,
-        )
-
-        assert torch.allclose(out_padded, out_trimmed, atol=1e-5)

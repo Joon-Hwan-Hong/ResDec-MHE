@@ -145,24 +145,22 @@ class HGTEncoderTensor(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_type: torch.Tensor,
-        edge_attr: torch.Tensor | None,
-        edge_counts: torch.Tensor,
+        edge_index: torch.Tensor,  # [2, E_total]
+        edge_type: torch.Tensor,   # [E_total]
+        edge_attr: torch.Tensor | None,  # [E_total, 1] or None
         return_attention: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
-        """Forward pass.
+        """Forward pass with flat/concatenated edge format.
 
         Args:
             x: Node features [B, N, d_input]
-            edge_index: Edge indices [B, 2, E] (src, dst)
-            edge_type: Edge type indices [B, E]
-            edge_attr: Edge attributes [B, E, edge_dim] or None
-            edge_counts: Number of valid edges per sample [B]
+            edge_index: [2, E_total] with batch-offset node indices
+            edge_type: [E_total] edge type indices
+            edge_attr: [E_total, edge_dim] or None
             return_attention: Whether to return per-layer attention weights
 
         Returns:
-            Node outputs [B, N, d_output], or (outputs, list of [B, E, H] attention)
+            Node outputs [B, N, d_output], or (outputs, list of attention)
         """
         attention_list = [] if return_attention else None
 
@@ -176,26 +174,26 @@ class HGTEncoderTensor(nn.Module):
             h_normed = self._per_type_layer_norm(h, layer_idx)
 
             if self.use_gradient_checkpointing and self.training:
-                # Wrap HGT layer in checkpoint for memory savings
+                # Wrap HGT layer in checkpoint for memory savings.
                 def _run_layer(
-                    _h_normed, _edge_index, _edge_type, _edge_attr, _edge_counts,
+                    _h_normed, _edge_index, _edge_type, _edge_attr,
                     _layer_idx=layer_idx, _return_attention=return_attention,
                 ):
                     layer = self.hgt_layers[_layer_idx]
                     return layer(
                         _h_normed, _edge_index, _edge_type, _edge_attr,
-                        _edge_counts, return_attention=_return_attention,
+                        return_attention=_return_attention,
                     )
 
                 result = torch.utils.checkpoint.checkpoint(
                     _run_layer,
-                    h_normed, edge_index, edge_type, edge_attr, edge_counts,
+                    h_normed, edge_index, edge_type, edge_attr,
                     use_reentrant=False,
                 )
             else:
                 result = self.hgt_layers[layer_idx](
                     h_normed, edge_index, edge_type, edge_attr,
-                    edge_counts, return_attention=return_attention,
+                    return_attention=return_attention,
                 )
 
             if return_attention:

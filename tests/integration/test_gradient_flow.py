@@ -29,12 +29,14 @@ D_COND = 16
 
 
 def _make_edge_inputs(B, n_edges=5):
-    """Create edge tensor inputs for testing."""
+    """Create flat edge tensor inputs for testing."""
+    E = B * n_edges
+    src = torch.cat([torch.randint(0, N_CELL_TYPES, (n_edges,)) + b * N_CELL_TYPES for b in range(B)])
+    dst = torch.cat([torch.randint(0, N_CELL_TYPES, (n_edges,)) + b * N_CELL_TYPES for b in range(B)])
     return {
-        'ccc_edge_index': torch.randint(0, N_CELL_TYPES, (B, 2, n_edges)),
-        'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges)),
-        'ccc_edge_attr': torch.rand(B, n_edges, 1),
-        'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long),
+        'ccc_edge_index': torch.stack([src, dst]),
+        'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,)),
+        'ccc_edge_attr': torch.rand(E, 1),
     }
 
 

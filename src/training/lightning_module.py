@@ -197,7 +197,6 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             "ccc_edge_index": batch.get("ccc_edge_index"),
             "ccc_edge_type": batch.get("ccc_edge_type"),
             "ccc_edge_attr": batch.get("ccc_edge_attr"),
-            "ccc_edge_counts": batch.get("ccc_edge_counts"),
             "cell_type_mask": batch.get("cell_type_mask"),
             "pathology": batch.get("pathology"),
             "cognition": batch.get("cognition"),
@@ -601,10 +600,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
                 device=device,
             ),
-            "ccc_edge_index": torch.zeros(1, 2, 0, dtype=torch.long, device=device),
-            "ccc_edge_type": torch.zeros(1, 0, dtype=torch.long, device=device),
-            "ccc_edge_attr": torch.zeros(1, 0, 1, device=device),
-            "ccc_edge_counts": torch.zeros(1, dtype=torch.long, device=device),
+            "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long, device=device),
+            "ccc_edge_type": torch.zeros(0, dtype=torch.long, device=device),
+            "ccc_edge_attr": torch.zeros(0, 1, device=device),
             "cognition": torch.zeros(1, 1, device=device),
         }
         with torch.no_grad():

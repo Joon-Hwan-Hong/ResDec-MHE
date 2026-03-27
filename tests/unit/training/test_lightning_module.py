@@ -98,12 +98,15 @@ def _make_batch(batch_size=4, n_genes=50, n_cell_types=N_CELL_TYPES,
     region_mask = torch.zeros(batch_size, n_regions, dtype=torch.bool)
     region_mask[:, 0] = True  # PFC only
 
-    # HGT raw edge tensors — 4 edges per sample (2 src x 2 dst, first edge type)
-    n_edges = 4
-    ccc_edge_index = torch.zeros(batch_size, 2, n_edges, dtype=torch.long)
-    ccc_edge_type = torch.zeros(batch_size, n_edges, dtype=torch.long)
-    ccc_edge_attr = torch.rand(batch_size, n_edges, 1)
-    ccc_edge_counts = torch.full((batch_size,), n_edges, dtype=torch.long)
+    # HGT flat edge tensors — 4 edges per sample, concatenated across batch
+    n_edges_per_sample = 4
+    n_edges_total = batch_size * n_edges_per_sample
+    # Build flat edge_index with batch-offset node indices
+    per_sample_idx = torch.randint(0, n_cell_types, (2, n_edges_per_sample))
+    edge_parts = [per_sample_idx + b * n_cell_types for b in range(batch_size)]
+    ccc_edge_index = torch.cat(edge_parts, dim=1)  # [2, n_edges_total]
+    ccc_edge_type = torch.zeros(n_edges_total, dtype=torch.long)
+    ccc_edge_attr = torch.rand(n_edges_total, 1)
 
     cells = torch.randn(batch_size, n_cell_types, max_cells, n_genes)
     cell_mask = torch.ones(batch_size, n_cell_types, max_cells, dtype=torch.bool)
@@ -118,7 +121,6 @@ def _make_batch(batch_size=4, n_genes=50, n_cell_types=N_CELL_TYPES,
         "ccc_edge_index": ccc_edge_index,
         "ccc_edge_type": ccc_edge_type,
         "ccc_edge_attr": ccc_edge_attr,
-        "ccc_edge_counts": ccc_edge_counts,
         "cells": cells,
         "cell_mask": cell_mask,
         "cell_type_mask": cell_type_mask,
@@ -757,13 +759,29 @@ class _SyntheticDataset(torch.utils.data.Dataset):
 
 
 def _identity_collate(batch):
-    """Collate that stacks single-sample dicts into a batch."""
+    """Collate that stacks single-sample dicts into a batch.
+
+    Flat edge tensors get special handling:
+    - ccc_edge_index [2, E] concatenated along dim=1 with node offsets
+    - ccc_edge_type [E] and ccc_edge_attr [E, 1] concatenated along dim=0
+    """
     keys = batch[0].keys()
     result = {}
+    n_cell_types = batch[0]["region_pseudobulk"].shape[2] if "region_pseudobulk" in batch[0] else N_CELL_TYPES
     for key in keys:
         values = [b[key] for b in batch]
         if isinstance(values[0], torch.Tensor):
-            result[key] = torch.cat(values, dim=0)
+            if key == "ccc_edge_index":
+                # Flat edge_index: [2, E] — concat along dim=1 with batch offsets
+                offset_parts = []
+                for i, v in enumerate(values):
+                    offset_parts.append(v + i * n_cell_types)
+                result[key] = torch.cat(offset_parts, dim=1)
+            elif key in ("ccc_edge_type", "ccc_edge_attr"):
+                # Flat: [E] or [E, 1] — concat along dim=0
+                result[key] = torch.cat(values, dim=0)
+            else:
+                result[key] = torch.cat(values, dim=0)
         elif isinstance(values[0], list):
             # Flatten list of lists
             result[key] = [item for sublist in values for item in sublist]
@@ -855,7 +873,6 @@ class TestCheckpointRoundTrip:
                 ccc_edge_index=batch["ccc_edge_index"],
                 ccc_edge_type=batch["ccc_edge_type"],
                 ccc_edge_attr=batch["ccc_edge_attr"],
-                ccc_edge_counts=batch["ccc_edge_counts"],
                 cells=batch["cells"],
                 cell_mask=batch["cell_mask"],
                 cell_type_mask=batch.get("cell_type_mask"),
@@ -874,7 +891,6 @@ class TestCheckpointRoundTrip:
                 ccc_edge_index=batch["ccc_edge_index"],
                 ccc_edge_type=batch["ccc_edge_type"],
                 ccc_edge_attr=batch["ccc_edge_attr"],
-                ccc_edge_counts=batch["ccc_edge_counts"],
                 cells=batch["cells"],
                 cell_mask=batch["cell_mask"],
                 cell_type_mask=batch.get("cell_type_mask"),

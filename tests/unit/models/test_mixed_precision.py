@@ -70,7 +70,7 @@ def sample_inputs(cuda_device, make_edge_tensors):
     n_genes = 50
     max_cells = 10
 
-    ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B, device=cuda_device)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B, device=cuda_device)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
@@ -78,7 +78,6 @@ def sample_inputs(cuda_device, make_edge_tensors):
         'ccc_edge_index': ccc_edge_index,
         'ccc_edge_type': ccc_edge_type,
         'ccc_edge_attr': ccc_edge_attr,
-        'ccc_edge_counts': ccc_edge_counts,
         'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
         'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
         'pathology': torch.randn(B, 3, device=cuda_device),
@@ -519,14 +518,13 @@ class TestAMPTrainingLoop:
         losses = []
         for batch_idx in range(n_batches):
             # Create new batch
-            ccc_ei, ccc_et, ccc_ea, ccc_ec = make_edge_tensors(B, device=cuda_device)
+            ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, device=cuda_device)
             inputs = {
                 'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
                 'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
                 'ccc_edge_index': ccc_ei,
                 'ccc_edge_type': ccc_et,
                 'ccc_edge_attr': ccc_ea,
-                'ccc_edge_counts': ccc_ec,
                 'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
                 'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
                 'pathology': torch.randn(B, 3, device=cuda_device),
@@ -575,13 +573,15 @@ class TestAMPTrainingLoop:
         n_regions = N_REGIONS
         n_edges = 10
 
+        E = B * n_edges
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device),
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
-            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
-            'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device),
-            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
+            'ccc_edge_attr': torch.rand(E, 1, device=cuda_device),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device),
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device),
@@ -738,13 +738,15 @@ class TestNumericalStability:
         n_edges = 10
 
         # Create inputs with larger values (but not extreme to avoid overflow)
+        E = B * n_edges
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device) * 10,
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
-            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
-            'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device),
-            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
+            'ccc_edge_attr': torch.rand(E, 1, device=cuda_device),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device) * 10,
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device) * 5,
@@ -774,13 +776,15 @@ class TestNumericalStability:
         n_edges = 10
 
         # Create inputs with small values
+        E = B * n_edges
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=cuda_device) + b * n_cell_types for b in range(B)])
         inputs = {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes, device=cuda_device) * 0.01,
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool, device=cuda_device),
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, n_edges), device=cuda_device),
-            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (B, n_edges), device=cuda_device),
-            'ccc_edge_attr': torch.rand(B, n_edges, 1, device=cuda_device) * 0.1,
-            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long, device=cuda_device),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, N_EDGE_TYPES, (E,), device=cuda_device),
+            'ccc_edge_attr': torch.rand(E, 1, device=cuda_device) * 0.1,
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes, device=cuda_device) * 0.01,
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool, device=cuda_device),
             'pathology': torch.randn(B, 3, device=cuda_device) * 0.1,

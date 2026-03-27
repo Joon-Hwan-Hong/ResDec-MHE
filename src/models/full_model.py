@@ -8,8 +8,8 @@ and prediction heads to predict cognitive resilience from multi-modal inputs.
 Data flow:
     region_pseudobulk [B, n_regions, 31, G] -> PseudobulkEncoder (per region)
         -> RegionHandler -> pooled [B, 31, d] + region_context [B, d]
-    ccc_edge_index [B, 2, E], ccc_edge_type [B, E], ccc_edge_attr [B, E, 1],
-        ccc_edge_counts [B] -> HGTEncoderTensor -> hgt_emb [B, 31, d]
+    ccc_edge_index [2, E_total], ccc_edge_type [E_total], ccc_edge_attr [E_total, 1]
+        -> HGTEncoderTensor -> hgt_emb [B, 31, d]
     cells [B, 31, max_cells, G] -> CellTransformer -> cell_emb [B, 31, d]
 
     [pooled, hgt_emb, cell_emb] -> FusionLayer -> fused [B, 31, d_fused]
@@ -21,10 +21,9 @@ Expected Input Format:
     This model expects data from collate_for_hgt_multiregion() which provides:
     - region_pseudobulk: [B, n_regions, n_cell_types, n_genes]
     - region_mask: [B, n_regions]
-    - ccc_edge_index: [B, 2, max_edges] padded edge indices
-    - ccc_edge_type: [B, max_edges] edge type indices
-    - ccc_edge_attr: [B, max_edges, 1] edge attributes
-    - ccc_edge_counts: [B] number of valid edges per sample
+    - ccc_edge_index: [2, E_total] flat edge indices
+    - ccc_edge_type: [E_total] edge type indices
+    - ccc_edge_attr: [E_total, 1] edge attributes
     - cells, cell_mask, pathology, etc.
 
     For single-region data, use pseudobulk [B, n_cell_types, n_genes] which will
@@ -90,10 +89,9 @@ class CognitiveResilienceModel(PyroModule):
         region_pseudobulk: [B, n_regions, n_cell_types, n_genes] OR
         pseudobulk: [B, n_cell_types, n_genes] (single-region, auto-expanded)
         region_mask: [B, n_regions]
-        ccc_edge_index: [B, 2, max_edges] padded edge indices
-        ccc_edge_type: [B, max_edges] edge type indices
-        ccc_edge_attr: [B, max_edges, 1] edge attributes
-        ccc_edge_counts: [B] number of valid edges per sample
+        ccc_edge_index: [2, E_total] flat edge indices
+        ccc_edge_type: [E_total] edge type indices
+        ccc_edge_attr: [E_total, 1] edge attributes
         cells: [B, n_cell_types, max_cells, n_genes]
         cell_mask: [B, n_cell_types, max_cells]
         cell_type_mask: [B, n_cell_types] (optional, for masking missing cell types)
@@ -312,10 +310,9 @@ class CognitiveResilienceModel(PyroModule):
         # Single-region fallback
         pseudobulk: Optional[torch.Tensor] = None,         # [B, n_cell_types, n_genes]
         # CCC edge tensors (from collate)
-        ccc_edge_index: Optional[torch.Tensor] = None,     # [B, 2, max_edges]
-        ccc_edge_type: Optional[torch.Tensor] = None,      # [B, max_edges]
-        ccc_edge_attr: Optional[torch.Tensor] = None,      # [B, max_edges, edge_dim]
-        ccc_edge_counts: Optional[torch.Tensor] = None,    # [B]
+        ccc_edge_index: Optional[torch.Tensor] = None,     # [2, E_total] flat
+        ccc_edge_type: Optional[torch.Tensor] = None,      # [E_total]
+        ccc_edge_attr: Optional[torch.Tensor] = None,      # [E_total, 1]
         # Cell-level inputs (padded format)
         cells: Optional[torch.Tensor] = None,              # [B, n_cell_types, max_cells, n_genes]
         cell_mask: Optional[torch.Tensor] = None,          # [B, n_cell_types, max_cells]
@@ -345,10 +342,9 @@ class CognitiveResilienceModel(PyroModule):
             region_pseudobulk: [B, n_regions, n_cell_types, n_genes] regional pseudobulk
             region_mask: [B, n_regions] bool mask for available regions
             pseudobulk: [B, n_cell_types, n_genes] single-region fallback
-            ccc_edge_index: [B, 2, max_edges] padded edge indices
-            ccc_edge_type: [B, max_edges] edge type indices
-            ccc_edge_attr: [B, max_edges, 1] edge attributes
-            ccc_edge_counts: [B] number of valid edges per sample
+            ccc_edge_index: [2, E_total] flat edge indices
+            ccc_edge_type: [E_total] edge type indices
+            ccc_edge_attr: [E_total, 1] edge attributes
             cells: [B, n_cell_types, max_cells, n_genes] cell-level expression
             cell_mask: [B, n_cell_types, max_cells] bool mask for valid cells
             cell_type_mask: [B, n_cell_types] optional mask for missing cell types.
@@ -440,14 +436,13 @@ class CognitiveResilienceModel(PyroModule):
         # ─────────────────────────────────────────────────────────────────────
         # Handle no-edges case
         if ccc_edge_index is None:
-            ccc_edge_index = torch.zeros(B, 2, 0, dtype=torch.long, device=device)
-            ccc_edge_type = torch.zeros(B, 0, dtype=torch.long, device=device)
-            ccc_edge_attr = torch.zeros(B, 0, 1, device=device)
-            ccc_edge_counts = torch.zeros(B, dtype=torch.long, device=device)
+            ccc_edge_index = torch.zeros(2, 0, dtype=torch.long, device=device)
+            ccc_edge_type = torch.zeros(0, dtype=torch.long, device=device)
+            ccc_edge_attr = torch.zeros(0, 1, device=device)
 
         hgt_result = self.hgt_encoder(
             pseudobulk_emb, ccc_edge_index, ccc_edge_type, ccc_edge_attr,
-            ccc_edge_counts, return_attention=return_hgt_attention,
+            return_attention=return_hgt_attention,
         )
         if return_hgt_attention:
             hgt_emb, hgt_attention = hgt_result
@@ -553,7 +548,6 @@ class CognitiveResilienceModel(PyroModule):
         ccc_edge_index=None,
         ccc_edge_type=None,
         ccc_edge_attr=None,
-        ccc_edge_counts=None,
         cells=None,
         cell_mask=None,
         cell_data=None,
@@ -610,13 +604,12 @@ class CognitiveResilienceModel(PyroModule):
 
         # Branch 2: HGT
         if ccc_edge_index is None:
-            ccc_edge_index = torch.zeros(B, 2, 0, dtype=torch.long, device=device)
-            ccc_edge_type = torch.zeros(B, 0, dtype=torch.long, device=device)
-            ccc_edge_attr = torch.zeros(B, 0, 1, device=device)
-            ccc_edge_counts = torch.zeros(B, dtype=torch.long, device=device)
+            ccc_edge_index = torch.zeros(2, 0, dtype=torch.long, device=device)
+            ccc_edge_type = torch.zeros(0, dtype=torch.long, device=device)
+            ccc_edge_attr = torch.zeros(0, 1, device=device)
 
         hgt_emb = self.hgt_encoder(
-            pseudobulk_emb, ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts,
+            pseudobulk_emb, ccc_edge_index, ccc_edge_type, ccc_edge_attr,
         )
 
         # Branch 3: Cell transformer

@@ -83,10 +83,9 @@ class TestEmptyCCCEdgesNoSyntheticInjection:
         with torch.no_grad():
             output = model(
                 pseudobulk=pseudobulk,
-                ccc_edge_index=torch.zeros(B, 2, 0, dtype=torch.long),
-                ccc_edge_type=torch.zeros(B, 0, dtype=torch.long),
-                ccc_edge_attr=torch.zeros(B, 0, 1),
-                ccc_edge_counts=torch.zeros(B, dtype=torch.long),
+                ccc_edge_index=torch.zeros(2, 0, dtype=torch.long),
+                ccc_edge_type=torch.zeros(0, dtype=torch.long),
+                ccc_edge_attr=torch.zeros(0, 1),
                 cells=cells,
                 cell_mask=cell_mask,
                 pathology=pathology,

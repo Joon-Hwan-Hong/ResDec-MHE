@@ -30,18 +30,22 @@ def encoder(encoder_config):
 
 @pytest.fixture
 def sample_batch(encoder_config):
-    """Sample batched input."""
-    B, N, E = 3, encoder_config["n_node_types"], 8
+    """Sample batched input (flat edge format)."""
+    B, N = 3, encoder_config["n_node_types"]
     d = encoder_config["d_input"]
     n_et = encoder_config["n_edge_types"]
-
+    edges_per_sample = 8
     x = torch.randn(B, N, d)
-    edge_index = torch.randint(0, N, (B, 2, E))
-    edge_type = torch.randint(0, n_et, (B, E))
-    edge_attr = torch.rand(B, E, 1)
-    edge_counts = torch.tensor([4, 8, 2])
-
-    return x, edge_index, edge_type, edge_attr, edge_counts
+    src_parts, dst_parts, type_parts = [], [], []
+    for b in range(B):
+        offset = b * N
+        src_parts.append(torch.randint(0, N, (edges_per_sample,)) + offset)
+        dst_parts.append(torch.randint(0, N, (edges_per_sample,)) + offset)
+        type_parts.append(torch.randint(0, n_et, (edges_per_sample,)))
+    edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+    edge_type = torch.cat(type_parts)
+    edge_attr = torch.rand(B * edges_per_sample, 1)
+    return x, edge_index, edge_type, edge_attr
 
 
 class TestHGTEncoderTensorInit:
@@ -94,13 +98,13 @@ class TestHGTEncoderTensorForward:
     """Test forward pass."""
 
     def test_output_shape(self, encoder, sample_batch):
-        x, edge_index, edge_type, edge_attr, edge_counts = sample_batch
-        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        x, edge_index, edge_type, edge_attr = sample_batch
+        out = encoder(x, edge_index, edge_type, edge_attr)
         assert out.shape == x.shape  # [B, N, d_output]
 
     def test_output_no_nan(self, encoder, sample_batch):
-        x, edge_index, edge_type, edge_attr, edge_counts = sample_batch
-        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        x, edge_index, edge_type, edge_attr = sample_batch
+        out = encoder(x, edge_index, edge_type, edge_attr)
         assert torch.isfinite(out).all()
 
     def test_zero_edges(self, encoder_config):
@@ -109,19 +113,18 @@ class TestHGTEncoderTensorForward:
         B, N, d = 2, encoder_config["n_node_types"], encoder_config["d_input"]
 
         x = torch.randn(B, N, d)
-        edge_index = torch.zeros(B, 2, 0, dtype=torch.long)
-        edge_type = torch.zeros(B, 0, dtype=torch.long)
-        edge_attr = torch.zeros(B, 0, 1)
-        edge_counts = torch.zeros(B, dtype=torch.long)
+        edge_index = torch.zeros(2, 0, dtype=torch.long)
+        edge_type = torch.zeros(0, dtype=torch.long)
+        edge_attr = torch.zeros(0, 1)
 
-        out = enc(x, edge_index, edge_type, edge_attr, edge_counts)
+        out = enc(x, edge_index, edge_type, edge_attr)
         assert out.shape == (B, N, encoder_config["d_output"])
         assert torch.isfinite(out).all()
 
     def test_gradient_flow(self, encoder, sample_batch):
-        x, edge_index, edge_type, edge_attr, edge_counts = sample_batch
+        x, edge_index, edge_type, edge_attr = sample_batch
         x.requires_grad_(True)
-        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        out = encoder(x, edge_index, edge_type, edge_attr)
         loss = out.sum()
         loss.backward()
 
@@ -131,15 +134,15 @@ class TestHGTEncoderTensorForward:
                 assert param.grad is not None, f"No gradient for {name}"
 
     def test_return_attention(self, encoder, sample_batch):
-        x, edge_index, edge_type, edge_attr, edge_counts = sample_batch
+        x, edge_index, edge_type, edge_attr = sample_batch
+        E_total = edge_index.shape[1]
         out, attn_list = encoder(x, edge_index, edge_type, edge_attr,
-                                  edge_counts, return_attention=True)
+                                  return_attention=True)
         assert attn_list is not None
         assert len(attn_list) == encoder.n_layers
-        B, E = x.shape[0], edge_index.shape[2]
         H = encoder.n_heads
         for attn in attn_list:
-            assert attn.shape == (B, E, H)
+            assert attn.shape == (E_total, H)
 
     def test_get_layer_scales(self, encoder, encoder_config):
         scales = encoder.get_layer_scales()
@@ -155,14 +158,19 @@ class TestHGTEncoderTensorForward:
             n_node_types=N_CELL_TYPES, n_edge_types=N_EDGE_TYPES,
             edge_dim=1, dropout=0.0,
         )
-        B, E = 4, 50
+        B, E_per = 4, 50
         x = torch.randn(B, N_CELL_TYPES, 128)
-        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, E))
-        edge_type = torch.randint(0, N_EDGE_TYPES, (B, E))
-        edge_attr = torch.rand(B, E, 1)
-        edge_counts = torch.randint(10, E + 1, (B,))
+        src_parts, dst_parts, type_parts = [], [], []
+        for b in range(B):
+            offset = b * N_CELL_TYPES
+            src_parts.append(torch.randint(0, N_CELL_TYPES, (E_per,)) + offset)
+            dst_parts.append(torch.randint(0, N_CELL_TYPES, (E_per,)) + offset)
+            type_parts.append(torch.randint(0, N_EDGE_TYPES, (E_per,)))
+        edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+        edge_type = torch.cat(type_parts)
+        edge_attr = torch.rand(B * E_per, 1)
 
-        out = enc(x, edge_index, edge_type, edge_attr, edge_counts)
+        out = enc(x, edge_index, edge_type, edge_attr)
         assert out.shape == (B, N_CELL_TYPES, 128)
         assert torch.isfinite(out).all()
 
@@ -171,16 +179,94 @@ class TestHGTEncoderTensorForward:
         enc = HGTEncoderTensor(**encoder_config, use_gradient_checkpointing=True)
         enc.train()
 
-        B, N, E = 2, encoder_config["n_node_types"], 5
+        B, N = 2, encoder_config["n_node_types"]
         d = encoder_config["d_input"]
         n_et = encoder_config["n_edge_types"]
+        edges_per_sample = 5
         x = torch.randn(B, N, d, requires_grad=True)
-        edge_index = torch.randint(0, N, (B, 2, E))
-        edge_type = torch.randint(0, n_et, (B, E))
-        edge_attr = torch.rand(B, E, 1)
-        edge_counts = torch.tensor([3, 5])
+        src_parts, dst_parts, type_parts = [], [], []
+        for b in range(B):
+            offset = b * N
+            src_parts.append(torch.randint(0, N, (edges_per_sample,)) + offset)
+            dst_parts.append(torch.randint(0, N, (edges_per_sample,)) + offset)
+            type_parts.append(torch.randint(0, n_et, (edges_per_sample,)))
+        edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+        edge_type = torch.cat(type_parts)
+        edge_attr = torch.rand(B * edges_per_sample, 1)
 
-        out = enc(x, edge_index, edge_type, edge_attr, edge_counts)
+        out = enc(x, edge_index, edge_type, edge_attr)
         loss = out.sum()
         loss.backward()
         assert x.grad is not None
+
+
+class TestHGTEncoderTensorFlatEdges:
+    """Test HGTEncoderTensor with flat (non-padded) edge format."""
+
+    @pytest.fixture
+    def flat_encoder_config(self):
+        return {
+            "d_input": 32,
+            "d_hidden": 32,
+            "d_output": 32,
+            "n_heads": 2,
+            "n_layers": 2,
+            "n_node_types": 4,
+            "n_edge_types": 2,
+            "edge_dim": 1,
+            "dropout": 0.0,
+        }
+
+    @pytest.fixture
+    def flat_batch(self, flat_encoder_config):
+        """Build flat edge tensors with batch-offset node indices for 3 samples."""
+        B = 3
+        N = flat_encoder_config["n_node_types"]
+        d = flat_encoder_config["d_input"]
+        n_et = flat_encoder_config["n_edge_types"]
+
+        x = torch.randn(B, N, d)
+
+        # Per-sample edge counts: 3, 5, 2 edges
+        edges_per_sample = [3, 5, 2]
+        src_list, dst_list, etype_list, eattr_list = [], [], [], []
+        for b, n_edges in enumerate(edges_per_sample):
+            offset = b * N
+            src_list.append(torch.randint(0, N, (n_edges,)) + offset)
+            dst_list.append(torch.randint(0, N, (n_edges,)) + offset)
+            etype_list.append(torch.randint(0, n_et, (n_edges,)))
+            eattr_list.append(torch.rand(n_edges, 1))
+
+        edge_index = torch.stack([torch.cat(src_list), torch.cat(dst_list)])  # [2, E_total]
+        edge_type = torch.cat(etype_list)  # [E_total]
+        edge_attr = torch.cat(eattr_list)  # [E_total, 1]
+
+        return x, edge_index, edge_type, edge_attr
+
+    def test_flat_output_shape(self, flat_encoder_config, flat_batch):
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
+
+        enc = HGTEncoderTensor(**flat_encoder_config)
+        x, edge_index, edge_type, edge_attr = flat_batch
+        B, N, d_out = x.shape[0], flat_encoder_config["n_node_types"], flat_encoder_config["d_output"]
+
+        out = enc(x, edge_index, edge_type, edge_attr)  # edge_counts=None (flat)
+        assert out.shape == (B, N, d_out)
+        assert torch.isfinite(out).all()
+
+    def test_flat_gradient_checkpointing(self, flat_encoder_config, flat_batch):
+        from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
+
+        enc = HGTEncoderTensor(**flat_encoder_config, use_gradient_checkpointing=True)
+        enc.train()
+        x, edge_index, edge_type, edge_attr = flat_batch
+        x = x.clone().requires_grad_(True)
+
+        out = enc(x, edge_index, edge_type, edge_attr)  # edge_counts=None (flat)
+        loss = out.sum()
+        loss.backward()
+
+        assert x.grad is not None
+        for name, param in enc.named_parameters():
+            if param.requires_grad:
+                assert param.grad is not None, f"No gradient for {name}"

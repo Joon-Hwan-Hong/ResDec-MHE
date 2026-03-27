@@ -132,6 +132,10 @@ def create_sample_inputs(
     """Create sample inputs for the full model."""
     from src.data.constants import N_EDGE_TYPES
 
+    E = batch_size * n_edges
+    src = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=device) + b * n_cell_types for b in range(batch_size)])
+    dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,), device=device) + b * n_cell_types for b in range(batch_size)])
+
     return {
         'region_pseudobulk': torch.randn(
             batch_size, n_regions, n_cell_types, n_genes, device=device
@@ -139,16 +143,11 @@ def create_sample_inputs(
         'region_mask': torch.ones(
             batch_size, n_regions, dtype=torch.bool, device=device
         ),
-        'ccc_edge_index': torch.randint(
-            0, n_cell_types, (batch_size, 2, n_edges), device=device
-        ),
+        'ccc_edge_index': torch.stack([src, dst]),
         'ccc_edge_type': torch.randint(
-            0, N_EDGE_TYPES, (batch_size, n_edges), device=device
+            0, N_EDGE_TYPES, (E,), device=device
         ),
-        'ccc_edge_attr': torch.rand(batch_size, n_edges, 1, device=device),
-        'ccc_edge_counts': torch.full(
-            (batch_size,), n_edges, dtype=torch.long, device=device
-        ),
+        'ccc_edge_attr': torch.rand(E, 1, device=device),
         'cells': torch.randn(
             batch_size, n_cell_types, max_cells, n_genes, device=device
         ),
@@ -422,13 +421,18 @@ class TestEdgeIndexScaling:
         B = 1
         n_edges = 2
         x = torch.randn(B, N_CELL_TYPES, d, device=cpu_device)
-        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, n_edges), device=cpu_device)
-        edge_type = torch.randint(0, len(ALL_EDGE_TYPES), (B, n_edges), device=cpu_device)
-        edge_attr = torch.rand(B, n_edges, 1, device=cpu_device)
-        edge_counts = torch.full((B,), n_edges, dtype=torch.long, device=cpu_device)
+        src_parts, dst_parts, type_parts = [], [], []
+        for b in range(B):
+            offset = b * N_CELL_TYPES
+            src_parts.append(torch.randint(0, N_CELL_TYPES, (n_edges,), device=cpu_device) + offset)
+            dst_parts.append(torch.randint(0, N_CELL_TYPES, (n_edges,), device=cpu_device) + offset)
+            type_parts.append(torch.randint(0, len(ALL_EDGE_TYPES), (n_edges,), device=cpu_device))
+        edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+        edge_type = torch.cat(type_parts)
+        edge_attr = torch.rand(B * n_edges, 1, device=cpu_device)
 
         with torch.no_grad():
-            out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+            out = encoder(x, edge_index, edge_type, edge_attr)
 
         assert out.shape == (B, N_CELL_TYPES, d)
         assert not torch.isnan(out).any()
@@ -448,13 +452,18 @@ class TestEdgeIndexScaling:
         B = 2
         n_edges = 500
         x = torch.randn(B, N_CELL_TYPES, d, device=cpu_device)
-        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, n_edges), device=cpu_device)
-        edge_type = torch.randint(0, len(ALL_EDGE_TYPES), (B, n_edges), device=cpu_device)
-        edge_attr = torch.rand(B, n_edges, 1, device=cpu_device)
-        edge_counts = torch.full((B,), n_edges, dtype=torch.long, device=cpu_device)
+        src_parts, dst_parts, type_parts = [], [], []
+        for b in range(B):
+            offset = b * N_CELL_TYPES
+            src_parts.append(torch.randint(0, N_CELL_TYPES, (n_edges,), device=cpu_device) + offset)
+            dst_parts.append(torch.randint(0, N_CELL_TYPES, (n_edges,), device=cpu_device) + offset)
+            type_parts.append(torch.randint(0, len(ALL_EDGE_TYPES), (n_edges,), device=cpu_device))
+        edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+        edge_type = torch.cat(type_parts)
+        edge_attr = torch.rand(B * n_edges, 1, device=cpu_device)
 
         with torch.no_grad():
-            out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+            out = encoder(x, edge_index, edge_type, edge_attr)
 
         assert out.shape == (B, N_CELL_TYPES, d)
         assert not torch.isnan(out).any()
@@ -472,7 +481,6 @@ class TestEdgeIndexScaling:
         encoder.eval()
 
         B = 1
-        # All-to-all edges among first 5 cell types, all edge types
         n_ct_subset = 5
         n_et = len(ALL_EDGE_TYPES)
         n_edges = n_ct_subset * n_ct_subset * n_et
@@ -488,13 +496,12 @@ class TestEdgeIndexScaling:
                     et_list.append(e)
 
         x = torch.randn(B, N_CELL_TYPES, d, device=cpu_device)
-        edge_index = torch.tensor([[src, dst]], device=cpu_device)  # [1, 2, n_edges]
-        edge_type = torch.tensor([et_list], device=cpu_device)     # [1, n_edges]
-        edge_attr = torch.rand(B, n_edges, 1, device=cpu_device)
-        edge_counts = torch.full((B,), n_edges, dtype=torch.long, device=cpu_device)
+        edge_index = torch.tensor([src, dst], device=cpu_device)  # [2, n_edges]
+        edge_type = torch.tensor(et_list, device=cpu_device)      # [n_edges]
+        edge_attr = torch.rand(n_edges, 1, device=cpu_device)
 
         with torch.no_grad():
-            out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+            out = encoder(x, edge_index, edge_type, edge_attr)
 
         assert out.shape == (B, N_CELL_TYPES, d)
         assert not torch.isnan(out).any()

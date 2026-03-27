@@ -63,9 +63,13 @@ data:
   # DataLoader
   dataloader:
     batch_size: 16
-    num_workers: 8  # 8-12 for PrecomputedDataset; reduce to 4 for on-the-fly AnnData mode
+    num_workers: 12  # 8-12 for PrecomputedDataset; reduce to 4 for on-the-fly AnnData mode
     pin_memory: true
     prefetch_factor: 2
+    # Bucket batching: group subjects by CCC edge count to minimize padding waste.
+    # Reduces backward pass time by ~50% by avoiding extreme padding (134K edges
+    # in one sample forcing the entire batch to pad to 134K).
+    bucket_batching: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Model Configuration
@@ -130,6 +134,12 @@ model:
 
   # Gradient checkpointing (trades ~5% compute for 5-8 GB memory savings)
   use_gradient_checkpointing: true
+
+  # torch.compile: fuses Linear+LN+GELU+Dropout into fewer CUDA kernels.
+  # BayesianPredictionHead is excluded (Pyro incompatible).
+  # WARNING: compilation is extremely RAM-hungry (~20-40 GB per module).
+  # Only enable on machines with 128+ GB free RAM beyond training needs.
+  use_torch_compile: true
 
   # Prediction Head
   head:

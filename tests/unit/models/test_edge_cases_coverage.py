@@ -46,13 +46,11 @@ class TestHGTEmptyGraphHandling:
 
     def test_empty_edge_index_produces_output(self, model, base_inputs):
         """Model should handle zero edges gracefully."""
-        B = 2
         inputs = {
             **base_inputs,
-            'ccc_edge_index': torch.zeros(B, 2, 0, dtype=torch.long),
-            'ccc_edge_type': torch.zeros(B, 0, dtype=torch.long),
-            'ccc_edge_attr': torch.zeros(B, 0, 1),
-            'ccc_edge_counts': torch.zeros(B, dtype=torch.long),
+            'ccc_edge_index': torch.zeros(2, 0, dtype=torch.long),
+            'ccc_edge_type': torch.zeros(0, dtype=torch.long),
+            'ccc_edge_attr': torch.zeros(0, 1),
         }
         output = model(**inputs)
         assert 'mean' in output
@@ -62,12 +60,14 @@ class TestHGTEmptyGraphHandling:
     def test_single_edge_graph(self, model, base_inputs):
         """Model should handle single edge graph."""
         B = 2
+        N = N_CELL_TYPES
+        src = torch.cat([torch.zeros(1, dtype=torch.long) + b * N for b in range(B)])
+        dst = torch.cat([torch.zeros(1, dtype=torch.long) + b * N for b in range(B)])
         inputs = {
             **base_inputs,
-            'ccc_edge_index': torch.zeros(B, 2, 1, dtype=torch.long),
-            'ccc_edge_type': torch.zeros(B, 1, dtype=torch.long),
-            'ccc_edge_attr': torch.ones(B, 1, 1),
-            'ccc_edge_counts': torch.ones(B, dtype=torch.long),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.zeros(B, dtype=torch.long),
+            'ccc_edge_attr': torch.ones(B, 1),
         }
         output = model(**inputs)
         assert torch.isfinite(output['mean']).all()
@@ -76,12 +76,14 @@ class TestHGTEmptyGraphHandling:
         """Model should handle graph with only self-loops."""
         B = 2
         n_edges = 3
+        N = N_CELL_TYPES
+        src = torch.cat([torch.zeros(n_edges, dtype=torch.long) + b * N for b in range(B)])
+        dst = src.clone()
         inputs = {
             **base_inputs,
-            'ccc_edge_index': torch.zeros(B, 2, n_edges, dtype=torch.long),  # src=dst=0
-            'ccc_edge_type': torch.zeros(B, n_edges, dtype=torch.long),
-            'ccc_edge_attr': torch.tensor([[[1.0], [0.9], [0.8]]] * B),
-            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.zeros(B * n_edges, dtype=torch.long),
+            'ccc_edge_attr': torch.tensor([1.0, 0.9, 0.8] * B).unsqueeze(1),
         }
         output = model(**inputs)
         assert torch.isfinite(output['mean']).all()
@@ -90,12 +92,14 @@ class TestHGTEmptyGraphHandling:
         """Duplicate edges should be accumulated, not dropped."""
         B = 2
         n_edges = 2
+        N = N_CELL_TYPES
+        src = torch.cat([torch.zeros(n_edges, dtype=torch.long) + b * N for b in range(B)])
+        dst = src.clone()
         inputs = {
             **base_inputs,
-            'ccc_edge_index': torch.zeros(B, 2, n_edges, dtype=torch.long),
-            'ccc_edge_type': torch.zeros(B, n_edges, dtype=torch.long),
-            'ccc_edge_attr': torch.tensor([[[1.0], [0.8]]] * B),
-            'ccc_edge_counts': torch.full((B,), n_edges, dtype=torch.long),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.zeros(B * n_edges, dtype=torch.long),
+            'ccc_edge_attr': torch.tensor([1.0, 0.8] * B).unsqueeze(1),
         }
         output = model(**inputs)
         assert torch.isfinite(output['mean']).all()
@@ -117,12 +121,12 @@ class TestMixedDtypeInputs:
     def test_float64_pathology_requires_conversion(self, model, make_edge_tensors):
         """Float64 pathology with float32 model requires explicit conversion."""
         B = 2
-        ccc_ei, ccc_et, ccc_ea, ccc_ec = make_edge_tensors(B, n_edges=1)
+        ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, n_edges=1)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50, dtype=torch.float32),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
-            'ccc_edge_attr': ccc_ea, 'ccc_edge_counts': ccc_ec,
+            'ccc_edge_attr': ccc_ea,
             'cells': torch.randn(B, N_CELL_TYPES, 10, 50, dtype=torch.float32),
             'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3, dtype=torch.float64),  # Different dtype
@@ -134,12 +138,12 @@ class TestMixedDtypeInputs:
     def test_consistent_dtypes_work(self, model, make_edge_tensors):
         """Consistent dtypes should work correctly."""
         B = 2
-        ccc_ei, ccc_et, ccc_ea, ccc_ec = make_edge_tensors(B, n_edges=1)
+        ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, n_edges=1)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50, dtype=torch.float32),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
-            'ccc_edge_attr': ccc_ea, 'ccc_edge_counts': ccc_ec,
+            'ccc_edge_attr': ccc_ea,
             'cells': torch.randn(B, N_CELL_TYPES, 10, 50, dtype=torch.float32),
             'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3, dtype=torch.float32),  # Same dtype
@@ -150,12 +154,12 @@ class TestMixedDtypeInputs:
     def test_bool_mask_required(self, model, make_edge_tensors):
         """Cell mask must be bool (for transformer attention)."""
         B = 2
-        ccc_ei, ccc_et, ccc_ea, ccc_ec = make_edge_tensors(B, n_edges=1)
+        ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, n_edges=1)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
-            'ccc_edge_attr': ccc_ea, 'ccc_edge_counts': ccc_ec,
+            'ccc_edge_attr': ccc_ea,
             'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
             'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.int32),  # int instead of bool
             'pathology': torch.randn(B, 3),
@@ -167,12 +171,12 @@ class TestMixedDtypeInputs:
     def test_region_mask_float_works(self, model, make_edge_tensors):
         """Region mask can be float (RegionHandler converts to float internally)."""
         B = 2
-        ccc_ei, ccc_et, ccc_ea, ccc_ec = make_edge_tensors(B, n_edges=1)
+        ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B, n_edges=1)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.float32),  # Float mask
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
-            'ccc_edge_attr': ccc_ea, 'ccc_edge_counts': ccc_ec,
+            'ccc_edge_attr': ccc_ea,
             'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
             'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -465,12 +469,12 @@ class TestFullModelGradientFlowEndToEnd:
     def test_all_parameters_receive_gradients(self, model, make_edge_tensors):
         """All trainable parameters should receive gradients."""
         B = 2
-        ccc_ei, ccc_et, ccc_ea, ccc_ec = make_edge_tensors(B)
+        ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
-            'ccc_edge_attr': ccc_ea, 'ccc_edge_counts': ccc_ec,
+            'ccc_edge_attr': ccc_ea,
             'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
             'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -501,12 +505,12 @@ class TestFullModelGradientFlowEndToEnd:
     def test_region_weights_receive_gradient_multi_region(self, model, make_edge_tensors):
         """Region weights should receive gradients with multi-region input."""
         B = 2
-        ccc_ei, ccc_et, ccc_ea, ccc_ec = make_edge_tensors(B)
+        ccc_ei, ccc_et, ccc_ea = make_edge_tensors(B)
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, N_CELL_TYPES, 50),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),  # All regions available
             'ccc_edge_index': ccc_ei, 'ccc_edge_type': ccc_et,
-            'ccc_edge_attr': ccc_ea, 'ccc_edge_counts': ccc_ec,
+            'ccc_edge_attr': ccc_ea,
             'cells': torch.randn(B, N_CELL_TYPES, 10, 50),
             'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.randn(B, 3),

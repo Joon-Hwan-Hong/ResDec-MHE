@@ -225,16 +225,13 @@ class TestCollateToTrainingStep:
         assert "ccc_edge_index" in batch
         assert "ccc_edge_type" in batch
         assert "ccc_edge_attr" in batch
-        assert "ccc_edge_counts" in batch
+        assert "ccc_edge_counts" not in batch
 
-        assert batch["ccc_edge_index"].shape[0] == 4
-        assert batch["ccc_edge_index"].shape[1] == 2
-        assert batch["ccc_edge_type"].shape[0] == 4
-        assert batch["ccc_edge_attr"].shape[0] == 4
-        assert batch["ccc_edge_counts"].shape == (4,)
-
-        # All samples have edges (n_edges=10), so counts should be > 0
-        assert (batch["ccc_edge_counts"] > 0).all()
+        # Flat edge tensors: [2, E_total], [E_total], [E_total, 1]
+        E_total = 4 * 10  # 4 samples, 10 edges each
+        assert batch["ccc_edge_index"].shape == (2, E_total)
+        assert batch["ccc_edge_type"].shape == (E_total,)
+        assert batch["ccc_edge_attr"].shape == (E_total, 1)
 
     def test_collate_region_pseudobulk_assembled(self):
         """Region pseudobulk assembled for available_regions=[0,2,4]."""
@@ -298,8 +295,8 @@ class TestCollateToTrainingStep:
         samples = [_make_sample(f"subj_{i}", n_edges=0) for i in range(4)]
         batch = collate_for_hgt_multiregion(samples)
 
-        # Verify collate produces zero-edge counts
-        assert (batch["ccc_edge_counts"] == 0).all(), "Expected zero edge counts for n_edges=0"
+        # Verify collate produces empty flat edge tensors
+        assert batch["ccc_edge_index"].shape == (2, 0), "Expected empty edge_index for n_edges=0"
 
         loss = module.training_step(batch, batch_idx=0)
 

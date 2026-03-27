@@ -107,39 +107,27 @@ class HGTConvTensor(nn.Module):
             nn.init.uniform_(self.edge_scale_lin.weight, 0.5, 1.0)
             nn.init.zeros_(self.edge_scale_lin.bias)
 
-    def _batched_softmax_by_target(
+    def _scatter_softmax(
         self,
         scores: torch.Tensor,
         dst_idx: torch.Tensor,
-        edge_mask: torch.Tensor,
-        B: int,
-        N: int,
+        total_nodes: int,
     ) -> torch.Tensor:
-        """Batched scatter softmax grouped by (sample, destination node).
+        """Scatter softmax for flat (concatenated) edges.
 
         Args:
-            scores: [B, E, H] attention scores (padded edges have -inf)
-            dst_idx: [B, E] destination node indices
-            edge_mask: [B, E] True for valid edges
-            B: batch size
-            N: number of node types
+            scores: [E_total, H] attention scores
+            dst_idx: [E_total] destination node indices (already batch-offset)
+            total_nodes: Total number of nodes across all samples (B * N)
 
         Returns:
-            [B, E, H] softmax weights (0 for padding edges)
+            [E_total, H] softmax weights
         """
         H = scores.size(-1)
-        E = scores.size(1)
         device = scores.device
 
-        # Flatten batch: offset destinations by batch index
-        batch_offset = torch.arange(B, device=device).unsqueeze(1) * N  # [B, 1]
-        dst_flat = (dst_idx + batch_offset).reshape(-1)  # [B*E]
-        scores_flat = scores.reshape(-1, H)  # [B*E, H]
-        total_nodes = B * N
-
-        # Float32 for numerical stability. scores_f32 is reused in 3 places
-        # (scatter_reduce, subtraction, -inf guard), so it cannot be fused away.
-        scores_f32 = scores_flat.float()
+        # Float32 for numerical stability
+        scores_f32 = scores.float()
 
         # Max per target (numerically stable softmax)
         max_scores = torch.full(
@@ -147,14 +135,14 @@ class HGTConvTensor(nn.Module):
         )
         max_scores.scatter_reduce_(
             0,
-            dst_flat[:, None].expand(-1, H),
+            dst_idx[:, None].expand(-1, H),
             scores_f32,
             reduce="amax",
             include_self=True,
         )
 
         # Subtract max and exp (guard against -inf - (-inf) = NaN)
-        gathered_max = max_scores[dst_flat]
+        gathered_max = max_scores[dst_idx]
         scores_norm = scores_f32 - gathered_max
         # Where max is -inf (no valid edges to that target), set to -inf to get exp=0
         scores_norm = torch.where(
@@ -164,91 +152,78 @@ class HGTConvTensor(nn.Module):
 
         # Sum per target
         sum_exp = torch.zeros(total_nodes, H, device=device, dtype=torch.float32)
-        sum_exp.scatter_add_(0, dst_flat[:, None].expand(-1, H), exp_scores)
+        sum_exp.scatter_add_(0, dst_idx[:, None].expand(-1, H), exp_scores)
 
         # Normalize
-        result = exp_scores / (sum_exp[dst_flat] + EPSILON_SOFTMAX)
+        result = exp_scores / (sum_exp[dst_idx] + EPSILON_SOFTMAX)
 
-        return result.reshape(B, E, H)
+        return result
 
     def forward(
         self,
         x: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_type: torch.Tensor,
-        edge_attr: torch.Tensor | None,
-        edge_counts: torch.Tensor,
+        edge_index: torch.Tensor,  # [2, E_total]
+        edge_type: torch.Tensor,   # [E_total]
+        edge_attr: torch.Tensor | None,  # [E_total, 1] or None
         return_attention: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass.
+        """Forward pass with flat/concatenated edge format.
 
         Args:
             x: Node features [B, N, d_in]
-            edge_index: Edge indices [B, 2, E] (src, dst)
-            edge_type: Edge type indices [B, E]
-            edge_attr: Edge attributes [B, E, edge_dim] or None
-            edge_counts: Number of valid edges per sample [B]
+            edge_index: [2, E_total] with batch-offset node indices
+            edge_type: [E_total] edge type indices
+            edge_attr: [E_total, 1] edge attributes, or None
             return_attention: Whether to return attention weights
 
         Returns:
-            Node outputs [B, N, d_out], or (outputs, attention [B, E, H])
+            Node outputs [B, N, d_out], or (outputs, attention [E_total, H])
         """
         B, N, D = x.shape
-        E = edge_index.shape[2]
+        E_total = edge_index.shape[1]
 
         # Handle zero edges case
-        if E == 0:
+        if E_total == 0:
             out = torch.zeros(B, N, self.out_channels, device=x.device, dtype=x.dtype)
             if return_attention:
-                return out, torch.zeros(B, 0, self.heads, device=x.device)
+                return out, torch.zeros(0, self.heads, device=x.device)
             return out
+
+        total_nodes = B * N
 
         # 1. Batched Q/K/V projections via einsum
         q = torch.einsum("bnd,ndo->bno", x, self.q_weight) + self.q_bias  # [B, N, d_out]
         k = torch.einsum("bnd,ndo->bno", x, self.k_weight) + self.k_bias
         v = torch.einsum("bnd,ndo->bno", x, self.v_weight) + self.v_bias
 
-        # Reshape for multi-head: [B, N, H, dk]
-        q = q.view(B, N, self.heads, self.d_k)
-        k = k.view(B, N, self.heads, self.d_k)
-        v = v.view(B, N, self.heads, self.d_k)
+        # Reshape for multi-head and flatten: [B*N, H, dk]
+        q = q.view(B, N, self.heads, self.d_k).reshape(total_nodes, self.heads, self.d_k)
+        k = k.view(B, N, self.heads, self.d_k).reshape(total_nodes, self.heads, self.d_k)
+        v = v.view(B, N, self.heads, self.d_k).reshape(total_nodes, self.heads, self.d_k)
 
-        # 2. Gather edge endpoints: [B, E, H, dk]
-        src_idx = edge_index[:, 0, :]  # [B, E]
-        dst_idx = edge_index[:, 1, :]  # [B, E]
+        # 2. Gather edge endpoints: [E_total, H, dk]
+        src_idx = edge_index[0]  # [E_total]
+        dst_idx = edge_index[1]  # [E_total]
 
-        def idx_expand(idx: torch.Tensor) -> torch.Tensor:
-            return idx[:, :, None, None].expand(-1, -1, self.heads, self.d_k)
+        q_i = q[dst_idx]  # [E_total, H, dk]
+        k_j = k[src_idx]  # [E_total, H, dk]
+        v_j = v[src_idx]  # [E_total, H, dk]
 
-        q_i = torch.gather(q, 1, idx_expand(dst_idx))
-        k_j = torch.gather(k, 1, idx_expand(src_idx))
-        v_j = torch.gather(v, 1, idx_expand(src_idx))
-
-        # 3. Relation-specific attention (loop over edge types to avoid
-        #    materializing [B, E, H, dk, dk] which OOMs with large E)
-        k_transformed = torch.zeros_like(k_j)  # [B, E, H, dk]
-        for et in range(self.n_edge_types):
-            mask = (edge_type == et).unsqueeze(-1).unsqueeze(-1)  # [B, E, 1, 1]
-            # w_att[et]: [H, dk, dk], k_j: [B, E, H, dk] -> [B, E, H, dk]
-            contrib = torch.einsum("behd,hdk->behk", k_j, self.w_att[et])
-            k_transformed = torch.where(mask, contrib, k_transformed)
-        attn_scores = (q_i * k_transformed).sum(dim=-1) / (self.d_k**0.5)  # [B, E, H]
+        # 3. Relation-specific attention — all edge types at once.
+        # einsum: edges have no B dim → "ehd,nhdk->nehk"
+        all_k = torch.einsum("ehd,nhdk->nehk", k_j, self.w_att)  # [n_et, E_total, H, dk]
+        e_idx = torch.arange(E_total, device=x.device)
+        k_transformed = all_k[edge_type, e_idx]  # [E_total, H, dk]
+        del all_k
+        attn_scores = (q_i * k_transformed).sum(dim=-1) / (self.d_k**0.5)  # [E_total, H]
 
         # Edge attribute bias
         if self.edge_lin is not None and edge_attr is not None:
-            edge_bias = self.edge_lin(edge_attr)  # [B, E, H]
+            edge_bias = self.edge_lin(edge_attr)  # [E_total, H]
             attn_scores = attn_scores + edge_bias
 
-        # 4. Edge validity masking
-        edge_mask = (
-            torch.arange(E, device=x.device).unsqueeze(0) < edge_counts.unsqueeze(1)
-        )  # [B, E]
-        attn_scores = attn_scores.masked_fill(~edge_mask.unsqueeze(-1), float("-inf"))
-
-        # 5. Batched scatter softmax (float32 precision)
-        attn_weights = self._batched_softmax_by_target(
-            attn_scores, dst_idx, edge_mask, B, N
-        )
+        # 4. Scatter softmax (no masking needed — all edges are valid)
+        attn_weights = self._scatter_softmax(attn_scores, dst_idx, total_nodes)
 
         # Extract attention BEFORE dropout
         if return_attention:
@@ -256,40 +231,34 @@ class HGTConvTensor(nn.Module):
 
         attn_weights = self.dropout(attn_weights)
 
-        # 6. Relation-specific message (loop over edge types, same reason as above)
-        v_transformed = torch.zeros_like(v_j)  # [B, E, H, dk]
-        for et in range(self.n_edge_types):
-            mask = (edge_type == et).unsqueeze(-1).unsqueeze(-1)  # [B, E, 1, 1]
-            contrib = torch.einsum("behd,hdk->behk", v_j, self.w_msg[et])
-            v_transformed = torch.where(mask, contrib, v_transformed)
-        messages = attn_weights.unsqueeze(-1) * v_transformed  # [B, E, H, dk]
+        # 5. Relation-specific message — all types at once
+        all_v = torch.einsum("ehd,nhdk->nehk", v_j, self.w_msg)  # [n_et, E_total, H, dk]
+        v_transformed = all_v[edge_type, e_idx]  # [E_total, H, dk]
+        del all_v
+        messages = attn_weights.unsqueeze(-1) * v_transformed  # [E_total, H, dk]
 
         # Edge scaling
         if self.edge_scale_lin is not None and edge_attr is not None:
-            edge_scale = torch.sigmoid(self.edge_scale_lin(edge_attr))  # [B, E, 1]
+            edge_scale = torch.sigmoid(self.edge_scale_lin(edge_attr))  # [E_total, 1]
             messages = messages * edge_scale.unsqueeze(-1)
 
-        # Mask padding edges
-        messages = messages * edge_mask[:, :, None, None]
-
-        # 7. Scatter add to destinations
-        messages_flat = messages.reshape(B, E, self.out_channels)
-        out = torch.zeros(B, N, self.out_channels, device=x.device, dtype=torch.float32)
+        # 6. Scatter add to destinations
+        messages_flat = messages.reshape(E_total, self.out_channels)  # [E_total, d_out]
+        out = torch.zeros(total_nodes, self.out_channels, device=x.device, dtype=torch.float32)
         out.scatter_add_(
-            1,
-            dst_idx[:, :, None].expand(-1, -1, self.out_channels),
+            0,
+            dst_idx[:, None].expand(-1, self.out_channels),
             messages_flat,
         )
 
-        # Received mask: nodes that received at least one valid edge message.
-        # Uses float scatter_add because scatter_ with bool src doesn't accumulate
-        # (it overwrites). With N=31, the float intermediate is negligible.
-        received_count = torch.zeros(B, N, dtype=torch.float32, device=x.device)
-        edge_mask_float = edge_mask.float()  # [B, E]
-        received_count.scatter_add_(
-            1, dst_idx, edge_mask_float
-        )
-        received = received_count > 0
+        # Received mask: nodes that received at least one edge message
+        received_count = torch.zeros(total_nodes, dtype=torch.float32, device=x.device)
+        received_count.scatter_add_(0, dst_idx, torch.ones(E_total, device=x.device))
+        received = received_count > 0  # [B*N]
+
+        # Reshape to [B, N, d_out]
+        out = out.reshape(B, N, self.out_channels)
+        received = received.reshape(B, N)
 
         # Output projection + masking
         input_dtype = x.dtype

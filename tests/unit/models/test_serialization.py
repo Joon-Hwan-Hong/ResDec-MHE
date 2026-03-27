@@ -41,7 +41,7 @@ def sample_inputs(make_edge_tensors):
     n_genes = 50
     max_cells = 10
 
-    ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
@@ -49,7 +49,6 @@ def sample_inputs(make_edge_tensors):
         'ccc_edge_index': ccc_edge_index,
         'ccc_edge_type': ccc_edge_type,
         'ccc_edge_attr': ccc_edge_attr,
-        'ccc_edge_counts': ccc_edge_counts,
         'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
         'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
         'pathology': torch.randn(B, 3),
@@ -490,28 +489,29 @@ class TestHGTEncoderTensorSerialization:
         hgt = HGTEncoderTensor(d_input=d, d_hidden=d, d_output=d, n_heads=4, n_layers=1, n_node_types=N_CELL_TYPES, n_edge_types=N_EDGE_TYPES, dropout=0.0, edge_dim=1)
         hgt.eval()
 
-        # Create inputs
         B = 2
         n_edges = 5
         x = torch.randn(B, n_ct, d)
-        edge_index = torch.randint(0, n_ct, (B, 2, n_edges))
-        edge_type = torch.randint(0, N_EDGE_TYPES, (B, n_edges))
-        edge_attr = torch.rand(B, n_edges, 1)
-        edge_counts = torch.full((B,), n_edges, dtype=torch.long)
+        src_parts, dst_parts, type_parts = [], [], []
+        for b in range(B):
+            offset = b * n_ct
+            src_parts.append(torch.randint(0, n_ct, (n_edges,)) + offset)
+            dst_parts.append(torch.randint(0, n_ct, (n_edges,)) + offset)
+            type_parts.append(torch.randint(0, N_EDGE_TYPES, (n_edges,)))
+        edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+        edge_type = torch.cat(type_parts)
+        edge_attr = torch.rand(B * n_edges, 1)
 
-        # Forward pass
         with torch.no_grad():
-            out1 = hgt(x, edge_index, edge_type, edge_attr, edge_counts)
+            out1 = hgt(x, edge_index, edge_type, edge_attr)
 
-        # Save and reload
         state = hgt.state_dict()
         hgt2 = HGTEncoderTensor(d_input=d, d_hidden=d, d_output=d, n_heads=4, n_layers=1, n_node_types=N_CELL_TYPES, n_edge_types=N_EDGE_TYPES, dropout=0.0, edge_dim=1)
         hgt2.load_state_dict(state)
         hgt2.eval()
 
-        # Forward pass with reloaded model
         with torch.no_grad():
-            out2 = hgt2(x, edge_index, edge_type, edge_attr, edge_counts)
+            out2 = hgt2(x, edge_index, edge_type, edge_attr)
 
         # Verify outputs match
         assert torch.allclose(out1, out2)

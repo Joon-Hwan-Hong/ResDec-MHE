@@ -64,22 +64,26 @@ N_EDGE_TYPES = len(ALL_EDGE_TYPES)
 
 def _make_edge_tensors(batch_size, n_edges=5, n_cell_types=N_CELL_TYPES,
                        n_edge_types=N_EDGE_TYPES, device=None):
-    """Create batched edge tensors for testing.
+    """Create flat edge tensors with batch-offset node indices for testing.
 
-    Returns (ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts)
-    in the padded tensor format expected by HGTEncoderTensor and
+    Returns (ccc_edge_index, ccc_edge_type, ccc_edge_attr) in the flat
+    concatenated format expected by HGTEncoderTensor and
     CognitiveResilienceModel.
     """
-    edge_index = torch.randint(0, n_cell_types, (batch_size, 2, n_edges))
-    edge_type = torch.randint(0, n_edge_types, (batch_size, n_edges))
-    edge_attr = torch.rand(batch_size, n_edges, 1)
-    edge_counts = torch.full((batch_size,), n_edges, dtype=torch.long)
+    src_parts, dst_parts, type_parts = [], [], []
+    for b in range(batch_size):
+        offset = b * n_cell_types
+        src_parts.append(torch.randint(0, n_cell_types, (n_edges,)) + offset)
+        dst_parts.append(torch.randint(0, n_cell_types, (n_edges,)) + offset)
+        type_parts.append(torch.randint(0, n_edge_types, (n_edges,)))
+    edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])  # [2, B*n_edges]
+    edge_type = torch.cat(type_parts)  # [B*n_edges]
+    edge_attr = torch.rand(batch_size * n_edges, 1)  # [B*n_edges, 1]
     if device is not None:
         edge_index = edge_index.to(device)
         edge_type = edge_type.to(device)
         edge_attr = edge_attr.to(device)
-        edge_counts = edge_counts.to(device)
-    return edge_index, edge_type, edge_attr, edge_counts
+    return edge_index, edge_type, edge_attr
 
 
 # ─────────────────────────────────────────────────────────────────────────────

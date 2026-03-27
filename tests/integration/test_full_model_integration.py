@@ -35,7 +35,7 @@ def sample_batch(make_edge_tensors):
     max_cells = 10
     n_regions = N_REGIONS
 
-    ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B)
+    ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B)
 
     return {
         'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
@@ -43,7 +43,6 @@ def sample_batch(make_edge_tensors):
         'ccc_edge_index': ccc_edge_index,
         'ccc_edge_type': ccc_edge_type,
         'ccc_edge_attr': ccc_edge_attr,
-        'ccc_edge_counts': ccc_edge_counts,
         'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
         'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
         'pathology': torch.randn(B, 3),
@@ -217,14 +216,13 @@ class TestEndToEndForward:
         model = CognitiveResilienceModel(**model_kwargs, use_bayesian_head=False)
 
         for batch_size in [1, 4, 8]:
-            ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(batch_size)
+            ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(batch_size)
             batch = {
                 'region_pseudobulk': torch.randn(batch_size, N_REGIONS, N_CELL_TYPES, model_kwargs['n_genes']),
                 'region_mask': torch.ones(batch_size, N_REGIONS, dtype=torch.bool),
                 'ccc_edge_index': ccc_edge_index,
                 'ccc_edge_type': ccc_edge_type,
                 'ccc_edge_attr': ccc_edge_attr,
-                'ccc_edge_counts': ccc_edge_counts,
                 'cells': torch.randn(batch_size, N_CELL_TYPES, 10, model_kwargs['n_genes']),
                 'cell_mask': torch.ones(batch_size, N_CELL_TYPES, 10, dtype=torch.bool),
                 'pathology': torch.randn(batch_size, 3),
@@ -452,7 +450,7 @@ class TestAttentionInterpretability:
         B = 4
         n_genes = model_kwargs['n_genes']
 
-        ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(B)
+        ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(B)
 
         # Create batch with deliberately different pathology per sample
         batch = {
@@ -461,7 +459,6 @@ class TestAttentionInterpretability:
             'ccc_edge_index': ccc_edge_index,
             'ccc_edge_type': ccc_edge_type,
             'ccc_edge_attr': ccc_edge_attr,
-            'ccc_edge_counts': ccc_edge_counts,
             'cells': torch.randn(B, N_CELL_TYPES, 10, n_genes),
             'cell_mask': torch.ones(B, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.tensor([
@@ -686,7 +683,7 @@ class TestBayesianSpecific:
 
         n_genes = model_kwargs['n_genes']
 
-        ccc_edge_index, ccc_edge_type, ccc_edge_attr, ccc_edge_counts = make_edge_tensors(4)
+        ccc_edge_index, ccc_edge_type, ccc_edge_attr = make_edge_tensors(4)
 
         # Batch with similar inputs
         uniform_batch = {
@@ -695,7 +692,6 @@ class TestBayesianSpecific:
             'ccc_edge_index': ccc_edge_index,
             'ccc_edge_type': ccc_edge_type,
             'ccc_edge_attr': ccc_edge_attr,
-            'ccc_edge_counts': ccc_edge_counts,
             'cells': torch.randn(4, N_CELL_TYPES, 10, n_genes) * 0.1,
             'cell_mask': torch.ones(4, N_CELL_TYPES, 10, dtype=torch.bool),
             'pathology': torch.zeros(4, 3),

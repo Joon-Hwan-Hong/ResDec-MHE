@@ -81,7 +81,6 @@ def _forward_kwargs(batch: dict) -> dict:
         ccc_edge_index=batch.get("ccc_edge_index"),
         ccc_edge_type=batch.get("ccc_edge_type"),
         ccc_edge_attr=batch.get("ccc_edge_attr"),
-        ccc_edge_counts=batch.get("ccc_edge_counts"),
         cells=batch.get("cells"),
         cell_mask=batch.get("cell_mask"),
         cell_type_mask=batch.get("cell_type_mask"),
@@ -340,9 +339,9 @@ def main() -> None:
             torch.cuda.synchronize()
         timer.stop("data_load+transfer")
 
-        # Track max edge count per batch (explains step time variance)
-        if "ccc_edge_counts" in batch:
-            edge_counts_per_step.append(batch["ccc_edge_counts"].max().item())
+        # Track total edge count per batch (explains step time variance)
+        if "ccc_edge_index" in batch:
+            edge_counts_per_step.append(batch["ccc_edge_index"].shape[1])
 
         # ── Forward ──
         timer.start()
@@ -421,7 +420,7 @@ def main() -> None:
         f"{'Optim':>10} {'Total':>10}"
     )
     if has_edges:
-        header += f" {'MaxEdges':>10}"
+        header += f" {'TotalEdges':>10}"
     print(header)
     print("-" * 90)
     for i in range(total_steps):
@@ -448,7 +447,7 @@ def main() -> None:
         meas_times = np.array(timer.timings["total_step"][skip:])
         if len(meas_edges) > 2:
             corr = np.corrcoef(meas_edges, meas_times)[0, 1]
-            print(f"\nCorrelation (max_edges vs step_time): {corr:.3f}")
+            print(f"\nCorrelation (total_edges vs step_time): {corr:.3f}")
 
     print(f"\nFor kernel-level profiling, use NVIDIA Nsight Systems:")
     print(f"  nsys profile -o outputs/profiling/nsys_report \\")
@@ -483,10 +482,9 @@ def _prototype_guide(model, guide, elbo, config, device):
             model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
             device=device,
         ),
-        "ccc_edge_index": torch.zeros(1, 2, 0, dtype=torch.long, device=device),
-        "ccc_edge_type": torch.zeros(1, 0, dtype=torch.long, device=device),
-        "ccc_edge_attr": torch.zeros(1, 0, 1, device=device),
-        "ccc_edge_counts": torch.zeros(1, dtype=torch.long, device=device),
+        "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long, device=device),
+        "ccc_edge_type": torch.zeros(0, dtype=torch.long, device=device),
+        "ccc_edge_attr": torch.zeros(0, 1, device=device),
         "cognition": torch.zeros(1, 1, device=device),
     }
     with torch.no_grad():

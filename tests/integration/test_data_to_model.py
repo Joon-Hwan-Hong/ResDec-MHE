@@ -78,7 +78,7 @@ class TestDatasetToCollate:
         assert "ccc_edge_index" in result
         assert "ccc_edge_type" in result
         assert "ccc_edge_attr" in result
-        assert "ccc_edge_counts" in result
+        assert "ccc_edge_counts" not in result
 
 
 class TestCollateToCellTransformer:
@@ -267,13 +267,13 @@ class TestCollateToHGTEncoderTensor:
         batch = [create_mock_dataset_sample(n_genes=d_input, n_edges=30) for _ in range(4)]
         collated = collate_for_hgt(batch)
 
-        # Verify raw edge tensor structure
+        # Verify flat edge tensor structure
         assert "ccc_edge_index" in collated
         assert "ccc_edge_type" in collated
         assert "ccc_edge_attr" in collated
-        assert "ccc_edge_counts" in collated
-        assert collated["ccc_edge_index"].shape[0] == 4
-        assert collated["ccc_edge_counts"].shape == (4,)
+        assert "ccc_edge_counts" not in collated
+        E_total = 4 * 30
+        assert collated["ccc_edge_index"].shape == (2, E_total)
 
         # Verify encoder can be created with correct structure
         encoder = HGTEncoderTensor(
@@ -287,14 +287,13 @@ class TestCollateToHGTEncoderTensor:
             edge_dim=1,
         )
 
-        # Forward pass with collated tensors
+        # Forward pass with collated tensors (flat format, no edge_counts)
         x = collated["pseudobulk"]  # [4, N_CELL_TYPES, d_input]
         out = encoder(
             x,
             collated["ccc_edge_index"],
             collated["ccc_edge_type"],
             collated["ccc_edge_attr"],
-            collated["ccc_edge_counts"],
         )
         assert out.shape == (4, N_CELL_TYPES, d_hidden)
         assert torch.isfinite(out).all()
@@ -319,12 +318,18 @@ class TestCollateToHGTEncoderTensor:
         )
 
         x = torch.randn(B, N_CELL_TYPES, d_input, requires_grad=True)
-        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, 5))
-        edge_type = torch.randint(0, len(ALL_EDGE_TYPES), (B, 5))
-        edge_attr = torch.rand(B, 5, 1)
-        edge_counts = torch.full((B,), 5, dtype=torch.long)
+        n_edges = 5
+        src_parts, dst_parts, type_parts = [], [], []
+        for b in range(B):
+            offset = b * N_CELL_TYPES
+            src_parts.append(torch.randint(0, N_CELL_TYPES, (n_edges,)) + offset)
+            dst_parts.append(torch.randint(0, N_CELL_TYPES, (n_edges,)) + offset)
+            type_parts.append(torch.randint(0, len(ALL_EDGE_TYPES), (n_edges,)))
+        edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+        edge_type = torch.cat(type_parts)
+        edge_attr = torch.rand(B * n_edges, 1)
 
-        out = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        out = encoder(x, edge_index, edge_type, edge_attr)
         loss = out.sum()
         loss.backward()
 
@@ -580,16 +585,20 @@ class TestGradientFlowAudit:
             n_edge_types=N_EDGE_TYPES,
         )
 
-        # Create minimal batched input
         B = 1
         n_edges = 3
         x = torch.randn(B, N_CELL_TYPES, d_input, requires_grad=True)
-        edge_index = torch.randint(0, N_CELL_TYPES, (B, 2, n_edges))
-        edge_type = torch.randint(0, N_EDGE_TYPES, (B, n_edges))
-        edge_attr = torch.rand(B, n_edges, 1)
-        edge_counts = torch.full((B,), n_edges, dtype=torch.long)
+        src_parts, dst_parts, type_parts = [], [], []
+        for b in range(B):
+            offset = b * N_CELL_TYPES
+            src_parts.append(torch.randint(0, N_CELL_TYPES, (n_edges,)) + offset)
+            dst_parts.append(torch.randint(0, N_CELL_TYPES, (n_edges,)) + offset)
+            type_parts.append(torch.randint(0, N_EDGE_TYPES, (n_edges,)))
+        edge_index = torch.stack([torch.cat(src_parts), torch.cat(dst_parts)])
+        edge_type = torch.cat(type_parts)
+        edge_attr = torch.rand(B * n_edges, 1)
 
-        output = encoder(x, edge_index, edge_type, edge_attr, edge_counts)
+        output = encoder(x, edge_index, edge_type, edge_attr)
 
         # Compute loss and backprop
         loss = output.sum()

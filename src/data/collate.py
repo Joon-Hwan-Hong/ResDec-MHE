@@ -7,9 +7,9 @@ Handles batching of:
 - Multi-region data (optional)
 
 Collate Format:
-    This module outputs **padded raw tensors** for HGT graph data:
-    ccc_edge_index [B, 2, max_edges], ccc_edge_type [B, max_edges],
-    ccc_edge_attr [B, max_edges, 1], ccc_edge_counts [B].
+    This module outputs **flat concatenated tensors** for HGT graph data:
+    ccc_edge_index [2, E_total], ccc_edge_type [E_total],
+    ccc_edge_attr [E_total, 1] with node indices offset per sample.
     These are directly compatible with HGTEncoderTensor. Key functions:
     - collate_for_hgt_multiregion: Primary collate for training (recommended)
     - collate_for_hgt: Single-region variant
@@ -346,25 +346,24 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
 
 def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = False) -> dict[str, Any]:
     """
-    Collate function returning padded tensor format for HGTEncoderTensor.
+    Collate function returning flat concatenated tensors for HGTEncoderTensor.
 
     This is the RECOMMENDED collate function for our model because:
     - We have 31 distinct node types (cell types)
     - We have 5 distinct edge/relation types (CellChatDB categories)
-    - HGTEncoderTensor expects padded batched tensors
+    - HGTEncoderTensor expects flat edge tensors (no padding needed)
 
-    Returns padded edge tensors directly compatible with HGTEncoderTensor,
-    avoiding per-sample dict overhead.
+    Returns flat concatenated edge tensors directly compatible with
+    HGTEncoderTensor, with node indices offset per sample.
 
     Returns:
         Batched dictionary with:
         - pseudobulk: [batch, n_cell_types, n_genes] (for PseudobulkEncoder)
         - cell_type_mask: [batch, n_cell_types] bool mask for available cell types
         - cell_counts: [batch, n_cell_types] number of cells per type
-        - ccc_edge_index: [batch, 2, max_edges] padded edge indices (node type indices)
-        - ccc_edge_type: [batch, max_edges] padded edge type indices
-        - ccc_edge_attr: [batch, max_edges, edge_dim] padded edge attributes
-        - ccc_edge_counts: [batch] number of valid edges per sample
+        - ccc_edge_index: [2, E_total] flat edge indices with per-sample node offsets
+        - ccc_edge_type: [E_total] edge type indices
+        - ccc_edge_attr: [E_total, edge_dim] edge attributes
         - pathology: [batch, n_pathology]
         - cognition: [batch, 1]
         - cells: [batch, n_cell_types, max_cells, n_genes]
@@ -418,32 +417,30 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
         cells, cell_mask = _pad_and_stack_cells(batch)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Build padded edge tensors for HGTEncoderTensor
+    # Build flat edge tensors for HGTEncoderTensor
     # ─────────────────────────────────────────────────────────────────────────
-    # ── Raw edge tensors (padded to max_edges in batch) ────────────────
-    # Pass raw CCC tensors padded to max_edges for HGTEncoderTensor.
-    edge_indices = [s["ccc_edge_index"] for s in batch]    # List of [2, n_edges_i]
-    edge_types_raw = [s["ccc_edge_type"] for s in batch]   # List of [n_edges_i]
-    edge_attrs = [s["ccc_edge_attr"] for s in batch]       # List of [n_edges_i, 1]
-    edge_counts = torch.tensor(
-        [ei.shape[1] if ei.numel() > 0 else 0 for ei in edge_indices],
-        dtype=torch.long,
-    )
+    # Concatenate edges across batch with node indices offset by sample * N.
+    N = batch[0]["pseudobulk"].shape[0]  # n_cell_types (fixed at 31)
+    all_edge_indices = []
+    all_edge_types = []
+    all_edge_attrs = []
+    for i, s in enumerate(batch):
+        ei = s["ccc_edge_index"]   # [2, n_edges_i]
+        n_edges = ei.shape[1] if ei.numel() > 0 else 0
+        if n_edges > 0:
+            all_edge_indices.append(ei + i * N)  # offset node indices
+            all_edge_types.append(s["ccc_edge_type"])
+            all_edge_attrs.append(s["ccc_edge_attr"])
 
-    max_edges = edge_counts.max().item() if edge_counts.numel() > 0 else 0
-
-    # Pad to max_edges
-    ccc_edge_index = torch.zeros(batch_size, 2, max_edges, dtype=torch.long)
-    ccc_edge_type = torch.zeros(batch_size, max_edges, dtype=torch.long)
-    edge_dim = edge_attrs[0].shape[1] if edge_attrs[0].numel() > 0 else 1
-    ccc_edge_attr = torch.zeros(batch_size, max_edges, edge_dim)
-
-    for i, n in enumerate(edge_counts):
-        n = n.item()
-        if n > 0:
-            ccc_edge_index[i, :, :n] = edge_indices[i]
-            ccc_edge_type[i, :n] = edge_types_raw[i]
-            ccc_edge_attr[i, :n] = edge_attrs[i]
+    if all_edge_indices:
+        ccc_edge_index = torch.cat(all_edge_indices, dim=1)  # [2, E_total]
+        ccc_edge_type = torch.cat(all_edge_types)             # [E_total]
+        ccc_edge_attr = torch.cat(all_edge_attrs)             # [E_total, 1]
+    else:
+        ccc_edge_index = torch.zeros(2, 0, dtype=torch.long)
+        ccc_edge_type = torch.zeros(0, dtype=torch.long)
+        edge_dim = 1
+        ccc_edge_attr = torch.zeros(0, edge_dim)
 
     subject_ids = [s["subject_id"] for s in batch]
 
@@ -453,11 +450,10 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
         "cell_counts": cell_counts,
         "pathology": pathology,
         "cognition": cognition,
-        # HGT inputs (raw padded tensors for HGTEncoderTensor)
+        # HGT inputs (flat concatenated tensors)
         "ccc_edge_index": ccc_edge_index,
         "ccc_edge_type": ccc_edge_type,
         "ccc_edge_attr": ccc_edge_attr,
-        "ccc_edge_counts": edge_counts,
         # Metadata
         "subject_ids": subject_ids,
         "batch_size": batch_size,
@@ -532,10 +528,10 @@ def collate_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
 
 def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    Collate function combining HGT tensor format with multi-region support.
+    Collate function combining HGT flat tensor format with multi-region support.
 
     This combines:
-    - Padded edge tensors for HGTEncoderTensor (from collate_for_hgt)
+    - Flat concatenated edge tensors for HGTEncoderTensor (from collate_for_hgt)
     - Region-specific pseudobulk tensors (from collate_multiregion)
 
     Use this when you need both HGT graph structure AND multi-region data.

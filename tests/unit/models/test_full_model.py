@@ -185,14 +185,16 @@ class TestForwardPass:
         n_cell_types = N_CELL_TYPES
         n_genes = 50
         max_cells = 10
+        n_edges = 5
 
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         return {
             'region_pseudobulk': torch.randn(B, n_regions, n_cell_types, n_genes),
             'region_mask': torch.ones(B, n_regions, dtype=torch.bool),
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, 5)),
-            'ccc_edge_type': torch.randint(0, 5, (B, 5)),
-            'ccc_edge_attr': torch.rand(B, 5, 1),
-            'ccc_edge_counts': torch.tensor([3, 5]),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
+            'ccc_edge_attr': torch.rand(B * n_edges, 1),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -433,10 +435,9 @@ class TestEdgeCases:
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'ccc_edge_index': torch.zeros(B, 2, 0, dtype=torch.long),
-            'ccc_edge_type': torch.zeros(B, 0, dtype=torch.long),
-            'ccc_edge_attr': torch.zeros(B, 0, 1),
-            'ccc_edge_counts': torch.zeros(B, dtype=torch.long),
+            'ccc_edge_index': torch.zeros(2, 0, dtype=torch.long),
+            'ccc_edge_type': torch.zeros(0, dtype=torch.long),
+            'ccc_edge_attr': torch.zeros(0, 1),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -456,13 +457,15 @@ class TestEdgeCases:
         cell_mask = torch.ones(B, n_cell_types, max_cells, dtype=torch.bool)
         cell_mask[:, :, max_cells//2:] = False
 
+        n_edges = 5
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, 5)),
-            'ccc_edge_type': torch.randint(0, 5, (B, 5)),
-            'ccc_edge_attr': torch.rand(B, 5, 1),
-            'ccc_edge_counts': torch.tensor([3, 5]),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
+            'ccc_edge_attr': torch.rand(B * n_edges, 1),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
             'cell_mask': cell_mask,
             'pathology': torch.randn(B, 3),
@@ -482,13 +485,15 @@ class TestEdgeCases:
         n_genes = 50
         max_cells = 10
 
+        n_edges = 5
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         inputs = {
             'pseudobulk': torch.randn(B, n_cell_types, n_genes),
             # NO region_pseudobulk or region_mask
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, 5)),
-            'ccc_edge_type': torch.randint(0, 5, (B, 5)),
-            'ccc_edge_attr': torch.rand(B, 5, 1),
-            'ccc_edge_counts': torch.tensor([3, 5]),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
+            'ccc_edge_attr': torch.rand(B * n_edges, 1),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -525,11 +530,13 @@ class TestEdgeCases:
         region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
         region_mask[:, PFC_REGION_IDX] = True
 
+        n_edges = 5
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         common_kwargs = {
-            "ccc_edge_index": torch.randint(0, n_cell_types, (B, 2, 5)),
-            "ccc_edge_type": torch.randint(0, 5, (B, 5)),
-            "ccc_edge_attr": torch.rand(B, 5, 1),
-            "ccc_edge_counts": torch.tensor([3, 5]),
+            "ccc_edge_index": torch.stack([src, dst]),
+            "ccc_edge_type": torch.randint(0, 5, (B * n_edges,)),
+            "ccc_edge_attr": torch.rand(B * n_edges, 1),
             "cells": torch.randn(B, n_cell_types, max_cells, n_genes),
             "cell_mask": torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
             "pathology": torch.randn(B, 3),
@@ -553,13 +560,15 @@ class TestEdgeCases:
         n_genes = 50
         max_cells = 10
 
+        n_edges = 5
+        src = torch.randint(0, n_cell_types, (n_edges,))
+        dst = torch.randint(0, n_cell_types, (n_edges,))
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, 5)),
-            'ccc_edge_type': torch.randint(0, 5, (B, 5)),
-            'ccc_edge_attr': torch.rand(B, 5, 1),
-            'ccc_edge_counts': torch.tensor([5]),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, 5, (n_edges,)),
+            'ccc_edge_attr': torch.rand(n_edges, 1),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -575,13 +584,15 @@ class TestEdgeCases:
         n_genes = 50
         max_cells = 10
 
+        n_edges = 5
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         inputs = {
             'region_pseudobulk': torch.randn(B, N_REGIONS, n_cell_types, n_genes),
             'region_mask': torch.ones(B, N_REGIONS, dtype=torch.bool),
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, 5)),
-            'ccc_edge_type': torch.randint(0, 5, (B, 5)),
-            'ccc_edge_attr': torch.rand(B, 5, 1),
-            'ccc_edge_counts': torch.tensor([3, 5]),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
+            'ccc_edge_attr': torch.rand(B * n_edges, 1),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
             'pathology': torch.randn(B, 3),
@@ -598,12 +609,14 @@ class TestEdgeCases:
         n_genes = 50
         max_cells = 10
 
+        n_edges = 5
+        src = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
+        dst = torch.cat([torch.randint(0, n_cell_types, (n_edges,)) + b * n_cell_types for b in range(B)])
         inputs = {
             # Neither region_pseudobulk nor pseudobulk provided
-            'ccc_edge_index': torch.randint(0, n_cell_types, (B, 2, 5)),
-            'ccc_edge_type': torch.randint(0, 5, (B, 5)),
-            'ccc_edge_attr': torch.rand(B, 5, 1),
-            'ccc_edge_counts': torch.tensor([3, 5]),
+            'ccc_edge_index': torch.stack([src, dst]),
+            'ccc_edge_type': torch.randint(0, 5, (B * n_edges,)),
+            'ccc_edge_attr': torch.rand(B * n_edges, 1),
             'cells': torch.randn(B, n_cell_types, max_cells, n_genes),
             'cell_mask': torch.ones(B, n_cell_types, max_cells, dtype=torch.bool),
             'pathology': torch.randn(B, 3),

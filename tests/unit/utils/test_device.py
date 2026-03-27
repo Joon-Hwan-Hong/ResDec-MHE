@@ -84,13 +84,12 @@ class TestMoveBatchToDevice:
 
     def test_raw_edge_tensors_moved_to_device(self):
         batch = {
-            "ccc_edge_index": torch.tensor([[[0], [0]], [[0], [0]]]),
-            "ccc_edge_type": torch.tensor([[0], [0]]),
-            "ccc_edge_attr": torch.tensor([[[0.5]], [[0.5]]]),
-            "ccc_edge_counts": torch.tensor([1, 1]),
+            "ccc_edge_index": torch.tensor([[0, 31], [0, 31]]),
+            "ccc_edge_type": torch.tensor([0, 0]),
+            "ccc_edge_attr": torch.tensor([[0.5], [0.5]]),
         }
         moved = move_batch_to_device(batch, "cpu")
-        for key in ("ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts"):
+        for key in ("ccc_edge_index", "ccc_edge_type", "ccc_edge_attr"):
             assert isinstance(moved[key], torch.Tensor)
             assert moved[key].device == torch.device("cpu")
 
@@ -103,10 +102,9 @@ class TestMoveBatchToDevice:
             "pathology": torch.randn(4, 3),
             "region_pseudobulk": torch.randn(4, 6, 31, 50),
             "region_mask": torch.ones(4, 6, dtype=torch.bool),
-            "ccc_edge_index": torch.zeros(4, 2, 0, dtype=torch.long),
-            "ccc_edge_type": torch.zeros(4, 0, dtype=torch.long),
-            "ccc_edge_attr": torch.zeros(4, 0, 1),
-            "ccc_edge_counts": torch.zeros(4, dtype=torch.long),
+            "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
+            "ccc_edge_type": torch.zeros(0, dtype=torch.long),
+            "ccc_edge_attr": torch.zeros(0, 1),
             "subject_ids": [f"subj_{i}" for i in range(4)],
             "batch_size": 4,
         }
@@ -122,10 +120,9 @@ class TestMoveBatchToDevice:
 
     def test_empty_edge_tensors(self):
         batch = {
-            "ccc_edge_index": torch.zeros(3, 2, 0, dtype=torch.long),
-            "ccc_edge_type": torch.zeros(3, 0, dtype=torch.long),
-            "ccc_edge_attr": torch.zeros(3, 0, 1),
-            "ccc_edge_counts": torch.zeros(3, dtype=torch.long),
+            "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
+            "ccc_edge_type": torch.zeros(0, dtype=torch.long),
+            "ccc_edge_attr": torch.zeros(0, 1),
         }
         moved = move_batch_to_device(batch, "cpu")
-        assert (moved["ccc_edge_counts"] == 0).all()
+        assert moved["ccc_edge_index"].shape == (2, 0)

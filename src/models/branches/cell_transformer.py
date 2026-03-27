@@ -244,14 +244,21 @@ class CellTransformer(nn.Module):
             device=device, dtype=torch.bool,
         )
 
-        for b in range(B):
-            for t in range(n_types):
-                start = int(cell_offsets[b, t])
-                end = int(cell_offsets[b, t + 1])
-                n = end - start
-                if n > 0:
-                    cells_grouped[b * n_types + t, :n] = cell_data[start:end]
-                    mask_grouped[b * n_types + t, :n] = True
+        total_cells = cell_data.shape[0]
+        if total_cells > 0:
+            starts = cell_offsets[:, :-1].reshape(-1)    # [B * n_types]
+            counts_flat = counts.reshape(-1)             # [B * n_types]
+
+            # Row: which group (b*n_types + t) each cell belongs to
+            group_idx = torch.arange(B * n_types, device=device)
+            row_idx = torch.repeat_interleave(group_idx, counts_flat)
+
+            # Col: position within its group (0, 1, ..., count-1)
+            group_starts = torch.repeat_interleave(starts, counts_flat)
+            col_idx = torch.arange(total_cells, device=device) - group_starts
+
+            cells_grouped[row_idx, col_idx] = cell_data
+            mask_grouped[row_idx, col_idx] = True
 
         # SetTransformerEncoder forward
         embeddings_flat, attention_flat = self.set_encoder(

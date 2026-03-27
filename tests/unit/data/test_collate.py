@@ -90,8 +90,8 @@ class TestCollateOutputSchema:
             "cells", "cell_mask",
             "pathology", "cognition",
             "region_mask",
-            # HGT raw edge tensors
-            "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts",
+            # HGT flat edge tensors
+            "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr",
             "subject_ids", "batch_size",
         }
 
@@ -112,11 +112,12 @@ class TestCollateOutputSchema:
         # cells: [batch, n_cell_types, max_cells, n_genes]
         assert batch["cells"].shape[0] == batch_size
         assert batch["cells"].shape[1] == N_CELL_TYPES
-        # HGT raw edge tensors should have batch dimension == batch_size
-        assert batch["ccc_edge_index"].shape[0] == batch_size
-        assert batch["ccc_edge_type"].shape[0] == batch_size
-        assert batch["ccc_edge_attr"].shape[0] == batch_size
-        assert batch["ccc_edge_counts"].shape == (batch_size,)
+        # HGT flat edge tensors: [2, E_total], [E_total], [E_total, 1]
+        assert batch["ccc_edge_index"].dim() == 2
+        assert batch["ccc_edge_index"].shape[0] == 2
+        assert batch["ccc_edge_type"].dim() == 1
+        assert batch["ccc_edge_attr"].dim() == 2
+        assert "ccc_edge_counts" not in batch
 
 
 def create_mock_sample(
@@ -244,7 +245,7 @@ class TestCollateForHgt:
     """Tests for collate_for_hgt() - tensor format for HGTEncoderTensor."""
 
     def test_creates_raw_edge_tensors(self):
-        """Creates raw padded edge tensors for HGTEncoderTensor."""
+        """Creates flat concatenated edge tensors for HGTEncoderTensor."""
         from src.data.collate import collate_for_hgt
 
         batch = [create_mock_sample() for _ in range(3)]
@@ -253,9 +254,10 @@ class TestCollateForHgt:
         assert "ccc_edge_index" in result
         assert "ccc_edge_type" in result
         assert "ccc_edge_attr" in result
-        assert "ccc_edge_counts" in result
+        assert "ccc_edge_counts" not in result
         assert result["batch_size"] == 3
-        assert result["ccc_edge_index"].shape[0] == 3
+        assert result["ccc_edge_index"].dim() == 2
+        assert result["ccc_edge_index"].shape[0] == 2
 
     def test_single_sample_batch(self):
         """Handle batch of size 1."""
@@ -266,10 +268,12 @@ class TestCollateForHgt:
 
         assert result["batch_size"] == 1
         assert result["pseudobulk"].shape[0] == 1
-        assert result["ccc_edge_index"].shape[0] == 1
+        # Flat format: [2, E_total]
+        assert result["ccc_edge_index"].dim() == 2
+        assert result["ccc_edge_index"].shape[0] == 2
 
     def test_raw_edge_tensors_from_sample_with_edges(self):
-        """Collate should produce valid raw edge tensors from samples with edges."""
+        """Collate should produce valid flat edge tensors from samples with edges."""
         from src.data.collate import collate_for_hgt
 
         # Create sample with edges
@@ -280,13 +284,77 @@ class TestCollateForHgt:
 
         result = collate_for_hgt([sample])
 
-        # Should have 2 edges
-        assert result["ccc_edge_counts"][0].item() == 2
-        assert result["ccc_edge_index"].shape == (1, 2, 2)
-        assert result["ccc_edge_type"].shape == (1, 2)
-        assert result["ccc_edge_attr"].shape == (1, 2, 1)
+        # Should have 2 edges in flat format
+        assert result["ccc_edge_index"].shape == (2, 2)
+        assert result["ccc_edge_type"].shape == (2,)
+        assert result["ccc_edge_attr"].shape == (2, 1)
+        assert "ccc_edge_counts" not in result
 
 
+
+
+class TestCollateForHgtFlatEdges:
+    """Tests for flat edge format in collate_for_hgt."""
+
+    def test_flat_edge_keys_present(self):
+        from src.data.collate import collate_for_hgt
+        batch = [create_mock_sample() for _ in range(3)]
+        result = collate_for_hgt(batch)
+        assert result["ccc_edge_index"].dim() == 2  # [2, E_total]
+        assert result["ccc_edge_index"].shape[0] == 2
+        assert result["ccc_edge_type"].dim() == 1    # [E_total]
+        assert result["ccc_edge_attr"].dim() == 2     # [E_total, 1]
+        assert "ccc_edge_counts" not in result
+
+    def test_flat_edge_node_offsets(self):
+        from src.data.collate import collate_for_hgt
+        N = N_CELL_TYPES  # n_cell_types
+        s0 = create_mock_sample()
+        s0["ccc_edge_index"] = torch.tensor([[0, 1], [1, 2]])
+        s0["ccc_edge_type"] = torch.tensor([0, 1])
+        s0["ccc_edge_attr"] = torch.tensor([[0.5], [0.8]])
+        s1 = create_mock_sample()
+        s1["ccc_edge_index"] = torch.tensor([[2, 3], [3, 0]])
+        s1["ccc_edge_type"] = torch.tensor([0, 0])
+        s1["ccc_edge_attr"] = torch.tensor([[0.3], [0.7]])
+        result = collate_for_hgt([s0, s1])
+        ei = result["ccc_edge_index"]
+        assert ei.shape == (2, 4)
+        # Sample 0: no offset
+        assert ei[0, 0].item() == 0
+        assert ei[1, 0].item() == 1
+        # Sample 1: offset by N
+        assert ei[0, 2].item() == 2 + N
+        assert ei[1, 2].item() == 3 + N
+
+    def test_flat_edge_values_preserved(self):
+        from src.data.collate import collate_for_hgt
+        s0 = create_mock_sample()
+        s0["ccc_edge_index"] = torch.tensor([[0], [1]])
+        s0["ccc_edge_type"] = torch.tensor([1])
+        s0["ccc_edge_attr"] = torch.tensor([[0.9]])
+        s1 = create_mock_sample()
+        s1["ccc_edge_index"] = torch.tensor([[2, 3], [0, 1]])
+        s1["ccc_edge_type"] = torch.tensor([0, 1])
+        s1["ccc_edge_attr"] = torch.tensor([[0.3], [0.4]])
+        result = collate_for_hgt([s0, s1])
+        et = result["ccc_edge_type"]
+        assert et.shape == (3,)
+        assert et[0].item() == 1
+        assert et[1].item() == 0
+
+    def test_flat_edge_empty_sample(self):
+        from src.data.collate import collate_for_hgt
+        s0 = create_mock_sample()
+        s0["ccc_edge_index"] = torch.tensor([[0], [1]])
+        s0["ccc_edge_type"] = torch.tensor([0])
+        s0["ccc_edge_attr"] = torch.tensor([[0.5]])
+        s1 = create_mock_sample(n_edges=0)
+        s1["ccc_edge_index"] = torch.zeros((2, 0), dtype=torch.long)
+        s1["ccc_edge_type"] = torch.zeros((0,), dtype=torch.long)
+        s1["ccc_edge_attr"] = torch.zeros((0, 1))
+        result = collate_for_hgt([s0, s1])
+        assert result["ccc_edge_index"].shape == (2, 1)
 
 
 class TestCreateDataloader:
@@ -342,11 +410,11 @@ class TestCollateForHgtMultiregion:
         sample = create_mock_sample()
         result = collate_for_hgt_multiregion([sample])
 
-        # HGT raw edge tensor keys should be present
+        # HGT flat edge tensor keys should be present
         assert "ccc_edge_index" in result
         assert "ccc_edge_type" in result
         assert "ccc_edge_attr" in result
-        assert "ccc_edge_counts" in result
+        assert "ccc_edge_counts" not in result
 
     def test_includes_region_data_when_present(self):
         """Should include region data when samples have region_pseudobulk."""
@@ -444,15 +512,14 @@ class TestMoveBatchToDevice:
         from src.utils.device import move_batch_to_device
 
         batch = {
-            "ccc_edge_index": torch.tensor([[[0], [0]]]),
-            "ccc_edge_type": torch.tensor([[0]]),
-            "ccc_edge_attr": torch.tensor([[[0.5]]]),
-            "ccc_edge_counts": torch.tensor([1]),
+            "ccc_edge_index": torch.tensor([[0], [0]]),
+            "ccc_edge_type": torch.tensor([0]),
+            "ccc_edge_attr": torch.tensor([[0.5]]),
         }
 
         moved = move_batch_to_device(batch, "cpu")
 
-        for key in ("ccc_edge_index", "ccc_edge_type", "ccc_edge_attr", "ccc_edge_counts"):
+        for key in ("ccc_edge_index", "ccc_edge_type", "ccc_edge_attr"):
             assert moved[key].device == torch.device("cpu")
 
     def test_preserves_metadata_keys(self):
@@ -655,7 +722,7 @@ class TestCompositeKeyOverflow:
             "subject_id": "test_subj",
         }
         result = collate_for_hgt([sample])
-        assert result["ccc_edge_counts"][0].item() == 2
+        assert result["ccc_edge_index"].shape == (2, 2)  # flat: [2, E_total]
 
 
 class TestMultiregionAvailableRegionsDerivation:
