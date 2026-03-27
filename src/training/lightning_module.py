@@ -12,23 +12,17 @@ Metric logging strategy (Bayesian head):
     The ELBO decomposes as: ELBO = E[log p(y|x,θ)] - KL(q(θ) || p(θ)), where the
     KL term regularizes the variational posterior q(θ) toward the prior p(θ).
 
-    For model selection (early stopping + checkpointing), we monitor val_loss which
-    is set to the ELBO on the validation set. This ensures the KL term is visible
-    to model selection, preventing a failure mode where the posterior degenerates
-    (collapses or becomes overconfident) while predictive loss looks fine.
+    For model selection (early stopping + checkpointing), we monitor val_nll
+    (predictive Beta-NLL loss at posterior median). With 1/N KL normalization
+    (Graves 2011, Blundell et al. 2015), the KL term is properly scaled but
+    remains a regularizer, not a measure of predictive quality. Monitoring
+    val_loss (ELBO) was found to prevent early stopping from firing because KL
+    monotonically decreases, masking prediction quality degradation
+    (FixAttempt2 diagnostic, 2026-03-12).
 
-    Literature supporting ELBO monitoring:
-    - Lucas et al. (NeurIPS 2019, "Don't Blame the ELBO!") show that with powerful
-      decoders, posterior collapse occurs without affecting reconstruction loss —
-      predictive-only monitoring would miss this.
-    - Lambert et al. (2020, "Objective Mismatch in MBRL") document that training on
-      metric A while selecting on metric B leads to poor model selection.
-    - Pyro core developers (Jankowiak, Pyro forum) recommend ELBO on validation set
-      for model selection, with more particles for evaluation than training.
-    - Seitzer et al. (ICLR 2022) fix training loss pathology (β-NLL) but evaluate
-      on BOTH RMSE and NLL — they do not recommend dropping NLL for validation.
-
-    The predictive Beta-NLL loss is additionally logged as val_nll for diagnostics.
+    The full ELBO is still logged as val_loss / val_elbo for posterior health
+    diagnostics. If posterior collapse occurs (KL → 0 while NLL increases),
+    this will be visible in val_elbo diverging from val_nll.
 
     For the deterministic head, val_loss is simply MSE — no ambiguity.
 """
@@ -238,7 +232,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                     self.model, self.guide,
                     **self._batch_to_model_kwargs(batch),
                 )
-                if self.training and not getattr(self, '_is_prototyping', False):
+                if (self.training
+                        and not getattr(self, '_is_prototyping', False)
+                        and not getattr(self, '_is_ge_reevaluation', False)):
                     bs = batch["cognition"].shape[0]
                     self.log("train_nll", nll.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
                     self.log("train_kl_weighted", kl.detach(), prog_bar=False, sync_dist=False, batch_size=bs)
@@ -336,6 +332,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
                 self._epoch_nan_skips += 1
                 logger.warning("NaN loss at batch %d — skipping", batch_idx)
                 return None
+
+        # Cache batch for GE noise re-evaluation (GradientModulationCallback)
+        self._current_batch = batch
 
         bs = batch["cognition"].shape[0]
         # For Bayesian head: train_loss = ELBO (the actual optimization target).
@@ -690,6 +689,19 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             if world_size > 1:
                 self.model.prediction_head.set_data_scale(float(world_size))
                 logger.info(f"Bayesian ELBO scaling: data_scale={world_size} for DDP")
+
+            # Set 1/N KL normalization (Graves 2011, Blundell et al. 2015).
+            # KL complexity cost applies once per dataset, not once per sample.
+            try:
+                train_ds = self.trainer.datamodule.train_dataset
+                if train_ds is None:
+                    train_ds = self.trainer.datamodule.train_ds
+                n_train = len(train_ds)
+            except (AttributeError, TypeError):
+                n_train = 1
+                logger.warning("Could not determine training set size for 1/N KL scaling; using n_train=1")
+            self.elbo.n_train = n_train
+            logger.info(f"KL 1/N normalization: n_train={n_train}")
 
             # Prototype the guide so AutoDiagonalNormal creates its variational
             # parameters (loc, scale). Without this, guide.parameters() returns []

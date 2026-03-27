@@ -12,7 +12,7 @@ Workflow:
 3. Load preprocessed data and create stratified splits
 4. Build DataLoaders for the specified fold
 5. Instantiate Lightning module and Trainer with callbacks
-6. Train with early stopping on val_loss
+6. Train with early stopping on val_nll
 7. Save best checkpoint and experiment config
 """
 
@@ -35,6 +35,7 @@ from src.training.callbacks import (
     GradientNormLogger,
     MinEpochEarlyStopping,
     ResilienceModelCheckpoint,
+    SerialCompilationWarmup,
     TemperatureAnnealing,
 )
 from src.training.lightning_module import CognitiveResilienceLightningModule
@@ -88,7 +89,7 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
     Create training callbacks from config.
 
     Returns list of:
-    - ModelCheckpoint: save best model by val_loss (ELBO for Bayesian, MSE for deterministic)
+    - ModelCheckpoint: save best model by val_nll (predictive quality for Bayesian, MSE for deterministic)
     - EarlyStopping: stop unpromising runs
     - LearningRateMonitor: log LR to TensorBoard
     - TemperatureAnnealing: anneal gene gate temperature
@@ -113,7 +114,7 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
             mode=ckpt_cfg.mode,
             save_top_k=ckpt_cfg.save_top_k,
             save_last=ckpt_cfg.get("save_last", True),
-            filename="epoch={epoch}-val_loss={val_loss:.4f}",
+            filename="epoch={epoch}-val_nll={val_nll:.4f}",
             auto_insert_metric_name=False,
         )
     )
@@ -166,8 +167,26 @@ def setup_callbacks(config: DictConfig) -> list[pl.Callback]:
         )
     )
 
+    # OGM-GE gradient modulation (Peng et al., CVPR 2022)
+    gm_cfg = train_cfg.get("gradient_modulation", {})
+    if gm_cfg.get("enabled", False):
+        from src.training.gradient_modulation import GradientModulationCallback
+        callbacks.append(
+            GradientModulationCallback(
+                alpha=gm_cfg.get("alpha", 1.0),
+                ge_enabled=gm_cfg.get("ge_enabled", True),
+                log_modulation=gm_cfg.get("log_modulation", True),
+                log_every_n_steps=log_cfg.get("log_every_n_steps", 10),
+            )
+        )
+
     # ResilienceModelCheckpoint (custom metadata)
     callbacks.append(ResilienceModelCheckpoint())
+
+    # Serial torch.compile warmup (DDP only — serializes compilation
+    # across ranks to avoid exceeding commit limit under overcommit_memory=2)
+    if config.model.get("use_torch_compile", False):
+        callbacks.append(SerialCompilationWarmup())
 
     return callbacks
 
@@ -211,15 +230,7 @@ def setup_trainer(
 
     # Distributed training settings
     devices = train_cfg.get("devices", "auto")
-    strategy_str = train_cfg.get("strategy", "auto")
-    if strategy_str == "ddp_find_unused_parameters_true":
-        from lightning.pytorch.strategies import DDPStrategy
-        strategy = DDPStrategy(
-            find_unused_parameters=True,
-            static_graph=True,
-        )
-    else:
-        strategy = strategy_str
+    strategy = train_cfg.get("strategy", "auto")
 
     # Profiler setup
     profiler = None
@@ -266,6 +277,7 @@ def setup_trainer(
         benchmark=repro_cfg.get("benchmark", False),
         enable_progress_bar=True,
         profiler=profiler,
+        use_distributed_sampler=True,
     )
 
     return trainer
@@ -353,12 +365,50 @@ def main() -> None:
     )
     logger.info("Seed set to %d", seed)
 
-    # Create experiment directory structure via ExperimentManager
+    # Pyro DDP: store parameters on nn.Modules (not global ParamStore).
+    # Required for DDP gradient sync — DDP synchronizes module.parameters(),
+    # not Pyro's global dict.  Must be set before guide construction.
+    # See: pyro.ai/examples/svi_lightning.html
+    import pyro
+    pyro.settings.set(module_local_params=True)
+
+    # Create experiment directory structure via ExperimentManager.
+    # Under DDP (torchrun), each rank runs this script independently.
+    # generate_experiment_hash includes a timestamp, so ranks would create
+    # different directories.  Rank 0 creates the experiment; other ranks
+    # receive the path via a shared temp file.
+    import os
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
     base_dir = config.paths.get("output_dir", "outputs/")
-    exp_manager = ExperimentManager(base_dir=base_dir)
     config_dict = OmegaConf.to_container(config, resolve=True)
-    experiment = exp_manager.create_experiment(config_dict)
-    logger.info("Experiment created: %s", experiment.exp_hash)
+
+    if world_size > 1:
+        exp_path_file = Path(base_dir) / ".ddp_exp_path"
+        if local_rank == 0:
+            exp_manager = ExperimentManager(base_dir=base_dir)
+            experiment = exp_manager.create_experiment(config_dict)
+            exp_path_file.write_text(str(experiment.exp_dir))
+            logger.info("Experiment created: %s", experiment.exp_hash)
+        else:
+            # Wait for rank 0 to write the experiment path
+            import time as _time
+            for _ in range(300):  # up to 30s
+                if exp_path_file.exists():
+                    break
+                _time.sleep(0.1)
+            exp_dir = Path(exp_path_file.read_text().strip())
+            from src.utils.experiment import Experiment
+            experiment = Experiment(
+                exp_dir=exp_dir,
+                config=config_dict,
+                exp_hash=exp_dir.name,
+            )
+            logger.info("Joined experiment: %s", exp_dir.name)
+    else:
+        exp_manager = ExperimentManager(base_dir=base_dir)
+        experiment = exp_manager.create_experiment(config_dict)
+        logger.info("Experiment created: %s", experiment.exp_hash)
 
     # Override paths in config to use experiment-specific directories
     OmegaConf.update(config, "paths.output_dir", str(experiment.exp_dir))

@@ -654,14 +654,14 @@ class CognitiveResilienceDataset(Dataset):
 
 class PrecomputedDataset(Dataset):
     """
-    Dataset loading precomputed features from .pt files via mmap.
+    Dataset loading precomputed features from .pt files into RAM.
 
-    All subjects are memory-mapped at init time using
-    ``torch.load(path, mmap=True, weights_only=False)``.  The OS pages in
-    data on demand; multiple DataLoader workers (and DDP ranks) share the
-    same page-cache pages with zero /dev/shm overhead.
-    ``__getitem__`` returns from pre-built templates with no disk I/O
-    beyond the initial page-fault.
+    All subjects are loaded into process-local heap memory at init time.
+    ``__getitem__`` returns from pre-built templates with zero I/O.
+
+    Each DDP rank loads its own copy (~38 GB for full ROSMAP dataset).
+    This avoids Linux ``mmap_lock`` contention that causes 4x data-loading
+    slowdown under DDP on kernels < 6.4 (no per-VMA locking).
     """
 
     def __init__(
@@ -676,7 +676,7 @@ class PrecomputedDataset(Dataset):
         max_missing_subject_fraction: float = 0.1,
     ):
         """
-        Initialize from precomputed .pt features (memory-mapped).
+        Initialize from precomputed .pt features (loaded into RAM).
 
         Args:
             feature_dir: Directory containing precomputed .pt files
@@ -697,8 +697,14 @@ class PrecomputedDataset(Dataset):
 
         self.target_column = target_column
         self.pathology_columns = pathology_columns or ["gpath", "amylsqrt", "tangsqrt"]
-        self.cell_type_order = cell_type_order or CELL_TYPE_ORDER
         self.max_missing_subject_fraction = max_missing_subject_fraction
+
+        # Auto-detect cell_type_order from first .pt file if not explicitly given.
+        # This avoids mismatches when the DataModule doesn't forward cell_type_order.
+        if cell_type_order is not None:
+            self.cell_type_order = cell_type_order
+        else:
+            self.cell_type_order = self._detect_cell_type_order() or CELL_TYPE_ORDER
 
         # Validate files exist
         self._validate_files()
@@ -725,9 +731,10 @@ class PrecomputedDataset(Dataset):
             self._target_array, dtype=torch.float32
         ).unsqueeze(1)  # [N_subjects, 1]
 
-        # Memory-map all .pt files. OS pages in data on demand; multiple
-        # workers / DDP ranks share the same page-cache pages.
-        self._mmap_load_all()
+        # Load all .pt files into process-local heap memory.  Each DDP rank
+        # gets its own copy (~38 GB) but avoids mmap_lock contention that
+        # causes 4x data-loading slowdown under DDP on kernel < 6.4.
+        self._load_all()
 
         # Pre-build sample templates (avoids dict construction per __getitem__)
         self._sample_templates = {}
@@ -767,12 +774,13 @@ class PrecomputedDataset(Dataset):
             template["region_mask"] = region_msk
             self._sample_templates[subject_id] = template
 
-    def _mmap_load_all(self) -> None:
-        """Memory-map all .pt files into ``_small_cache``.
+    def _load_all(self) -> None:
+        """Load all .pt files into process-local heap memory.
 
-        Uses ``torch.load(path, mmap=True)`` so that tensors are backed by
-        the OS page cache.  Multiple DataLoader workers and DDP ranks share
-        the same physical pages with no /dev/shm overhead.
+        Each DDP rank gets its own copy of the data (~38 GB for full ROSMAP).
+        This trades memory for zero ``mmap_lock`` contention during training —
+        on Linux < 6.4, concurrent mmap page faults across DDP ranks contend
+        on a single kernel lock, causing 4x data-loading slowdown.
         """
         import time as _time
 
@@ -781,7 +789,7 @@ class PrecomputedDataset(Dataset):
         total_cell_bytes = 0
         for sid in self.subject_ids:
             feature_file = self._resolve_feature_file(sid)
-            pt_data = torch.load(feature_file, mmap=True, weights_only=False)
+            pt_data = torch.load(feature_file, weights_only=False)
             # Validate cell_type_order if stored in .pt file
             if "cell_type_order" in pt_data:
                 saved_order = list(pt_data["cell_type_order"])
@@ -792,26 +800,26 @@ class PrecomputedDataset(Dataset):
                         f"Re-run precompute_features.py with the correct cell_type_order."
                     )
             entry: dict[str, Any] = {
-                "pseudobulk": pt_data["pseudobulk"].float(),
-                "cell_type_mask": pt_data["cell_type_mask"].bool(),
-                "cell_offsets": pt_data["cell_offsets"].long(),
-                "ccc_edge_index": pt_data["ccc_edge_index"].long(),
-                "ccc_edge_type": pt_data["ccc_edge_type"].long(),
-                "ccc_edge_attr": pt_data["ccc_edge_attr"].float(),
-                "cell_counts": pt_data["cell_counts"].long(),
-                "region_mask": pt_data["region_mask"].bool(),
-                "cell_data": pt_data["cell_data"].float(),
+                "pseudobulk": pt_data["pseudobulk"],
+                "cell_type_mask": pt_data["cell_type_mask"],
+                "cell_offsets": pt_data["cell_offsets"],
+                "ccc_edge_index": pt_data["ccc_edge_index"],
+                "ccc_edge_type": pt_data["ccc_edge_type"],
+                "ccc_edge_attr": pt_data["ccc_edge_attr"],
+                "cell_counts": pt_data["cell_counts"],
+                "region_mask": pt_data["region_mask"],
+                "cell_data": pt_data["cell_data"],
             }
             for key in pt_data:
                 if key.startswith("region_") and key.endswith("_pseudobulk"):
-                    entry[key] = pt_data[key].float()
+                    entry[key] = pt_data[key]
             if "available_regions" in pt_data:
                 entry["available_regions"] = list(pt_data["available_regions"])
             total_cell_bytes += entry["cell_data"].nelement() * entry["cell_data"].element_size()
             self._small_cache[sid] = entry
         elapsed = _time.monotonic() - t0
         logger.info(
-            "Memory-mapped all .pt files for %d subjects in %.1f s (cell_data: %.1f GB)",
+            "Loaded all .pt files for %d subjects into RAM in %.1f s (cell_data: %.1f GB)",
             len(self.subject_ids), elapsed, total_cell_bytes / (1024**3),
         )
 
@@ -823,6 +831,19 @@ class PrecomputedDataset(Dataset):
         pt_path = self.feature_dir / f"{sid}.pt"
         if pt_path.exists():
             return pt_path
+        return None
+
+    def _detect_cell_type_order(self) -> list[str] | None:
+        """Read cell_type_order from the first available .pt file.
+
+        Returns None if no .pt file is found or it lacks the key.
+        """
+        for sid in self.subject_ids:
+            pt_path = self.feature_dir / f"{sid}.pt"
+            if pt_path.exists():
+                data = torch.load(pt_path, weights_only=False)
+                if "cell_type_order" in data:
+                    return list(data["cell_type_order"])
         return None
 
     def _validate_files(self):
@@ -880,10 +901,6 @@ class PrecomputedDataset(Dataset):
 
         self.subject_ids = valid_subjects
         self._edge_counts = edge_counts
-
-    def get_edge_counts(self) -> list[int]:
-        """Return edge counts in subject_ids order (for bucket batching)."""
-        return [self._edge_counts[sid] for sid in self.subject_ids]
 
     @staticmethod
     def _load_raw_feature_file(path: Path) -> dict:
@@ -943,11 +960,7 @@ class PrecomputedDataset(Dataset):
         return len(self.subject_ids)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        """Return pre-built template for a subject (mmap-backed, zero copy).
-
-        All subjects are memory-mapped at init; ``__getitem__`` is a dict
-        lookup with no per-call disk I/O.
-        """
+        """Return pre-built template for a subject (heap-backed, zero I/O)."""
         subject_id = self.subject_ids[idx]
         return self._sample_templates[subject_id]
 

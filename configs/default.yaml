@@ -5,7 +5,7 @@
 # Experiment metadata
 experiment:
   name: "cognitive_resilience"
-  run_name: "run2"  # Human-readable tag for experiment dirs (e.g., "baseline-5fold", "hgt-ablation")
+  run_name: "FixAttempt3"  # Human-readable tag for experiment dirs (e.g., "baseline-5fold", "hgt-ablation")
   seed: 42
   device: "auto"  # "auto", "cuda", "cpu"
 
@@ -54,11 +54,6 @@ data:
     min_cells_threshold: 50
     sampling_strategy: "random"  # "random", "stratified", "importance"
 
-  # Pre-load all .npz files (including cell_data) to shared memory at startup.
-  # Eliminates all disk I/O during training. Costs ~41 GB RAM for full ROSMAP dataset.
-  # Tensors are placed in shared memory for zero-copy DataLoader worker access.
-  preload_to_ram: true
-
   # Fraction of subjects allowed to be missing from splits before raising an error
   max_missing_subject_fraction: 0.1
 
@@ -68,10 +63,6 @@ data:
     num_workers: 12  # 8-12 for PrecomputedDataset; reduce to 4 for on-the-fly AnnData mode
     pin_memory: true
     prefetch_factor: 2
-    # Bucket batching: group subjects by CCC edge count to minimize padding waste.
-    # Reduces backward pass time by ~50% by avoiding extreme padding (134K edges
-    # in one sample forcing the entire batch to pad to 134K).
-    bucket_batching: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Model Configuration
@@ -141,7 +132,7 @@ model:
   # BayesianPredictionHead is excluded (Pyro incompatible).
   # WARNING: compilation is extremely RAM-hungry (~20-40 GB per module).
   # Only enable on machines with 128+ GB free RAM beyond training needs.
-  use_torch_compile: true
+  use_torch_compile: false
 
   # Prediction Head
   head:
@@ -159,7 +150,7 @@ training:
     patience: 15
     min_delta: 0.0001
     min_epochs: 55               # Don't stop before temperature annealing completes (5 warmup + 50 anneal)
-    monitor: "val_loss"
+    monitor: "val_nll"
     mode: "min"
 
   # Optimizer
@@ -200,18 +191,27 @@ training:
   # float32 (master weights), so this threshold applies to unscaled norms.
   gradient_clip_val: 1.0
 
+  # Gradient modulation — OGM-GE (Peng et al., CVPR 2022)
+  # Suppresses dominant branches to reduce gradient imbalance.
+  gradient_modulation:
+    enabled: true
+    method: "ogm_ge"
+    alpha: 1.0              # Suppression sensitivity (paper tunes per dataset)
+    ge_enabled: true         # GE noise injection for generalization
+    log_modulation: true     # Log k_i values to TensorBoard
+
   # Mixed precision
   precision: "bf16-mixed"  # "bf16-mixed" (Ada GPUs), "32-true" (debug), "16-mixed"
 
   # Distributed training
   devices: "auto"                # Device IDs: "auto", 1, 2, [0,1], etc.
-  strategy: "ddp_find_unused_parameters_true"  # Required: HGT edge-category params may be unused in some batches
+  strategy: "ddp"                # Pyro module_local_params=True handles param sync; tensorized HGT has no unused params
   lr_scaling: true               # Scale LR linearly with effective GPU count (Goyal et al. 2017)
 
   # Checkpointing
   checkpoint:
     save_top_k: 3
-    monitor: "val_loss"
+    monitor: "val_nll"
     mode: "min"
     save_last: true
 

@@ -119,11 +119,12 @@ class GeneAttentionGate(nn.Module):
         Returns:
             Gate weights of shape (n_cell_types, n_genes), each row sums to 1
         """
-        tau = self._temperature_buf.item()
+        # Use scalar tensor directly (no .item()) to avoid torch.compile graph break.
+        # Division by 0-d tensor works via broadcasting — numerically identical.
         # Promote to float32 for softmax stability under AMP.
         # At low temperature (tau→0.05), logits/tau amplifies by 20x.
         # Float16 exp() overflows at ~11.09 — any logit > 0.55 would produce NaN.
-        return F.softmax((self.gate_logits / tau).float(), dim=-1)
+        return F.softmax((self.gate_logits / self._temperature_buf).float(), dim=-1)
 
     def get_top_genes_per_cell_type(
         self, k: int = 100, gene_names: list[str] | None = None

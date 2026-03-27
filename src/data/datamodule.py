@@ -13,7 +13,7 @@ from omegaconf import DictConfig
 
 from src.data.collate import create_dataloader
 from src.data.datasets import CognitiveResilienceDataset, PrecomputedDataset
-from src.data.samplers import EdgeCountBucketBatchSampler
+from src.data.prefetch import ThreadedPrefetcher
 from src.data.splits import get_fold_subjects, get_final_train_subjects
 
 if TYPE_CHECKING:
@@ -73,6 +73,20 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         self._train_ds = None
         self._val_ds = None
         self._test_ds = None
+
+    @property
+    def _effective_num_workers(self) -> int:
+        """Return 0 workers when using precomputed (heap-loaded) data.
+
+        With heap-loaded .pt files, __getitem__ is a dict lookup on
+        in-memory tensors (O(1), no disk I/O).  DataLoader workers
+        add no throughput benefit but their fork() fails under
+        overcommit_memory=2 because process-private pages are counted
+        toward the commit limit.  This applies regardless of GPU count.
+        """
+        if self.precomputed_dir is not None:
+            return 0
+        return self._dl_cfg.get("num_workers", 4)
 
     def setup(self, stage: str | None = None) -> None:
         """Create datasets for the appropriate splits.
@@ -149,14 +163,6 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             targets.append(sample["cognition"].item())
         return float(np.mean(targets))
 
-    def on_train_epoch_start(self) -> None:
-        """Update bucket sampler epoch for deterministic batch-order shuffling."""
-        dl = self.trainer.train_dataloader
-        if dl is not None and hasattr(dl, "batch_sampler"):
-            bs = dl.batch_sampler
-            if hasattr(bs, "set_epoch"):
-                bs.set_epoch(self.trainer.current_epoch)
-
     def _make_dataset(self, subject_ids: list[str]):
         """Create a dataset for the given subject IDs."""
         if self.precomputed_dir is not None:
@@ -214,72 +220,99 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 ),
             )
 
-    def train_dataloader(self) -> torch.utils.data.DataLoader:
-        """Create training DataLoader.
+    def train_dataloader(self) -> torch.utils.data.DataLoader | ThreadedPrefetcher:
+        """Create training DataLoader, optionally wrapped with ThreadedPrefetcher.
 
-        When bucket_batching is enabled (default for PrecomputedDataset),
-        uses EdgeCountBucketBatchSampler to group subjects with similar
-        edge counts, reducing padding waste. This replaces both shuffle
-        and DistributedSampler — the bucket sampler handles DDP internally.
+        On CUDA, wraps the DataLoader with ThreadedPrefetcher to overlap batch
+        collation (torch.cat of ~1.4 GB cell_data) with GPU forward/backward.
+        This reduces data loading time from 628ms to 103ms (2-GPU DDP) and
+        158ms to ~0ms (1-GPU).
 
-        When bucket_batching is disabled, Lightning automatically replaces
-        shuffle with DistributedSampler for DDP.
+        When wrapping with ThreadedPrefetcher, DistributedSampler is added
+        manually because Lightning only auto-adds sampler to DataLoader
+        instances (ThreadedPrefetcher is not a DataLoader).  Val/test loaders
+        return plain DataLoaders and get Lightning's automatic sampler.
+
+        ThreadedPrefetcher also moves batches to the target CUDA device.
+        Lightning's transfer_batch_to_device sees tensors already on device
+        and becomes a no-op (torch .to() on same-device tensor returns self).
         """
-        use_bucket = self._dl_cfg.get("bucket_batching", True)
-        has_edge_counts = hasattr(self._train_ds, "get_edge_counts")
+        nw = self._effective_num_workers
 
-        if use_bucket and has_edge_counts:
-            return self._make_bucket_dataloader(self._train_ds, shuffle=True)
+        # Under DDP on CUDA, add DistributedSampler ourselves (see docstring)
+        sampler = None
+        if (
+            torch.cuda.is_available()
+            and self.trainer is not None
+            and self.trainer.world_size > 1
+        ):
+            from torch.utils.data.distributed import DistributedSampler
 
-        return create_dataloader(
+            sampler = DistributedSampler(
+                self._train_ds,
+                num_replicas=self.trainer.world_size,
+                rank=self.trainer.global_rank,
+                shuffle=True,
+            )
+
+        dl = create_dataloader(
             self._train_ds,
             batch_size=self.batch_size,
             shuffle=True,
             drop_last=True,
-            num_workers=self._dl_cfg.get("num_workers", 4),
+            num_workers=nw,
             pin_memory=self._dl_cfg.get("pin_memory", True),
             multiregion=True,
             use_hgt_format=True,
-            prefetch_factor=self._dl_cfg.get("prefetch_factor", 2),
-            worker_init_fn=self._make_worker_init_fn(),
+            prefetch_factor=self._dl_cfg.get("prefetch_factor", 2) if nw > 0 else None,
+            worker_init_fn=self._make_worker_init_fn() if nw > 0 else None,
+            sampler=sampler,
         )
+
+        if torch.cuda.is_available() and self.trainer is not None:
+            device = torch.device(f"cuda:{self.trainer.local_rank}")
+            return ThreadedPrefetcher(dl, device, prefetch_count=2)
+
+        return dl
 
     def val_dataloader(self) -> torch.utils.data.DataLoader | None:
         """Create validation DataLoader with deterministic cell sampling.
 
         DDP note: DistributedSampler pads dataset to make it evenly divisible
         across ranks. _gather_and_compute_metrics truncates to real dataset
-        size for correct correlation metrics. drop_last defaults to False,
-        which is correct here (padding handles equal batch counts).
+        size for correct correlation metrics. Lightning handles
+        DistributedSampler automatically (use_distributed_sampler=True).
 
         Returns None in final_mode (no validation set exists).
         """
         if self._val_ds is None:
             return None
+        nw = self._effective_num_workers
         return create_dataloader(
             self._val_ds,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self._dl_cfg.get("num_workers", 4),
+            num_workers=nw,
             pin_memory=self._dl_cfg.get("pin_memory", True),
             multiregion=True,
             use_hgt_format=True,
-            prefetch_factor=self._dl_cfg.get("prefetch_factor", 2),
-            worker_init_fn=self._make_deterministic_worker_init_fn(),
+            prefetch_factor=self._dl_cfg.get("prefetch_factor", 2) if nw > 0 else None,
+            worker_init_fn=self._make_deterministic_worker_init_fn() if nw > 0 else None,
         )
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
         """Create test DataLoader with deterministic cell sampling."""
+        nw = self._effective_num_workers
         return create_dataloader(
             self._test_ds,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self._dl_cfg.get("num_workers", 4),
+            num_workers=nw,
             pin_memory=self._dl_cfg.get("pin_memory", True),
             multiregion=True,
             use_hgt_format=True,
-            prefetch_factor=self._dl_cfg.get("prefetch_factor", 2),
-            worker_init_fn=self._make_deterministic_worker_init_fn(),
+            prefetch_factor=self._dl_cfg.get("prefetch_factor", 2) if nw > 0 else None,
+            worker_init_fn=self._make_deterministic_worker_init_fn() if nw > 0 else None,
         )
 
     def _make_worker_init_fn(self):
@@ -348,40 +381,3 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
 
         return _det_worker_init_fn
 
-    def _make_bucket_dataloader(
-        self, dataset, shuffle: bool = True,
-    ) -> torch.utils.data.DataLoader:
-        """Create DataLoader with EdgeCountBucketBatchSampler.
-
-        The batch_sampler handles batching AND DDP distribution, so we pass
-        batch_size=1 and batch_sampler to DataLoader (mutually exclusive with
-        batch_size, shuffle, sampler, and drop_last).
-        """
-        from src.data.collate import collate_for_hgt_multiregion, _worker_init_fn
-
-        global_rank = self.trainer.global_rank if self.trainer is not None else 0
-        world_size = self.trainer.world_size if self.trainer is not None else 1
-        seed = self.config.experiment.get("seed", 42)
-        num_workers = self._dl_cfg.get("num_workers", 4)
-        prefetch = self._dl_cfg.get("prefetch_factor", 2) if num_workers > 0 else None
-
-        batch_sampler = EdgeCountBucketBatchSampler(
-            edge_counts=dataset.get_edge_counts(),
-            batch_size=self.batch_size,
-            drop_last=True,
-            shuffle=shuffle,
-            seed=seed,
-            rank=global_rank,
-            world_size=world_size,
-        )
-
-        return torch.utils.data.DataLoader(
-            dataset,
-            batch_sampler=batch_sampler,
-            num_workers=num_workers,
-            pin_memory=self._dl_cfg.get("pin_memory", True),
-            collate_fn=collate_for_hgt_multiregion,
-            persistent_workers=num_workers > 0,
-            worker_init_fn=self._make_worker_init_fn() if num_workers > 0 else None,
-            prefetch_factor=prefetch,
-        )

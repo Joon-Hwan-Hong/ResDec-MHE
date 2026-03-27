@@ -27,7 +27,7 @@ def mock_metadata():
 
 @pytest.fixture
 def flat_precomputed_dir(tmp_path, mock_metadata):
-    """Create a tmp dir with flat-format .npz files for 5 subjects."""
+    """Create a tmp dir with flat-format .pt files for 5 subjects."""
     n_cell_types = len(CELL_TYPE_ORDER)
     n_genes = 10
     n_regions = len(REGION_ORDER)
@@ -38,32 +38,33 @@ def flat_precomputed_dir(tmp_path, mock_metadata):
         sid = f"flat_subj_{i}"
 
         # Generate random cell counts per type (0-8 cells each)
-        cell_counts = rng.randint(0, 9, size=n_cell_types)
+        cell_counts_np = rng.randint(0, 9, size=n_cell_types)
         # Ensure at least 2 cell types have cells (for edge validation)
-        cell_counts[0] = max(cell_counts[0], 3)
-        cell_counts[1] = max(cell_counts[1], 3)
+        cell_counts_np[0] = max(cell_counts_np[0], 3)
+        cell_counts_np[1] = max(cell_counts_np[1], 3)
 
-        total_cells = int(cell_counts.sum())
+        total_cells = int(cell_counts_np.sum())
 
         # Build flat cell_data and cell_offsets
-        cell_offsets = np.zeros(n_cell_types + 1, dtype=np.int64)
+        cell_offsets = torch.zeros(n_cell_types + 1, dtype=torch.long)
         for ct in range(n_cell_types):
-            cell_offsets[ct + 1] = cell_offsets[ct] + cell_counts[ct]
+            cell_offsets[ct + 1] = cell_offsets[ct] + int(cell_counts_np[ct])
 
-        cell_data = rng.randn(total_cells, n_genes).astype(np.float32)
+        cell_data = torch.from_numpy(rng.randn(total_cells, n_genes).astype(np.float32))
 
-        np.savez_compressed(
-            tmp_path / f"{sid}.npz",
-            pseudobulk=rng.randn(n_cell_types, n_genes).astype(np.float32),
-            cell_type_mask=(cell_counts > 0),
-            cell_counts=cell_counts.astype(np.int64),
-            region_mask=np.array([True] + [False] * (n_regions - 1), dtype=bool),
-            cell_data=cell_data,
-            cell_offsets=cell_offsets,
-            edge_index=np.zeros((2, 0), dtype=np.int64),
-            edge_type=np.zeros((0,), dtype=np.int64),
-            edge_attr=np.zeros((0, 1), dtype=np.float32),
-        )
+        torch.save({
+            "pseudobulk": torch.from_numpy(rng.randn(n_cell_types, n_genes).astype(np.float32)),
+            "cell_type_mask": torch.tensor(cell_counts_np > 0, dtype=torch.bool),
+            "cell_counts": torch.from_numpy(cell_counts_np.astype(np.int64)),
+            "region_mask": torch.tensor([True] + [False] * (n_regions - 1), dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
+            "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
+            "ccc_edge_type": torch.zeros(0, dtype=torch.long),
+            "ccc_edge_attr": torch.zeros(0, 1),
+            "cell_type_order": list(CELL_TYPE_ORDER),
+            "available_regions": [0],
+        }, tmp_path / f"{sid}.pt")
     return tmp_path
 
 
@@ -75,7 +76,7 @@ class TestFlatCellStorage:
     """Verify save_precomputed_features writes flat format."""
 
     def test_flat_cells_keys_present(self, tmp_path):
-        """Saved npz has cell_data and cell_offsets (not cells/cell_mask)."""
+        """Saved .pt has cell_data and cell_offsets (not cells/cell_mask)."""
         from src.data.datasets import save_precomputed_features
 
         n_cell_types = len(CELL_TYPE_ORDER)
@@ -111,15 +112,15 @@ class TestFlatCellStorage:
             cell_type_order = CELL_TYPE_ORDER
 
         save_precomputed_features(FakeDataset(), tmp_path, verbose=False)
-        npz_file = tmp_path / "test_subj_0.npz"
-        assert npz_file.exists()
+        pt_file = tmp_path / "test_subj_0.pt"
+        assert pt_file.exists()
 
-        with np.load(npz_file) as data:
-            keys = set(data.files)
-            assert "cell_data" in keys, f"Missing cell_data. Keys: {keys}"
-            assert "cell_offsets" in keys, f"Missing cell_offsets. Keys: {keys}"
-            assert "cells" not in keys, f"Old 'cells' key should not be present"
-            assert "cell_mask" not in keys, f"Old 'cell_mask' key should not be present"
+        data = torch.load(pt_file, weights_only=False)
+        keys = set(data.keys())
+        assert "cell_data" in keys, f"Missing cell_data. Keys: {keys}"
+        assert "cell_offsets" in keys, f"Missing cell_offsets. Keys: {keys}"
+        assert "cells" not in keys, f"Old 'cells' key should not be present"
+        assert "cell_mask" not in keys, f"Old 'cell_mask' key should not be present"
 
     def test_flat_round_trip_preserves_data(self, tmp_path):
         """Padded -> flat -> padded round-trip preserves real cell values."""
@@ -174,9 +175,9 @@ class TestFlatCellStorage:
 
         save_precomputed_features(FakeDataset(), tmp_path, verbose=False)
 
-        with np.load(tmp_path / "rt_subj.npz") as data:
-            cell_data = data["cell_data"]
-            cell_offsets = data["cell_offsets"]
+        data = torch.load(tmp_path / "rt_subj.pt", weights_only=False)
+        cell_data = data["cell_data"]
+        cell_offsets = data["cell_offsets"]
 
         # Verify offsets shape and monotonicity
         assert cell_offsets.shape == (n_cell_types + 1,)
@@ -190,14 +191,14 @@ class TestFlatCellStorage:
 
         # Round-trip: reconstruct padded from flat and compare
         for ct in range(n_cell_types):
-            start = cell_offsets[ct]
-            end = cell_offsets[ct + 1]
+            start = int(cell_offsets[ct])
+            end = int(cell_offsets[ct + 1])
             n = real_counts[ct]
             if n > 0:
-                np.testing.assert_array_almost_equal(
+                torch.testing.assert_close(
                     cell_data[start:end],
-                    cells_padded[ct, :n],
-                    err_msg=f"Mismatch at cell type {ct}",
+                    torch.from_numpy(cells_padded[ct, :n]),
+                    msg=f"Mismatch at cell type {ct}",
                 )
 
 
@@ -206,10 +207,10 @@ class TestFlatCellStorage:
 # ---------------------------------------------------------------------------
 
 class TestFlatCellLoading:
-    """Verify PrecomputedDataset loads flat-format npz correctly."""
+    """Verify PrecomputedDataset loads flat-format .pt correctly."""
 
     def test_getitem_returns_flat_tensors(self, flat_precomputed_dir, mock_metadata):
-        """Loading flat npz returns cell_data (2D) and cell_offsets (1D len 32)."""
+        """Loading flat .pt returns cell_data (2D) and cell_offsets (1D len 32)."""
         from src.data.datasets import PrecomputedDataset
 
         ds = PrecomputedDataset(
@@ -243,13 +244,12 @@ class TestFlatCellLoading:
         assert sample["cell_data"].dtype == torch.float32
         assert sample["cell_offsets"].dtype == torch.int64
 
-    def test_backward_compat_padded_format(self, tmp_path):
-        """PrecomputedDataset converts old padded format on-the-fly."""
+    def test_flat_pt_loads_correctly(self, tmp_path):
+        """PrecomputedDataset loads flat .pt format with correct cell data."""
         from src.data.datasets import PrecomputedDataset
 
         n_cell_types = len(CELL_TYPE_ORDER)
         n_genes = 10
-        max_cells = 5
         n_regions = len(REGION_ORDER)
 
         rng = np.random.RandomState(99)
@@ -258,25 +258,30 @@ class TestFlatCellLoading:
             "cogn_global": [0.5],
         })
 
-        # Save in OLD padded format
-        cells = rng.randn(n_cell_types, max_cells, n_genes).astype(np.float32)
-        cell_mask = np.ones((n_cell_types, max_cells), dtype=bool)
-        # Make some cells invalid
-        cell_mask[0, 3:] = False  # type 0 has 3 cells
-        cell_mask[1, 2:] = False  # type 1 has 2 cells
+        # Build flat cell data with known counts per type
+        # type 0 has 3 cells, type 1 has 2, rest have 5
+        counts = [3, 2] + [5] * (n_cell_types - 2)
+        total_cells = sum(counts)
 
-        np.savez_compressed(
-            tmp_path / "compat_subj_0.npz",
-            pseudobulk=rng.randn(n_cell_types, n_genes).astype(np.float32),
-            cell_type_mask=np.ones(n_cell_types, dtype=bool),
-            cell_counts=np.array([int(cell_mask[ct].sum()) for ct in range(n_cell_types)], dtype=np.int64),
-            region_mask=np.array([True] + [False] * (n_regions - 1), dtype=bool),
-            cells=cells,
-            cell_mask=cell_mask,
-            edge_index=np.zeros((2, 0), dtype=np.int64),
-            edge_type=np.zeros((0,), dtype=np.int64),
-            edge_attr=np.zeros((0, 1), dtype=np.float32),
-        )
+        cell_offsets = torch.zeros(n_cell_types + 1, dtype=torch.long)
+        for ct in range(n_cell_types):
+            cell_offsets[ct + 1] = cell_offsets[ct] + counts[ct]
+
+        cell_data = torch.from_numpy(rng.randn(total_cells, n_genes).astype(np.float32))
+
+        torch.save({
+            "pseudobulk": torch.from_numpy(rng.randn(n_cell_types, n_genes).astype(np.float32)),
+            "cell_type_mask": torch.ones(n_cell_types, dtype=torch.bool),
+            "cell_counts": torch.tensor(counts, dtype=torch.long),
+            "region_mask": torch.tensor([True] + [False] * (n_regions - 1), dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
+            "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
+            "ccc_edge_type": torch.zeros(0, dtype=torch.long),
+            "ccc_edge_attr": torch.zeros(0, 1),
+            "cell_type_order": list(CELL_TYPE_ORDER),
+            "available_regions": [0],
+        }, tmp_path / "compat_subj_0.pt")
 
         ds = PrecomputedDataset(
             feature_dir=tmp_path,
@@ -289,7 +294,7 @@ class TestFlatCellLoading:
         )
         sample = ds[0]
 
-        # Should return flat format even from old files
+        # Should return flat format
         assert "cell_data" in sample
         assert "cell_offsets" in sample
         assert sample["cell_data"].ndim == 2
@@ -301,18 +306,17 @@ class TestFlatCellLoading:
         assert offsets[2] - offsets[1] == 2  # type 1
 
         # Check actual values match
-        cell_data = sample["cell_data"].numpy()
-        np.testing.assert_array_almost_equal(
-            cell_data[offsets[0]:offsets[1]],
-            cells[0, :3],
+        torch.testing.assert_close(
+            sample["cell_data"][offsets[0]:offsets[1]],
+            cell_data[:3],
         )
-        np.testing.assert_array_almost_equal(
-            cell_data[offsets[1]:offsets[2]],
-            cells[1, :2],
+        torch.testing.assert_close(
+            sample["cell_data"][offsets[1]:offsets[2]],
+            cell_data[3:5],
         )
 
-    def test_preload_to_ram_flat_format(self, flat_precomputed_dir, mock_metadata):
-        """PrecomputedDataset with preload_to_ram works with flat format."""
+    def test_mmap_loading_flat_format(self, flat_precomputed_dir, mock_metadata):
+        """PrecomputedDataset with mmap loading works with flat format."""
         from src.data.datasets import PrecomputedDataset
 
         ds = PrecomputedDataset(
@@ -323,7 +327,6 @@ class TestFlatCellLoading:
             target_column="cogn_global",
             pathology_columns=[],
             max_missing_subject_fraction=1.0,
-            preload_to_ram=True,
         )
         sample = ds[0]
 

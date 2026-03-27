@@ -138,10 +138,23 @@ class BayesianPredictionHead(PyroModule):
         self.fc2.bias = PyroSample(_make_normal_prior([d_hidden], self))
 
         self.fc_mean.weight = PyroSample(_make_normal_prior([1, d_hidden], self))
-        if target_mean != 0.0:
-            self.fc_mean.bias = PyroSample(_make_shifted_prior([1], target_mean, self))
-        else:
-            self.fc_mean.bias = PyroSample(_make_normal_prior([1], self))
+        # fc_mean.bias: kept as a regular nn.Parameter (no prior).
+        # Rationale: bias is a single scalar (1/65 of last-layer params), contributes
+        # negligible epistemic uncertainty. N(0,1) prior penalizes predictions away
+        # from 0, causing R²/r² calibration gap when target mean ≠ 0 (run1: -0.89).
+        # No BNN paper (Blundell 2015, Fortuin 2022) demonstrates bias priors matter
+        # for uncertainty quantification. Bayesian Last Layer literature omits them.
+        #
+        # Alternative (Option B): standardize targets to mean=0/std=1 per training
+        # fold so N(0,1) prior is well-calibrated (Immer 2023 assumes this). Would
+        # require storing fold mean/std, transforming in dataloader, un-transforming
+        # predictions. Consider if optimization issues surface.
+        #
+        # Original bias prior code (commented out for reference):
+        # if target_mean != 0.0:
+        #     self.fc_mean.bias = PyroSample(_make_shifted_prior([1], target_mean, self))
+        # else:
+        #     self.fc_mean.bias = PyroSample(_make_normal_prior([1], self))
 
     def set_data_scale(self, scale: float) -> None:
         """Set ELBO likelihood scaling factor (world_size for DDP)."""

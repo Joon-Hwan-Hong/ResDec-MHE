@@ -3,6 +3,13 @@ Cell Type Selector for choosing which cell types get cell-level modeling.
 
 Learns which cell types benefit from fine-grained Set Transformer processing
 versus just using pseudobulk representations.
+
+Uses sigmoid gating (not softmax) so each cell type gets an independent
+importance weight in (0, 1).  This avoids the 1/K attenuation that softmax
+imposes (K=31 cell types → each weight ≈ 0.032), which caused the
+cell_transformer branch to receive 20-90x less gradient than the other
+encoder branches at the fusion layer.  Sigmoid allows multiple cell types
+to independently have high importance without competitive suppression.
 """
 
 import torch
@@ -14,18 +21,20 @@ class CellTypeSelector(nn.Module):
     """
     Learns which cell types need fine-grained cell-level modeling.
 
-    Uses attention-based selection with temperature-controlled softmax.
-    All 31 cell types are processed through Set Transformer with soft
-    attention weighting. After training, get_selected_types(k) can extract
-    the top-k most important types for interpretability analysis.
+    Uses sigmoid gating with temperature scaling.  Each cell type gets an
+    independent importance weight in (0, 1) — multiple types can have high
+    weights simultaneously without competitive suppression.
+
+    After training, get_selected_types(k) can extract the top-k most
+    important types for interpretability analysis.
 
     Args:
         n_cell_types: Number of cell types (default: 31 for Allen ABC)
-        temperature: Temperature for softmax (higher = softer selection)
-        init_uniform: If True, initialize for uniform selection
+        temperature: Temperature for sigmoid (higher = softer selection)
+        init_uniform: If True, initialize for uniform selection (logits=0 → weight=0.5)
 
     Shape:
-        - get_selection_weights(): Returns (n_cell_types,) selection probabilities
+        - get_selection_weights(): Returns (n_cell_types,) importance weights in (0, 1)
         - get_selected_types(k): Returns (k,) indices of top-k selected types
     """
 
@@ -70,25 +79,24 @@ class CellTypeSelector(nn.Module):
 
     def forward(self) -> torch.Tensor:
         """
-        Get soft selection weights (probabilities).
+        Get soft selection weights (independent per-type importance).
 
         Returns:
-            Selection weights (n_cell_types,) summing to 1
+            Selection weights (n_cell_types,) each in (0, 1)
         """
         return self.get_selection_weights()
 
     def get_selection_weights(self) -> torch.Tensor:
         """
-        Get soft selection weights for all cell types.
+        Get independent importance weights for all cell types.
 
         Returns:
-            Tensor of shape (n_cell_types,) with selection probabilities
+            Tensor of shape (n_cell_types,) with weights in (0, 1)
         """
         # AMP note: selection_logits is an nn.Parameter (always float32, not
         # autocasted), and _temperature_buf is a float32 buffer. The entire
-        # computation stays float32. PyTorch autocast also promotes softmax
-        # to float32 natively, so no explicit .float() promotion is needed.
-        return F.softmax(self.selection_logits / self._temperature_buf, dim=0)
+        # computation stays float32.
+        return torch.sigmoid(self.selection_logits / self._temperature_buf)
 
     def get_selected_types(self, k: int) -> torch.Tensor:
         """

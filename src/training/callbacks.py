@@ -603,3 +603,75 @@ class ResilienceModelCheckpoint(pl.Callback):
                     v = store[k]
                     if v.device != target_device:
                         store[k] = v.to(target_device)
+
+
+class SerialCompilationWarmup(pl.Callback):
+    """Serialize torch.compile warmup across DDP ranks.
+
+    torch.compile is lazy — compilation happens on the first forward pass.
+    In DDP, all ranks compile simultaneously, doubling peak virtual memory.
+    Under overcommit_memory=2 (strict), this can exceed the commit limit.
+
+    This callback pulls a real batch from the train dataloader and forces
+    rank-by-rank compilation: each rank runs a forward pass (triggering
+    compilation on real shapes) while other ranks wait at a barrier.
+    Using real data avoids recompilation on the first training step.
+
+    Only activates when world_size > 1 AND the model uses torch.compile.
+    Single-GPU training is unaffected.
+    """
+
+    def on_train_start(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule,
+    ) -> None:
+        if trainer.world_size <= 1:
+            return
+        if not getattr(pl_module.model, "use_torch_compile", False):
+            return
+
+        rank = trainer.global_rank
+        world_size = trainer.world_size
+        device = pl_module.device
+
+        logger.info(
+            "Serial compilation warmup: rank %d/%d starting", rank, world_size,
+        )
+
+        # Pull a real batch from the train dataloader so compilation sees
+        # actual shapes (batch_size, edge counts, cell counts). This prevents
+        # recompilation on the first training step which would desync ranks.
+        import inspect
+        dl = trainer.train_dataloader
+        real_batch = next(iter(dl))
+        # Only keep keys that match model.forward() parameters — the collate
+        # function may add extra keys (e.g. cell_counts) not in the signature.
+        forward_params = set(inspect.signature(pl_module.model.forward).parameters)
+        warmup_batch = {
+            k: v.to(device) if isinstance(v, torch.Tensor) else v
+            for k, v in real_batch.items()
+            if k in forward_params
+        }
+        # Remove target — not needed for forward pass, avoid any side effects
+        warmup_batch.pop("cognition", None)
+
+        logger.info(
+            "Rank %d: warmup batch shapes — pseudobulk %s, edges %s, cells %s",
+            rank,
+            list(warmup_batch["region_pseudobulk"].shape),
+            list(warmup_batch["ccc_edge_index"].shape),
+            list(warmup_batch["cell_data"].shape),
+        )
+
+        # Serialize: each rank compiles while others wait
+        for compiling_rank in range(world_size):
+            if rank == compiling_rank:
+                logger.info("Rank %d: compiling (real-data forward pass)...", rank)
+                with torch.no_grad():
+                    pl_module.model(**warmup_batch)
+                logger.info("Rank %d: compilation complete.", rank)
+            torch.distributed.barrier()
+
+        # Free warmup batch memory
+        del warmup_batch, real_batch
+
+        logger.info("Serial compilation warmup complete on rank %d.", rank)

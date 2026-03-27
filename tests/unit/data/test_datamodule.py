@@ -56,28 +56,35 @@ def mock_splits():
 
 @pytest.fixture
 def precomputed_dir(tmp_path, mock_metadata):
-    """Create a tmp dir with minimal .npz files for all 20 subjects."""
+    """Create a tmp dir with minimal .pt files for all 20 subjects."""
     from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
 
     n_cell_types = len(CELL_TYPE_ORDER)
     n_genes = 10  # minimal
     max_cells = 5
     n_regions = len(REGION_ORDER)
+    total_cells = n_cell_types * max_cells
 
     for i in range(20):
         sid = f"subj_{i}"
-        np.savez_compressed(
-            tmp_path / f"{sid}.npz",
-            pseudobulk=np.random.randn(n_cell_types, n_genes).astype(np.float32),
-            cell_type_mask=np.ones(n_cell_types, dtype=bool),
-            cell_counts=np.full(n_cell_types, max_cells, dtype=np.int64),
-            region_mask=np.array([True] + [False] * (n_regions - 1), dtype=bool),
-            cells=np.random.randn(n_cell_types, max_cells, n_genes).astype(np.float32),
-            cell_mask=np.ones((n_cell_types, max_cells), dtype=bool),
-            edge_index=np.zeros((2, 0), dtype=np.int64),
-            edge_type=np.zeros((0,), dtype=np.int64),
-            edge_attr=np.zeros((0, 1), dtype=np.float32),
-        )
+        cell_counts = torch.full((n_cell_types,), max_cells, dtype=torch.long)
+        cell_offsets = torch.zeros(n_cell_types + 1, dtype=torch.long)
+        for ct in range(n_cell_types):
+            cell_offsets[ct + 1] = cell_offsets[ct] + max_cells
+
+        torch.save({
+            "pseudobulk": torch.randn(n_cell_types, n_genes),
+            "cell_type_mask": torch.ones(n_cell_types, dtype=torch.bool),
+            "cell_counts": cell_counts,
+            "region_mask": torch.tensor([True] + [False] * (n_regions - 1), dtype=torch.bool),
+            "cell_data": torch.randn(total_cells, n_genes),
+            "cell_offsets": cell_offsets,
+            "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
+            "ccc_edge_type": torch.zeros(0, dtype=torch.long),
+            "ccc_edge_attr": torch.zeros(0, 1),
+            "cell_type_order": list(CELL_TYPE_ORDER),
+            "available_regions": [0],
+        }, tmp_path / f"{sid}.pt")
     return tmp_path
 
 
@@ -255,11 +262,7 @@ class TestDataloaderConfig:
         )
         dm.setup(stage="fit")
         loader = dm.train_dataloader()
-        # With bucket batching, batch_size is None (batch_sampler controls it)
-        if loader.batch_sampler is not None and hasattr(loader.batch_sampler, 'batch_size'):
-            assert loader.batch_sampler.batch_size == 4
-        else:
-            assert loader.batch_size == 4
+        assert loader.batch_size == 4
 
     def test_val_dataloader_batch_size(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
         dm = CognitiveResilienceDataModule(

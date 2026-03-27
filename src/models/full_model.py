@@ -250,16 +250,20 @@ class CognitiveResilienceModel(PyroModule):
             )
 
         # torch.compile fuses Linear+LN+GELU+Dropout into fewer CUDA kernels.
-        # Only applied to pure tensor modules (no dict ops, no dynamic shapes).
-        # BayesianPredictionHead uses pyro.sample which is incompatible with
-        # torch.compile, so only compile the deterministic head.
-        # Gated by config flag since torch.compile adds startup latency.
+        # BayesianPredictionHead uses pyro.sample which is incompatible.
+        # hgt_encoder excluded: scatter_add produces symbolic strides that
+        # trip an Inductor codegen assertion (even with dynamic=True).
+        # cell_transformer uses dynamic=True: total_cells varies per batch.
+        # cache_size_limit raised from 8 to 64: DDP with variable shapes can
+        # exhaust the default 8-entry cache, triggering excessive recompilation.
+        self.use_torch_compile = use_torch_compile
         if use_torch_compile:
+            import torch._dynamo.config
+            torch._dynamo.config.cache_size_limit = 64
             self.pseudobulk_encoder = torch.compile(self.pseudobulk_encoder)
             self.fusion_layer = torch.compile(self.fusion_layer)
             self.pathology_encoder = torch.compile(self.pathology_encoder)
-            self.hgt_encoder = torch.compile(self.hgt_encoder)
-            self.cell_transformer = torch.compile(self.cell_transformer)
+            self.cell_transformer = torch.compile(self.cell_transformer, dynamic=True)
             if not use_bayesian_head:
                 self.prediction_head = torch.compile(self.prediction_head)
 

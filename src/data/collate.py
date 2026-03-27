@@ -547,7 +547,7 @@ def collate_for_hgt_multiregion(batch: list[dict[str, Any]]) -> dict[str, Any]:
           with actual data presence check)
     """
     # Check if samples have pre-stacked region_pseudobulk [n_regions, C, G]
-    # (produced by PrecomputedDataset with preload_to_ram=True).
+    # (produced by PrecomputedDataset mmap templates).
     # If so, torch.stack is ~100x faster than _assemble_region_tensors
     # (which allocates 36 MB zeros + nested fill loop).
     s0 = batch[0]
@@ -635,6 +635,7 @@ def create_dataloader(
     use_hgt_format: bool = True,  # Default True - tensor format for HGTEncoderTensor
     prefetch_factor: int | None = 2,
     worker_init_fn=None,
+    sampler=None,
 ) -> torch.utils.data.DataLoader:
     """
     Create DataLoader with appropriate collate function.
@@ -682,10 +683,14 @@ def create_dataloader(
     # prefetch_factor requires num_workers > 0
     effective_prefetch = prefetch_factor if num_workers > 0 else None
 
+    # sampler and shuffle are mutually exclusive in DataLoader
+    effective_shuffle = False if sampler is not None else shuffle
+
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=effective_shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=drop_last,

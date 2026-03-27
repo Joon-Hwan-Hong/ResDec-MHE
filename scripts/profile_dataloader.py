@@ -142,35 +142,17 @@ def main():
     # Create DataLoader
     dl_cfg = data_cfg.dataloader
     from src.data.collate import collate_for_hgt_multiregion as collate_subjects
-    from src.data.samplers import EdgeCountBucketBatchSampler
 
-    if dl_cfg.get("bucket_batching", False) and hasattr(ds, '_edge_counts'):
-        sampler = EdgeCountBucketBatchSampler(
-            edge_counts=ds._edge_counts,
-            batch_size=dl_cfg.batch_size,
-            drop_last=False,
-            shuffle=True,
-        )
-        dl = torch.utils.data.DataLoader(
-            ds,
-            batch_sampler=sampler,
-            num_workers=dl_cfg.num_workers,
-            collate_fn=collate_subjects,
-            pin_memory=dl_cfg.pin_memory,
-            prefetch_factor=dl_cfg.get("prefetch_factor", 2),
-            persistent_workers=dl_cfg.num_workers > 0,
-        )
-    else:
-        dl = torch.utils.data.DataLoader(
-            ds,
-            batch_size=dl_cfg.batch_size,
-            shuffle=True,
-            num_workers=dl_cfg.num_workers,
-            collate_fn=collate_subjects,
-            pin_memory=dl_cfg.pin_memory,
-            prefetch_factor=dl_cfg.get("prefetch_factor", 2),
-            persistent_workers=dl_cfg.num_workers > 0,
-        )
+    dl = torch.utils.data.DataLoader(
+        ds,
+        batch_size=dl_cfg.batch_size,
+        shuffle=True,
+        num_workers=dl_cfg.num_workers,
+        collate_fn=collate_subjects,
+        pin_memory=dl_cfg.pin_memory,
+        prefetch_factor=dl_cfg.get("prefetch_factor", 2),
+        persistent_workers=dl_cfg.num_workers > 0,
+    )
 
     # Profile DataLoader
     profile_dataloader(dl, n_batches=30, label="warm")

@@ -267,21 +267,10 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
             MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
         pass  # n_regions not in config — correct behavior
 
-    # 6. DDP strategy must use find_unused_parameters=True for HGT edge-specific params
-    try:
-        strategy = config.training.strategy
-        if isinstance(strategy, str) and "ddp" in strategy and "find_unused" not in strategy:
-            import logging as _logging
-            _cfg_logger = _logging.getLogger(__name__)
-            _cfg_logger.warning(
-                "training.strategy='%s' with HGT model requires find_unused_parameters=True "
-                "because edge-type-specific parameters may be unused in some batches. "
-                "Use 'ddp_find_unused_parameters_true' instead.",
-                strategy,
-            )
-    except (KeyError, TypeError, ConfigKeyError, ConfigAttributeError,
-            MissingMandatoryValue, InterpolationKeyError, InterpolationResolutionError):
-        pass
+    # 6. (Removed) Old warning about find_unused_parameters for HGT.
+    # The tensorized HGTConvTensor uses single w_att/w_msg parameter tensors
+    # via einsum — all parameters participate in every forward pass regardless
+    # of which edge types appear in a batch. find_unused_parameters is not needed.
 
     # 7. n_cell_types must match dataset constant if specified
     try:

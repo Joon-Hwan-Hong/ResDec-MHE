@@ -134,6 +134,48 @@ class TestKLAnnealedELBO:
         assert nll.item() > -1e6, "NLL should be finite"
         assert kl.item() >= -1e-6, "Weighted KL should be non-negative"
 
+    def test_n_train_scales_kl(self):
+        """With n_train=N, KL is divided by N compared to n_train=1."""
+        from src.training.kl_annealing import KLAnnealedELBO
+
+        model, guide, x, y = self._make_model_guide_data(seed=42)
+
+        elbo_no_scale = KLAnnealedELBO(kl_weight=1.0, n_train=1)
+        elbo_scaled = KLAnnealedELBO(kl_weight=1.0, n_train=100)
+
+        torch.manual_seed(99)
+        nll_1, kl_1, total_1 = elbo_no_scale.differentiable_loss_with_parts(model, guide, x, y)
+
+        torch.manual_seed(99)
+        nll_100, kl_100, total_100 = elbo_scaled.differentiable_loss_with_parts(model, guide, x, y)
+
+        # NLL should be identical (not scaled)
+        assert abs(nll_1.item() - nll_100.item()) < 1e-4, (
+            f"NLL should be identical: {nll_1.item():.6f} vs {nll_100.item():.6f}"
+        )
+
+        # KL should be 100x smaller with n_train=100
+        assert abs(kl_1.item() / 100 - kl_100.item()) < 1e-3, (
+            f"KL should be 100x smaller: {kl_1.item()/100:.6f} vs {kl_100.item():.6f}"
+        )
+
+    def test_n_train_default_is_1(self):
+        """Default n_train=1 preserves backward compatibility."""
+        from src.training.kl_annealing import KLAnnealedELBO
+
+        model, guide, x, y = self._make_model_guide_data(seed=42)
+
+        elbo_default = KLAnnealedELBO(kl_weight=0.5)
+        elbo_explicit = KLAnnealedELBO(kl_weight=0.5, n_train=1)
+
+        torch.manual_seed(99)
+        loss_default = elbo_default.differentiable_loss(model, guide, x, y)
+
+        torch.manual_seed(99)
+        loss_explicit = elbo_explicit.differentiable_loss(model, guide, x, y)
+
+        assert abs(loss_default.item() - loss_explicit.item()) < 1e-4
+
 
 # ---------------------------------------------------------------------------
 # TestKLAnnealingCallback

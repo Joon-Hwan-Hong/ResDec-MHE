@@ -321,9 +321,8 @@ class TestInterpretability:
         assert len(importance) == N_CELL_TYPES  # All cell types
         assert all(isinstance(v, float) for v in importance.values())
 
-        # Weights should sum to 1 (softmax)
-        total = sum(importance.values())
-        assert abs(total - 1.0) < 1e-5
+        # Weights are independent sigmoid values in (0, 1) per type
+        assert all(0 < v < 1 for v in importance.values())
 
     def test_get_hgt_layer_scales(self, model):
         """Test HGT layer scale extraction."""
@@ -355,9 +354,8 @@ class TestInterpretability:
         assert isinstance(importance, dict)
         assert len(importance) == N_REGIONS  # All regions
 
-        # Weights should sum to 1 (softmax)
-        total = sum(importance.values())
-        assert abs(total - 1.0) < 1e-5
+        # Weights are independent sigmoid values in (0, 1) per type
+        assert all(0 < v < 1 for v in importance.values())
 
     def test_num_parameters_structure(self, model):
         """Test num_parameters returns all expected components."""

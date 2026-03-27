@@ -180,10 +180,11 @@ class TestCellTypeSelection:
         weights = small_transformer.get_selection_weights()
         assert weights.shape == (small_config["n_cell_types"],)
 
-    def test_selection_weights_sum_to_one(self, small_transformer):
-        """Test selection weights sum to 1."""
+    def test_selection_weights_in_unit_interval(self, small_transformer):
+        """Test selection weights are independent values in (0, 1)."""
         weights = small_transformer.get_selection_weights()
-        assert torch.allclose(weights.sum(), torch.tensor(1.0), atol=1e-5)
+        assert (weights > 0).all()
+        assert (weights < 1).all()
 
     def test_selection_temperature_property(self, small_transformer, small_config):
         """Test selection temperature property."""
@@ -621,14 +622,24 @@ class TestDivergentCellMasksInBatch:
         assert embeddings.shape == (B, C, divergent_config["d_model"])
 
     def test_gradients_flow_through_mixed_mask_batch(self, divergent_transformer, divergent_config):
-        """Gradients flow to both samples even when one has empty cell types."""
+        """Gradients flow to both samples even when one has empty cell types.
+
+        Note: gradients to raw cells are very small (~1e-8) because the Set
+        Transformer has 5 chained softmax attention operations that contract
+        gradients.  We verify the computation graph is connected by checking
+        that embeddings (the CellTransformer output) have grad_fn and that
+        the gradient to cells is not None.  We use (embeddings**2).sum() as
+        the loss to amplify the gradient signal above float32 precision.
+        """
         B, C, max_cells, G = 2, divergent_config["n_cell_types"], 30, divergent_config["n_genes"]
+        torch.manual_seed(42)
         cells = torch.randn(B, C, max_cells, G, requires_grad=True)
         cell_mask = torch.ones(B, C, max_cells, dtype=torch.bool)
         cell_mask[0, 0, :] = False
 
         embeddings, _, _ = divergent_transformer(cells, cell_mask)
-        loss = embeddings.sum()
+        assert embeddings.grad_fn is not None  # Graph is connected
+        loss = (embeddings ** 2).sum()  # Squared loss amplifies gradient
         loss.backward()
 
         assert cells.grad is not None

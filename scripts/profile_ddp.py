@@ -44,6 +44,7 @@ from pyro.infer.autoguide import AutoDiagonalNormal
 
 from src.data.collate import collate_for_hgt_multiregion
 from src.data.datamodule import CognitiveResilienceDataModule
+from src.data.prefetch import ThreadedPrefetcher
 from src.data.splits import load_splits
 from src.models.full_model import build_model_from_config
 from src.utils.config import load_config, validate_config
@@ -244,12 +245,16 @@ def main() -> None:
         help="Steps to exclude from timing averages",
     )
     parser.add_argument(
-        "--num-workers", type=int, default=4,
-        help="DataLoader workers per rank",
+        "--num-workers", type=int, default=0,
+        help="DataLoader workers per rank (0 for preloaded precomputed data)",
     )
     parser.add_argument(
         "--profile-subset", type=str, default=None,
         help="Path to profile_subset.json for reproducible subject selection",
+    )
+    parser.add_argument(
+        "--prefetch", action="store_true",
+        help="Use threaded prefetcher to overlap collation with GPU compute",
     )
     parser.add_argument(
         "overrides", nargs="*",
@@ -291,13 +296,16 @@ def main() -> None:
 
     # ── Model ────────────────────────────────────────────────────────────────
     is_bayesian = config.model.head.type == "bayesian"
+
+    # Must set before model creation: AutoDiagonalNormal auto-converts the
+    # model to a PyroModule, which needs param_state on its _Context.
+    if is_bayesian:
+        pyro.settings.set(module_local_params=True)
+
     model = build_model_from_config(config.model).to(device)
 
-    # Wrap in DDP — find_unused_parameters=True as in real training
-    model_ddp = DDP(
-        model, device_ids=[local_rank],
-        find_unused_parameters=True,
-    )
+    # Wrap in DDP — tensorized HGT has no unused params
+    model_ddp = DDP(model, device_ids=[local_rank])
 
     guide = None
     elbo = None
@@ -397,19 +405,26 @@ def main() -> None:
         total_steps, args.warmup_steps, total_steps - args.warmup_steps, world_size,
     )
 
-    batch_iter = iter(train_dl)
+    if args.prefetch:
+        logger.info("Threaded prefetcher enabled (prefetch_count=2)")
+        data_source = ThreadedPrefetcher(train_dl, device, prefetch_count=2)
+    else:
+        data_source = train_dl
+
+    batch_iter = iter(data_source)
     edge_counts_per_step: list[int] = []
 
     for step_idx in range(total_steps):
-        # ── Data loading ──
+        # ── Data loading (or wait for prefetched batch) ──
         timer.start()
         try:
             batch = next(batch_iter)
         except StopIteration:
             sampler.set_epoch(step_idx)
-            batch_iter = iter(train_dl)
+            batch_iter = iter(data_source)
             batch = next(batch_iter)
-        batch = _move_batch_to_device(batch, device)
+        if not args.prefetch:
+            batch = _move_batch_to_device(batch, device)
         torch.cuda.synchronize(device)
         timer.stop("data_load+transfer")
 

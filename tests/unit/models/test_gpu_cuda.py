@@ -688,7 +688,8 @@ class TestCellTypeSelectorCUDA:
         # Verify output on CUDA
         assert weights.device.type == "cuda"
         assert weights.shape == (N_CELL_TYPES,)
-        assert torch.allclose(weights.sum(), torch.tensor(1.0, device=cuda_device), atol=1e-5)
+        # Sigmoid: independent weights in (0, 1), uniform init → all 0.5
+        assert (weights > 0).all() and (weights < 1).all()
 
     def test_cell_type_selector_gradient_cuda(self, cuda_device):
         """CellTypeSelector gradients flow on GPU."""

@@ -683,8 +683,8 @@ class TestDataDrivenPrior:
 
         assert head.target_mean == 0.0
 
-    def test_custom_target_mean(self):
-        """target_mean=-0.89 should shift the fc_mean.bias prior loc."""
+    def test_custom_target_mean_stored(self):
+        """target_mean is stored but fc_mean.bias has no prior (regular parameter)."""
         import pyro.poutine as poutine
         from src.models.heads.bayesian_head import BayesianPredictionHead
 
@@ -692,15 +692,16 @@ class TestDataDrivenPrior:
 
         assert head.target_mean == -0.89
 
-        # Trace the model to inspect the fc_mean.bias prior distribution
+        # fc_mean.bias should be a regular nn.Parameter (no Bayesian prior)
+
+        # Verify fc_mean.bias is a deterministic param, not a Bayesian sample site.
+        # PyroModule[nn.Linear] registers all params in the trace, but without
+        # PyroSample the bias appears as a "param" node (no prior, no KL term).
         x = torch.randn(4, 64)
         trace = poutine.trace(head).get_trace(x)
-
-        bias_node = trace.nodes["fc_mean.bias"]
-        prior_dist = bias_node["fn"]
-        # The prior loc should be shifted to -0.89
-        assert torch.allclose(prior_dist.base_dist.loc, torch.tensor([-0.89])), \
-            f"Expected prior loc=-0.89, got {prior_dist.base_dist.loc}"
+        if "fc_mean.bias" in trace.nodes:
+            assert trace.nodes["fc_mean.bias"]["type"] == "param", \
+                f"fc_mean.bias should be a param, not {trace.nodes['fc_mean.bias']['type']}"
 
     def test_other_priors_unchanged(self):
         """fc1, fc2, fc_mean.weight priors should remain N(0,1) even with custom target_mean."""
@@ -722,3 +723,8 @@ class TestDataDrivenPrior:
                 f"{site_name} prior loc should be 0.0, got {loc}"
             assert torch.all(scale == 1.0), \
                 f"{site_name} prior scale should be 1.0, got {scale}"
+
+        # fc_mean.bias should be a deterministic param, not a Bayesian sample
+        if "fc_mean.bias" in trace.nodes:
+            assert trace.nodes["fc_mean.bias"]["type"] == "param", \
+                f"fc_mean.bias should be a param, not {trace.nodes['fc_mean.bias']['type']}"

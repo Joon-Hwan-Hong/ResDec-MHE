@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Convert precomputed .npz feature files to .pt format for mmap loading.
+"""Convert precomputed .npz feature files to .pt format.
 
 Usage:
     uv run python scripts/convert_npz_to_pt.py data/precomputed/rosmap/

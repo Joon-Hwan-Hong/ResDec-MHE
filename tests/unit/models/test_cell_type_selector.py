@@ -2,10 +2,9 @@
 Tests for src/models/components/cell_type_selector.py
 
 Tests cover:
-- Selection weights sum to 1
+- Selection weights are independent per-type values in (0, 1)
 - Top-k selection correctness
 - Temperature effects on selection sharpness
-- Mask generation
 - Input validation
 """
 
@@ -66,17 +65,27 @@ class TestCellTypeSelectorInit:
 class TestSelectionWeights:
     """Tests for selection weight properties."""
 
-    def test_weights_sum_to_one(self):
-        """Selection weights should sum to 1."""
+    def test_weights_in_unit_interval(self):
+        """Selection weights should be in (0, 1) per type (sigmoid)."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
         weights = selector.get_selection_weights()
 
-        assert torch.allclose(weights.sum(), torch.tensor(1.0), atol=1e-5)
+        assert (weights > 0).all()
+        assert (weights < 1).all()
+
+    def test_uniform_init_gives_half(self):
+        """Uniform init (logits=0) should give weights = 0.5 (sigmoid(0))."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=N_CELL_TYPES)
+        weights = selector.get_selection_weights()
+
+        assert torch.allclose(weights, torch.full((N_CELL_TYPES,), 0.5), atol=1e-5)
 
     def test_weights_are_positive(self):
-        """All selection weights should be non-negative."""
+        """All selection weights should be positive."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=20)
@@ -84,17 +93,30 @@ class TestSelectionWeights:
         selector.selection_logits.data = torch.randn(20) * 2
 
         weights = selector.get_selection_weights()
-        assert (weights >= 0).all()
+        assert (weights > 0).all()
 
     def test_weights_bounded_by_one(self):
-        """All selection weights should be at most 1."""
+        """All selection weights should be strictly less than 1."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=20)
         selector.selection_logits.data = torch.randn(20) * 5
 
         weights = selector.get_selection_weights()
-        assert (weights <= 1).all()
+        assert (weights < 1).all()
+
+    def test_weights_are_independent(self):
+        """Each weight depends only on its own logit (sigmoid, not softmax)."""
+        from src.models.components.cell_type_selector import CellTypeSelector
+
+        selector = CellTypeSelector(n_cell_types=5)
+        selector.selection_logits.data = torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0])
+
+        weights = selector.get_selection_weights()
+
+        # Higher logit → higher weight, monotonically
+        for i in range(4):
+            assert weights[i] < weights[i + 1]
 
     def test_forward_returns_weights(self):
         """forward() should return selection weights."""
@@ -200,30 +222,30 @@ class TestTemperatureEffects:
     """Tests for temperature behavior."""
 
     def test_high_temperature_gives_uniform_weights(self):
-        """High temperature should give nearly uniform weights."""
+        """High temperature should give nearly uniform weights (all ≈ 0.5)."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=10, temperature=100.0)
         selector.selection_logits.data = torch.randn(10)
 
         weights = selector.get_selection_weights()
-        uniform = torch.ones(10) / 10
-
-        assert torch.allclose(weights, uniform, atol=0.01)
+        # sigmoid(x/100) ≈ 0.5 for any reasonable x
+        assert torch.allclose(weights, torch.full((10,), 0.5), atol=0.01)
 
     def test_low_temperature_gives_sharp_weights(self):
-        """Low temperature should give nearly one-hot weights."""
+        """Low temperature should push weights toward 0 or 1."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=10, temperature=0.01)
-        # Set clear winner at index 3
+        # Positive logit → weight near 1, negative → near 0
         selector.selection_logits.data = torch.zeros(10)
         selector.selection_logits.data[3] = 1.0
+        selector.selection_logits.data[7] = -1.0
 
         weights = selector.get_selection_weights()
 
-        # Index 3 should have weight close to 1
-        assert weights[3] > 0.99
+        assert weights[3] > 0.99  # sigmoid(1.0/0.01) ≈ 1.0
+        assert weights[7] < 0.01  # sigmoid(-1.0/0.01) ≈ 0.0
 
     def test_temperature_setter_works(self):
         """Temperature property setter should update correctly."""
@@ -312,14 +334,14 @@ class TestEdgeCases:
     """Edge cases and boundary conditions."""
 
     def test_single_cell_type(self):
-        """Single cell type: selection is trivial."""
+        """Single cell type: weight = sigmoid(0) = 0.5."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=1)
         weights = selector.get_selection_weights()
         selected = selector.get_selected_types(k=1)
 
-        assert torch.allclose(weights, torch.ones(1))
+        assert torch.allclose(weights, torch.tensor([0.5]))
         assert selected.item() == 0
 
     def test_k_equals_n(self):
@@ -343,13 +365,13 @@ class TestEdgeCases:
         assert selected.item() == 9  # Highest logit
 
     def test_all_equal_logits(self):
-        """All logits equal: uniform selection weights."""
+        """All logits equal (zero): all weights = 0.5."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=5, init_uniform=True)
         weights = selector.get_selection_weights()
 
-        expected = torch.ones(5) / 5
+        expected = torch.full((5,), 0.5)
         assert torch.allclose(weights, expected, atol=1e-5)
 
 
@@ -361,30 +383,31 @@ class TestNumericalStability:
     """Numerical stability tests."""
 
     def test_large_positive_logits(self):
-        """Large positive logits should not overflow."""
+        """Large positive logits should saturate at 1, not overflow."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=10)
-        selector.selection_logits.data = torch.randn(10) * 1000
+        selector.selection_logits.data = torch.ones(10) * 1000
 
         weights = selector.get_selection_weights()
 
         assert not torch.isnan(weights).any()
         assert not torch.isinf(weights).any()
-        assert torch.allclose(weights.sum(), torch.tensor(1.0), atol=1e-4)
+        # sigmoid(1000) ≈ 1.0
+        assert torch.allclose(weights, torch.ones(10), atol=1e-4)
 
     def test_large_negative_logits(self):
-        """Large negative logits may underflow but shouldn't produce NaN."""
+        """Large negative logits should saturate at 0, not produce NaN."""
         from src.models.components.cell_type_selector import CellTypeSelector
 
         selector = CellTypeSelector(n_cell_types=10)
-        selector.selection_logits.data = torch.randn(10) * -1000
+        selector.selection_logits.data = torch.ones(10) * -1000
 
         weights = selector.get_selection_weights()
 
         assert not torch.isnan(weights).any()
-        # At least one weight should be non-zero (the "winner")
-        assert weights.max() > 0
+        # sigmoid(-1000) ≈ 0.0
+        assert torch.allclose(weights, torch.zeros(10), atol=1e-4)
 
     def test_gradient_stability(self):
         """Gradients should be stable, not NaN or Inf."""
@@ -407,7 +430,8 @@ class TestNumericalStability:
         selector.selection_logits.data = torch.randn(N_CELL_TYPES)
         weights = selector.get_selection_weights()
         assert torch.isfinite(weights).all()
-        assert weights.max() > 0.9
+        # Near-zero T pushes sigmoid toward 0 or 1 (hard gating)
+        assert (weights > 0.9).any() or (weights < 0.1).any()
 
 
 # =============================================================================

@@ -954,24 +954,39 @@ class TestPrecomputedDataset:
         )
 
     def test_backward_compatible_loading(self, mock_dataset, tmp_path):
-        """Should handle older files missing cell_counts/region_mask."""
+        """Should handle files with all required .pt keys."""
         from src.data.datasets import PrecomputedDataset
+        from src.data.constants import REGION_ORDER
 
-        # Manually save an "old format" file without cell_counts/region_mask
         subject_id = mock_dataset.subject_ids[0]
         sample = mock_dataset[0]
 
-        np.savez_compressed(
-            tmp_path / f"{subject_id}.npz",
-            pseudobulk=sample["pseudobulk"].numpy(),
-            cell_type_mask=sample["cell_type_mask"].numpy(),
-            # Intentionally omit cell_counts and region_mask
-            edge_index=sample["ccc_edge_index"].numpy(),
-            edge_type=sample["ccc_edge_type"].numpy(),
-            edge_attr=sample["ccc_edge_attr"].numpy(),
-            cells=sample["cells"].numpy(),
-            cell_mask=sample["cell_mask"].numpy(),
-        )
+        # Build cell_data / cell_offsets from padded cells + cell_mask
+        cells_padded = sample["cells"]
+        cell_mask_padded = sample["cell_mask"]
+        n_types = cells_padded.shape[0]
+        cell_offsets = torch.zeros(n_types + 1, dtype=torch.long)
+        flat_parts = []
+        for ct in range(n_types):
+            n = int(cell_mask_padded[ct].sum().item())
+            if n > 0:
+                flat_parts.append(cells_padded[ct, :n])
+            cell_offsets[ct + 1] = cell_offsets[ct] + n
+        cell_data = torch.cat(flat_parts) if flat_parts else torch.empty(0, cells_padded.shape[2])
+
+        torch.save({
+            "pseudobulk": sample["pseudobulk"],
+            "cell_type_mask": sample["cell_type_mask"],
+            "cell_counts": sample["cell_mask"].sum(dim=1).long(),
+            "region_mask": torch.tensor([True] + [False] * (len(REGION_ORDER) - 1), dtype=torch.bool),
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
+            "ccc_edge_index": sample["ccc_edge_index"],
+            "ccc_edge_type": sample["ccc_edge_type"],
+            "ccc_edge_attr": sample["ccc_edge_attr"],
+            "cell_type_order": list(mock_dataset.cell_type_order),
+            "available_regions": [0],
+        }, tmp_path / f"{subject_id}.pt")
 
         # Load via PrecomputedDataset - should not crash
         precomputed = PrecomputedDataset(
@@ -982,14 +997,13 @@ class TestPrecomputedDataset:
 
         loaded_sample = precomputed[0]
 
-        # Should have defaults
+        # Should have all keys
         assert "cell_counts" in loaded_sample
         assert "region_mask" in loaded_sample
-        # Default region_mask should have at least first region True
+        # region_mask should have first region True
         assert loaded_sample["region_mask"][0] == True
 
-        # cell_counts should be derived from cell_mask, not just zeros
-        # The count for each cell type should be the sum of True values in that row
+        # cell_counts should match
         expected_counts = sample["cell_mask"].sum(dim=1).long()
         assert torch.equal(loaded_sample["cell_counts"], expected_counts)
 
@@ -997,62 +1011,41 @@ class TestPrecomputedDataset:
 class TestPrecomputedNaNFallbacks:
     """D-A4: Tests for PrecomputedDataset backward-compatible NaN fallbacks."""
 
-    def test_precomputed_derives_cell_counts_when_missing(self, mock_dataset, tmp_path):
-        """When cell_counts absent, should derive from cell_mask."""
-        from src.data.datasets import PrecomputedDataset
-
-        # Manually save a file WITHOUT cell_counts (simulating older format)
-        subject_id = mock_dataset.subject_ids[0]
-        sample = mock_dataset[0]
-
-        np.savez_compressed(
-            tmp_path / f"{subject_id}.npz",
-            pseudobulk=sample["pseudobulk"].numpy(),
-            cell_type_mask=sample["cell_type_mask"].numpy(),
-            # Intentionally omit cell_counts
-            edge_index=sample["ccc_edge_index"].numpy(),
-            edge_type=sample["ccc_edge_type"].numpy(),
-            edge_attr=sample["ccc_edge_attr"].numpy(),
-            cells=sample["cells"].numpy(),
-            cell_mask=sample["cell_mask"].numpy(),
-            region_mask=sample["region_mask"].numpy(),
-        )
-
-        precomputed = PrecomputedDataset(
-            feature_dir=tmp_path,
-            metadata=mock_dataset.metadata,
-            subject_ids=[subject_id],
-        )
-
-        loaded_sample = precomputed[0]
-
-        # cell_counts should be derived from cell_mask: sum of True values per cell type
-        assert "cell_counts" in loaded_sample
-        assert loaded_sample["cell_counts"].dtype == torch.long
-        expected_counts = sample["cell_mask"].sum(dim=1).long()
-        assert torch.equal(loaded_sample["cell_counts"], expected_counts)
-
-    def test_precomputed_defaults_region_mask_to_pfc(self, mock_dataset, tmp_path):
-        """When region_mask absent, should default to PFC only."""
+    def test_precomputed_loads_cell_counts(self, mock_dataset, tmp_path):
+        """cell_counts should be loaded from .pt file."""
         from src.data.datasets import PrecomputedDataset
         from src.data.constants import REGION_ORDER
 
-        # Manually save a file WITHOUT region_mask (simulating older format)
         subject_id = mock_dataset.subject_ids[0]
         sample = mock_dataset[0]
 
-        np.savez_compressed(
-            tmp_path / f"{subject_id}.npz",
-            pseudobulk=sample["pseudobulk"].numpy(),
-            cell_type_mask=sample["cell_type_mask"].numpy(),
-            cell_counts=sample["cell_counts"].numpy(),
-            # Intentionally omit region_mask
-            edge_index=sample["ccc_edge_index"].numpy(),
-            edge_type=sample["ccc_edge_type"].numpy(),
-            edge_attr=sample["ccc_edge_attr"].numpy(),
-            cells=sample["cells"].numpy(),
-            cell_mask=sample["cell_mask"].numpy(),
-        )
+        # Build flat cell data from padded format
+        cells_padded = sample["cells"]
+        cell_mask_padded = sample["cell_mask"]
+        n_types = cells_padded.shape[0]
+        cell_offsets = torch.zeros(n_types + 1, dtype=torch.long)
+        flat_parts = []
+        for ct in range(n_types):
+            n = int(cell_mask_padded[ct].sum().item())
+            if n > 0:
+                flat_parts.append(cells_padded[ct, :n])
+            cell_offsets[ct + 1] = cell_offsets[ct] + n
+        cell_data = torch.cat(flat_parts) if flat_parts else torch.empty(0, cells_padded.shape[2])
+        cell_counts = sample["cell_mask"].sum(dim=1).long()
+
+        torch.save({
+            "pseudobulk": sample["pseudobulk"],
+            "cell_type_mask": sample["cell_type_mask"],
+            "cell_counts": cell_counts,
+            "region_mask": sample["region_mask"],
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
+            "ccc_edge_index": sample["ccc_edge_index"],
+            "ccc_edge_type": sample["ccc_edge_type"],
+            "ccc_edge_attr": sample["ccc_edge_attr"],
+            "cell_type_order": list(mock_dataset.cell_type_order),
+            "available_regions": [0],
+        }, tmp_path / f"{subject_id}.pt")
 
         precomputed = PrecomputedDataset(
             feature_dir=tmp_path,
@@ -1062,7 +1055,55 @@ class TestPrecomputedNaNFallbacks:
 
         loaded_sample = precomputed[0]
 
-        # region_mask should default to [True, False, False, ...]
+        assert "cell_counts" in loaded_sample
+        assert loaded_sample["cell_counts"].dtype == torch.long
+        assert torch.equal(loaded_sample["cell_counts"], cell_counts)
+
+    def test_precomputed_region_mask_loaded(self, mock_dataset, tmp_path):
+        """region_mask should be loaded from .pt file."""
+        from src.data.datasets import PrecomputedDataset
+        from src.data.constants import REGION_ORDER
+
+        subject_id = mock_dataset.subject_ids[0]
+        sample = mock_dataset[0]
+
+        # Build flat cell data from padded format
+        cells_padded = sample["cells"]
+        cell_mask_padded = sample["cell_mask"]
+        n_types = cells_padded.shape[0]
+        cell_offsets = torch.zeros(n_types + 1, dtype=torch.long)
+        flat_parts = []
+        for ct in range(n_types):
+            n = int(cell_mask_padded[ct].sum().item())
+            if n > 0:
+                flat_parts.append(cells_padded[ct, :n])
+            cell_offsets[ct + 1] = cell_offsets[ct] + n
+        cell_data = torch.cat(flat_parts) if flat_parts else torch.empty(0, cells_padded.shape[2])
+
+        region_mask = torch.tensor([True] + [False] * (len(REGION_ORDER) - 1), dtype=torch.bool)
+
+        torch.save({
+            "pseudobulk": sample["pseudobulk"],
+            "cell_type_mask": sample["cell_type_mask"],
+            "cell_counts": sample["cell_counts"],
+            "region_mask": region_mask,
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
+            "ccc_edge_index": sample["ccc_edge_index"],
+            "ccc_edge_type": sample["ccc_edge_type"],
+            "ccc_edge_attr": sample["ccc_edge_attr"],
+            "cell_type_order": list(mock_dataset.cell_type_order),
+            "available_regions": [0],
+        }, tmp_path / f"{subject_id}.pt")
+
+        precomputed = PrecomputedDataset(
+            feature_dir=tmp_path,
+            metadata=mock_dataset.metadata,
+            subject_ids=[subject_id],
+        )
+
+        loaded_sample = precomputed[0]
+
         assert "region_mask" in loaded_sample
         assert loaded_sample["region_mask"].dtype == torch.bool
         assert loaded_sample["region_mask"].shape == (len(REGION_ORDER),)
@@ -1109,7 +1150,7 @@ class TestPrecomputedCellTypeOrderValidation:
         assert precomputed.cell_type_order == mock_dataset.cell_type_order
 
     def test_precomputed_raises_on_mismatched_order(self, mock_dataset, tmp_path):
-        """PrecomputedDataset should raise ValueError on mismatched order."""
+        """PrecomputedDataset should raise RuntimeError on mismatched order."""
         from src.data.datasets import save_precomputed_features, PrecomputedDataset
 
         save_precomputed_features(mock_dataset, tmp_path, verbose=False)
@@ -1117,17 +1158,14 @@ class TestPrecomputedCellTypeOrderValidation:
         # Try to load with different order
         wrong_order = list(reversed(mock_dataset.cell_type_order))
 
-        precomputed = PrecomputedDataset(
-            feature_dir=tmp_path,
-            metadata=mock_dataset.metadata,
-            subject_ids=mock_dataset.subject_ids,
-            cell_type_order=wrong_order,
-        )
-
-        # Should raise on __getitem__ — ValueError is wrapped in RuntimeError
-        # by the error context annotation in __getitem__
+        # Should raise during __init__ (mmap_load_all validates cell_type_order)
         with pytest.raises(RuntimeError, match="different cell_type_order"):
-            _ = precomputed[0]
+            PrecomputedDataset(
+                feature_dir=tmp_path,
+                metadata=mock_dataset.metadata,
+                subject_ids=mock_dataset.subject_ids,
+                cell_type_order=wrong_order,
+            )
 
 
 class TestMultiRegionPseudobulk:
@@ -1225,7 +1263,7 @@ class TestMultiRegionPseudobulk:
             assert "available_regions" in data
 
     def test_precomputed_loads_region_data(self, mock_dataset, tmp_path):
-        """PrecomputedDataset should load region pseudobulk data."""
+        """PrecomputedDataset should load region pseudobulk data as stacked tensor."""
         from src.data.datasets import save_precomputed_features, PrecomputedDataset
 
         save_precomputed_features(mock_dataset, tmp_path, verbose=False)
@@ -1241,19 +1279,20 @@ class TestMultiRegionPseudobulk:
             orig_sample = mock_dataset[i]
             loaded_sample = precomputed[i]
 
-            # Check region pseudobulk keys match
+            # PrecomputedDataset stacks per-region pseudobulks into
+            # region_pseudobulk [n_regions, n_ct, n_genes]
+            assert "region_pseudobulk" in loaded_sample, "Missing region_pseudobulk"
+
+            # Verify the individual region data was correctly stacked
             orig_region_keys = {k for k in orig_sample if k.startswith("region_") and k.endswith("_pseudobulk")}
-            loaded_region_keys = {k for k in loaded_sample if k.startswith("region_") and k.endswith("_pseudobulk")}
-            assert orig_region_keys == loaded_region_keys, "Region keys should match"
-
-            # Check values match
             for key in orig_region_keys:
-                assert torch.allclose(orig_sample[key], loaded_sample[key]), f"Values mismatch for {key}"
-
-            # Check available_regions matches
-            if "available_regions" in orig_sample:
-                assert "available_regions" in loaded_sample
-                assert orig_sample["available_regions"] == loaded_sample["available_regions"]
+                # Extract region index from key like "region_0_pseudobulk"
+                ridx = int(key.split("_")[1])
+                torch.testing.assert_close(
+                    loaded_sample["region_pseudobulk"][ridx],
+                    orig_sample[key],
+                    msg=f"Values mismatch for {key} (region index {ridx})",
+                )
 
 
 class TestPrecomputedMultiRegionRoundtrip:

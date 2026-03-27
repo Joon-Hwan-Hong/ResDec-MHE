@@ -185,7 +185,7 @@ class TestPrecomputeRoundTrip:
     """Verify CognitiveResilienceDataset → save → PrecomputedDataset round-trip."""
 
     def test_precompute_round_trip_fields_match(self, tmp_path):
-        """Saved .npz fields match what PrecomputedDataset loads."""
+        """Saved .pt fields match what PrecomputedDataset loads."""
         adata, subject_ids = _make_synthetic_adata(N_SUBJECTS)
         metadata = _make_metadata(subject_ids)
 
@@ -254,7 +254,7 @@ class TestPrecomputeRoundTrip:
         for key in ["ccc_edge_index", "ccc_edge_type", "ccc_edge_attr"]:
             assert key in pre_sample, f"Missing key '{key}' in PrecomputedDataset"
 
-        # Phenotypes come from metadata, not .npz — verify they're present
+        # Phenotypes come from metadata, not .pt — verify they're present
         assert "pathology" in pre_sample
         assert "cognition" in pre_sample
 
