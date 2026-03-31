@@ -1434,6 +1434,18 @@ def save_precomputed_features(
             n_skipped += 1
             continue
 
+        # Skip degenerate subjects: 0 cells or <2 active cell types
+        # (no CCC edges possible, HGT branch gets empty graph)
+        n_cells = sample["cell_data"].shape[0] if isinstance(sample["cell_data"], torch.Tensor) else len(sample["cell_data"])
+        n_active_types = int(sample["cell_type_mask"].sum()) if isinstance(sample["cell_type_mask"], torch.Tensor) else int(sum(sample["cell_type_mask"]))
+        if n_cells == 0 or n_active_types < 2:
+            logger.warning(
+                "Skipping degenerate subject %s: %d cells, %d active types",
+                subject_id, n_cells, n_active_types,
+            )
+            n_skipped += 1
+            continue
+
         output_file = output_dir / f"{subject_id}.pt"
 
         # Build save dict with core features.
