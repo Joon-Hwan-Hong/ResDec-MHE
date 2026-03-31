@@ -226,11 +226,13 @@ def preprocess_adata(
     n_hvg: int = 4000,
     target_sum: float = 1e4,
     min_cells_per_gene: int = 10,
-    hvg_flavor: Literal["seurat_v3", "cell_ranger", "seurat"] = "seurat_v3",
+    hvg_flavor: Literal["seurat_v3", "cell_ranger", "seurat", "blocked"] = "blocked",
     hvg_subsample_n: int = 100_000,
+    hvg_per_type_n: int = 5_000,
     copy: bool = True,
     training_subject_ids: list[str] | None = None,
     subject_column: str = "ROSMAP_IndividualID",
+    cell_type_column: str = "supercluster_name",
     seed: int = 42,
 ) -> AnnData:
     """
@@ -354,6 +356,105 @@ def preprocess_adata(
         del adata_sub
         logger.info(f"HVG selection ({hvg_flavor}) on {n_sub:,}-cell subsample: {hvg_mask.sum():,} genes")
 
+    elif hvg_flavor == "blocked":
+        # scran-style blocked HVG: equal-weight per-cell-type variance,
+        # loess-normalized to remove mean-expression bias.
+        rng = np.random.default_rng(seed)
+
+        # Determine which cells are eligible
+        if training_subject_ids is not None:
+            eligible_mask = adata.obs[subject_column].isin(training_subject_ids).values
+        else:
+            eligible_mask = np.ones(adata.n_obs, dtype=bool)
+
+        # Also filter to genes passing min_cells QC
+        gene_mask = min_cells_mask
+        eligible_idx = np.where(eligible_mask)[0]
+
+        # Stratified subsample: equal N per cell type
+        ct_values = adata.obs[cell_type_column].values[eligible_idx]
+        unique_types = np.unique(ct_values)
+        sub_idx = []
+        type_sample_counts = {}
+        for ct in unique_types:
+            ct_positions = eligible_idx[ct_values == ct]
+            n = min(hvg_per_type_n, len(ct_positions))
+            if n > 0:
+                chosen = rng.choice(ct_positions, size=n, replace=False)
+                sub_idx.extend(chosen)
+                type_sample_counts[ct] = n
+        sub_idx = np.array(sorted(sub_idx))
+        logger.info(
+            f"Blocked HVG: stratified subsample {len(sub_idx):,} cells "
+            f"from {len(unique_types)} types (up to {hvg_per_type_n} per type)"
+        )
+        for ct, n in sorted(type_sample_counts.items(), key=lambda x: -x[1])[:5]:
+            logger.info(f"  {ct}: {n:,} cells")
+
+        # Subset to QC-passing genes and subsample
+        X_sub = adata[sub_idx][:, gene_mask].X
+        if sparse.issparse(X_sub):
+            X_sub = X_sub.toarray()
+        X_sub = X_sub.astype(np.float32)
+        gene_names_filtered = adata.var_names[gene_mask]
+
+        # Build one-hot cell type indicator [n_sub, n_types]
+        ct_sub = adata.obs[cell_type_column].values[sub_idx]
+        ct_categories = np.unique(ct_sub)
+        ct_to_idx = {ct: i for i, ct in enumerate(ct_categories)}
+        ct_codes = np.array([ct_to_idx[c] for c in ct_sub])
+        n_types = len(ct_categories)
+
+        C = sparse.csc_matrix(
+            (np.ones(len(ct_codes)), (np.arange(len(ct_codes)), ct_codes)),
+            shape=(len(ct_codes), n_types),
+        )
+
+        # Per-type variance via E[X^2] - E[X]^2 (no dense intermediates beyond X_sub)
+        type_counts = np.asarray(C.sum(axis=0)).ravel().astype(np.float64)
+        type_counts_safe = np.maximum(type_counts, 1)
+
+        type_means = (C.T @ X_sub) / type_counts_safe[:, None]       # [n_types, n_genes]
+        type_mean_sq = (C.T @ (X_sub ** 2)) / type_counts_safe[:, None]
+        variances = type_mean_sq - type_means ** 2                     # [n_types, n_genes]
+
+        # Mask out types with too few cells
+        for t in range(n_types):
+            if type_counts[t] < 10:
+                variances[t] = np.nan
+
+        # Equal-weight average across types (scran-style)
+        mean_var = np.nanmean(variances, axis=0)  # [n_genes]
+
+        # Gene-level mean expression (for loess normalization)
+        gene_means = X_sub.mean(axis=0)  # [n_genes]
+
+        # Loess normalization: fit mean-variance trend, divide out
+        from statsmodels.nonparametric.smoothers_lowess import lowess
+        finite_mask = np.isfinite(mean_var) & (gene_means > 0)
+        loess_result = lowess(
+            np.log1p(mean_var[finite_mask]),
+            np.log1p(gene_means[finite_mask]),
+            frac=0.3,
+            return_sorted=False,
+        )
+        # Map back: expected log-variance for each gene
+        expected_log_var = np.full(len(mean_var), np.nan)
+        expected_log_var[finite_mask] = loess_result
+        normalized_var = np.log1p(mean_var) - expected_log_var
+        normalized_var = np.nan_to_num(normalized_var, nan=-np.inf)
+
+        # Select top n_hvg by normalized within-type variance
+        top_idx = np.argsort(normalized_var)[-n_hvg:]
+        selected_genes = set(gene_names_filtered[top_idx])
+
+        hvg_mask = adata.var_names.isin(selected_genes)
+        del X_sub
+        logger.info(
+            f"Blocked HVG: {hvg_mask.sum():,} genes selected "
+            f"(from {gene_mask.sum():,} QC-passing, {n_types} types)"
+        )
+
     # ── STEP 4: Force include L-R genes from CellChatDB ──
     cellchatdb_path = Path(cellchatdb_path)
     lr_genes: set[str] = set()
@@ -397,11 +498,12 @@ def preprocess_adata(
     sc.pp.log1p(adata)
     logger.info(f"Normalized (target_sum={target_sum:.0e}) and log1p transformed")
 
-    # For non-seurat_v3 flavors, run HVG on normalized data.
-    if hvg_flavor != "seurat_v3":
+    # For non-seurat_v3 flavors that don't pre-select HVGs, run HVG on normalized data.
+    # "blocked" selects genes on raw counts (like seurat_v3), so skip this path.
+    if hvg_flavor not in ("seurat_v3", "blocked"):
         logger.warning(
             "Non-seurat_v3 HVG running on already-subsetted data (%d genes). "
-            "This path is not validated at scale. seurat_v3 is recommended.",
+            "This path is not validated at scale. seurat_v3 or blocked is recommended.",
             adata.n_vars,
         )
         sc.pp.highly_variable_genes(
@@ -442,6 +544,11 @@ def main():
     mp.add_argument("--target-sum", type=float, default=1e4)
     mp.add_argument("--min-cells-per-gene", type=int, default=10)
     mp.add_argument("--hvg-subsample", type=int, default=100_000)
+    mp.add_argument("--hvg-flavor", default="blocked",
+                    choices=["seurat_v3", "cell_ranger", "seurat", "blocked"])
+    mp.add_argument("--hvg-per-type-n", type=int, default=5000,
+                    help="Cells per type for blocked HVG (only used with --hvg-flavor blocked)")
+    mp.add_argument("--cell-type-column", default="supercluster_name")
     mp.add_argument("--seed", type=int, default=42)
     mp.add_argument("--chunk-size", type=int, default=200_000)
     mp.add_argument("--keep-raw-merged", action="store_true",
@@ -458,6 +565,11 @@ def main():
     pp.add_argument("--target-sum", type=float, default=1e4)
     pp.add_argument("--min-cells-per-gene", type=int, default=10)
     pp.add_argument("--hvg-subsample", type=int, default=100_000)
+    pp.add_argument("--hvg-flavor", default="blocked",
+                    choices=["seurat_v3", "cell_ranger", "seurat", "blocked"])
+    pp.add_argument("--hvg-per-type-n", type=int, default=5000,
+                    help="Cells per type for blocked HVG (only used with --hvg-flavor blocked)")
+    pp.add_argument("--cell-type-column", default="supercluster_name")
     pp.add_argument("--seed", type=int, default=42)
     pp.add_argument("--splits-path", type=str, default=None,
                     help="Path to splits JSON for leak-free HVG selection")
@@ -483,8 +595,11 @@ def main():
             n_hvg=args.n_hvg,
             target_sum=args.target_sum,
             min_cells_per_gene=args.min_cells_per_gene,
+            hvg_flavor=args.hvg_flavor,
             hvg_subsample_n=args.hvg_subsample,
+            hvg_per_type_n=args.hvg_per_type_n,
             copy=False,
+            cell_type_column=args.cell_type_column,
             seed=args.seed,
         )
 
@@ -511,9 +626,12 @@ def main():
             n_hvg=args.n_hvg,
             target_sum=args.target_sum,
             min_cells_per_gene=args.min_cells_per_gene,
+            hvg_flavor=args.hvg_flavor,
             hvg_subsample_n=args.hvg_subsample,
+            hvg_per_type_n=args.hvg_per_type_n,
             copy=False,
             training_subject_ids=training_subject_ids,
+            cell_type_column=args.cell_type_column,
             seed=args.seed,
         )
 
