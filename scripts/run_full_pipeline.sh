@@ -12,12 +12,31 @@ set -euo pipefail
 cd /host/milan/tank/Joon/proj_ml_snrna
 
 SECONDS=0
+FRESH=false
+if [ "${1:-}" = "--fresh" ]; then
+    FRESH=true
+    # Remove symlink so a new timestamped dir is created
+    rm -f outputs/pipeline_latest
+    shift
+fi
 
-PIPELINE_DIR="outputs/pipeline_$(date +%Y%m%d)"
+# Pipeline directory: use outputs/pipeline_latest symlink for idempotent restart.
+# First run creates a timestamped dir and symlinks to it.
+# Re-runs follow the symlink to resume from sentinel files.
+if [ -L "outputs/pipeline_latest" ] && [ -d "outputs/pipeline_latest" ]; then
+    PIPELINE_DIR="$(readlink -f outputs/pipeline_latest)"
+    echo "Resuming pipeline in $PIPELINE_DIR"
+else
+    RUN_ID="$(date +%Y%m%d_%H%M%S)"
+    PIPELINE_DIR="outputs/pipeline_${RUN_ID}"
+    mkdir -p "$PIPELINE_DIR"
+    ln -sfn "$PIPELINE_DIR" outputs/pipeline_latest
+    echo "New pipeline run: $PIPELINE_DIR"
+fi
 LOG_DIR="$PIPELINE_DIR/logs"
 mkdir -p "$LOG_DIR"
 
-log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_DIR/pipeline.log"; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_DIR/pipeline.log"; }
 done_file() { echo "$PIPELINE_DIR/.stage_${1}.done"; }
 mark_done() { touch "$(done_file "$1")"; log "Stage $1 COMPLETE"; }
 is_done() { [ -f "$(done_file "$1")" ]; }
@@ -82,13 +101,15 @@ if ! is_done 2; then
     N_PT=$(ls "$PRECOMPUTED"/*.pt 2>/dev/null | wc -l)
     log "  Created $N_PT .pt files"
 
-    # Auto-detect n_genes from the first .pt file and update config
+    # Auto-detect n_genes from the first .pt file
+    FIRST_PT=$(ls "$PRECOMPUTED"/*.pt | head -1)
     N_GENES=$(uv run python -c "
-import torch; pt = torch.load('$(ls $PRECOMPUTED/*.pt | head -1)', weights_only=False)
+import torch; pt = torch.load('$FIRST_PT', weights_only=False)
 print(pt['pseudobulk'].shape[1])
 ")
     log "  Auto-detected n_genes=$N_GENES"
-    sed -i "s/n_genes:.*/n_genes: $N_GENES/" configs/default.yaml
+    # Save to a pipeline-local file (don't mutate tracked configs/default.yaml)
+    echo "$N_GENES" > "$PIPELINE_DIR/n_genes.txt"
     mark_done 2
 fi
 
@@ -108,13 +129,17 @@ fi
 if ! is_done 4; then
     log "Stage 4: HPO — 50 trials, 3-fold, 2 GPUs..."
 
+    # Read auto-detected n_genes
+    N_GENES=$(cat "$PIPELINE_DIR/n_genes.txt")
+    log "  Using n_genes=$N_GENES (from stage 2 auto-detection)"
+
     # Generate a merged HPO config: default.yaml + hpo search space overlay.
     # hpo.py takes a single --config, so we produce one self-contained YAML.
     uv run python -c "
 from omegaconf import OmegaConf
 base = OmegaConf.load('configs/default.yaml')
 overlay = OmegaConf.create({
-    'model': {'n_genes': None},  # auto-detected at runtime from .pt files
+    'model': {'n_genes': $N_GENES},
     'data': {'precomputed_dir': '$PRECOMPUTED'},
     'paths': {'output_dir': '$PIPELINE_DIR'},
     'hpo': {
@@ -192,6 +217,14 @@ fi
 # ─── Stage 6: Ablations (all ablation configs x 5 folds) ───────────────────
 if ! is_done 6; then
     log "Stage 6: Ablation study..."
+    N_GENES=$(cat "$PIPELINE_DIR/n_genes.txt")
+
+    # Update all ablation configs to match current n_genes (may differ from hardcoded value)
+    for cfg in configs/ablations/ablation_*.yaml; do
+        sed -i "s/^  n_genes:.*/  n_genes: $N_GENES/" "$cfg"
+    done
+    log "  Updated ablation configs to n_genes=$N_GENES"
+
     for cfg in configs/ablations/ablation_*.yaml; do
         NAME=$(basename "$cfg" .yaml)
         log "  Running $NAME..."
