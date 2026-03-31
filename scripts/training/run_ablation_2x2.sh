@@ -4,8 +4,8 @@
 # All on fold 0, 30 epochs, compressed annealing schedule.
 #
 # Usage:
-#   bash scripts/run_ablation_2x2.sh [--fold N] [--n-gpus N]
-#   setsid nohup bash scripts/run_ablation_2x2.sh > outputs/logs/ablation_2x2.log 2>&1 &
+#   bash scripts/training/run_ablation_2x2.sh [--fold N] [--n-gpus N]
+#   setsid nohup bash scripts/training/run_ablation_2x2.sh > outputs/logs/ablation_2x2.log 2>&1 &
 set -euo pipefail
 
 FOLD=${1:-0}
@@ -40,7 +40,7 @@ run_condition() {
     local logfile="$LOGDIR/${name}.log"
 
     echo "[$(date '+%H:%M:%S')] $name -> GPU $gpu (log: $logfile)"
-    CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/train.py \
+    CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/training/train.py \
         "${COMMON[@]}" \
         experiment.run_name="ablation_${name}" \
         "${overrides[@]}" \

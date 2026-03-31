@@ -6,7 +6,7 @@ configs as ready-to-train YAML files, and computes HP importance.
 
 Usage:
     # Parse and extract top 10 configs (no GPU needed)
-    uv run python scripts/extract_hpo_results.py \\
+    uv run python scripts/inference/extract_hpo_results.py \\
         --ray-dir outputs/ray_results/cognitive_resilience_hpo6/ \\
         --base-config configs/hpo_round6.yaml \\
         --top-k 10 \\
@@ -318,7 +318,7 @@ def export_top_configs(
     Returns:
         List of paths to exported YAML files.
     """
-    from scripts.hpo import build_config_from_ray
+    from scripts.training.hpo import build_config_from_ray
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -332,6 +332,13 @@ def export_top_configs(
             logger.warning("Trial %s has invalid HP combo — skipping export",
                            trial["trial_id"])
             continue
+
+        # Match HPO's min_epochs = warmup + anneal (so early stopping can't
+        # fire before the temperature annealing schedule completes)
+        ta = config.training.get("temperature_annealing", {})
+        if ta.get("tau_min", 2.0) < ta.get("tau_max", 2.0):
+            min_ep = ta.get("warmup_epochs", 5) + ta.get("anneal_epochs", 20)
+            OmegaConf.update(config, "training.early_stopping.min_epochs", min_ep)
 
         # Add provenance metadata
         OmegaConf.update(config, "_hpo_provenance.trial_id", trial["trial_id"])

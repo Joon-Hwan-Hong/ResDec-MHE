@@ -113,7 +113,7 @@ def main():
     metadata = pd.read_csv(metadata_path / "metadata.csv")
 
     from src.data.datasets import PrecomputedDataset
-    from scripts.hpo import _collect_all_subject_ids
+    from scripts.training.hpo import _collect_all_subject_ids
     all_subject_ids = _collect_all_subject_ids(splits)
     preloaded_cache = PrecomputedDataset.load_subject_cache(
         args.precomputed_dir, all_subject_ids,
@@ -147,7 +147,7 @@ def main():
     t0 = time.perf_counter()
 
     # Call the actual train_fn — same function HPO calls
-    from scripts.hpo import train_fn
+    from scripts.training.hpo import train_fn
     with patch.object(ray.tune, "report", MagicMock()), \
          patch.object(ptl_integration, "TuneReportCheckpointCallback",
                       lambda **kw: __import__("lightning.pytorch", fromlist=["Callback"]).Callback()):

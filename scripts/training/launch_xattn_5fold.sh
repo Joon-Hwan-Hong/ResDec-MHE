@@ -17,7 +17,7 @@ run_fold() {
     local FOLD=$1
     local GPU=$2
     echo "$(date): Starting fold $FOLD on GPU $GPU"
-    CUDA_VISIBLE_DEVICES=$GPU uv run python scripts/train.py \
+    CUDA_VISIBLE_DEVICES=$GPU uv run python scripts/training/train.py \
         --config "$CONFIG" \
         --fold "$FOLD" \
         --splits-path "$SPLITS" \

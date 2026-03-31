@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Create and save stratified subject-level splits.
 
-Generates a splits JSON file used by all downstream scripts (train.py,
-hpo.py, precompute_features.py, profile_training.py).
+Generates a splits JSON file used by all downstream scripts (training/train.py,
+training/hpo.py, data/precompute_features.py, profiling/profile_training.py).
 
 Stratification: joint pathology × cognition tertiles (3×3 = 9 strata).
 Each subject appears in exactly one validation fold (disjoint).
 
 Usage:
-    .venv/bin/python scripts/create_splits.py \
+    .venv/bin/python scripts/data/create_splits.py \
         --config configs/default.yaml \
         --output outputs/splits.json
 
     # Custom split parameters:
-    .venv/bin/python scripts/create_splits.py \
+    .venv/bin/python scripts/data/create_splits.py \
         --config configs/default.yaml \
         --output outputs/splits.json \
         --test-frac 0.15 --n-folds 3 --seed 123
@@ -91,7 +91,7 @@ def main() -> None:
 
     # Split parameters (CLI overrides > config)
     data_cfg = config.data
-    test_frac = args.test_frac or data_cfg.splits.test_frac
+    test_frac = args.test_frac if args.test_frac is not None else data_cfg.splits.test_frac
     n_folds = args.n_folds or data_cfg.splits.n_folds
     seed = args.seed or config.experiment.get("seed", 42)
 

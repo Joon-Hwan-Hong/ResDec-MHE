@@ -8,18 +8,18 @@ the recommended approach for large datasets (e.g., full ROSMAP with
 
 Usage:
     # Basic (no LIANA — CCC edges will be empty):
-    uv run python scripts/precompute_features.py \
+    uv run python scripts/data/precompute_features.py \
         --config configs/default.yaml \
         --output-dir data/precomputed/
 
     # With LIANA results:
-    uv run python scripts/precompute_features.py \
+    uv run python scripts/data/precompute_features.py \
         --config configs/default.yaml \
         --output-dir data/precomputed/ \
         --liana-dir data/liana_cache/
 
     # Subset of subjects:
-    uv run python scripts/precompute_features.py \
+    uv run python scripts/data/precompute_features.py \
         --config configs/default.yaml \
         --output-dir data/precomputed/ \
         --splits-path outputs/splits.json

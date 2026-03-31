@@ -2,9 +2,9 @@
 Inference script for cognitive resilience model.
 
 Usage:
-    uv run python scripts/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml
-    uv run python scripts/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml --output-dir outputs/analysis/
-    uv run python scripts/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml --extract-hgt-attention --extract-embeddings
+    uv run python scripts/inference/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml
+    uv run python scripts/inference/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml --output-dir outputs/analysis/
+    uv run python scripts/inference/run_inference.py --checkpoint path/to/best.ckpt --config configs/default.yaml --extract-hgt-attention --extract-embeddings
 
 Workflow:
 1. Load config from YAML with optional CLI overrides
@@ -183,13 +183,17 @@ def build_dataloader(
             raise FileNotFoundError(
                 f"Precomputed data directory not found: {precomputed_dir}"
             )
-        # Discover subject IDs from .npz files on disk
+        # Discover subject IDs from .pt or .npz files on disk
         subject_ids = sorted(
-            p.stem for p in precomputed_dir.glob("*.npz")
+            p.stem for p in precomputed_dir.glob("*.pt")
         )
         if not subject_ids:
+            subject_ids = sorted(
+                p.stem for p in precomputed_dir.glob("*.npz")
+            )
+        if not subject_ids:
             raise ValueError(
-                f"No .npz files found in {precomputed_dir}"
+                f"No .pt or .npz files found in {precomputed_dir}"
             )
         logger.info(
             "Found %d subjects in precomputed directory: %s",

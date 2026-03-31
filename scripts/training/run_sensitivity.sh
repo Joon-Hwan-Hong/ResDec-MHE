@@ -3,9 +3,9 @@
 # Distributes folds across available GPUs in parallel.
 #
 # Usage:
-#   bash scripts/run_sensitivity.sh configs/production_5fold_rank*.yaml
-#   bash scripts/run_sensitivity.sh --n-gpus 1 --n-folds 3 configs/my_config.yaml
-#   setsid nohup bash scripts/run_sensitivity.sh configs/production_5fold_rank*.yaml \
+#   bash scripts/training/run_sensitivity.sh configs/production_5fold_rank*.yaml
+#   bash scripts/training/run_sensitivity.sh --n-gpus 1 --n-folds 3 configs/my_config.yaml
+#   setsid nohup bash scripts/training/run_sensitivity.sh configs/production_5fold_rank*.yaml \
 #       > outputs/logs/sensitivity.log 2>&1 &
 set -euo pipefail
 export PYTHONHASHSEED=42
@@ -14,7 +14,7 @@ export PYTHONHASHSEED=42
 N_GPUS=${N_GPUS:-$(nvidia-smi -L 2>/dev/null | wc -l)}
 N_FOLDS=5
 SPLITS="outputs/splits.json"
-PRECOMPUTED="data/precomputed/rosmap/"
+PRECOMPUTED="data/precomputed/"
 LOGDIR="outputs/logs/sensitivity"
 
 # ── Parse flags ──────────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ for config in "${CONFIGS[@]}"; do
             logfile="$LOGDIR/${name}_fold${fold}.log"
             echo "[$(date '+%H:%M:%S')] $name fold $fold -> GPU $gpu"
 
-            CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/train.py \
+            CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/training/train.py \
                 --config "$config" \
                 --splits-path "$SPLITS" \
                 --precomputed-dir "$PRECOMPUTED" \

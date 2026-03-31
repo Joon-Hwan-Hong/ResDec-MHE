@@ -3,7 +3,7 @@
 # All: ind=64, no OGM, no anneal, det=True, benchmark=False
 #
 # Usage:
-#   setsid nohup bash scripts/run_ablation_pma_cells.sh > outputs/logs/ablation_pma_cells.log 2>&1 &
+#   setsid nohup bash scripts/training/run_ablation_pma_cells.sh > outputs/logs/ablation_pma_cells.log 2>&1 &
 set -euo pipefail
 
 FOLD=${1:-0}
@@ -40,7 +40,7 @@ run_condition() {
     local logfile="$LOGDIR/${name}.log"
 
     echo "[$(date '+%H:%M:%S')] $name (pma=$pma, cells=$max_cells) -> GPU $gpu"
-    CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/train.py \
+    CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/training/train.py \
         "${COMMON[@]}" \
         experiment.run_name="ablation_${name}" \
         model.set_transformer.n_pma_seeds="$pma" \

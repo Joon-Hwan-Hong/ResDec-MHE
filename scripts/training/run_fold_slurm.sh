@@ -8,13 +8,13 @@
 #SBATCH --output=outputs/logs/slurm/fold_%a_%j.out
 #SBATCH --error=outputs/logs/slurm/fold_%a_%j.err
 #
-# Submit: sbatch scripts/run_fold_slurm.sh
+# Submit: sbatch scripts/training/run_fold_slurm.sh
 # Monitor: squeue -u $USER
 # Logs:    outputs/logs/slurm/fold_<FOLD>_<JOBID>.{out,err}
 #
 # Override defaults via sbatch flags:
-#   sbatch --partition=gpu-large --mem=128G scripts/run_fold_slurm.sh
-#   sbatch --array=2-4 scripts/run_fold_slurm.sh   # re-run failed folds only
+#   sbatch --partition=gpu-large --mem=128G scripts/training/run_fold_slurm.sh
+#   sbatch --array=2-4 scripts/training/run_fold_slurm.sh   # re-run failed folds only
 set -euo pipefail
 
 # Reproducibility: PYTHONHASHSEED must be set before Python starts.
@@ -34,7 +34,7 @@ echo "    Started at: $(date)"
 #   source /path/to/venv/bin/activate
 #   conda activate cogres
 
-uv run python scripts/train.py \
+uv run python scripts/training/train.py \
     --config configs/default.yaml \
     --splits-path outputs/splits.json \
     --precomputed-dir data/precomputed/rosmap/ \

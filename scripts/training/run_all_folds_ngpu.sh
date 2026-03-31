@@ -5,7 +5,7 @@
 #   Parallel-folds mode:     folds run concurrently (N at a time), 1 GPU per fold
 #
 # Usage:
-#   bash scripts/run_all_folds_ngpu.sh [OPTIONS] [-- OVERRIDES...]
+#   bash scripts/training/run_all_folds_ngpu.sh [OPTIONS] [-- OVERRIDES...]
 #
 # Options:
 #   --n-gpus N            Number of GPUs (default: auto-detect)
@@ -23,14 +23,14 @@
 #
 # Examples:
 #   # DDP: 5 folds sequentially, 2 GPUs per fold
-#   bash scripts/run_all_folds_ngpu.sh --n-gpus 2 --n-folds 5
+#   bash scripts/training/run_all_folds_ngpu.sh --n-gpus 2 --n-folds 5
 #
 #   # Parallel: 5 folds, 2 at a time on 2 GPUs, custom config
-#   bash scripts/run_all_folds_ngpu.sh --parallel-folds --config outputs/best_config.yaml \
+#   bash scripts/training/run_all_folds_ngpu.sh --parallel-folds --config outputs/best_config.yaml \
 #       -- training.max_epochs=100
 #
 #   # Session-persistent (survives logout):
-#   setsid nohup bash scripts/run_all_folds_ngpu.sh --parallel-folds \
+#   setsid nohup bash scripts/training/run_all_folds_ngpu.sh --parallel-folds \
 #       > outputs/logs/5fold.log 2>&1 &
 set -euo pipefail
 
@@ -109,14 +109,14 @@ run_fold() {
 
     if $PARALLEL; then
         echo "[$(date '+%H:%M:%S')] Fold $fold -> GPU $gpu (log: $logfile)"
-        CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/train.py \
+        CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/training/train.py \
             "${COMMON_ARGS[@]}" --fold "$fold" \
             training.devices=1 training.strategy=auto \
             "${OVERRIDES[@]}" \
             > "$logfile" 2>&1
     else
         echo "[$(date '+%H:%M:%S')] Fold $fold -> $N_GPUS GPU(s) DDP (log: $logfile)"
-        uv run python scripts/train.py \
+        uv run python scripts/training/train.py \
             "${COMMON_ARGS[@]}" --fold "$fold" \
             training.devices="$N_GPUS" \
             "${OVERRIDES[@]}" \

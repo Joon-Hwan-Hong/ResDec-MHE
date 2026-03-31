@@ -2,9 +2,9 @@
 Training script for cognitive resilience model.
 
 Usage:
-    uv run python scripts/train.py --config configs/default.yaml
-    uv run python scripts/train.py --config configs/default.yaml training.max_epochs=50
-    uv run python scripts/train.py --config configs/default.yaml --fold 0
+    uv run python scripts/training/train.py --config configs/default.yaml
+    uv run python scripts/training/train.py --config configs/default.yaml training.max_epochs=50
+    uv run python scripts/training/train.py --config configs/default.yaml --fold 0
 
 Workflow:
 1. Load config from YAML with optional CLI overrides

@@ -2,9 +2,9 @@
 Run post-hoc analysis pipeline on trained model outputs.
 
 Usage:
-    uv run python scripts/run_analysis.py --experiment-dir experiments/20260113_143052_a3f7b2c1
-    uv run python scripts/run_analysis.py --experiment-dir experiments/20260113_143052_a3f7b2c1 --skip-ccc
-    uv run python scripts/run_analysis.py --predictions-path analysis/predictions.parquet --attention-path analysis/attention.h5
+    uv run python scripts/analysis/run_analysis.py --experiment-dir experiments/20260113_143052_a3f7b2c1
+    uv run python scripts/analysis/run_analysis.py --experiment-dir experiments/20260113_143052_a3f7b2c1 --skip-ccc
+    uv run python scripts/analysis/run_analysis.py --predictions-path analysis/predictions.parquet --attention-path analysis/attention.h5
 
 Workflow:
 1. Load predictions and attention weights from experiment directory (or explicit paths)

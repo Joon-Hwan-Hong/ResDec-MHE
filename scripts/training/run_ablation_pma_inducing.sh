@@ -4,8 +4,8 @@
 # max_cells_per_type=2500
 #
 # Usage:
-#   bash scripts/run_ablation_pma_inducing.sh [--fold N] [--n-gpus N]
-#   setsid nohup bash scripts/run_ablation_pma_inducing.sh > outputs/logs/ablation_pma_inducing.log 2>&1 &
+#   bash scripts/training/run_ablation_pma_inducing.sh [--fold N] [--n-gpus N]
+#   setsid nohup bash scripts/training/run_ablation_pma_inducing.sh > outputs/logs/ablation_pma_inducing.log 2>&1 &
 set -euo pipefail
 
 FOLD=${1:-0}
@@ -43,7 +43,7 @@ run_condition() {
     local logfile="$LOGDIR/${name}.log"
 
     echo "[$(date '+%H:%M:%S')] $name (pma=$pma, ind=$inducing) -> GPU $gpu"
-    CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/train.py \
+    CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/training/train.py \
         "${COMMON[@]}" \
         experiment.run_name="ablation_${name}" \
         model.set_transformer.n_pma_seeds="$pma" \

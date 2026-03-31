@@ -11,18 +11,18 @@ Applies the full preprocessing pipeline from src/data/preprocessing.py:
   7. Filter to HVG + L-R gene set
 
 Saves the preprocessed AnnData to disk for use by:
-  - scripts/run_liana.py (CCC analysis)
-  - scripts/precompute_features.py (PrecomputedDataset generation)
+  - scripts/data/run_liana.py (CCC analysis)
+  - scripts/data/precompute_features.py (PrecomputedDataset generation)
 
 Usage:
     # With splits (recommended — prevents HVG leakage from test/val subjects):
-    uv run python scripts/preprocess_adata.py \
+    uv run python scripts/data/preprocess_adata.py \
         --config configs/default.yaml \
         --output data/snRNAseq/adata_ROSMAP_preprocessed.h5ad \
         --splits-path outputs/splits.json
 
     # Without splits (uses all subjects for HVG — acceptable for exploration):
-    uv run python scripts/preprocess_adata.py \
+    uv run python scripts/data/preprocess_adata.py \
         --config configs/default.yaml \
         --output data/snRNAseq/adata_ROSMAP_preprocessed.h5ad
 """

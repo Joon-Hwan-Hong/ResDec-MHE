@@ -6,7 +6,7 @@ sets (cell-type proportions, pseudobulk, all-combined) using the same 5-fold
 CV splits as the deep model.  All computation on GPU via cuML / XGBoost CUDA.
 
 Usage:
-    uv run python scripts/run_baselines.py \
+    uv run python scripts/analysis/run_baselines.py \
         --precomputed-dir data/precomputed/rosmap/ \
         --splits-path outputs/splits.json \
         --metadata-path data/metadata_ROSMAP/ \
@@ -47,9 +47,15 @@ from sklearn.cross_decomposition import PLSRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler as SklearnStandardScaler
 
+class _FlushHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[_FlushHandler()],
 )
 logger = logging.getLogger(__name__)
 
@@ -243,8 +249,8 @@ def _get_param_grid(name: str, n_features: int) -> tuple:
     elif name == "RandomForest":
         estimator = RandomForestRegressor(random_state=42)
         param_grid = {
-            "n_estimators": [50, 100, 200],
-            "max_depth": [8, 16, 32],
+            "n_estimators": [100, 200],
+            "max_depth": [8, 16],
         }
     else:
         raise ValueError(f"No CV grid for model: {name}")
@@ -282,7 +288,7 @@ def fit_predict_cv(
     return np.asarray(preds), best_params
 
 
-MODEL_NAMES = ["Ridge", "ElasticNet", "SVR", "RandomForest", "XGBoost", "PLS"]
+MODEL_NAMES = ["Ridge", "ElasticNet", "RandomForest", "XGBoost", "PLS"]
 
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
@@ -380,6 +386,26 @@ def run_fold(
     X_train_gpu = scaler.fit_transform(X_train_gpu)
     X_val_gpu = scaler.transform(X_val_gpu)
 
+    # PCA reduction for ElasticNet on high-dim features (148K coordinate descent is infeasible)
+    PCA_DIM_THRESHOLD = 1000
+    PCA_N_COMPONENTS = 100
+    pca_applied = False
+    if model_name == "ElasticNet" and X_train_gpu.shape[1] > PCA_DIM_THRESHOLD:
+        from sklearn.decomposition import PCA as skPCA
+        # Use sklearn PCA on CPU — cuML PCA OOMs on 148K features (needs 88GB GPU)
+        logger.info("  PCA %d -> %d for ElasticNet (CPU sklearn)",
+                    X_all.shape[1], PCA_N_COMPONENTS)
+        pca_reducer = skPCA(n_components=PCA_N_COMPONENTS, random_state=42)
+        X_train_reduced = pca_reducer.fit_transform(X_train_np)
+        X_val_reduced = pca_reducer.transform(X_val_np)
+        X_train_gpu = cp.asarray(X_train_reduced.astype(np.float32))
+        X_val_gpu = cp.asarray(X_val_reduced.astype(np.float32))
+        # Re-scale after PCA
+        scaler2 = StandardScaler()
+        X_train_gpu = scaler2.fit_transform(X_train_gpu)
+        X_val_gpu = scaler2.transform(X_val_gpu)
+        pca_applied = True
+
     # Fit and predict
     best_params = None
     n_feat = X_train_gpu.shape[1]
@@ -417,9 +443,9 @@ def run_fold(
                 random_state=42,
             )
             xgb_grid = {
-                "max_depth": [3, 6, 9],
-                "learning_rate": [0.01, 0.1, 0.3],
-                "n_estimators": [50, 100, 200],
+                "max_depth": [3, 6],
+                "learning_rate": [0.05, 0.1],
+                "n_estimators": [100, 200],
             }
             gs = skGridSearchCV(xgb_est, xgb_grid, cv=5, scoring="r2", refit=True)
             gs.fit(X_train_np, y_train_np)
@@ -599,13 +625,6 @@ def main(argv: list[str] | None = None) -> None:
 
     for model_name in args.models:
         for feature_set in args.feature_sets:
-            # Warn about potentially slow SVR on high-dim data
-            if model_name == "SVR" and feature_set in ("A", "A+C+E"):
-                logger.warning(
-                    "SVR with RBF kernel on %d features — this may be slow even on GPU",
-                    dim_a if feature_set == "A" else dim_a + dim_c + dim_e,
-                )
-
             for fold_idx in range(n_folds):
                 done += 1
                 train_ids = splits["folds"][fold_idx]["train"]

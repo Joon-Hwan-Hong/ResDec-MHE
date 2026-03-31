@@ -6,7 +6,7 @@ Ray Tune + Optuna TPE hyperparameter optimization for cognitive resilience model
 - Object store data sharing (zero-copy via ray.put)
 
 Usage:
-    uv run python scripts/hpo.py --config configs/hpo_round6.yaml \\
+    uv run python scripts/training/hpo.py --config configs/hpo_round6.yaml \\
         --splits-path data/splits.json --precomputed-dir data/precomputed/ \\
         --n-gpus 2 --n-trials 120 --n-folds 2
 """
@@ -172,6 +172,7 @@ def build_config_from_ray(ray_config: dict, base_config: DictConfig) -> DictConf
         "batch_size": "data.dataloader.batch_size",
         "n_inducing": "model.set_transformer.n_inducing_points",
         "gene_gate_temp": "model.gene_gate.initial_temperature",
+        "gene_gate_l1": "training.regularization.gene_gate_l1",
         "guide_lr": "training.optimizer.guide_lr",
         "fusion_type": "model.fusion.type",
         "fusion_n_heads": "model.fusion.n_heads",
@@ -372,7 +373,7 @@ def train_fn(ray_config: dict, base_config: dict, splits: dict, metadata, preloa
     from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
     from lightning.pytorch.loggers import CSVLogger
 
-    from scripts.train import setup_callbacks
+    from scripts.training.train import setup_callbacks
     from src.data.datamodule import CognitiveResilienceDataModule
     from src.training.callbacks import GradientNormLogger, ResilienceModelCheckpoint
     from src.training.lightning_module import CognitiveResilienceLightningModule
