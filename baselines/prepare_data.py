@@ -162,7 +162,10 @@ def prepare_mixmil_input(
         gene_likelihood="nb",  # negative binomial for count data
     )
 
-    train_kwargs = dict(max_epochs=max_epochs, early_stopping=True, num_workers=num_workers)
+    train_kwargs = dict(
+        max_epochs=max_epochs,
+        early_stopping=True,
+    )
     if devices > 1:
         train_kwargs.update(accelerator="gpu", devices=devices, strategy="ddp")
         logger.info(f"Training scVI for {max_epochs} epochs (num_workers={num_workers}, devices={devices}, strategy=ddp)...")
