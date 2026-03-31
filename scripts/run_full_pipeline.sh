@@ -19,7 +19,7 @@ SECONDS=0
 START_FROM=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --fresh)      rm -f outputs/pipeline_latest; shift ;;
+        --fresh)      rm -f "${PIPELINE_DIR:-outputs/pipeline}"/.stage_*.done 2>/dev/null; shift ;;
         --start-from) START_FROM="$2"; shift 2 ;;
         *)            echo "Unknown flag: $1"; exit 1 ;;
     esac
@@ -97,13 +97,12 @@ fi
 if ! is_done 2; then
     log "Stage 2: Precomputing per-subject .pt files..."
     LIANA_DIR="data/liana_cache/rosmap_blocked_hvg"
-    # Clear old .pt files so gene-index mismatch cannot happen
-    rm -rf "$PRECOMPUTED"/*.pt
     uv run python -u scripts/data/precompute_features.py \
         --config configs/default.yaml \
         --output-dir "$PRECOMPUTED" \
         --adata "$ADATA_PREP" \
         --liana-dir "$LIANA_DIR" \
+        --overwrite \
         2>&1 | tee "$LOG_DIR/stage2_precompute.log"
     N_PT=$(ls "$PRECOMPUTED"/*.pt 2>/dev/null | wc -l)
     log "  Created $N_PT .pt files"
