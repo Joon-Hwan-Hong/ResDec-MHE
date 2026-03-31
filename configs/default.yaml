@@ -70,7 +70,7 @@ data:
 
 model:
   # Dimensions
-  n_genes: 4796  # 4000 HVGs + 796 CellChatDB L-R genes (from preprocessed AnnData)
+  n_genes: null  # Auto-detected from precomputed .pt files at runtime
   n_cell_types: 31
   # n_regions is fixed at 6 (from constants.N_REGIONS) — determined by dataset schema.
   # Do NOT add n_regions here; the model reads N_REGIONS from src.data.constants.

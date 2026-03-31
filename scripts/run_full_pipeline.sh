@@ -29,37 +29,66 @@ PRECOMPUTED="data/precomputed"
 SPLITS="outputs/splits.json"
 METADATA="data/metadata_ROSMAP"
 HPO_CONFIG="$PIPELINE_DIR/hpo_config.yaml"
-WARM_START_DIR="outputs/ray_results/cognitive_resilience_hpo7"
+# Warm-start HPO from a prior run (set to empty string "" to skip warm-start)
+WARM_START_DIR="${WARM_START_DIR:-outputs/ray_results/cognitive_resilience_hpo7}"
 
 log "Pipeline started — output dir: $PIPELINE_DIR"
 
 # ─── Stage 1: Preprocess (blocked HVG) ─────────────────────────────────────
 if ! is_done 1; then
     log "Stage 1: Preprocessing with blocked HVG..."
+    # Note: no --splits-path here because splits.json doesn't exist yet.
+    # HVG selection on all subjects is standard practice (unsupervised step).
     uv run python -u -m src.data.preprocessing preprocess-only \
         --input "$ADATA_RAW" \
         --output "$ADATA_PREP" \
         --hvg-flavor blocked \
         --hvg-per-type-n 5000 \
         --n-hvg 4000 \
-        --splits-path "$SPLITS" \
         2>&1 | tee "$LOG_DIR/stage1_preprocess.log"
     mark_done 1
+fi
+
+# ─── Stage 1.5: Run LIANA+ CCC analysis ────────────────────────────────────
+if ! is_done 1.5; then
+    log "Stage 1.5: Running LIANA+ CCC analysis on preprocessed data..."
+    LIANA_DIR="data/liana_cache/rosmap_blocked_hvg"
+    mkdir -p "$LIANA_DIR"
+    uv run python -u scripts/data/run_liana.py \
+        --config configs/default.yaml \
+        --adata "$ADATA_PREP" \
+        --output-dir "$LIANA_DIR" \
+        --n-perms 100 \
+        --n-jobs 8 \
+        --overwrite \
+        2>&1 | tee "$LOG_DIR/stage1.5_liana.log"
+    N_LIANA=$(ls "$LIANA_DIR"/*.parquet 2>/dev/null | wc -l)
+    log "  LIANA completed for $N_LIANA subjects"
+    mark_done 1.5
 fi
 
 # ─── Stage 2: Precompute .pt files ─────────────────────────────────────────
 if ! is_done 2; then
     log "Stage 2: Precomputing per-subject .pt files..."
+    LIANA_DIR="data/liana_cache/rosmap_blocked_hvg"
     # Clear old .pt files so gene-index mismatch cannot happen
     rm -rf "$PRECOMPUTED"/*.pt
     uv run python -u scripts/data/precompute_features.py \
         --config configs/default.yaml \
         --output-dir "$PRECOMPUTED" \
         --adata "$ADATA_PREP" \
-        --liana-dir data/liana_cache/ \
+        --liana-dir "$LIANA_DIR" \
         2>&1 | tee "$LOG_DIR/stage2_precompute.log"
     N_PT=$(ls "$PRECOMPUTED"/*.pt 2>/dev/null | wc -l)
     log "  Created $N_PT .pt files"
+
+    # Auto-detect n_genes from the first .pt file and update config
+    N_GENES=$(uv run python -c "
+import torch; pt = torch.load('$(ls $PRECOMPUTED/*.pt | head -1)', weights_only=False)
+print(pt['pseudobulk'].shape[1])
+")
+    log "  Auto-detected n_genes=$N_GENES"
+    sed -i "s/n_genes:.*/n_genes: $N_GENES/" configs/default.yaml
     mark_done 2
 fi
 
@@ -85,6 +114,9 @@ if ! is_done 4; then
 from omegaconf import OmegaConf
 base = OmegaConf.load('configs/default.yaml')
 overlay = OmegaConf.create({
+    'model': {'n_genes': None},  # auto-detected at runtime from .pt files
+    'data': {'precomputed_dir': '$PRECOMPUTED'},
+    'paths': {'output_dir': '$PIPELINE_DIR'},
     'hpo': {
         'n_trials': 50,
         'per_trial_timeout': 7200,
@@ -108,17 +140,21 @@ print(f'Wrote merged HPO config to $HPO_CONFIG')
 "
     log "  Generated merged HPO config at $HPO_CONFIG"
 
-    # Warm-start from HPO7 best config; output ray_results into pipeline dir.
-    uv run python -u scripts/training/hpo.py \
-        --config "$HPO_CONFIG" \
-        --precomputed-dir "$PRECOMPUTED" \
-        --splits-path "$SPLITS" \
-        --n-trials 50 \
-        --n-folds 3 \
-        --n-gpus 2 \
-        --warm-start "$WARM_START_DIR" \
-        paths.output_dir="$PIPELINE_DIR" \
-        2>&1 | tee "$LOG_DIR/stage4_hpo.log"
+    # Build HPO command
+    HPO_CMD=(uv run python -u scripts/training/hpo.py
+        --config "$HPO_CONFIG"
+        --precomputed-dir "$PRECOMPUTED"
+        --splits-path "$SPLITS"
+        --n-trials 50
+        --n-folds 3
+        --n-gpus 2)
+    if [ -n "$WARM_START_DIR" ] && [ -d "$WARM_START_DIR" ]; then
+        HPO_CMD+=(--warm-start "$WARM_START_DIR")
+        log "  Warm-starting from $WARM_START_DIR"
+    else
+        log "  No warm-start (fresh HPO search)"
+    fi
+    "${HPO_CMD[@]}" 2>&1 | tee "$LOG_DIR/stage4_hpo.log"
 
     # Agent analysis of HPO results
     claude -p "Read $LOG_DIR/stage4_hpo.log and $PIPELINE_DIR/ray_results/. Extract top 3 configs. Write analysis to $PIPELINE_DIR/hpo_analysis.md. Extract best config to $PIPELINE_DIR/best_config.yaml." \
@@ -200,7 +236,7 @@ fi
 
 # ─── Stage 7a: Classical baselines ──────────────────────────────────────────
 if ! is_done 7a; then
-    log "Stage 7a: Classical baselines (Ridge, ElasticNet, SVR, RF, XGBoost, PLS)..."
+    log "Stage 7a: Classical baselines (Ridge, ElasticNet, RF, XGBoost, PLS)..."
     uv run python -u scripts/analysis/run_baselines.py \
         --precomputed-dir "$PRECOMPUTED" \
         --splits-path "$SPLITS" \
