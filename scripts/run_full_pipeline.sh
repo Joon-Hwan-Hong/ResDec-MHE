@@ -6,10 +6,10 @@
 # script resumes from the first incomplete stage.
 #
 # Usage:
-#   bash scripts/run_full_pipeline.sh                  # resume from last completed stage
-#   bash scripts/run_full_pipeline.sh --start-from 2   # start from stage 2
-#   bash scripts/run_full_pipeline.sh --fresh           # wipe sentinels, start from scratch
-#   PIPELINE_DIR=outputs/pipeline_v2 bash scripts/run_full_pipeline.sh  # custom dir
+#   tmux new-session -d -s pipeline 'bash scripts/run_full_pipeline.sh'
+#   tmux new-session -d -s pipeline 'bash scripts/run_full_pipeline.sh --start-from 2'
+#   tmux new-session -d -s pipeline 'bash scripts/run_full_pipeline.sh --fresh'
+#   tmux attach -t pipeline   # to watch
 set -euo pipefail
 cd /host/milan/tank/Joon/proj_ml_snrna
 
