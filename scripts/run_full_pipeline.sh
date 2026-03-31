@@ -6,33 +6,28 @@
 # script resumes from the first incomplete stage.
 #
 # Usage:
-#   tmux new-session -d -s pipeline 'bash scripts/run_full_pipeline.sh'
-#   tmux attach -t pipeline   # to watch
+#   bash scripts/run_full_pipeline.sh                  # resume from last completed stage
+#   bash scripts/run_full_pipeline.sh --start-from 2   # start from stage 2
+#   bash scripts/run_full_pipeline.sh --fresh           # wipe sentinels, start from scratch
+#   PIPELINE_DIR=outputs/pipeline_v2 bash scripts/run_full_pipeline.sh  # custom dir
 set -euo pipefail
 cd /host/milan/tank/Joon/proj_ml_snrna
 
 SECONDS=0
-FRESH=false
-if [ "${1:-}" = "--fresh" ]; then
-    FRESH=true
-    # Remove symlink so a new timestamped dir is created
-    rm -f outputs/pipeline_latest
-    shift
-fi
 
-# Pipeline directory: use outputs/pipeline_latest symlink for idempotent restart.
-# First run creates a timestamped dir and symlinks to it.
-# Re-runs follow the symlink to resume from sentinel files.
-if [ -L "outputs/pipeline_latest" ] && [ -d "outputs/pipeline_latest" ]; then
-    PIPELINE_DIR="$(readlink -f outputs/pipeline_latest)"
-    echo "Resuming pipeline in $PIPELINE_DIR"
-else
-    RUN_ID="$(date +%Y%m%d_%H%M%S)"
-    PIPELINE_DIR="outputs/pipeline_${RUN_ID}"
-    mkdir -p "$PIPELINE_DIR"
-    ln -sfn "$PIPELINE_DIR" outputs/pipeline_latest
-    echo "New pipeline run: $PIPELINE_DIR"
-fi
+# ── Parse flags ──────────────────────────────────────────────────────────────
+START_FROM=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --fresh)      rm -f outputs/pipeline_latest; shift ;;
+        --start-from) START_FROM="$2"; shift 2 ;;
+        *)            echo "Unknown flag: $1"; exit 1 ;;
+    esac
+done
+
+# ── Pipeline directory ───────────────────────────────────────────────────────
+PIPELINE_DIR="${PIPELINE_DIR:-outputs/pipeline}"
+mkdir -p "$PIPELINE_DIR"
 LOG_DIR="$PIPELINE_DIR/logs"
 mkdir -p "$LOG_DIR"
 
@@ -40,6 +35,18 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_DIR/pipeline.log
 done_file() { echo "$PIPELINE_DIR/.stage_${1}.done"; }
 mark_done() { touch "$(done_file "$1")"; log "Stage $1 COMPLETE"; }
 is_done() { [ -f "$(done_file "$1")" ]; }
+
+# --start-from: mark all stages before the target as done
+if [ -n "$START_FROM" ]; then
+    ALL_STAGES=(1 1.5 2 3 4 5 6 6.5 7a 7b 7c 7d 8)
+    for s in "${ALL_STAGES[@]}"; do
+        if [ "$s" = "$START_FROM" ]; then
+            break
+        fi
+        touch "$(done_file "$s")"
+    done
+    log "Starting from stage $START_FROM (marking prior stages as done)"
+fi
 
 # ── Paths ───────────────────────────────────────────────────────────────────
 ADATA_RAW="data/snRNAseq/adata_ROSMAP_merged.h5ad"
