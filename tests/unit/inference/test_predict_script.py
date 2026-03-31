@@ -8,7 +8,7 @@ class TestRunInferenceScriptImports:
 
     def test_no_scanpy_top_level_import(self):
         """scanpy should NOT be imported at module level — only in AnnData branch."""
-        script_path = Path("scripts/run_inference.py")
+        script_path = Path("scripts/inference/run_inference.py")
         tree = ast.parse(script_path.read_text())
 
         top_level_imports = []
@@ -69,7 +69,7 @@ class TestRunInferenceScriptConfigRecovery:
 
     def test_config_recovery_codepath_exists(self):
         """Script has a config recovery path from checkpoint before failing."""
-        source = (Path(__file__).resolve().parents[3] / "scripts" / "run_inference.py").read_text()
+        source = (Path(__file__).resolve().parents[3] / "scripts" / "inference" / "run_inference.py").read_text()
         # The script should try predictor.config before raising ValueError
         assert "predictor.config" in source or "config = predictor" in source, (
             "run_inference.py should attempt to recover config from checkpoint "

@@ -468,7 +468,7 @@ class TestRegionalAnalysisGuard:
         import ast
         from pathlib import Path
 
-        source = Path("scripts/run_analysis.py").read_text()
+        source = Path("scripts/analysis/run_analysis.py").read_text()
         assert "region_attention is not None" in source or "region_pseudobulk" in source, (
             "Regional analysis guard must check for actual extracted data, "
             "not just learned weights"

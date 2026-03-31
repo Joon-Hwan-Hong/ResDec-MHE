@@ -549,7 +549,7 @@ class TestMinEpochEarlyStopping:
     def test_setup_callbacks_uses_min_epoch_early_stopping(self):
         """setup_callbacks in train.py uses MinEpochEarlyStopping."""
         from omegaconf import OmegaConf
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         from src.training.callbacks import MinEpochEarlyStopping
 
         cfg = OmegaConf.load(_PROJECT_ROOT / "configs" / "default.yaml")

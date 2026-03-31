@@ -127,12 +127,12 @@ class TestParseRayResults:
     """Test parsing Ray Tune result directories."""
 
     def test_parse_all_trials(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results
+        from scripts.inference.extract_hpo_results import parse_ray_results
         trials = parse_ray_results(mock_ray_results)
         assert len(trials) == 5
 
     def test_trials_have_required_fields(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results
+        from scripts.inference.extract_hpo_results import parse_ray_results
         trials = parse_ray_results(mock_ray_results)
         required = {"trial_id", "best_val_nll", "best_epoch", "total_epochs",
                      "config", "total_time_s"}
@@ -140,7 +140,7 @@ class TestParseRayResults:
             assert required.issubset(set(t.keys())), f"Missing fields: {required - set(t.keys())}"
 
     def test_best_val_nll_is_minimum(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results
+        from scripts.inference.extract_hpo_results import parse_ray_results
         trials = parse_ray_results(mock_ray_results)
         # Trial ccc33333 has best val_nll=0.38 at epoch 25
         best = min(trials, key=lambda t: t["best_val_nll"])
@@ -148,14 +148,14 @@ class TestParseRayResults:
         assert abs(best["best_val_nll"] - 0.38) < 0.01
 
     def test_per_epoch_history_collected(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results
+        from scripts.inference.extract_hpo_results import parse_ray_results
         trials = parse_ray_results(mock_ray_results)
         # ccc33333 ran 25 epochs
         trial_c = [t for t in trials if t["trial_id"] == "ccc33333"][0]
         assert len(trial_c["epoch_history"]) == 25
 
     def test_handles_empty_directory(self, tmp_path):
-        from scripts.extract_hpo_results import parse_ray_results
+        from scripts.inference.extract_hpo_results import parse_ray_results
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         trials = parse_ray_results(empty_dir)
@@ -166,7 +166,7 @@ class TestFilterCurrentExperiment:
     """Test filtering trials to the most recent experiment."""
 
     def test_filters_to_latest_experiment(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results, _filter_current_experiment
+        from scripts.inference.extract_hpo_results import parse_ray_results, _filter_current_experiment
         trials = parse_ray_results(mock_ray_results)
         filtered = _filter_current_experiment(trials, mock_ray_results)
         # All 5 mock trials have matching timestamp, so all should be kept
@@ -182,7 +182,7 @@ class TestFilterCurrentExperiment:
                   "config": {"lr": 0.001}, "done": True}
         (old_dir / "result.json").write_text(json.dumps(result))
 
-        from scripts.extract_hpo_results import parse_ray_results, _filter_current_experiment
+        from scripts.inference.extract_hpo_results import parse_ray_results, _filter_current_experiment
         trials = parse_ray_results(mock_ray_results)
         assert len(trials) == 6  # 5 original + 1 old
         filtered = _filter_current_experiment(trials, mock_ray_results)
@@ -194,14 +194,14 @@ class TestRankTrials:
     """Test trial ranking."""
 
     def test_rank_by_val_nll_ascending(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results, rank_trials
+        from scripts.inference.extract_hpo_results import parse_ray_results, rank_trials
         trials = parse_ray_results(mock_ray_results)
         ranked = rank_trials(trials, metric="val_nll", mode="min")
         nlls = [t["best_val_nll"] for t in ranked]
         assert nlls == sorted(nlls)
 
     def test_top_k_selection(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results, rank_trials
+        from scripts.inference.extract_hpo_results import parse_ray_results, rank_trials
         trials = parse_ray_results(mock_ray_results)
         ranked = rank_trials(trials, metric="val_nll", mode="min", top_k=3)
         assert len(ranked) == 3
@@ -211,7 +211,7 @@ class TestBuildSummaryTable:
     """Test summary table generation."""
 
     def test_summary_has_all_trials_and_epochs(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results, build_summary_table
+        from scripts.inference.extract_hpo_results import parse_ray_results, build_summary_table
         trials = parse_ray_results(mock_ray_results)
         df = build_summary_table(trials)
         # Total epochs: 10 + 10 + 25 + 10 + 15 = 70
@@ -221,7 +221,7 @@ class TestBuildSummaryTable:
         assert "val_nll" in df.columns
 
     def test_summary_includes_hp_columns(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results, build_summary_table
+        from scripts.inference.extract_hpo_results import parse_ray_results, build_summary_table
         trials = parse_ray_results(mock_ray_results)
         df = build_summary_table(trials)
         hp_cols = {"lr", "dropout", "weight_decay", "beta", "guide_lr",
@@ -233,7 +233,7 @@ class TestExportConfigs:
     """Test config YAML export."""
 
     def test_export_creates_yaml_files(self, mock_ray_results, mock_base_config, tmp_path):
-        from scripts.extract_hpo_results import (
+        from scripts.inference.extract_hpo_results import (
             parse_ray_results, rank_trials, export_top_configs,
         )
         trials = parse_ray_results(mock_ray_results)
@@ -244,7 +244,7 @@ class TestExportConfigs:
         assert len(yamls) == 3
 
     def test_exported_config_has_correct_hp_values(self, mock_ray_results, mock_base_config, tmp_path):
-        from scripts.extract_hpo_results import (
+        from scripts.inference.extract_hpo_results import (
             parse_ray_results, rank_trials, export_top_configs,
         )
         trials = parse_ray_results(mock_ray_results)
@@ -256,7 +256,7 @@ class TestExportConfigs:
         assert abs(exported["training"]["optimizer"]["lr"] - 0.0005) < 1e-8
 
     def test_exported_config_preserves_non_hp_fields(self, mock_ray_results, mock_base_config, tmp_path):
-        from scripts.extract_hpo_results import (
+        from scripts.inference.extract_hpo_results import (
             parse_ray_results, rank_trials, export_top_configs,
         )
         trials = parse_ray_results(mock_ray_results)
@@ -273,7 +273,7 @@ class TestHPImportance:
     """Test HP importance analysis."""
 
     def test_importance_returns_all_hps(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results, compute_hp_importance
+        from scripts.inference.extract_hpo_results import parse_ray_results, compute_hp_importance
         trials = parse_ray_results(mock_ray_results)
         importance = compute_hp_importance(trials, metric="val_nll")
         hp_names = {"lr", "dropout", "weight_decay", "beta", "guide_lr",
@@ -281,7 +281,7 @@ class TestHPImportance:
         assert hp_names.issubset(set(importance.keys()))
 
     def test_importance_values_are_bounded(self, mock_ray_results):
-        from scripts.extract_hpo_results import parse_ray_results, compute_hp_importance
+        from scripts.inference.extract_hpo_results import parse_ray_results, compute_hp_importance
         trials = parse_ray_results(mock_ray_results)
         importance = compute_hp_importance(trials, metric="val_nll")
         for name, score in importance.items():

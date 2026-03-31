@@ -406,7 +406,7 @@ class TestResiliencePlotsUseResilienceDir:
         # Read the generate_plots.py source and verify the directory name
         # by inspecting the actual code structure.
         # The fix is in generate_plots.py main() where resilience_dir is set.
-        import scripts.generate_plots as gp
+        import scripts.analysis.generate_plots as gp
 
         # Verify generate_resilience_plots function exists
         assert hasattr(gp, "generate_resilience_plots"), (
@@ -639,17 +639,17 @@ class TestFinalModeDoesNotUseHoldoutForSelection:
 
         # Mock all heavyweight dependencies
         with (
-            patch("scripts.train.load_config") as mock_load_config,
-            patch("scripts.train.set_seed"),
-            patch("scripts.train.ExperimentManager") as mock_exp_mgr,
-            patch("scripts.train.CognitiveResilienceLightningModule") as mock_module_cls,
-            patch("scripts.train.OmegaConf") as mock_omegaconf,
+            patch("scripts.training.train.load_config") as mock_load_config,
+            patch("scripts.training.train.set_seed"),
+            patch("scripts.training.train.ExperimentManager") as mock_exp_mgr,
+            patch("scripts.training.train.CognitiveResilienceLightningModule") as mock_module_cls,
+            patch("scripts.training.train.OmegaConf") as mock_omegaconf,
             patch("src.utils.config.validate_config"),
-            patch("scripts.train.setup_callbacks") as mock_setup_callbacks,
-            patch("scripts.train.setup_trainer") as mock_setup_trainer,
+            patch("scripts.training.train.setup_callbacks") as mock_setup_callbacks,
+            patch("scripts.training.train.setup_trainer") as mock_setup_trainer,
             patch("src.data.splits.load_splits") as mock_load_splits,
             patch("src.data.splits.get_final_train_subjects") as mock_get_final,
-            patch("scripts.train.torch") as mock_torch,
+            patch("scripts.training.train.torch") as mock_torch,
         ):
             # Configure mock config
             mock_config = MagicMock()
@@ -708,10 +708,10 @@ class TestFinalModeDoesNotUseHoldoutForSelection:
 
             # Metadata + adata mock -- patch Path, pd.read_csv, scanpy.read_h5ad
             # Note: scanpy is imported lazily inside train.py functions,
-            # so we patch the scanpy module directly rather than scripts.train.sc
+            # so we patch the scanpy module directly rather than scripts.training.train.sc
             with (
-                patch("scripts.train.Path") as mock_path_cls,
-                patch("scripts.train.pd") as mock_pd,
+                patch("scripts.training.train.Path") as mock_path_cls,
+                patch("scripts.training.train.pd") as mock_pd,
                 patch("scanpy.read_h5ad") as mock_read_h5ad,
             ):
                 mock_path_instance = MagicMock()
@@ -730,7 +730,7 @@ class TestFinalModeDoesNotUseHoldoutForSelection:
                     "--splits-path", "/fake/splits.json",
                 ]
                 with patch.object(sys, "argv", test_args):
-                    from scripts.train import main
+                    from scripts.training.train import main
                     main()
 
             # --- Assertions ---
@@ -814,7 +814,7 @@ class TestBayesianModelExportsBackboneNotFullWeights:
         (N(0,1)) and without the guide, loading weights.pt for inference
         produces random predictions.
         """
-        from scripts.train import _export_weights
+        from scripts.training.train import _export_weights
 
         module = MagicMock()
         module.model.state_dict.return_value = {
@@ -844,7 +844,7 @@ class TestBayesianModelExportsBackboneNotFullWeights:
         Round 17, Task 2: Deterministic models should export full weights.pt
         containing all keys including prediction_head.
         """
-        from scripts.train import _export_weights
+        from scripts.training.train import _export_weights
 
         module = MagicMock()
         full_state = {

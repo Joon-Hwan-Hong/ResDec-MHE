@@ -1,5 +1,5 @@
 """
-Tests for scripts/train.py helper functions.
+Tests for scripts/training/train.py helper functions.
 
 Tests the composable pieces of the training script:
 - Config loading with CLI overrides
@@ -117,7 +117,7 @@ class TestLoadConfig:
 
     def test_load_config_from_yaml(self, tmp_path, train_config):
         """load_config loads a YAML file into OmegaConf."""
-        from scripts.train import load_config
+        from scripts.training.train import load_config
 
         config_path = tmp_path / "test_config.yaml"
         OmegaConf.save(train_config, config_path)
@@ -128,7 +128,7 @@ class TestLoadConfig:
 
     def test_load_config_with_overrides(self, tmp_path, train_config):
         """load_config applies CLI overrides to loaded config."""
-        from scripts.train import load_config
+        from scripts.training.train import load_config
 
         config_path = tmp_path / "test_config.yaml"
         OmegaConf.save(train_config, config_path)
@@ -140,7 +140,7 @@ class TestLoadConfig:
 
     def test_load_config_nonexistent_file_raises(self):
         """load_config raises FileNotFoundError for missing config."""
-        from scripts.train import load_config
+        from scripts.training.train import load_config
 
         with pytest.raises(FileNotFoundError):
             load_config("/nonexistent/path.yaml")
@@ -151,7 +151,7 @@ class TestSetupCallbacks:
 
     def test_setup_callbacks_returns_list(self, train_config):
         """setup_callbacks returns a list of Lightning callbacks."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
 
         callbacks = setup_callbacks(train_config)
         assert isinstance(callbacks, list)
@@ -159,7 +159,7 @@ class TestSetupCallbacks:
 
     def test_setup_callbacks_includes_model_checkpoint(self, train_config):
         """Callbacks include ModelCheckpoint monitoring val_loss."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         import lightning.pytorch as pl
 
         callbacks = setup_callbacks(train_config)
@@ -169,7 +169,7 @@ class TestSetupCallbacks:
 
     def test_setup_callbacks_includes_early_stopping(self, train_config):
         """Callbacks include EarlyStopping with configured patience."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         import lightning.pytorch as pl
 
         callbacks = setup_callbacks(train_config)
@@ -179,7 +179,7 @@ class TestSetupCallbacks:
 
     def test_setup_callbacks_includes_temperature_annealing(self, train_config):
         """Callbacks include TemperatureAnnealing with config values."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         from src.training.callbacks import TemperatureAnnealing
 
         callbacks = setup_callbacks(train_config)
@@ -190,7 +190,7 @@ class TestSetupCallbacks:
 
     def test_setup_callbacks_includes_gradient_norm_logger(self, train_config):
         """Callbacks include GradientNormLogger."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         from src.training.callbacks import GradientNormLogger
 
         callbacks = setup_callbacks(train_config)
@@ -199,7 +199,7 @@ class TestSetupCallbacks:
 
     def test_setup_callbacks_includes_resilience_checkpoint(self, train_config):
         """Callbacks include ResilienceModelCheckpoint."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         from src.training.callbacks import ResilienceModelCheckpoint
 
         callbacks = setup_callbacks(train_config)
@@ -208,7 +208,7 @@ class TestSetupCallbacks:
 
     def test_setup_callbacks_includes_lr_monitor(self, train_config):
         """Callbacks include LearningRateMonitor for deterministic head."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         import lightning.pytorch as pl
 
         callbacks = setup_callbacks(train_config)
@@ -217,7 +217,7 @@ class TestSetupCallbacks:
 
     def test_lr_monitor_present_for_bayesian_head(self, train_config):
         """LearningRateMonitor IS in callbacks for bayesian head (uses standard torch optimizer)."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         import lightning.pytorch as pl
 
         train_config.model.head.type = "bayesian"
@@ -227,7 +227,7 @@ class TestSetupCallbacks:
 
     def test_lr_monitor_present_for_deterministic_head(self, train_config):
         """LearningRateMonitor IS in callbacks when head.type is deterministic."""
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         import lightning.pytorch as pl
 
         train_config.model.head.type = "deterministic"
@@ -241,7 +241,7 @@ class TestSetupTrainer:
 
     def test_setup_trainer_returns_trainer(self, train_config, tmp_path):
         """setup_trainer returns a Lightning Trainer."""
-        from scripts.train import setup_trainer
+        from scripts.training.train import setup_trainer
         import lightning.pytorch as pl
 
         train_config.paths.output_dir = str(tmp_path)
@@ -253,7 +253,7 @@ class TestSetupTrainer:
 
     def test_setup_trainer_max_epochs(self, train_config, tmp_path):
         """Trainer uses max_epochs from config."""
-        from scripts.train import setup_trainer
+        from scripts.training.train import setup_trainer
 
         train_config.paths.output_dir = str(tmp_path)
         train_config.paths.logs_dir = str(tmp_path / "logs")
@@ -264,7 +264,7 @@ class TestSetupTrainer:
 
     def test_setup_trainer_gradient_clipping(self, train_config, tmp_path):
         """Trainer uses gradient_clip_val from config."""
-        from scripts.train import setup_trainer
+        from scripts.training.train import setup_trainer
 
         train_config.paths.output_dir = str(tmp_path)
         train_config.paths.logs_dir = str(tmp_path / "logs")
@@ -275,7 +275,7 @@ class TestSetupTrainer:
 
     def test_setup_trainer_benchmark_false(self, train_config, tmp_path):
         """Trainer sets torch.backends.cudnn.benchmark=False for reproducibility."""
-        from scripts.train import setup_trainer
+        from scripts.training.train import setup_trainer
 
         train_config.paths.output_dir = str(tmp_path)
         train_config.paths.logs_dir = str(tmp_path / "logs")
@@ -287,7 +287,7 @@ class TestSetupTrainer:
 
     def test_setup_trainer_deterministic_true(self, train_config, tmp_path):
         """Trainer sets deterministic=True for reproducibility via torch."""
-        from scripts.train import setup_trainer
+        from scripts.training.train import setup_trainer
         train_config.paths.output_dir = str(tmp_path)
         train_config.paths.logs_dir = str(tmp_path / "logs")
         train_config.paths.checkpoint_dir = str(tmp_path / "checkpoints")
@@ -297,7 +297,7 @@ class TestSetupTrainer:
 
     def test_setup_trainer_has_callbacks(self, train_config, tmp_path):
         """Trainer has callbacks configured."""
-        from scripts.train import setup_trainer
+        from scripts.training.train import setup_trainer
 
         train_config.paths.output_dir = str(tmp_path)
         train_config.paths.logs_dir = str(tmp_path / "logs")
@@ -312,7 +312,7 @@ class TestSetSeed:
 
     def test_set_seed_makes_torch_deterministic(self):
         """set_seed sets torch random seed for reproducibility."""
-        from scripts.train import set_seed
+        from scripts.training.train import set_seed
 
         set_seed(42)
         a = torch.randn(5)
@@ -322,7 +322,7 @@ class TestSetSeed:
 
     def test_set_seed_different_seeds_differ(self):
         """Different seeds produce different random values."""
-        from scripts.train import set_seed
+        from scripts.training.train import set_seed
 
         set_seed(42)
         a = torch.randn(5)
@@ -338,7 +338,7 @@ class TestMainHelp:
         """train.py --help exits with code 0."""
         monkeypatch.setattr("sys.argv", ["train.py", "--help"])
         with pytest.raises(SystemExit) as exc_info:
-            from scripts.train import main
+            from scripts.training.train import main
             main()
         assert exc_info.value.code == 0
 
@@ -348,7 +348,7 @@ class TestConfigToTrainerWiring:
 
     def test_callbacks_and_trainer_match_config(self, train_config, tmp_path):
         """setup_callbacks + setup_trainer produce correct Trainer config."""
-        from scripts.train import setup_callbacks, setup_trainer
+        from scripts.training.train import setup_callbacks, setup_trainer
         import lightning.pytorch as pl
 
         train_config.paths.output_dir = str(tmp_path)
@@ -447,7 +447,7 @@ class TestMainIntegration:
     def test_main_trains_one_epoch_with_synthetic_data(self, train_config, tmp_path):
         """main() completes one epoch with synthetic data (mocked loaders)."""
         import lightning.pytorch as pl
-        from scripts.train import setup_callbacks
+        from scripts.training.train import setup_callbacks
         from src.training.lightning_module import CognitiveResilienceLightningModule
 
         # Configure for minimal training (scheduler needs warmup < max_epochs)

@@ -335,9 +335,9 @@ class TestInterpretability:
         weights = model.hgt_gene_gate.get_gate_weights()
 
         assert weights.shape == (N_CELL_TYPES, 50)  # n_cell_types x n_genes
-        # Weights sum to 1 per cell type (softmax)
-        sums = weights.sum(dim=-1)
-        assert torch.allclose(sums, torch.ones(N_CELL_TYPES), atol=1e-5)
+        # Sigmoid gate: all values in [0, 1], initialized at 0.5
+        assert (weights >= 0).all() and (weights <= 1).all()
+        assert torch.allclose(weights, torch.full_like(weights, 0.5), atol=1e-5)
 
     def test_get_hgt_layer_scales(self, model):
         """Test HGT layer scale extraction."""

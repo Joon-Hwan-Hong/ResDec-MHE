@@ -4,8 +4,8 @@ Tests for src/models/components/gene_attention_gate.py
 Test organization:
 1. Initialization - parameter shapes, validation, defaults
 2. Forward pass - shapes, correctness, input validation
-3. Weight properties - softmax properties (sum to 1, bounded, positive)
-4. Temperature - annealing behavior, sharp vs uniform
+3. Weight properties - sigmoid properties (bounded [0,1], independent per gene)
+4. Temperature - stored for compat but is a no-op for sigmoid
 5. Gradients - flow through gate and to input
 6. Interpretability - top genes extraction
 7. Edge cases - single gene/cell type, extreme sizes, boundary conditions
@@ -125,13 +125,13 @@ class TestForwardPass:
         assert output.shape == x.shape
 
     def test_output_is_gated_input(self, small_gate):
-        """Output should be input * scaled_gate_weights (gate * n_genes)."""
+        """Output should be input * sigmoid(logits)."""
         x = torch.randn(2, 5, 10)
         gate_weights = small_gate.get_gate_weights()
         output = small_gate(x)
 
-        # forward() scales gate weights by n_genes to preserve input magnitude
-        expected = x * (gate_weights * small_gate.n_genes).unsqueeze(0)
+        # Sigmoid gate: output = input * sigmoid(logits), no scaling
+        expected = x * gate_weights.unsqueeze(0)
         assert torch.allclose(output, expected)
 
     def test_batch_size_one(self, small_gate):
@@ -178,43 +178,75 @@ class TestForwardPass:
 # =============================================================================
 
 class TestWeightProperties:
-    """Tests for mathematical properties of gate weights."""
+    """Tests for mathematical properties of sigmoid gate weights."""
 
-    def test_weights_sum_to_one_per_cell_type(self, production_gate):
-        """Gate weights should sum to 1 for each cell type."""
-        weights = production_gate.get_gate_weights()
-        sums = weights.sum(dim=-1)
-        assert torch.allclose(sums, torch.ones(N_CELL_TYPES), atol=1e-5)
-
-    def test_weights_are_non_negative(self):
-        """All gate weights should be >= 0."""
+    def test_weights_in_zero_one_range(self):
+        """All gate weights should be in [0, 1]."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=10, n_genes=50)
         gate.gate_logits.data = torch.randn(10, 50) * 5  # Varied logits
         weights = gate.get_gate_weights()
         assert (weights >= 0).all()
-
-    def test_weights_are_bounded_by_one(self):
-        """All gate weights should be <= 1."""
-        from src.models.components.gene_attention_gate import GeneAttentionGate
-
-        gate = GeneAttentionGate(n_cell_types=10, n_genes=50)
-        gate.gate_logits.data = torch.randn(10, 50) * 5
-        weights = gate.get_gate_weights()
         assert (weights <= 1).all()
 
-    def test_weights_positive_with_moderate_logits(self):
-        """With moderate logit values, all weights should be > 0.
+    def test_init_weights_are_half(self):
+        """At initialization (logits=0), all weights should be 0.5."""
+        from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        Note: With extreme logit differences (>~100), softmax CAN underflow
-        to exactly 0 in float32. This test uses moderate values where all
-        weights remain positive.
+        gate = GeneAttentionGate(n_cell_types=10, n_genes=50, init_uniform=True)
+        weights = gate.get_gate_weights()
+        assert torch.allclose(weights, torch.full((10, 50), 0.5), atol=1e-6)
+
+    def test_positive_logits_give_weights_above_half(self):
+        """Positive logits should produce weights > 0.5."""
+        from src.models.components.gene_attention_gate import GeneAttentionGate
+
+        gate = GeneAttentionGate(n_cell_types=5, n_genes=10)
+        gate.gate_logits.data = torch.abs(torch.randn(5, 10)) + 0.1  # All positive
+        weights = gate.get_gate_weights()
+        assert (weights > 0.5).all()
+
+    def test_negative_logits_give_weights_below_half(self):
+        """Negative logits should produce weights < 0.5."""
+        from src.models.components.gene_attention_gate import GeneAttentionGate
+
+        gate = GeneAttentionGate(n_cell_types=5, n_genes=10)
+        gate.gate_logits.data = -torch.abs(torch.randn(5, 10)) - 0.1  # All negative
+        weights = gate.get_gate_weights()
+        assert (weights < 0.5).all()
+
+    def test_weights_independent_per_gene(self):
+        """Changing one gene's logit should not affect other genes' weights."""
+        from src.models.components.gene_attention_gate import GeneAttentionGate
+
+        gate = GeneAttentionGate(n_cell_types=3, n_genes=10)
+        gate.gate_logits.data = torch.randn(3, 10)
+
+        weights_before = gate.get_gate_weights().clone()
+
+        # Change only gene 0's logit for cell type 0
+        gate.gate_logits.data[0, 0] += 5.0
+        weights_after = gate.get_gate_weights()
+
+        # Gene 0 in cell type 0 should change
+        assert not torch.allclose(weights_before[0, 0], weights_after[0, 0])
+        # All other genes in cell type 0 should be unaffected
+        assert torch.equal(weights_before[0, 1:], weights_after[0, 1:])
+        # All genes in other cell types should be unaffected
+        assert torch.equal(weights_before[1:], weights_after[1:])
+
+    def test_weights_strictly_positive_with_moderate_logits(self):
+        """With moderate logits, all sigmoid weights are strictly > 0.
+
+        Note: With very extreme logits (< -80), float32 sigmoid CAN underflow
+        to exactly 0. This test uses moderate logits where all weights stay
+        positive, which covers the realistic training range.
         """
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=5, n_genes=10)
-        gate.gate_logits.data = torch.randn(5, 10) * 2  # Moderate range
+        gate.gate_logits.data = torch.randn(5, 10) * 5  # Moderate range
         weights = gate.get_gate_weights()
         assert (weights > 0).all()
 
@@ -224,64 +256,42 @@ class TestWeightProperties:
 # =============================================================================
 
 class TestTemperature:
-    """Tests for temperature annealing behavior."""
+    """Tests for temperature compatibility (no-op for sigmoid gate).
 
-    def test_high_temperature_gives_uniform_weights(self):
-        """High temperature should give nearly uniform weights."""
+    Temperature is stored for backward compatibility with checkpoints and
+    the TemperatureAnnealing callback, but has no effect on sigmoid output.
+    """
+
+    def test_temperature_does_not_affect_weights(self):
+        """Changing temperature should NOT change sigmoid gate weights."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=100.0)
-        gate.gate_logits.data = torch.randn(5, 10)  # Varied logits
-
-        weights = gate.get_gate_weights()
-        uniform = torch.ones(5, 10) / 10
-        assert torch.allclose(weights, uniform, atol=0.01)
-
-    def test_low_temperature_gives_sharp_weights(self):
-        """Low temperature should give nearly one-hot weights."""
-        from src.models.components.gene_attention_gate import GeneAttentionGate
-
-        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=0.01)
-        gate.gate_logits.data = torch.zeros(5, 10)
-        gate.gate_logits.data[:, 0] = 1.0  # Clear preference for gene 0
-
-        weights = gate.get_gate_weights()
-        assert weights[:, 0].min() > 0.99
-
-    def test_very_small_temperature(self):
-        """Very small temperature should give near-one-hot, subject to floor.
-
-        The gene gate enforces a minimum temperature of 0.05 for numerical
-        stability (prevents gradient vanishing / gate freeze). With the floor,
-        near-one-hot behavior is still achieved for well-separated logits but
-        the threshold is relaxed compared to a true tau→0 limit.
-        """
-        from src.models.components.gene_attention_gate import GeneAttentionGate
-
-        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1e-6)
-        # Use logits with a clear winner (gap ≥ 1.0) so even at tau=0.05
-        # the softmax is strongly peaked
+        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1.0)
         gate.gate_logits.data = torch.randn(5, 10)
 
-        weights = gate.get_gate_weights()
-        # With floor tau=0.05 and randn logits, the max weight per row
-        # should still be dominant (> 0.99) but not necessarily > 0.9999
-        assert weights.max(dim=-1).values.min() > 0.99
+        weights_t1 = gate.get_gate_weights().clone()
+        gate.temperature = 0.1
+        weights_t01 = gate.get_gate_weights()
 
-    def test_very_large_temperature(self):
-        """Very large temperature should give approximately uniform weights."""
+        assert torch.equal(weights_t1, weights_t01), \
+            "Temperature should be a no-op for sigmoid gate"
+
+    def test_temperature_does_not_affect_forward(self):
+        """Forward pass output should be identical regardless of temperature."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1e6)
-        gate.gate_logits.data = torch.randn(5, 10) * 100
+        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1.0)
+        gate.gate_logits.data = torch.randn(5, 10)
+        x = torch.randn(2, 5, 10)
 
-        weights = gate.get_gate_weights()
-        expected = torch.ones(5, 10) / 10
-        # At τ=1e6 with logits*100, expect ~1e-4 deviation from uniform
-        assert torch.allclose(weights, expected, atol=1e-4)
+        out_t1 = gate(x).clone()
+        gate.temperature = 100.0
+        out_t100 = gate(x)
+
+        assert torch.equal(out_t1, out_t100)
 
     def test_temperature_setter_works(self):
-        """Temperature property setter should update correctly."""
+        """Temperature property setter should update the stored value."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1.0)
@@ -306,46 +316,12 @@ class TestTemperature:
         with pytest.raises(ValueError, match="temperature must be positive"):
             gate.temperature = -1.0
 
-    def test_temperature_change_affects_weights(self):
-        """Changing temperature should change weight distribution."""
+    def test_temperature_floor_applied(self):
+        """Very small temperature should be floored to 0.05."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1.0)
-        gate.gate_logits.data = torch.randn(5, 10)
-
-        weights_t1 = gate.get_gate_weights().clone()
-        gate.temperature = 0.5
-        weights_t05 = gate.get_gate_weights()
-
-        # Lower temperature = sharper weights (higher max)
-        assert weights_t05.max() > weights_t1.max()
-
-    def test_realistic_temperature_range_precision(self):
-        """At realistic temperatures (0.1-2.0), weights should have high precision.
-
-        This test matters for downstream reproducibility and gradient flow.
-        The temperature annealing schedule uses τ ∈ [0.1, 2.0].
-        """
-        from src.models.components.gene_attention_gate import GeneAttentionGate
-
-        gate = GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=100)
-        gate.gate_logits.data = torch.randn(N_CELL_TYPES, 100)
-
-        for tau in [2.0, 1.0, 0.5, 0.1]:
-            gate.temperature = tau
-            weights = gate.get_gate_weights()
-
-            # Critical: weights must sum to 1 with high precision
-            sums = weights.sum(dim=-1)
-            assert torch.allclose(sums, torch.ones(N_CELL_TYPES), atol=1e-6), \
-                f"Weights don't sum to 1 at τ={tau}: max deviation {(sums - 1).abs().max()}"
-
-            # No NaN or Inf
-            assert not torch.isnan(weights).any(), f"NaN in weights at τ={tau}"
-            assert not torch.isinf(weights).any(), f"Inf in weights at τ={tau}"
-
-            # All weights non-negative
-            assert (weights >= 0).all(), f"Negative weights at τ={tau}"
+        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1e-6)
+        assert gate.temperature == pytest.approx(0.05)
 
 
 # =============================================================================
@@ -506,7 +482,7 @@ class TestEdgeCases:
     """Tests for boundary conditions and edge cases."""
 
     def test_single_gene(self):
-        """Single gene: weight must be 1.0."""
+        """Single gene at init: weight = sigmoid(0) = 0.5."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=5, n_genes=1)
@@ -516,7 +492,7 @@ class TestEdgeCases:
         weights = gate.get_gate_weights()
 
         assert output.shape == (2, 5, 1)
-        assert torch.allclose(weights, torch.ones(5, 1))
+        assert torch.allclose(weights, torch.full((5, 1), 0.5))
 
     def test_single_cell_type(self):
         """Single cell type should work."""
@@ -529,7 +505,7 @@ class TestEdgeCases:
         assert output.shape == (4, 1, 100)
 
     def test_single_gene_single_cell_type(self):
-        """Degenerate case: 1x1 gate."""
+        """Degenerate case: 1x1 gate. At init, output = x * 0.5."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=1, n_genes=1)
@@ -537,7 +513,7 @@ class TestEdgeCases:
 
         output = gate(x)
         assert output.shape == (2, 1, 1)
-        assert torch.allclose(output, x)  # Weight is 1.0
+        assert torch.allclose(output, x * 0.5)  # Weight is sigmoid(0) = 0.5
 
     def test_all_zero_input(self):
         """All-zero input should produce all-zero output."""
@@ -604,7 +580,7 @@ class TestNumericalStability:
         assert output.shape == x.shape
 
     def test_large_positive_logits_no_overflow(self):
-        """Large positive logits should not overflow."""
+        """Large positive logits should saturate to 1.0, not overflow."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=5, n_genes=10)
@@ -614,28 +590,26 @@ class TestNumericalStability:
 
         assert not torch.isnan(weights).any()
         assert not torch.isinf(weights).any()
-        assert torch.allclose(weights.sum(dim=-1), torch.ones(5), atol=1e-4)
+        # Large positive logits -> sigmoid saturates near 1.0
+        assert (weights >= 0).all() and (weights <= 1).all()
 
-    def test_large_negative_logits_underflow_behavior(self):
-        """Large negative logits will underflow - verify this is handled gracefully.
+    def test_large_negative_logits_saturate_near_zero(self):
+        """Large negative logits should saturate near 0, not produce NaN.
 
-        Note: With extreme logit differences (>~100), softmax in float32 WILL
-        produce exact zeros for "losing" values. This is expected behavior.
-        At low temperatures during training, this creates sparse attention.
+        Sigmoid is numerically stable: large negative logits saturate to 0
+        (unlike softmax which can have competitive underflow issues).
         """
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=5, n_genes=10)
-        gate.gate_logits.data = torch.randn(5, 10) * -1000
+        gate.gate_logits.data = torch.ones(5, 10) * -1000
 
         weights = gate.get_gate_weights()
 
         # Should not produce NaN
         assert not torch.isnan(weights).any()
-        # Should still sum to 1 (one value gets all the mass)
-        assert torch.allclose(weights.sum(dim=-1), torch.ones(5), atol=1e-5)
-        # At least one gene per cell type should have non-zero weight
-        assert (weights.max(dim=-1).values > 0).all()
+        # All weights should be near zero
+        assert (weights < 1e-6).all()
 
     def test_mixed_extreme_logits(self):
         """Mix of very large and very small logits."""
@@ -651,21 +625,19 @@ class TestNumericalStability:
         assert not torch.isnan(weights).any()
         assert not torch.isinf(weights).any()
 
-    def test_gene_gate_softmax_float16_stability(self):
-        """Gene gate softmax should not produce NaN with float16 logits at low temperature."""
+    def test_gene_gate_sigmoid_float16_stability(self):
+        """Gene gate sigmoid should not produce NaN with float16 logits."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=2, n_genes=2000)
         gate.gate_logits.data = torch.randn(2, 2000) * 0.5  # Typical after training
-        gate._temperature_buf.fill_(0.05)  # Low temperature
 
         # Simulate AMP: cast logits to float16
         gate.gate_logits.data = gate.gate_logits.data.half()
         weights = gate.get_gate_weights()
         assert torch.isfinite(weights).all(), "NaN/Inf in gate weights"
-        # gate_logits is nn.Parameter (always float32 internally), so get_gate_weights()
-        # returns float32 regardless of any manual .half() cast on the data tensor.
-        # The softmax is computed in float32 for precision.
+        # gate_logits is nn.Parameter — get_gate_weights() casts to float32 via .float()
+        # so weights are always float32 regardless of logit dtype.
         assert weights.dtype == torch.float32, "Gate weights should stay float32 for precision"
 
 

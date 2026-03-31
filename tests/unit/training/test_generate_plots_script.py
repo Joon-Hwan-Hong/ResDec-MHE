@@ -196,7 +196,7 @@ class TestGeneratePlotsImports:
 
     def test_script_is_importable(self):
         """Test that script can be imported."""
-        from scripts.generate_plots import (
+        from scripts.analysis.generate_plots import (
             parse_args,
             load_analysis_data,
             load_attention_weights,
@@ -225,7 +225,7 @@ class TestLoadAnalysisData:
 
     def test_load_parquet(self, tmp_path):
         """Test loading analysis parquet files."""
-        from scripts.generate_plots import load_analysis_data
+        from scripts.analysis.generate_plots import load_analysis_data
 
         # Create analysis dir with a test file
         analysis_dir = tmp_path / "analysis"
@@ -240,7 +240,7 @@ class TestLoadAnalysisData:
 
     def test_load_empty_dir(self, tmp_path):
         """Test loading from empty directory returns empty dict."""
-        from scripts.generate_plots import load_analysis_data
+        from scripts.analysis.generate_plots import load_analysis_data
 
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
@@ -255,7 +255,7 @@ class TestLoadAttentionWeights:
 
     def test_load_hdf5(self, tmp_path):
         """Test loading HDF5 file."""
-        from scripts.generate_plots import load_attention_weights
+        from scripts.analysis.generate_plots import load_attention_weights
 
         path = tmp_path / "attention.h5"
         vlen_str = h5py.special_dtype(vlen=str)
@@ -270,7 +270,7 @@ class TestLoadAttentionWeights:
 
     def test_load_nonexistent(self, tmp_path):
         """Test loading nonexistent file returns empty dict."""
-        from scripts.generate_plots import load_attention_weights
+        from scripts.analysis.generate_plots import load_attention_weights
 
         weights = load_attention_weights(tmp_path / "nonexistent.h5")
         assert weights == {}
@@ -286,7 +286,7 @@ class TestGenerateAttentionPlots:
 
     def test_generates_plots(self, mock_analysis_dir, tmp_path):
         """Test attention plots are generated."""
-        from scripts.generate_plots import (
+        from scripts.analysis.generate_plots import (
             generate_attention_plots,
             load_attention_weights,
             load_analysis_data,
@@ -315,7 +315,7 @@ class TestGenerateImportancePlots:
 
     def test_generates_plots(self, mock_analysis_dir, tmp_path):
         """Test importance plots are generated."""
-        from scripts.generate_plots import generate_importance_plots, load_analysis_data
+        from scripts.analysis.generate_plots import generate_importance_plots, load_analysis_data
 
         plots_dir = tmp_path / "plots"
         plots_dir.mkdir()
@@ -338,7 +338,7 @@ class TestGeneratePredictionPlots:
 
     def test_generates_plots(self, mock_analysis_dir, tmp_path):
         """Test prediction plots are generated."""
-        from scripts.generate_plots import generate_prediction_plots, load_analysis_data
+        from scripts.analysis.generate_plots import generate_prediction_plots, load_analysis_data
 
         plots_dir = tmp_path / "plots"
         plots_dir.mkdir()
@@ -361,7 +361,7 @@ class TestGenerateResiliencePlots:
 
     def test_generates_plots(self, mock_analysis_dir, tmp_path):
         """Test resilience plots are generated."""
-        from scripts.generate_plots import generate_resilience_plots, load_analysis_data
+        from scripts.analysis.generate_plots import generate_resilience_plots, load_analysis_data
 
         plots_dir = tmp_path / "plots"
         plots_dir.mkdir()
@@ -390,7 +390,7 @@ class TestScriptIntegration:
     def test_help_flag(self):
         """Test --help flag works."""
         result = subprocess.run(
-            [sys.executable, "scripts/generate_plots.py", "--help"],
+            [sys.executable, "scripts/analysis/generate_plots.py", "--help"],
             capture_output=True,
             text=True,
         )
@@ -400,7 +400,7 @@ class TestScriptIntegration:
     def test_requires_input(self):
         """Test script fails without input."""
         result = subprocess.run(
-            [sys.executable, "scripts/generate_plots.py"],
+            [sys.executable, "scripts/analysis/generate_plots.py"],
             capture_output=True,
             text=True,
         )
@@ -413,7 +413,7 @@ class TestScriptIntegration:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/generate_plots.py",
+                "scripts/analysis/generate_plots.py",
                 "--analysis-dir", str(mock_analysis_dir),
                 "--output-dir", str(plots_dir),
             ],
@@ -432,7 +432,7 @@ class TestScriptIntegration:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/generate_plots.py",
+                "scripts/analysis/generate_plots.py",
                 "--analysis-dir", str(mock_analysis_dir),
                 "--output-dir", str(plots_dir),
                 "--plot-types", "prediction",
@@ -452,7 +452,7 @@ class TestScriptIntegration:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/generate_plots.py",
+                "scripts/analysis/generate_plots.py",
                 "--analysis-dir", str(mock_analysis_dir),
                 "--output-dir", str(plots_dir),
                 "--skip-plots", "cell_type_attention_heatmap", "cell_type_importance_bar",
@@ -470,7 +470,7 @@ class TestScriptIntegration:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/generate_plots.py",
+                "scripts/analysis/generate_plots.py",
                 "--analysis-dir", str(mock_analysis_dir),
                 "--output-dir", str(plots_dir),
                 "--format", "pdf",
@@ -497,7 +497,7 @@ class TestGeneratePlotsEdgeCases:
 
     def test_empty_analysis_dir(self, tmp_path):
         """Test with empty analysis directory."""
-        from scripts.generate_plots import (
+        from scripts.analysis.generate_plots import (
             generate_attention_plots,
             generate_importance_plots,
             generate_prediction_plots,
@@ -530,7 +530,7 @@ class TestGeneratePlotsEdgeCases:
 
     def test_partial_data(self, tmp_path):
         """Test with partial analysis data."""
-        from scripts.generate_plots import generate_prediction_plots, load_analysis_data
+        from scripts.analysis.generate_plots import generate_prediction_plots, load_analysis_data
 
         analysis_dir = tmp_path / "analysis"
         analysis_dir.mkdir()
@@ -566,7 +566,7 @@ class TestUncertaintyCorrelatesDataSource:
 
     def test_load_analysis_data_includes_correlates(self, mock_analysis_dir):
         """load_analysis_data should load uncertainty_correlates.parquet."""
-        from scripts.generate_plots import load_analysis_data
+        from scripts.analysis.generate_plots import load_analysis_data
         data = load_analysis_data(mock_analysis_dir)
         assert "uncertainty_correlates" in data
         assert "covariate" in data["uncertainty_correlates"].columns
@@ -574,7 +574,7 @@ class TestUncertaintyCorrelatesDataSource:
 
     def test_correlates_plot_uses_correct_key(self, mock_analysis_dir):
         """generate_analysis_plots should use uncertainty_correlates key, not uncertainty."""
-        from scripts.generate_plots import load_analysis_data
+        from scripts.analysis.generate_plots import load_analysis_data
         data = load_analysis_data(mock_analysis_dir)
         # The uncertainty_correlates key should be present for the plot
         assert "uncertainty_correlates" in data

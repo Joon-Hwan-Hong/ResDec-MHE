@@ -469,7 +469,7 @@ class TestCellHeterogeneityPipeline:
 
     def test_pma_attention_loading(self, synthetic_pma_attention, n_cell_types):
         """Test PMA attention can be saved and loaded from HDF5."""
-        from scripts.run_cell_heterogeneity import load_pma_attention
+        from scripts.analysis.run_cell_heterogeneity import load_pma_attention
 
         with tempfile.TemporaryDirectory() as tmpdir:
             h5_path = Path(tmpdir) / "attention_weights.h5"

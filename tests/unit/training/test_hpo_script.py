@@ -1,5 +1,5 @@
 """
-Tests for scripts/hpo.py — Ray Tune HPO script helper functions.
+Tests for scripts/training/hpo.py — Ray Tune HPO script helper functions.
 
 Tests the composable pieces of the HP optimization script:
 - YAML-to-Ray-Tune search space translation (_yaml_to_search_space)
@@ -67,7 +67,7 @@ class TestYamlToSearchSpace:
 
     def test_loguniform_type(self, search_space_config):
         """loguniform translates to tune.loguniform (Float with LogUniform sampler)."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
         from ray.tune.search.sample import Float
 
         space = _yaml_to_search_space(search_space_config)
@@ -77,7 +77,7 @@ class TestYamlToSearchSpace:
 
     def test_uniform_type(self, search_space_config):
         """uniform translates to tune.uniform (Float with Uniform sampler)."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
         from ray.tune.search.sample import Float
 
         space = _yaml_to_search_space(search_space_config)
@@ -88,7 +88,7 @@ class TestYamlToSearchSpace:
 
     def test_categorical_type(self, search_space_config):
         """categorical translates to tune.choice (Categorical)."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
         from ray.tune.search.sample import Categorical
 
         space = _yaml_to_search_space(search_space_config)
@@ -96,7 +96,7 @@ class TestYamlToSearchSpace:
 
     def test_int_type(self, search_space_config):
         """int translates to tune.randint (Integer)."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
         from ray.tune.search.sample import Integer
 
         space = _yaml_to_search_space(search_space_config)
@@ -104,7 +104,7 @@ class TestYamlToSearchSpace:
 
     def test_int_upper_bound_exclusive(self, search_space_config):
         """int type uses exclusive upper bound (spec.high + 1)."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
 
         space = _yaml_to_search_space(search_space_config)
         # tune.randint(10, 31) — upper is spec.high(30) + 1
@@ -112,7 +112,7 @@ class TestYamlToSearchSpace:
 
     def test_unknown_type_raises(self):
         """Unknown search space type raises ValueError."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
 
         config = OmegaConf.create({
             "hpo": {
@@ -126,7 +126,7 @@ class TestYamlToSearchSpace:
 
     def test_loguniform_samples_in_range(self, search_space_config):
         """loguniform samples fall within configured range."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
 
         space = _yaml_to_search_space(search_space_config)
         for _ in range(50):
@@ -135,7 +135,7 @@ class TestYamlToSearchSpace:
 
     def test_uniform_samples_in_range(self, search_space_config):
         """uniform samples fall within configured range."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
 
         space = _yaml_to_search_space(search_space_config)
         for _ in range(50):
@@ -144,7 +144,7 @@ class TestYamlToSearchSpace:
 
     def test_categorical_samples_from_choices(self, search_space_config):
         """categorical samples are from the configured choices."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
 
         space = _yaml_to_search_space(search_space_config)
         for _ in range(50):
@@ -153,7 +153,7 @@ class TestYamlToSearchSpace:
 
     def test_int_samples_in_range(self, search_space_config):
         """int samples fall within configured range (inclusive)."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
 
         space = _yaml_to_search_space(search_space_config)
         for _ in range(50):
@@ -163,14 +163,14 @@ class TestYamlToSearchSpace:
 
     def test_all_keys_present(self, search_space_config):
         """All search space keys are translated."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
 
         space = _yaml_to_search_space(search_space_config)
         assert set(space.keys()) == {"lr", "dropout", "fusion_type", "anneal_epochs"}
 
     def test_empty_search_space(self):
         """Empty search space returns empty dict."""
-        from scripts.hpo import _yaml_to_search_space
+        from scripts.training.hpo import _yaml_to_search_space
 
         config = OmegaConf.create({"hpo": {"search_space": {}}})
         space = _yaml_to_search_space(config)
@@ -187,77 +187,77 @@ class TestBuildConfigFromRay:
 
     def test_simple_param_lr(self, base_config):
         """lr maps to training.optimizer.lr."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"lr": 0.005}, base_config)
         assert config.training.optimizer.lr == 0.005
 
     def test_simple_param_weight_decay(self, base_config):
         """weight_decay maps to training.optimizer.weight_decay."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"weight_decay": 0.01}, base_config)
         assert config.training.optimizer.weight_decay == 0.01
 
     def test_simple_param_n_hgt_layers(self, base_config):
         """n_hgt_layers maps to model.hgt.n_layers."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"n_hgt_layers": 6}, base_config)
         assert config.model.hgt.n_layers == 6
 
     def test_simple_param_beta(self, base_config):
         """beta maps to training.loss.beta."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"beta": 0.8}, base_config)
         assert config.training.loss.beta == 0.8
 
     def test_simple_param_batch_size(self, base_config):
         """batch_size maps to data.dataloader.batch_size."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"batch_size": 32}, base_config)
         assert config.data.dataloader.batch_size == 32
 
     def test_simple_param_n_inducing(self, base_config):
         """n_inducing maps to model.set_transformer.n_inducing_points."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"n_inducing": 128}, base_config)
         assert config.model.set_transformer.n_inducing_points == 128
 
     def test_simple_param_gene_gate_temp(self, base_config):
         """gene_gate_temp maps to model.gene_gate.initial_temperature."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"gene_gate_temp": 1.5}, base_config)
         assert config.model.gene_gate.initial_temperature == 1.5
 
     def test_simple_param_guide_lr(self, base_config):
         """guide_lr maps to training.optimizer.guide_lr."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"guide_lr": 0.02}, base_config)
         assert config.training.optimizer.guide_lr == 0.02
 
     def test_simple_param_fusion_type(self, base_config):
         """fusion_type maps to model.fusion.type."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"fusion_type": "concat"}, base_config)
         assert config.model.fusion.type == "concat"
 
     def test_simple_param_fusion_n_heads(self, base_config):
         """fusion_n_heads maps to model.fusion.n_heads."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"fusion_n_heads": 8}, base_config)
         assert config.model.fusion.n_heads == 8
 
     def test_d_embed_updates_both(self, base_config):
         """d_embed compound mapping updates both model.d_embed and model.d_fused."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"d_embed": 128}, base_config)
         assert config.model.d_embed == 128
@@ -265,7 +265,7 @@ class TestBuildConfigFromRay:
 
     def test_n_heads_updates_three_modules(self, base_config):
         """n_heads compound mapping updates hgt, pathology_attention, and set_transformer."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"n_heads": 8, "d_embed": 128}, base_config)
         assert config.model.hgt.n_heads == 8
@@ -274,21 +274,21 @@ class TestBuildConfigFromRay:
 
     def test_dropout_updates_model_dropout(self, base_config):
         """dropout maps to model.dropout."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"dropout": 0.25}, base_config)
         assert config.model.dropout == 0.25
 
     def test_tau_min_updates_annealing(self, base_config):
         """tau_min maps to training.temperature_annealing.tau_min."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"tau_min": 0.05}, base_config)
         assert config.training.temperature_annealing.tau_min == 0.05
 
     def test_anneal_epochs_cast_to_int(self, base_config):
         """anneal_epochs is cast to int."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"anneal_epochs": 15.0}, base_config)
         assert config.training.temperature_annealing.anneal_epochs == 15
@@ -296,9 +296,9 @@ class TestBuildConfigFromRay:
 
     def test_unknown_key_warns(self, base_config):
         """Unknown keys produce a warning but do not crash."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
-        with patch("scripts.hpo.logger") as mock_logger:
+        with patch("scripts.training.hpo.logger") as mock_logger:
             config = build_config_from_ray({"unknown_param": 42}, base_config)
             mock_logger.warning.assert_called_once()
             assert "unknown_param" in mock_logger.warning.call_args[0][1]
@@ -307,7 +307,7 @@ class TestBuildConfigFromRay:
 
     def test_returns_none_when_d_embed_not_divisible_by_n_heads(self, base_config):
         """Returns None when d_embed % n_heads != 0."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         # d_embed=65 is not divisible by n_heads=4 (base config default)
         config = build_config_from_ray({"d_embed": 65}, base_config)
@@ -315,7 +315,7 @@ class TestBuildConfigFromRay:
 
     def test_returns_none_when_d_embed_not_divisible_by_fusion_n_heads(self, base_config):
         """Returns None when d_embed % fusion_n_heads != 0."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         # d_embed=64, fusion_n_heads=6 -> 64 % 6 != 0
         config = build_config_from_ray({"fusion_n_heads": 6}, base_config)
@@ -323,7 +323,7 @@ class TestBuildConfigFromRay:
 
     def test_does_not_mutate_base_config(self, base_config):
         """build_config_from_ray does not modify the base config."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         original_lr = base_config.training.optimizer.lr
         build_config_from_ray({"lr": 0.999}, base_config)
@@ -331,7 +331,7 @@ class TestBuildConfigFromRay:
 
     def test_multiple_params_applied(self, base_config):
         """Multiple parameters are applied simultaneously."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({
             "lr": 0.005,
@@ -346,7 +346,7 @@ class TestBuildConfigFromRay:
 
     def test_valid_d_embed_n_heads_combination(self, base_config):
         """Valid d_embed/n_heads combination returns config (not None)."""
-        from scripts.hpo import build_config_from_ray
+        from scripts.training.hpo import build_config_from_ray
 
         config = build_config_from_ray({"d_embed": 128, "n_heads": 8}, base_config)
         assert config is not None
@@ -364,7 +364,7 @@ class TestMakeTuneReportCallback:
 
     def test_returns_tune_callback(self):
         """Factory returns a TuneReportCheckpointCallback instance."""
-        from scripts.hpo import _make_tune_report_callback
+        from scripts.training.hpo import _make_tune_report_callback
         from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 
         cb = _make_tune_report_callback()
@@ -372,14 +372,14 @@ class TestMakeTuneReportCallback:
 
     def test_checkpoints_disabled(self):
         """Callback does not save checkpoints (HPO trials don't checkpoint)."""
-        from scripts.hpo import _make_tune_report_callback
+        from scripts.training.hpo import _make_tune_report_callback
 
         cb = _make_tune_report_callback()
         assert cb._save_checkpoints is False
 
     def test_reports_val_nll_metric(self):
         """Callback is configured to report val_nll."""
-        from scripts.hpo import _make_tune_report_callback
+        from scripts.training.hpo import _make_tune_report_callback
 
         cb = _make_tune_report_callback()
         assert "val_nll" in cb._metrics
@@ -395,7 +395,7 @@ class TestShortenAnnealingForHPO:
 
     def test_ratio_gte_1_returns_unchanged(self, base_config):
         """ratio >= 1.0 returns config with original values."""
-        from scripts.hpo import shorten_annealing_for_hpo
+        from scripts.training.hpo import shorten_annealing_for_hpo
 
         # max_epochs == full_max_epochs -> ratio = 1.0
         config = shorten_annealing_for_hpo(base_config, full_max_epochs=100)
@@ -404,7 +404,7 @@ class TestShortenAnnealingForHPO:
 
     def test_ratio_gt_1_returns_unchanged(self, base_config):
         """ratio > 1.0 (more epochs than full) returns config unchanged."""
-        from scripts.hpo import shorten_annealing_for_hpo
+        from scripts.training.hpo import shorten_annealing_for_hpo
 
         # max_epochs=100, full_max_epochs=50 -> ratio=2.0
         config = shorten_annealing_for_hpo(base_config, full_max_epochs=50)
@@ -413,7 +413,7 @@ class TestShortenAnnealingForHPO:
 
     def test_shortens_warmup_proportionally(self, base_config):
         """ratio < 1.0 shortens warmup_epochs proportionally."""
-        from scripts.hpo import shorten_annealing_for_hpo
+        from scripts.training.hpo import shorten_annealing_for_hpo
 
         base_config.training.max_epochs = 30
         config = shorten_annealing_for_hpo(base_config, full_max_epochs=100)
@@ -422,7 +422,7 @@ class TestShortenAnnealingForHPO:
 
     def test_shortens_anneal_epochs_proportionally(self, base_config):
         """ratio < 1.0 shortens anneal_epochs proportionally."""
-        from scripts.hpo import shorten_annealing_for_hpo
+        from scripts.training.hpo import shorten_annealing_for_hpo
 
         base_config.training.max_epochs = 30
         config = shorten_annealing_for_hpo(base_config, full_max_epochs=100)
@@ -431,7 +431,7 @@ class TestShortenAnnealingForHPO:
 
     def test_kl_annealing_shortened_when_enabled(self, base_config):
         """KL annealing warmup is shortened when enabled."""
-        from scripts.hpo import shorten_annealing_for_hpo
+        from scripts.training.hpo import shorten_annealing_for_hpo
 
         base_config.training.kl_annealing = {
             "enabled": True, "alpha_min": 0.01,
@@ -444,7 +444,7 @@ class TestShortenAnnealingForHPO:
 
     def test_kl_annealing_not_shortened_when_disabled(self, base_config):
         """KL annealing warmup is not touched when disabled."""
-        from scripts.hpo import shorten_annealing_for_hpo
+        from scripts.training.hpo import shorten_annealing_for_hpo
 
         base_config.training.kl_annealing = {
             "enabled": False, "warmup_epochs": 10,
@@ -455,7 +455,7 @@ class TestShortenAnnealingForHPO:
 
     def test_min_epochs_updated(self, base_config):
         """min_epochs is set to warmup + anneal (shortened)."""
-        from scripts.hpo import shorten_annealing_for_hpo
+        from scripts.training.hpo import shorten_annealing_for_hpo
 
         base_config.training.max_epochs = 30
         config = shorten_annealing_for_hpo(base_config, full_max_epochs=100)
@@ -467,7 +467,7 @@ class TestShortenAnnealingForHPO:
 
     def test_minimum_one_epoch(self, base_config):
         """Shortened values are always at least 1 epoch."""
-        from scripts.hpo import shorten_annealing_for_hpo
+        from scripts.training.hpo import shorten_annealing_for_hpo
 
         base_config.training.max_epochs = 1
         config = shorten_annealing_for_hpo(base_config, full_max_epochs=100)
@@ -485,7 +485,7 @@ class TestCollectAllSubjectIds:
 
     def test_collects_from_holdout_and_folds(self):
         """Collects IDs from holdout_test, train_val_pool, and folds."""
-        from scripts.hpo import _collect_all_subject_ids
+        from scripts.training.hpo import _collect_all_subject_ids
 
         splits = {
             "holdout_test": ["s1", "s2"],
@@ -499,7 +499,7 @@ class TestCollectAllSubjectIds:
 
     def test_deduplicates(self):
         """Duplicate IDs across sections are deduplicated."""
-        from scripts.hpo import _collect_all_subject_ids
+        from scripts.training.hpo import _collect_all_subject_ids
 
         splits = {
             "holdout_test": ["s1", "s2"],
@@ -512,7 +512,7 @@ class TestCollectAllSubjectIds:
 
     def test_returns_sorted(self):
         """Returns sorted list."""
-        from scripts.hpo import _collect_all_subject_ids
+        from scripts.training.hpo import _collect_all_subject_ids
 
         splits = {
             "holdout_test": ["s3", "s1"],
@@ -523,7 +523,7 @@ class TestCollectAllSubjectIds:
 
     def test_empty_splits(self):
         """Handles empty splits dict."""
-        from scripts.hpo import _collect_all_subject_ids
+        from scripts.training.hpo import _collect_all_subject_ids
 
         ids = _collect_all_subject_ids({})
         assert ids == []

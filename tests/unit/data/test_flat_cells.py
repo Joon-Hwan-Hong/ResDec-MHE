@@ -515,7 +515,7 @@ class TestConvertScript:
         )
 
         # Run conversion
-        from scripts.convert_to_flat_npz import convert_npz
+        from scripts.data.convert_to_flat_npz import convert_npz
         from pathlib import Path
 
         status = convert_npz(
@@ -542,7 +542,7 @@ class TestConvertScript:
             cell_data=np.zeros((5, 10), dtype=np.float32),
             cell_offsets=np.arange(32, dtype=np.int64),
         )
-        from scripts.convert_to_flat_npz import convert_npz
+        from scripts.data.convert_to_flat_npz import convert_npz
 
         status = convert_npz(tmp_path / "flat.npz", tmp_path / "flat.npz")
         assert status == "skipped"
@@ -553,7 +553,7 @@ class TestConvertScript:
             tmp_path / "bad.npz",
             pseudobulk=np.zeros((31, 10), dtype=np.float32),
         )
-        from scripts.convert_to_flat_npz import convert_npz
+        from scripts.data.convert_to_flat_npz import convert_npz
 
         status = convert_npz(tmp_path / "bad.npz", tmp_path / "bad.npz")
         assert status == "error"
@@ -575,7 +575,7 @@ class TestConvertScript:
             pseudobulk=np.zeros((n_types, n_genes), dtype=np.float32),
         )
 
-        from scripts.convert_to_flat_npz import convert_npz
+        from scripts.data.convert_to_flat_npz import convert_npz
 
         status = convert_npz(src_dir / "subj.npz", dst_dir / "subj.npz")
         assert status == "converted"
@@ -596,7 +596,7 @@ class TestConvertScript:
             cell_mask=cell_mask,
         )
 
-        from scripts.convert_to_flat_npz import convert_npz
+        from scripts.data.convert_to_flat_npz import convert_npz
 
         status = convert_npz(tmp_path / "empty.npz", tmp_path / "empty.npz")
         assert status == "converted"

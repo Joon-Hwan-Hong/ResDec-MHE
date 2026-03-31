@@ -96,7 +96,7 @@ class TestRunAnalysisImports:
     def test_script_is_importable(self):
         """Test that script can be imported."""
         # Import the module functions directly
-        from scripts.run_analysis import (
+        from scripts.analysis.run_analysis import (
             parse_args,
             load_predictions,
             run_cell_type_importance,
@@ -124,7 +124,7 @@ class TestLoadPredictions:
 
     def test_load_parquet(self, tmp_path):
         """Test loading parquet file."""
-        from scripts.run_analysis import load_predictions
+        from scripts.analysis.run_analysis import load_predictions
 
         df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
         path = tmp_path / "test.parquet"
@@ -135,7 +135,7 @@ class TestLoadPredictions:
 
     def test_load_csv(self, tmp_path):
         """Test loading CSV file."""
-        from scripts.run_analysis import load_predictions
+        from scripts.analysis.run_analysis import load_predictions
 
         df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
         path = tmp_path / "test.csv"
@@ -146,7 +146,7 @@ class TestLoadPredictions:
 
     def test_unsupported_format(self, tmp_path):
         """Test error on unsupported format."""
-        from scripts.run_analysis import load_predictions
+        from scripts.analysis.run_analysis import load_predictions
 
         path = tmp_path / "test.xyz"
         path.touch()
@@ -202,7 +202,7 @@ class TestRunCellTypeImportance:
 
     def test_runs_without_error(self, tmp_path):
         """Test function runs without error."""
-        from scripts.run_analysis import run_cell_type_importance
+        from scripts.analysis.run_analysis import run_cell_type_importance
 
         pathology_attention = np.random.rand(20, 4, 8)
         cell_type_names = ["A", "B", "C", "D", "E", "F", "G", "H"]
@@ -224,7 +224,7 @@ class TestRunGeneImportance:
 
     def test_runs_without_error(self, tmp_path):
         """Test function runs without error."""
-        from scripts.run_analysis import run_gene_importance
+        from scripts.analysis.run_analysis import run_gene_importance
 
         gene_gate = np.random.rand(8, 100)
         cell_type_names = ["A", "B", "C", "D", "E", "F", "G", "H"]
@@ -247,7 +247,7 @@ class TestRunUncertaintyAnalysis:
 
     def test_runs_without_error(self, tmp_path):
         """Test function runs without error."""
-        from scripts.run_analysis import run_uncertainty_analysis
+        from scripts.analysis.run_analysis import run_uncertainty_analysis
 
         np.random.seed(42)
         n = 50
@@ -272,7 +272,7 @@ class TestRunCCCImportance:
 
     def test_runs_without_error(self, tmp_path):
         """Test function runs without error."""
-        from scripts.run_analysis import run_ccc_importance
+        from scripts.analysis.run_analysis import run_ccc_importance
 
         # Create mock edge attention scores [n_subjects, n_edges]
         edge_attention = np.random.rand(20, 50)
@@ -289,7 +289,7 @@ class TestRunCCCImportance:
 
     def test_with_edge_metadata(self, tmp_path):
         """Test function with edge metadata."""
-        from scripts.run_analysis import run_ccc_importance
+        from scripts.analysis.run_analysis import run_ccc_importance
 
         edge_attention = np.random.rand(20, 10)
         edge_metadata = pd.DataFrame({
@@ -313,7 +313,7 @@ class TestRunResilienceSignature:
 
     def test_runs_without_error(self, tmp_path):
         """Test function runs without error."""
-        from scripts.run_analysis import run_resilience_signature
+        from scripts.analysis.run_analysis import run_resilience_signature
 
         np.random.seed(42)
         n_subjects = 30
@@ -343,7 +343,7 @@ class TestRunRegionalAnalysis:
 
     def test_runs_without_error(self, tmp_path):
         """Test function runs without error."""
-        from scripts.run_analysis import run_regional_analysis
+        from scripts.analysis.run_analysis import run_regional_analysis
 
         np.random.seed(42)
         n_regions = 6
@@ -382,7 +382,7 @@ class TestScriptIntegration:
     def test_help_flag(self):
         """Test --help flag works."""
         result = subprocess.run(
-            [sys.executable, "scripts/run_analysis.py", "--help"],
+            [sys.executable, "scripts/analysis/run_analysis.py", "--help"],
             capture_output=True,
             text=True,
         )
@@ -392,7 +392,7 @@ class TestScriptIntegration:
     def test_requires_input(self):
         """Test script fails without input."""
         result = subprocess.run(
-            [sys.executable, "scripts/run_analysis.py"],
+            [sys.executable, "scripts/analysis/run_analysis.py"],
             capture_output=True,
             text=True,
         )
@@ -403,7 +403,7 @@ class TestScriptIntegration:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/run_analysis.py",
+                "scripts/analysis/run_analysis.py",
                 "--experiment-dir", str(mock_experiment_dir),
                 "--skip-ccc",
                 "--skip-resilience",
@@ -421,7 +421,7 @@ class TestScriptIntegration:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/run_analysis.py",
+                "scripts/analysis/run_analysis.py",
                 "--experiment-dir", str(mock_experiment_dir),
                 "--skip-resilience",
                 "--skip-embedding",
@@ -438,7 +438,7 @@ class TestScriptIntegration:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/run_analysis.py",
+                "scripts/analysis/run_analysis.py",
                 "--experiment-dir", str(mock_experiment_dir),
                 "--skip-cell-type",
                 "--skip-gene",
@@ -485,7 +485,7 @@ class TestRunAnalysisEdgeCases:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/run_analysis.py",
+                "scripts/analysis/run_analysis.py",
                 "--predictions-path", str(tmp_path / "predictions.parquet"),
                 "--output-dir", str(tmp_path / "output"),
                 "--skip-cell-type",
@@ -512,7 +512,7 @@ class TestAlignArrayBySubjectId:
 
     def test_basic_alignment(self):
         """Test basic subject-aligned extraction."""
-        from scripts.run_analysis import _align_array_by_subject_id
+        from scripts.analysis.run_analysis import _align_array_by_subject_id
 
         source_df = pd.DataFrame({
             "subject_id": ["S1", "S2", "S3"],
@@ -524,7 +524,7 @@ class TestAlignArrayBySubjectId:
 
     def test_missing_subjects_get_nan(self):
         """Missing subjects get NaN values."""
-        from scripts.run_analysis import _align_array_by_subject_id
+        from scripts.analysis.run_analysis import _align_array_by_subject_id
 
         source_df = pd.DataFrame({
             "subject_id": ["S1", "S2"],
@@ -538,7 +538,7 @@ class TestAlignArrayBySubjectId:
 
     def test_column_not_found_returns_none(self):
         """Returns None when column doesn't exist."""
-        from scripts.run_analysis import _align_array_by_subject_id
+        from scripts.analysis.run_analysis import _align_array_by_subject_id
 
         source_df = pd.DataFrame({"subject_id": ["S1"], "other": [1.0]})
         result = _align_array_by_subject_id(source_df, ["S1"], "nonexistent")
@@ -546,7 +546,7 @@ class TestAlignArrayBySubjectId:
 
     def test_no_subject_id_column_returns_none(self):
         """Returns None when source_id_column doesn't exist."""
-        from scripts.run_analysis import _align_array_by_subject_id
+        from scripts.analysis.run_analysis import _align_array_by_subject_id
 
         source_df = pd.DataFrame({"id": ["S1"], "gpath": [1.0]})
         result = _align_array_by_subject_id(source_df, ["S1"], "gpath")
@@ -558,7 +558,7 @@ class TestResilienceWithAblation:
 
     def test_ablation_params_accepted(self, tmp_path):
         """Test run_resilience_signature accepts ablation parameters."""
-        from scripts.run_analysis import run_resilience_signature
+        from scripts.analysis.run_analysis import run_resilience_signature
 
         np.random.seed(42)
         n_subjects = 30
@@ -592,7 +592,7 @@ class TestAblationCLIFlags:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/run_analysis.py",
+                "scripts/analysis/run_analysis.py",
                 "--experiment-dir", str(mock_experiment_dir),
                 "--metadata-path", str(mock_metadata),
                 "--skip-cell-type", "--skip-gene", "--skip-ccc",
@@ -643,7 +643,7 @@ class TestCognitionFallback:
         result = subprocess.run(
             [
                 sys.executable,
-                "scripts/run_analysis.py",
+                "scripts/analysis/run_analysis.py",
                 "--predictions-path", str(tmp_path / "predictions.parquet"),
                 "--attention-path", str(tmp_path / "attention.h5"),
                 "--metadata-path", str(tmp_path / "metadata.csv"),
@@ -694,7 +694,7 @@ class TestGeneImportanceWithRegionPseudobulk:
 
     def test_produces_gene_importance_by_region(self, tmp_path):
         """run_gene_importance with region_pseudobulk should produce by-region CSV."""
-        from scripts.run_analysis import run_gene_importance
+        from scripts.analysis.run_analysis import run_gene_importance
 
         np.random.seed(42)
         n_cell_types = 8
@@ -733,7 +733,7 @@ class TestGeneImportanceWithRegionPseudobulk:
 
     def test_without_region_pseudobulk_no_region_file(self, tmp_path):
         """run_gene_importance without region_pseudobulk should NOT produce by-region file."""
-        from scripts.run_analysis import run_gene_importance
+        from scripts.analysis.run_analysis import run_gene_importance
 
         gene_gate = np.random.rand(8, 50).astype(np.float32)
         cell_type_names = ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
@@ -763,14 +763,14 @@ class TestAlignPredictionsToSubjects:
 
     def test_matching_order(self):
         """Matching order returns identical data."""
-        from scripts.run_analysis import _align_predictions_to_subjects
+        from scripts.analysis.run_analysis import _align_predictions_to_subjects
         df = pd.DataFrame({"subject_id": ["A", "B", "C"], "val": [1, 2, 3]})
         result = _align_predictions_to_subjects(df, ["A", "B", "C"])
         pd.testing.assert_frame_equal(result, df)
 
     def test_reversed_order(self):
         """Reversed target order reorders rows."""
-        from scripts.run_analysis import _align_predictions_to_subjects
+        from scripts.analysis.run_analysis import _align_predictions_to_subjects
         df = pd.DataFrame({"subject_id": ["A", "B", "C"], "val": [1, 2, 3]})
         result = _align_predictions_to_subjects(df, ["C", "B", "A"])
         assert result["subject_id"].tolist() == ["C", "B", "A"]
@@ -778,7 +778,7 @@ class TestAlignPredictionsToSubjects:
 
     def test_missing_subjects_get_nan(self):
         """Subjects in target but not in predictions_df get NaN rows."""
-        from scripts.run_analysis import _align_predictions_to_subjects
+        from scripts.analysis.run_analysis import _align_predictions_to_subjects
         df = pd.DataFrame({"subject_id": ["A", "C"], "val": [1.0, 3.0]})
         result = _align_predictions_to_subjects(df, ["A", "B", "C"])
         assert len(result) == 3
@@ -787,7 +787,7 @@ class TestAlignPredictionsToSubjects:
 
     def test_no_subject_id_column_returns_unchanged(self):
         """No subject_id column returns DataFrame unchanged with warning."""
-        from scripts.run_analysis import _align_predictions_to_subjects
+        from scripts.analysis.run_analysis import _align_predictions_to_subjects
         df = pd.DataFrame({"id": ["A", "B"], "val": [1, 2]})
         result = _align_predictions_to_subjects(df, ["B", "A"])
         pd.testing.assert_frame_equal(result, df)
@@ -861,7 +861,7 @@ class TestCCCRunsWithoutAttention:
 
     def test_ccc_runs_with_metadata_only(self, tmp_path):
         """CCC analysis produces output when attention is None but edge_metadata exists."""
-        from scripts.run_analysis import run_ccc_importance
+        from scripts.analysis.run_analysis import run_ccc_importance
 
         # Create edge_metadata without any attention scores
         edge_metadata = pd.DataFrame({
@@ -884,7 +884,7 @@ class TestCCCRunsWithoutAttention:
 
     def test_ccc_runs_with_neither_returns_placeholder(self, tmp_path):
         """CCC analysis produces placeholder output with no attention and no metadata."""
-        from scripts.run_analysis import run_ccc_importance
+        from scripts.analysis.run_analysis import run_ccc_importance
 
         run_ccc_importance(
             edge_attention_scores=None,
@@ -956,7 +956,7 @@ class TestSubjectColumnResolution:
 
     def test_align_with_custom_source_id_column(self):
         """_align_array_by_subject_id works with non-default source_id_column."""
-        from scripts.run_analysis import _align_array_by_subject_id
+        from scripts.analysis.run_analysis import _align_array_by_subject_id
 
         source_df = pd.DataFrame({
             "ROSMAP_IndividualID": ["R001", "R002", "R003"],
@@ -971,7 +971,7 @@ class TestSubjectColumnResolution:
 
     def test_align_with_wrong_column_returns_none(self):
         """_align_array_by_subject_id returns None when source_id_column doesn't match."""
-        from scripts.run_analysis import _align_array_by_subject_id
+        from scripts.analysis.run_analysis import _align_array_by_subject_id
 
         source_df = pd.DataFrame({
             "ROSMAP_IndividualID": ["R001", "R002"],

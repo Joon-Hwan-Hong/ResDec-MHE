@@ -762,13 +762,14 @@ class TestGeneAttentionGateIntegration:
         )
 
     def test_gene_gate_temperature_property(self, gate_config):
-        """gene_gate_temperature property should read/write correctly."""
+        """gene_gate_temperature property should read/write (no-op for sigmoid gate)."""
         ct = CellTransformer(**gate_config)
 
-        # Check initial value
-        assert ct.gene_gate_temperature == pytest.approx(2.0)
+        # Sigmoid gate: temperature is a no-op buffer, default=1.0
+        # (kept for backward compatibility with checkpoints and callbacks)
+        assert ct.gene_gate_temperature == pytest.approx(gate_config.get("gene_gate_temperature", 2.0))
 
-        # Set new value
+        # Set new value (no-op but shouldn't crash)
         ct.gene_gate_temperature = 0.5
         assert ct.gene_gate_temperature == pytest.approx(0.5)
         assert ct.gene_gate.temperature == pytest.approx(0.5)

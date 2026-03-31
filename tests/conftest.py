@@ -283,7 +283,7 @@ def clear_pyro_param_store():
     'Parameter has no attribute unconstrained' errors.
 
     Also resets module_local_params to False (Pyro default). Some tests
-    import scripts.train which calls pyro.settings.set(module_local_params=True)
+    import scripts.training.train which calls pyro.settings.set(module_local_params=True)
     at module scope. This global setting persists across tests and breaks SVI
     tests that expect parameters in the global param store.
 
