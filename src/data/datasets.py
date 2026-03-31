@@ -1462,6 +1462,15 @@ def save_precomputed_features(
         if "available_regions" in sample:
             save_data["available_regions"] = list(sample["available_regions"])
 
+        # Ensure all tensors are contiguous (stride-0 empty tensors crash
+        # Ray's zero-copy serialization during HPO).
+        for k, v in save_data.items():
+            if isinstance(v, torch.Tensor) and v.nelement() == 0:
+                # Replace empty tensors with properly-strided empty tensors
+                save_data[k] = torch.empty(v.shape, dtype=v.dtype)
+            elif isinstance(v, torch.Tensor) and not v.is_contiguous():
+                save_data[k] = v.contiguous()
+
         # Atomic write: save to temp file then rename to prevent partial files on crash.
         with tempfile.NamedTemporaryFile(
             dir=output_dir, suffix=".pt", delete=False
