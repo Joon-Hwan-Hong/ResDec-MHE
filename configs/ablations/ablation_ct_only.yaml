@@ -66,8 +66,8 @@ model:
     d_cond: 64
     n_heads: 4
     n_pathology_features: 3
-  use_hgt_encoder: true
-  use_cell_transformer: false
+  use_hgt_encoder: false
+  use_cell_transformer: true
   use_gradient_checkpointing: true
   use_torch_compile: false
   head:
@@ -216,6 +216,6 @@ _hpo_provenance:
   best_epoch: 67
   rank: 3
 _ablation:
-  name: ablation_hgt_only
-  description: HGT branch only — disable cell transformer
+  name: ablation_ct_only
+  description: Cell transformer only — disable HGT/CCC branch
   base_config: rank03_trial_b67416f2 (HPO7)

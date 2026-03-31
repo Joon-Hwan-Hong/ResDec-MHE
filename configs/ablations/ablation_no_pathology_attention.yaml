@@ -67,13 +67,14 @@ model:
     n_heads: 4
     n_pathology_features: 3
   use_hgt_encoder: true
-  use_cell_transformer: false
+  use_cell_transformer: true
   use_gradient_checkpointing: true
   use_torch_compile: false
   head:
     type: bayesian
     d_hidden: 64
     target_mean: null
+  use_pathology_attention: false
 training:
   max_epochs: 100
   early_stopping:
@@ -216,6 +217,6 @@ _hpo_provenance:
   best_epoch: 67
   rank: 3
 _ablation:
-  name: ablation_hgt_only
-  description: HGT branch only — disable cell transformer
+  name: ablation_no_pathology_attention
+  description: Disable pathology-conditioned attention — use mean pooling instead
   base_config: rank03_trial_b67416f2 (HPO7)

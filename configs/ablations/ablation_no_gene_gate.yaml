@@ -43,7 +43,7 @@ model:
   d_fused: 64
   dropout: 0.23364921626695692
   gene_gate:
-    initial_temperature: 0.9362042554951886
+    initial_temperature: 100.0
   hgt:
     n_layers: 4
     n_heads: 4
@@ -67,7 +67,7 @@ model:
     n_heads: 4
     n_pathology_features: 3
   use_hgt_encoder: true
-  use_cell_transformer: false
+  use_cell_transformer: true
   use_gradient_checkpointing: true
   use_torch_compile: false
   head:
@@ -216,6 +216,6 @@ _hpo_provenance:
   best_epoch: 67
   rank: 3
 _ablation:
-  name: ablation_hgt_only
-  description: HGT branch only — disable cell transformer
+  name: ablation_no_gene_gate
+  description: Disable gene gate via very high temperature (uniform weights)
   base_config: rank03_trial_b67416f2 (HPO7)
