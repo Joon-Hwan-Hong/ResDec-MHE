@@ -40,9 +40,9 @@ data:
 
   # Data splitting (True Stratified K-Fold CV)
   # Uses StratifiedKFold for disjoint validation sets across folds.
-  # val_frac is derived: (1 - test_frac) / n_folds ≈ 20% with 5-fold
+  # val_frac is derived: (1 - test_frac) / n_folds ≈ 18% with 5-fold on 90% pool
   splits:
-    test_frac: 0.0  # No holdout — 5-fold CV on all subjects
+    test_frac: 0.1  # 10% holdout test set for final evaluation
     n_folds: 5      # CV folds (determines val size = 100%/5 = 20%)
     stratify_by:
       - "gpath"
