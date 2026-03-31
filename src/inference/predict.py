@@ -38,14 +38,26 @@ logger = logging.getLogger(__name__)
 
 
 def _hgt_attention_to_cpu(
-    hgt_attention: list[list[dict]],
-) -> list[list[dict]]:
+    hgt_attention: list,
+) -> list:
     """Move HGT attention tensors to CPU.
 
-    HGT attention from HGTEncoderTensor is list[list[dict[tuple, Tensor]]]
-    (per-sample, per-layer, per-edge-type). Moves to CPU to prevent GPU OOM
-    during batch accumulation.
+    Handles two formats:
+    - Current: list[Tensor] — per-layer attention [n_edges, n_heads]
+    - Legacy: list[list[dict[tuple, Tensor]]] — per-sample, per-layer, per-edge-type
+
+    Moves to CPU to prevent GPU OOM during batch accumulation.
     """
+    if not hgt_attention:
+        return hgt_attention
+
+    first = hgt_attention[0]
+
+    # Current format: list[Tensor] — one tensor per layer
+    if isinstance(first, torch.Tensor):
+        return [t.cpu() for t in hgt_attention]
+
+    # Legacy format: list[list[dict]]
     return [
         [
             {
@@ -54,6 +66,8 @@ def _hgt_attention_to_cpu(
             }
             for layer_dict in sample_attn
         ]
+        if isinstance(first, list) else
+        first.cpu() if isinstance(first, torch.Tensor) else first
         for sample_attn in hgt_attention
     ]
 
@@ -160,6 +174,10 @@ class Predictor:
 
         self.model = model.to(self.device)
         self.model.eval()
+
+        # Move guide to same device as model
+        if self.guide is not None:
+            self.guide = self.guide.to(self.device)
 
         # Validate guide matches head type. Default True: CognitiveResilienceModel
         # always sets this attribute. If a model lacks it, assume Bayesian
@@ -513,9 +531,10 @@ class Predictor:
 
         epistemic_std = means_all.detach().cpu().std(dim=0)  # [B, 1]
 
+        attn_w = output_median.get("attention_weights")
         result = {
             "mean": output_median["mean"].cpu().numpy(),
-            "attention_weights": output_median["attention_weights"].cpu().numpy(),
+            "attention_weights": attn_w.cpu().numpy() if attn_w is not None else None,
         }
 
         # Aleatoric std from Bayesian head
@@ -534,7 +553,13 @@ class Predictor:
 
         # Extract optional outputs from median prediction (same logic as predict_batch)
         if return_hgt_attention and "hgt_attention" in output_median:
-            result["hgt_attention"] = _hgt_attention_to_cpu(output_median["hgt_attention"])
+            from src.inference.extract_attention import split_batch_attention_by_subject
+            result["hgt_attention"] = split_batch_attention_by_subject(
+                [t.cpu() for t in output_median["hgt_attention"]],
+                batch["ccc_edge_type"].cpu(),
+                batch["batch_size"],
+                batch["ccc_edge_index"].cpu(),
+            )
 
         if return_pma_attention and "pma_attention" in output_median:
             pma = output_median["pma_attention"]
@@ -623,16 +648,23 @@ class Predictor:
         model_kwargs["cell_offsets"] = batch.get("cell_offsets")
         output = self.model(**model_kwargs)
 
+        det_attn = output.get("attention_weights")
         result = {
             "mean": output["mean"].cpu().numpy(),
-            "attention_weights": output["attention_weights"].cpu().numpy(),
+            "attention_weights": det_attn.cpu().numpy() if det_attn is not None else None,
         }
 
         if "std" in output:
             result["std"] = output["std"].cpu().numpy()
 
         if extract_hgt_attention and "hgt_attention" in output:
-            result["hgt_attention"] = _hgt_attention_to_cpu(output["hgt_attention"])
+            from src.inference.extract_attention import split_batch_attention_by_subject
+            result["hgt_attention"] = split_batch_attention_by_subject(
+                [t.cpu() for t in output["hgt_attention"]],
+                batch["ccc_edge_type"].cpu(),
+                batch["batch_size"],
+                batch["ccc_edge_index"].cpu(),
+            )
 
         if extract_pma_attention and "pma_attention" in output:
             # Split [B, n_cell_types, ...] tensor into per-cell-type list for PredictionResult
@@ -733,7 +765,8 @@ class Predictor:
                     raise
 
             all_mean.append(result["mean"])
-            all_attention.append(result["attention_weights"])
+            if result["attention_weights"] is not None:
+                all_attention.append(result["attention_weights"])
 
             if "std" in result:
                 all_std.append(result["std"])
@@ -845,7 +878,7 @@ class Predictor:
 
         # Concatenate results
         mean = np.concatenate(all_mean, axis=0)
-        attention_weights = np.concatenate(all_attention, axis=0)
+        attention_weights = np.concatenate(all_attention, axis=0) if all_attention else None
         std = np.concatenate(all_std, axis=0) if all_std else None
         epistemic_std = np.concatenate(all_epistemic_std, axis=0) if all_epistemic_std else None
         aleatoric_std = np.concatenate(all_aleatoric_std, axis=0) if all_aleatoric_std else None
@@ -857,16 +890,18 @@ class Predictor:
         if hasattr(self.model, 'fusion') and hasattr(self.model.fusion, 'proj'):
             fusion_proj_weight = self.model.fusion.proj.weight.detach().cpu().numpy()
 
-        # Get gene gate weights from both branches
-        # HGT branch gate: model.hgt_gene_gate
-        hgt_gene_gate_weights = self.model.hgt_gene_gate.get_gate_weights()
-        hgt_gene_gate_weights = hgt_gene_gate_weights.cpu().numpy()
-        # CellTransformer gate: model.cell_transformer.gene_gate
-        ct_gene_gate_weights = self.model.cell_transformer.gene_gate.get_gate_weights()
-        ct_gene_gate_weights = ct_gene_gate_weights.cpu().numpy()
-        # Legacy field: use HGT gate as the primary gene_gate_weights
-        # (backward compatible with GeneImportanceAnalyzer and save_attention_weights)
-        gene_gate_weights = hgt_gene_gate_weights
+        # Get gene gate weights if gates exist
+        hgt_gene_gate_weights = None
+        ct_gene_gate_weights = None
+        gene_gate_weights = None
+        hgt_gate = getattr(self.model, "hgt_gene_gate", None)
+        if hgt_gate is not None and hasattr(hgt_gate, "get_gate_weights"):
+            hgt_gene_gate_weights = hgt_gate.get_gate_weights().cpu().numpy()
+            gene_gate_weights = hgt_gene_gate_weights
+        ct = getattr(self.model, "cell_transformer", None)
+        ct_gate = getattr(ct, "gene_gate", None) if ct is not None else None
+        if ct_gate is not None and hasattr(ct_gate, "get_gate_weights"):
+            ct_gene_gate_weights = ct_gate.get_gate_weights().cpu().numpy()
 
         # Get region importance weights
         region_importance = self.model.get_region_importance()
@@ -899,9 +934,13 @@ class Predictor:
         # Concatenate PMA attention per cell type
         pma_attention = None
         if extract_pma_attention and all_pma_attention:
-            pma_attention = [
-                np.concatenate(ct_batches, axis=0) for ct_batches in all_pma_attention
-            ]
+            # Only concatenate if at least one cell type has data
+            # (empty when CT branch is disabled in ablation)
+            if any(len(ct_batches) > 0 for ct_batches in all_pma_attention):
+                pma_attention = [
+                    np.concatenate(ct_batches, axis=0) if ct_batches else None
+                    for ct_batches in all_pma_attention
+                ]
 
         # Concatenate region attention per subject
         region_attention = None

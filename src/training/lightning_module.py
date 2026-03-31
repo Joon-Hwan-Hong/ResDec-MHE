@@ -98,7 +98,7 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         if self._use_bayesian_svi:
             # Safe to clear globally: the CV loop creates exactly one module at a
             # time per fold and does not hold references to previous fold modules
-            # when constructing the next one (see scripts/hpo.py train_fn).
+            # when constructing the next one (see scripts/training/hpo.py train_fn).
             # Constraint: only one CognitiveResilienceLightning instance may exist
             # per process at a time. Under DDP, each rank is a separate process,
             # so this is safe across ranks.
@@ -167,23 +167,28 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self._is_ge_reevaluation: bool = False
 
     def _gene_gate_l1_penalty(self) -> torch.Tensor:
-        """Compute L1 penalty on all gene gate logits (HGT + CT gates).
+        """Compute L1 sparsity penalty on sigmoid gene gate values.
+
+        Penalizes mean(sigmoid(logits)) — pushes gate values toward 0 (off).
+        Genes important for the task must overcome this penalty to stay on.
+        Combined with bias-free linear projection, this forces the gate to
+        be the primary gene selection mechanism.
 
         Returns:
-            Scalar L1 penalty tensor (mean of absolute gate logits across all gates).
+            Scalar penalty: λ * mean(sigmoid(logits)) across all gates.
         """
-        logits_list = []
+        gate_values = []
         hgt_gate = getattr(self.model, "hgt_gene_gate", None)
         if hgt_gate is not None and hasattr(hgt_gate, "gate_logits"):
-            logits_list.append(hgt_gate.gate_logits)
+            gate_values.append(torch.sigmoid(hgt_gate.gate_logits))
         ct = getattr(self.model, "cell_transformer", None)
         ct_gate = getattr(ct, "gene_gate", None) if ct is not None else None
         if ct_gate is not None and hasattr(ct_gate, "gate_logits"):
-            logits_list.append(ct_gate.gate_logits)
-        if not logits_list:
+            gate_values.append(torch.sigmoid(ct_gate.gate_logits))
+        if not gate_values:
             return torch.tensor(0.0, device=self.device)
-        all_logits = torch.cat([l.flatten() for l in logits_list])
-        return self._gene_gate_l1_lambda * all_logits.abs().mean()
+        all_values = torch.cat([v.flatten() for v in gate_values])
+        return self._gene_gate_l1_lambda * all_values.mean()
 
     def _compute_loss(self, output: dict, cognition: torch.Tensor) -> torch.Tensor:
         """Compute loss with branching based on head type."""

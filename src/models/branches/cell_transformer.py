@@ -39,9 +39,6 @@ class CellTransformer(nn.Module):
         condition_on_cell_type: Whether to use cell-type-conditioned inducing points.
             When True (default), each cell type gets a learned offset added to the
             shared inducing points, allowing the encoder to specialize per type.
-        gene_gate_temperature: Initial temperature for GeneAttentionGate softmax.
-            Higher = softer/more uniform, lower = sharper/more selective.
-
     Shape:
         - cell_data: (total_cells, n_genes) concatenated cell expression
         - cell_offsets: (B, n_cell_types + 1) cumulative offsets into cell_data
@@ -61,7 +58,7 @@ class CellTransformer(nn.Module):
         dropout: float = 0.1,
         use_gradient_checkpointing: bool = False,
         condition_on_cell_type: bool = True,
-        gene_gate_temperature: float = 2.0,
+        gene_gate_temperature: float = 2.0,  # Unused — kept for config backward compat
     ):
         super().__init__()
 
@@ -76,7 +73,7 @@ class CellTransformer(nn.Module):
         self.n_pma_seeds = n_pma_seeds
         self.condition_on_cell_type = condition_on_cell_type
 
-        # Gene attention gate: learns cell-type-specific gene importance
+        # Gene attention gate: cell-type-specific gene re-weighting
         self.gene_gate = GeneAttentionGate(
             n_cell_types=n_cell_types,
             n_genes=n_genes,
@@ -139,18 +136,14 @@ class CellTransformer(nn.Module):
         # Compute per-(sample, type) cell counts
         counts = cell_offsets[:, 1:] - cell_offsets[:, :-1]  # [B, n_types]
 
-        # Apply gene attention gate BEFORE SetTransformer processing.
-        # Gate weights are [n_cell_types, n_genes]; we expand them to match
-        # the flat cell_data layout using each cell's type index.
         total_cells = cell_data.shape[0]
+
+        # Apply gene gate before projection
         if total_cells > 0:
             counts_flat = counts.reshape(-1)  # [B * n_types]
-            # Compute scaled gate weights once: [n_cell_types, n_genes]
-            scaled_gate = self.gene_gate.get_gate_weights() * self.gene_gate.n_genes
-            # Build per-cell type index via repeat_interleave
+            scaled_gate = self.gene_gate.get_gate_weights()
             type_indices = torch.arange(n_types, device=device).repeat(B)
             per_cell_type = torch.repeat_interleave(type_indices, counts_flat)
-            # Apply gate: gather the correct row for each cell, multiply
             cell_data = cell_data * scaled_gate[per_cell_type].to(cell_data.dtype)
 
         # Project flat cell data BEFORE padding: [total_cells, n_genes] -> [total_cells, d_model]
@@ -221,12 +214,10 @@ class CellTransformer(nn.Module):
 
     @property
     def gene_gate_temperature(self) -> float:
-        """Current gene gate temperature (delegates to GeneAttentionGate)."""
         return self.gene_gate.temperature
 
     @gene_gate_temperature.setter
     def gene_gate_temperature(self, value: float) -> None:
-        """Set gene gate temperature (delegates to GeneAttentionGate)."""
         self.gene_gate.temperature = value
 
     def extra_repr(self) -> str:

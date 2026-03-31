@@ -1,8 +1,13 @@
 """
 HGT attention aggregation for CCC importance analysis.
 
-Aggregates per-sample, per-layer HGT attention weights into summary statistics
+Aggregates per-layer HGT attention weights into summary statistics
 suitable for downstream cell communication analysis.
+
+Current model output format (HGTEncoderTensor):
+    hgt_attention: list[Tensor] — one [total_edges_in_batch, n_heads] per layer
+    Edges are flat-concatenated across subjects in the batch, with node indices
+    offset by 31 (n_cell_types) per subject.
 """
 
 from __future__ import annotations
@@ -14,43 +19,76 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+N_CELL_TYPES = 31
 
-def aggregate_hgt_attention(
-    hgt_attention: list[list[dict]],
-    edge_types: list[tuple[str, str, str]] | None = None,
-    include_per_sample: bool = True,
-) -> dict[str, np.ndarray | list[str]]:
-    """
-    Aggregate HGT attention across samples.
 
-    Computes mean and std of attention weights for each edge type across all samples.
-    Optionally includes per-sample summaries to preserve subject-level variation.
-
-    Design Note (2026-02):
-        Full per-edge attention storage was not implemented because edge counts vary
-        per subject (different CCC graphs), making rectangular tensor storage infeasible
-        without padding or ragged arrays. Instead, we store per-sample summaries that
-        aggregate within each sample while preserving between-sample variation.
+def split_batch_attention_by_subject(
+    hgt_attention: list[torch.Tensor],
+    ccc_edge_type: torch.Tensor,
+    batch_size: int,
+    ccc_edge_index: torch.Tensor,
+    n_cell_types: int = N_CELL_TYPES,
+) -> list[list[dict[int, np.ndarray]]]:
+    """Split flat batch attention into per-subject, per-layer, per-edge-type arrays.
 
     Args:
-        hgt_attention: List of per-sample attention, where each sample contains
-                      a list of per-layer dicts mapping edge_type -> [n_edges, n_heads]
-        edge_types: Optional list of edge types to include. If None, discovers
-                    from data with deterministic sorted ordering.
-        include_per_sample: Whether to include per-sample per-layer summaries (default: True)
+        hgt_attention: list[Tensor [total_edges, n_heads]] per layer
+        ccc_edge_type: Tensor [total_edges] — edge type indices
+        batch_size: Number of subjects in batch
+        ccc_edge_index: Tensor [2, total_edges] — source/target node indices
+        n_cell_types: Nodes per subject (31)
+
+    Returns:
+        list[list[dict[int, ndarray]]] — [n_subjects][n_layers]{edge_type: [n_edges, n_heads]}
+    """
+    n_layers = len(hgt_attention)
+    src_nodes = ccc_edge_index[0]
+
+    # Determine which subject each edge belongs to from source node index
+    subject_ids = src_nodes // n_cell_types  # [total_edges]
+
+    result = []
+    for s in range(batch_size):
+        subject_mask = (subject_ids == s)
+        subject_edge_types = ccc_edge_type[subject_mask]
+        subject_layers = []
+        for layer_idx in range(n_layers):
+            layer_attn = hgt_attention[layer_idx][subject_mask]  # [n_subject_edges, n_heads]
+            layer_attn_np = layer_attn.cpu().numpy() if isinstance(layer_attn, torch.Tensor) else layer_attn
+            edge_types_np = subject_edge_types.cpu().numpy() if isinstance(subject_edge_types, torch.Tensor) else subject_edge_types
+
+            edge_type_dict = {}
+            for et in np.unique(edge_types_np):
+                et_mask = edge_types_np == et
+                edge_type_dict[int(et)] = layer_attn_np[et_mask]
+            subject_layers.append(edge_type_dict)
+        result.append(subject_layers)
+    return result
+
+
+def aggregate_hgt_attention(
+    per_subject_attention: list[list[dict[int, np.ndarray]]],
+    include_per_sample: bool = True,
+) -> dict[str, np.ndarray | list]:
+    """
+    Aggregate HGT attention across subjects.
+
+    Args:
+        per_subject_attention: [n_subjects][n_layers]{edge_type_int: [n_edges, n_heads]}
+            Output of split_batch_attention_by_subject, accumulated across batches.
+        include_per_sample: Whether to include per-sample summaries
 
     Returns:
         Dict with:
-            - 'edge_type_names': List of string representations of edge types
-            - 'mean_by_edge_type': [n_edge_types, n_heads] mean attention per edge type
-            - 'std_by_edge_type': [n_edge_types, n_heads] std attention per edge type
-            - 'per_sample': [n_samples, n_edge_types, n_layers, n_heads] per-sample summaries (if include_per_sample)
-            - 'n_samples': Number of samples
-            - 'n_layers': Number of HGT layers
+            - 'edge_type_ids': sorted list of integer edge type indices
+            - 'mean_by_edge_type': [n_edge_types, n_heads]
+            - 'std_by_edge_type': [n_edge_types, n_heads]
+            - 'per_sample': [n_samples, n_edge_types, n_layers, n_heads] (if include_per_sample)
+            - 'n_samples', 'n_layers'
     """
-    if not hgt_attention or len(hgt_attention) == 0:
+    if not per_subject_attention:
         return {
-            "edge_type_names": [],
+            "edge_type_ids": [],
             "mean_by_edge_type": np.array([]),
             "std_by_edge_type": np.array([]),
             "per_sample": np.array([]) if include_per_sample else None,
@@ -58,20 +96,19 @@ def aggregate_hgt_attention(
             "n_layers": 0,
         }
 
-    n_samples = len(hgt_attention)
-    n_layers = len(hgt_attention[0]) if hgt_attention[0] else 0
+    n_samples = len(per_subject_attention)
+    n_layers = len(per_subject_attention[0])
 
-    # Discover edge types from data with deterministic sort for reproducibility
-    if edge_types is None:
-        edge_type_set: set[tuple[str, str, str]] = set()
-        for sample_attn in hgt_attention:
-            for layer_attn in sample_attn:
-                edge_type_set.update(layer_attn.keys())
-        edge_types = sorted(edge_type_set, key=str)
+    # Discover all edge types
+    edge_type_set = set()
+    for subject_attn in per_subject_attention:
+        for layer_attn in subject_attn:
+            edge_type_set.update(layer_attn.keys())
+    edge_type_ids = sorted(edge_type_set)
 
-    if len(edge_types) == 0:
+    if not edge_type_ids:
         return {
-            "edge_type_names": [],
+            "edge_type_ids": [],
             "mean_by_edge_type": np.array([]),
             "std_by_edge_type": np.array([]),
             "per_sample": np.array([]) if include_per_sample else None,
@@ -79,19 +116,12 @@ def aggregate_hgt_attention(
             "n_layers": n_layers,
         }
 
-    # For each edge type, aggregate attention across samples and layers
-    # We take the mean across edges within each sample, then aggregate across samples
-    edge_type_names = [f"{et[0]}|{et[1]}|{et[2]}" for et in edge_types]
-
-    # Determine n_heads from first available attention
+    # Determine n_heads
     n_heads = None
-    for sample_attn in hgt_attention:
-        for layer_attn in sample_attn:
+    for subject_attn in per_subject_attention:
+        for layer_attn in subject_attn:
             for attn in layer_attn.values():
-                if isinstance(attn, torch.Tensor):
-                    n_heads = attn.shape[-1]
-                else:
-                    n_heads = attn.shape[-1]
+                n_heads = attn.shape[-1]
                 break
             if n_heads is not None:
                 break
@@ -99,10 +129,8 @@ def aggregate_hgt_attention(
             break
 
     if n_heads is None:
-        # No attention tensors found — all samples had empty attention dicts.
-        # Return empty arrays rather than guessing n_heads.
         return {
-            "edge_type_names": [f"{et[0]}|{et[1]}|{et[2]}" for et in edge_types],
+            "edge_type_ids": edge_type_ids,
             "mean_by_edge_type": np.array([]),
             "std_by_edge_type": np.array([]),
             "per_sample": np.array([]) if include_per_sample else None,
@@ -110,43 +138,30 @@ def aggregate_hgt_attention(
             "n_layers": n_layers,
         }
 
-    # Collect per-sample per-layer attention summaries
+    # Collect per-sample, per-edge-type, per-layer mean attention
     # Shape: [n_samples, n_edge_types, n_layers, n_heads]
-    # NaN init: absent edge types stay NaN instead of biasing means to zero
-    per_sample_per_layer = np.full((n_samples, len(edge_types), n_layers, n_heads), np.nan)
+    import warnings
 
-    for sample_idx, sample_attn in enumerate(hgt_attention):
-        for layer_idx, layer_attn in enumerate(sample_attn):
-            for et_idx, et in enumerate(edge_types):
+    per_sample_array = np.full((n_samples, len(edge_type_ids), n_layers, n_heads), np.nan)
+
+    for s_idx, subject_attn in enumerate(per_subject_attention):
+        for l_idx, layer_attn in enumerate(subject_attn):
+            for et_idx, et in enumerate(edge_type_ids):
                 if et in layer_attn:
                     attn = layer_attn[et]
-                    if isinstance(attn, torch.Tensor):
-                        attn = attn.cpu().numpy()
-                    # Mean across edges for this edge type in this layer
-                    per_sample_per_layer[sample_idx, et_idx, layer_idx, :] = attn.mean(axis=0)
+                    per_sample_array[s_idx, et_idx, l_idx, :] = attn.mean(axis=0)
 
-    # Aggregate: nanmean across layers, then across samples
-    # (absent edge types excluded from aggregation, not treated as zero)
-    # Suppress "Mean of empty slice" warning — expected when edge type is
-    # absent from all layers for a given sample (NaN output is correct).
-    import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        attention_per_sample = np.nanmean(per_sample_per_layer, axis=2)  # [n_samples, n_edge_types, n_heads]
+        attention_per_sample = np.nanmean(per_sample_array, axis=2)  # [n_samples, n_edge_types, n_heads]
         mean_by_edge_type = np.nanmean(attention_per_sample, axis=0)  # [n_edge_types, n_heads]
-        std_by_edge_type = np.nanstd(attention_per_sample, axis=0)    # [n_edge_types, n_heads]
-
-    # Count non-NaN samples per edge type (for downstream transparency)
-    n_samples_per_edge_type = np.sum(
-        ~np.isnan(attention_per_sample[:, :, 0]), axis=0
-    )  # [n_edge_types]
+        std_by_edge_type = np.nanstd(attention_per_sample, axis=0)
 
     return {
-        "edge_type_names": edge_type_names,
+        "edge_type_ids": edge_type_ids,
         "mean_by_edge_type": mean_by_edge_type,
         "std_by_edge_type": std_by_edge_type,
-        "per_sample": per_sample_per_layer if include_per_sample else None,
+        "per_sample": per_sample_array if include_per_sample else None,
         "n_samples": n_samples,
         "n_layers": n_layers,
-        "n_samples_per_edge_type": n_samples_per_edge_type,
     }

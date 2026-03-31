@@ -2,27 +2,39 @@
 Gene Attention Gate for cell-type-specific gene weighting.
 
 The gate learns which genes are important for each cell type independently,
-using softmax attention to weight gene expression values.
+using sigmoid activation to produce per-gene gate values in [0, 1].
+
+Gate value interpretation:
+    - 0.0: gene is fully filtered (no signal passes)
+    - 0.5: neutral (initialization point, maximum gradient)
+    - 1.0: gene is fully passed
+
+Design choice (2026-03-30): Sigmoid replaces the original softmax gate.
+Softmax produced uniform weights due to (1) zero init + high temperature
+creating vanishing gradients over 4796 genes, and (2) the downstream linear
+layer absorbing gene selection, removing gradient signal from the gate.
+Sigmoid avoids both issues: zero init places all genes at the steepest
+gradient point (sigmoid'(0) = 0.25), and independent gating avoids the
+competitive dilution of softmax over thousands of genes.
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class GeneAttentionGate(nn.Module):
     """
-    Cell-type-specific gene attention gate.
+    Cell-type-specific gene attention gate using sigmoid activation.
 
-    Each cell type learns which genes to attend to.
-    Softmax ensures weights sum to 1 per cell type.
-    Temperature annealing: high τ (soft) → low τ (sharp/sparse).
+    Each cell type independently learns which genes to pass or filter.
+    Gate values are in [0, 1] — directly interpretable as the fraction
+    of gene signal passed through.
 
     Args:
         n_cell_types: Number of cell types (default: 31 for Allen ABC)
         n_genes: Number of genes in input
-        temperature: Initial temperature for softmax (higher = softer)
-        init_uniform: If True, initialize logits to 0 for uniform attention
+        temperature: Unused (kept for config backward compatibility). Ignored.
+        init_uniform: If True (default), initialize logits to 0 (sigmoid=0.5).
 
     Shape:
         - Input: (batch, n_cell_types, n_genes)
@@ -33,7 +45,7 @@ class GeneAttentionGate(nn.Module):
         self,
         n_cell_types: int,
         n_genes: int,
-        temperature: float = 1.0,
+        temperature: float = 1.0,  # Ignored — kept for config compatibility
         init_uniform: bool = True,
     ):
         super().__init__()
@@ -47,10 +59,9 @@ class GeneAttentionGate(nn.Module):
 
         self.n_cell_types = n_cell_types
         self.n_genes = n_genes
-        self.register_buffer("_temperature_buf", torch.tensor(max(float(temperature), 0.05)))
 
         # Gate logits: learned parameter for each (cell_type, gene) pair
-        # Initialize to zeros for uniform attention at start
+        # Zero init: sigmoid(0) = 0.5 = maximum gradient point
         if init_uniform:
             self.gate_logits = nn.Parameter(torch.zeros(n_cell_types, n_genes))
         else:
@@ -58,14 +69,19 @@ class GeneAttentionGate(nn.Module):
                 torch.randn(n_cell_types, n_genes) * 0.01
             )
 
+        # Temperature buffer kept for backward compatibility with checkpoints
+        # and the TemperatureAnnealing callback. Setting it is a no-op for
+        # sigmoid gating, but we store it to avoid breaking checkpoint loading.
+        self.register_buffer("_temperature_buf", torch.tensor(max(float(temperature), 0.05)))
+
     @property
     def temperature(self) -> float:
-        """Current temperature value."""
+        """Temperature value (no-op for sigmoid gate, kept for compatibility)."""
         return self._temperature_buf.item()
 
     @temperature.setter
     def temperature(self, value: float) -> None:
-        """Set temperature (with validation). Clamped to minimum 0.05."""
+        """Set temperature (no-op for sigmoid gate, kept for compatibility)."""
         if value <= 0:
             raise ValueError(f"temperature must be positive, got {value}")
         self._temperature_buf.fill_(max(value, 0.05))
@@ -90,47 +106,28 @@ class GeneAttentionGate(nn.Module):
                 f"got {x.shape}"
             )
 
-        # Compute gate weights with temperature-controlled softmax
+        # Sigmoid gate: each gene independently gated in [0, 1]
         gate = self.get_gate_weights()
 
-        # Scale by n_genes to preserve input magnitude.
-        # Softmax produces weights ~1/n_genes at initialization, which would
-        # shrink inputs by ~4000x. Scaling by n_genes gives ~1.0 per gene at
-        # init, so the downstream MLP receives properly-scaled inputs.
-        # This also eliminates weight decay asymmetry on the first MLP layer
-        # (see review discussion: Option A for gene gate scaling).
-        scaled_gate = gate * self.n_genes
-
         # Apply gating (broadcast over batch dimension)
-        # scaled_gate: [n_cell_types, n_genes] -> [1, n_cell_types, n_genes]
-        # Cast gate to input dtype to avoid unnecessary bf16→float32→bf16 round-trip:
-        # get_gate_weights() returns float32 (for softmax stability), but the
-        # downstream MLP's nn.Linear will re-downcast under autocast anyway.
-        return x * scaled_gate.unsqueeze(0).to(x.dtype)
+        # Cast gate to input dtype to avoid bf16/float32 issues under AMP
+        return x * gate.unsqueeze(0).to(x.dtype)
 
     def get_gate_weights(self) -> torch.Tensor:
         """
-        Get current gate weights as probabilities for interpretability.
-
-        Returns probabilities (sum to 1 per cell type), NOT the scaled values
-        used in forward(). For the actual scaling applied during forward pass,
-        these weights are multiplied by n_genes.
+        Get current gate weights for interpretability.
 
         Returns:
-            Gate weights of shape (n_cell_types, n_genes), each row sums to 1
+            Gate weights of shape (n_cell_types, n_genes), each value in [0, 1].
+            Values > 0.5 = gene passes more signal, < 0.5 = gene is filtered.
         """
-        # Use scalar tensor directly (no .item()) to avoid torch.compile graph break.
-        # Division by 0-d tensor works via broadcasting — numerically identical.
-        # Promote to float32 for softmax stability under AMP.
-        # At low temperature (tau→0.05), logits/tau amplifies by 20x.
-        # Float16 exp() overflows at ~11.09 — any logit > 0.55 would produce NaN.
-        return F.softmax((self.gate_logits / self._temperature_buf).float(), dim=-1)
+        return torch.sigmoid(self.gate_logits.float())
 
     def get_top_genes_per_cell_type(
         self, k: int = 100, gene_names: list[str] | None = None
     ) -> dict[int, list[tuple[int | str, float]]]:
         """
-        Get top-k genes by attention weight for each cell type.
+        Get top-k genes by gate weight for each cell type.
 
         Args:
             k: Number of top genes to return per cell type
@@ -162,9 +159,51 @@ class GeneAttentionGate(nn.Module):
 
         return results
 
+    def get_selected_genes(
+        self, threshold: float = 0.5, gene_names: list[str] | None = None
+    ) -> dict[int, list[tuple[int | str, float]]]:
+        """
+        Get genes above threshold for each cell type.
+
+        Args:
+            threshold: Gate value threshold (default: 0.5 = above initialization)
+            gene_names: Optional list of gene names
+
+        Returns:
+            Dict mapping cell type index to list of (gene_id/name, weight) tuples
+        """
+        weights = self.get_gate_weights().detach()
+
+        results = {}
+        for ct_idx in range(self.n_cell_types):
+            ct_weights = weights[ct_idx]
+            mask = ct_weights > threshold
+            indices = mask.nonzero(as_tuple=True)[0]
+            values = ct_weights[indices]
+
+            # Sort by weight descending
+            sorted_order = values.argsort(descending=True)
+            indices = indices[sorted_order]
+            values = values[sorted_order]
+
+            if gene_names is not None:
+                genes = [
+                    (gene_names[idx.item()], val.item())
+                    for idx, val in zip(indices, values)
+                ]
+            else:
+                genes = [
+                    (idx.item(), val.item())
+                    for idx, val in zip(indices, values)
+                ]
+
+            results[ct_idx] = genes
+
+        return results
+
     def extra_repr(self) -> str:
         return (
             f"n_cell_types={self.n_cell_types}, "
             f"n_genes={self.n_genes}, "
-            f"temperature={self._temperature_buf.item()}"
+            f"activation=sigmoid"
         )

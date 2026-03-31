@@ -152,8 +152,8 @@ def create_stratified_splits(
         - metadata: Split configuration metadata
     """
     # Validate test fraction
-    if not 0 < test_frac < 1:
-        raise ValueError(f"test_frac must be between 0 and 1, got {test_frac}")
+    if not 0 <= test_frac < 1:
+        raise ValueError(f"test_frac must be in [0, 1), got {test_frac}")
 
     # Get unique subjects
     if subject_column in metadata.columns:
@@ -203,14 +203,18 @@ def create_stratified_splits(
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Step 1: Hold out fixed test set
+    # Step 1: Hold out fixed test set (skip if test_frac == 0)
     # ─────────────────────────────────────────────────────────────────────────
-    train_val_subjects, test_subjects = train_test_split(
-        subjects,
-        test_size=test_frac,
-        stratify=strata_array if use_stratification else None,
-        random_state=random_state,
-    )
+    if test_frac > 0:
+        train_val_subjects, test_subjects = train_test_split(
+            subjects,
+            test_size=test_frac,
+            stratify=strata_array if use_stratification else None,
+            random_state=random_state,
+        )
+    else:
+        train_val_subjects = subjects
+        test_subjects = np.array([], dtype=subjects.dtype)
 
     logger.info(f"Holdout test set: {len(test_subjects)} subjects ({test_frac*100:.0f}%)")
 

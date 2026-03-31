@@ -128,6 +128,7 @@ class CognitiveResilienceModel(PyroModule):
         edge_categories: Optional[list[str]] = None,
         use_hgt_encoder: bool = True,
         use_cell_transformer: bool = True,
+        use_pathology_attention: bool = True,
         condition_on_cell_type: bool = True,
         use_gradient_checkpointing: bool = False,
         use_torch_compile: bool = False,
@@ -164,6 +165,7 @@ class CognitiveResilienceModel(PyroModule):
         self.n_pma_seeds = n_pma_seeds
         self.use_hgt_encoder = use_hgt_encoder
         self.use_cell_transformer = use_cell_transformer
+        self.use_pathology_attention = use_pathology_attention
         self.use_gradient_checkpointing = use_gradient_checkpointing
 
         disabled = [name for name, on in [
@@ -178,9 +180,7 @@ class CognitiveResilienceModel(PyroModule):
         self.edge_categories = edge_categories if edge_categories is not None else list(ALL_EDGE_TYPES)
 
         # HGT input pipeline: GeneAttentionGate → Linear → RegionHandler → HGT
-        # Replaces the former PseudobulkEncoder. The gene gate learns cell-type-
-        # specific gene attention (same mechanism as CellTransformer's gate),
-        # and the linear projection maps from gene space to embedding space.
+        # Gene attention gate + linear projection from gene space to embedding space
         self.hgt_gene_gate = GeneAttentionGate(
             n_cell_types=n_cell_types,
             n_genes=n_genes,
@@ -529,13 +529,22 @@ class CognitiveResilienceModel(PyroModule):
         path_emb = self.pathology_encoder(pathology, region_context)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Pathology-stratified attention over cell types
+        # Pathology-stratified attention over cell types (or mean pooling)
         # ─────────────────────────────────────────────────────────────────────
-        # [B, d_fused], [B, n_heads, n_cell_types] or None
-        attended, attention_weights = self.pathology_attention(
-            fused, path_emb, cell_type_mask=cell_type_mask,
-            return_attention_weights=not self.training,
-        )
+        if self.use_pathology_attention:
+            # [B, d_fused], [B, n_heads, n_cell_types] or None
+            attended, attention_weights = self.pathology_attention(
+                fused, path_emb, cell_type_mask=cell_type_mask,
+                return_attention_weights=not self.training,
+            )
+        else:
+            # Mean pooling over cell types (ablation: no pathology conditioning)
+            if cell_type_mask is not None:
+                mask = cell_type_mask.unsqueeze(-1).float()  # [B, n_cell_types, 1]
+                attended = (fused * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+            else:
+                attended = fused.mean(dim=1)  # [B, d_fused]
+            attention_weights = None
 
         # ─────────────────────────────────────────────────────────────────────
         # Prediction
@@ -650,10 +659,18 @@ class CognitiveResilienceModel(PyroModule):
         # Fusion + pathology + attention
         fused = self.fusion_layer(hgt_emb, cell_emb)
         path_emb = self.pathology_encoder(pathology, region_context)
-        attended, attention_weights = self.pathology_attention(
-            fused, path_emb, cell_type_mask=cell_type_mask,
-            return_attention_weights=not self.training,
-        )
+        if self.use_pathology_attention:
+            attended, attention_weights = self.pathology_attention(
+                fused, path_emb, cell_type_mask=cell_type_mask,
+                return_attention_weights=not self.training,
+            )
+        else:
+            if cell_type_mask is not None:
+                mask = cell_type_mask.unsqueeze(-1).float()
+                attended = (fused * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+            else:
+                attended = fused.mean(dim=1)
+            attention_weights = None
 
         return {"attended": attended, "attention_weights": attention_weights}
 
@@ -783,6 +800,7 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         n_pma_seeds=_cfg_get(model_cfg.set_transformer, "n_pma_seeds", 1, "model.set_transformer"),
         use_hgt_encoder=model_cfg.get("use_hgt_encoder", True),
         use_cell_transformer=model_cfg.get("use_cell_transformer", True),
+        use_pathology_attention=model_cfg.get("use_pathology_attention", True),
         condition_on_cell_type=_cfg_get(model_cfg.set_transformer, "condition_on_cell_type", True, "model.set_transformer"),
         use_gradient_checkpointing=model_cfg.get("use_gradient_checkpointing", False),
         use_torch_compile=use_torch_compile,

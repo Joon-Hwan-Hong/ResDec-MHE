@@ -178,20 +178,14 @@ class TemperatureAnnealing(pl.Callback):
         tau = self.get_temperature(epoch)
 
         model = getattr(pl_module, "model", None)
-        # HGT gene gate (on full_model directly)
+        # Temperature annealing: sets gene gate temperature if gates exist.
+        # No-op if gene gates are absent.
         hgt_gate = getattr(model, "hgt_gene_gate", None)
         if hgt_gate is not None:
             hgt_gate.temperature = tau
-        # CT gene gate (inside cell_transformer)
         ct_gate = getattr(getattr(model, "cell_transformer", None), "gene_gate", None)
         if ct_gate is not None:
             ct_gate.temperature = tau
-        if hgt_gate is None and ct_gate is None:
-            raise AttributeError(
-                "TemperatureAnnealing requires at least one gene gate on model "
-                "(model.hgt_gene_gate or model.cell_transformer.gene_gate) "
-                "but neither exists."
-            )
 
         pl_module.log("gene_gate_temperature", tau, rank_zero_only=True, sync_dist=True)
 
