@@ -354,36 +354,6 @@ class TestBuildConfigFromRay:
         assert config.model.hgt.n_heads == 8
 
 
-# ---------------------------------------------------------------------------
-# Tests: _make_tune_report_callback (official Ray TuneReportCheckpointCallback)
-# ---------------------------------------------------------------------------
-
-
-class TestMakeTuneReportCallback:
-    """Tests for the factory that creates Ray's official Lightning callback."""
-
-    def test_returns_tune_callback(self):
-        """Factory returns a TuneReportCheckpointCallback instance."""
-        from scripts.training.hpo import _make_tune_report_callback
-        from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
-
-        cb = _make_tune_report_callback()
-        assert isinstance(cb, TuneReportCheckpointCallback)
-
-    def test_checkpoints_disabled(self):
-        """Callback does not save checkpoints (HPO trials don't checkpoint)."""
-        from scripts.training.hpo import _make_tune_report_callback
-
-        cb = _make_tune_report_callback()
-        assert cb._save_checkpoints is False
-
-    def test_reports_val_nll_metric(self):
-        """Callback is configured to report val_nll."""
-        from scripts.training.hpo import _make_tune_report_callback
-
-        cb = _make_tune_report_callback()
-        assert "val_nll" in cb._metrics
-
 
 # ---------------------------------------------------------------------------
 # Tests: shorten_annealing_for_hpo

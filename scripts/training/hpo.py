@@ -16,7 +16,6 @@ import gc
 import logging
 from pathlib import Path
 
-import lightning.pytorch as pl
 import numpy as np
 import pyro
 import torch
@@ -107,7 +106,11 @@ def load_warm_start_data(ray_dir: str, search_space_keys: list[str]) -> tuple[li
         if not result_file.exists():
             continue
 
-        best_nll = float("inf")
+        # Use the LAST result line's val_nll (the final cross-fold mean),
+        # not the per-epoch minimum. Per-epoch reports may be single-fold
+        # values (old sequential code) or fold-averaged (interleaved code);
+        # the last line is always the authoritative final metric.
+        final_nll = float("inf")
         config = {}
         with open(result_file) as f:
             for line in f:
@@ -118,20 +121,18 @@ def load_warm_start_data(ray_dir: str, search_space_keys: list[str]) -> tuple[li
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                nll = record.get("val_nll", float("inf"))
-                if nll < best_nll:
-                    best_nll = nll
+                final_nll = record.get("val_nll", final_nll)
                 if not config and "config" in record:
                     config = record["config"]
 
-        if not config or best_nll == float("inf"):
+        if not config or final_nll == float("inf"):
             continue
 
         # Only include HPs that exist in the current search space
         point = {k: config[k] for k in search_space_keys if k in config}
         if len(point) == len(search_space_keys):
             points.append(point)
-            rewards.append(best_nll)
+            rewards.append(final_nll)
 
     logger.info(
         "Loaded %d warm-start trials from %s (best val_nll=%.4f, worst=%.4f)",
@@ -233,58 +234,8 @@ def build_config_from_ray(ray_config: dict, base_config: DictConfig) -> DictConf
     return config
 
 
-# ---------------------------------------------------------------------------
-# Ray Tune reporting callback
-# ---------------------------------------------------------------------------
-
-def _make_tune_report_callback():
-    """Create Ray Tune's official Lightning callback for per-epoch metric reporting.
-
-    Uses TuneReportCheckpointCallback with save_checkpoints=False (HPO trials
-    don't save checkpoints). Handles sanity-check skipping internally.
-    """
-    from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
-    return TuneReportCheckpointCallback(
-        metrics={
-            "val_nll": "val_nll",
-            "val_r2": "val_r2",
-            "val_pearson_r": "val_pearson_r",
-            "val_spearman_rho": "val_spearman_rho",
-            "val_rmse": "val_rmse",
-        },
-        save_checkpoints=False,
-        on="validation_end",
-    )
 
 
-# ---------------------------------------------------------------------------
-# Fold cleanup
-# ---------------------------------------------------------------------------
-
-def _cleanup_fold(trainer, module, dm):
-    """Aggressively free CUDA memory and Pyro state between folds/trials.
-
-    Shuts down ThreadedPrefetcher daemon threads (which hold GPU-resident
-    batch tensors in their closures, ~8-10 GB per fold) via the DataModule's
-    explicit tracking, then frees all references.
-    """
-    dm.shutdown_prefetchers()
-    del trainer, module, dm
-    pyro.clear_param_store()
-    for _ in range(3):
-        gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-
-        # Debug: warn if CUDA tensors survived cleanup (reference cycle detector)
-        post_cleanup = torch.cuda.memory_allocated()
-        if post_cleanup > 500 * 1024 * 1024:  # > 500 MB remaining = likely leak
-            logger.warning(
-                "VRAM leak detected: %.2f GB still allocated after fold cleanup. "
-                "Enable torch.cuda.memory._record_memory_history() to diagnose.",
-                post_cleanup / 1024**3,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -354,8 +305,14 @@ def _collect_all_subject_ids(splits: dict) -> list[str]:
 def train_fn(ray_config: dict, base_config: dict, splits: dict, metadata, preloaded_cache, n_folds: int):
     """Per-trial training function invoked by Ray Tune.
 
-    Trains on N folds, reports per-epoch val_nll to HyperBand via
-    ``TuneReportCheckpointCallback``, and reports mean val_nll at the end.
+    Trains N folds interleaved epoch-by-epoch using a manual training loop
+    with fold-swap: only 1 model lives on GPU at a time, K-1 fold states
+    are kept in CPU RAM as state_dicts. Each epoch trains all folds for one
+    epoch, then reports the mean val_nll to Ray. This gives
+    MedianStoppingRule clean, comparable metrics without fold-boundary spikes.
+
+    Early stopping: if mean val_nll across folds doesn't improve for
+    ``patience`` epochs after ``min_epochs``, the trial stops.
 
     Data is passed via tune.with_parameters (uses ray.put internally).
     With RAY_ENABLE_ZERO_COPY_TORCH_TENSORS=1, tensors in the cache are
@@ -369,13 +326,12 @@ def train_fn(ray_config: dict, base_config: dict, splits: dict, metadata, preloa
         preloaded_cache: Pre-loaded subject cache dict (or None).
         n_folds: Number of CV folds per trial.
     """
-    from ray import tune
-    from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
-    from lightning.pytorch.loggers import CSVLogger
+    from contextlib import nullcontext
 
-    from scripts.training.train import setup_callbacks
+    from ray import tune
+
     from src.data.datamodule import CognitiveResilienceDataModule
-    from src.training.callbacks import GradientNormLogger, ResilienceModelCheckpoint
+    from src.training.callbacks import TemperatureAnnealing, KLAnnealingCallback
     from src.training.lightning_module import CognitiveResilienceLightningModule
     from src.utils.reproducibility import set_seed
 
@@ -389,22 +345,16 @@ def train_fn(ray_config: dict, base_config: dict, splits: dict, metadata, preloa
     # Build trial config from Ray-sampled HPs
     config = build_config_from_ray(ray_config, base_config)
     if config is None:
-        # Invalid HP combination (e.g., d_embed % n_heads != 0)
         tune.report({"val_nll": float("inf")})
         return
 
-    # Override n_folds in config
     OmegaConf.update(config, "data.splits.n_folds", n_folds)
 
-    # Annealing schedule: when tau_min and anneal_epochs are HPO-controlled
-    # (present in search space), skip proportional shortening — the optimizer
-    # sets them directly. Update min_epochs to match the sampled schedule so
-    # early stopping can't fire before annealing completes.
+    # Annealing schedule adjustment
     search_cfg = base_config.get("hpo", {})
     search_space = search_cfg.get("search_space", {})
     if "tau_min" in search_space or "anneal_epochs" in search_space:
         ta = config.training.temperature_annealing
-        # When tau_min == tau_max, annealing is disabled — no min_epochs constraint
         if ta.tau_min >= ta.tau_max:
             OmegaConf.update(config, "training.early_stopping.min_epochs", 1)
         else:
@@ -414,101 +364,299 @@ def train_fn(ray_config: dict, base_config: dict, splits: dict, metadata, preloa
         config = shorten_annealing_for_hpo(config, full_max_epochs=100)
 
     seed = config.experiment.get("seed", 42)
-    # HPO overrides: disable deterministic algorithms and enable cuDNN autotuner.
-    # Reproducibility is already broken by scatter_add in HGT and FlashAttention
-    # in SetTransformer. Deterministic mode forces slower cuBLAS kernels for no benefit.
     set_seed(seed, deterministic=False, benchmark=True)
 
-    # Data is already available — passed via tune.with_parameters
-    # (ray.put/ray.get handled internally by Ray)
+    # --- Config extraction ---
+    train_cfg = config.training
+    max_epochs = train_cfg.max_epochs
+    min_epochs = train_cfg.early_stopping.get("min_epochs", 1)
+    es_patience = train_cfg.early_stopping.get("patience", 15)
+    es_min_delta = train_cfg.early_stopping.get("min_delta", 0.0001)
+    grad_clip_val = train_cfg.get("gradient_clip_val", None)
+    use_bf16 = train_cfg.get("precision", "32-true") == "bf16-mixed"
 
-    # Callback types to exclude for HPO trials:
-    # - ModelCheckpoint / ResilienceModelCheckpoint: trials don't save checkpoints
-    # - LearningRateMonitor: logged via CSVLogger instead
-    # - GradientNormLogger: unnecessary overhead per trial
-    _EXCLUDED_TRIAL_CALLBACKS = (
-        ModelCheckpoint, ResilienceModelCheckpoint,
-        LearningRateMonitor, GradientNormLogger,
+    # Temperature annealing (pure function — no Trainer needed)
+    ta_cfg = train_cfg.temperature_annealing
+    temp_annealer = TemperatureAnnealing(
+        tau_max=ta_cfg.tau_max, tau_min=ta_cfg.tau_min,
+        warmup_epochs=ta_cfg.warmup_epochs, anneal_epochs=ta_cfg.anneal_epochs,
+        schedule=ta_cfg.schedule,
     )
 
-    max_epochs = config.training.max_epochs
-    fold_val_losses = []
+    # KL annealing
+    kl_cfg = train_cfg.get("kl_annealing", {})
+    kl_annealer = None
+    if kl_cfg.get("enabled", False):
+        kl_annealer = KLAnnealingCallback(
+            alpha_min=kl_cfg.get("alpha_min", 0.01),
+            warmup_epochs=kl_cfg.get("warmup_epochs", 5),
+        )
+
+    # --- Helper: build optimizer + scheduler for a module ---
+    def _build_optimizer(module):
+        opt_cfg = train_cfg.optimizer
+        lr = opt_cfg.lr
+        wd = opt_cfg.get("weight_decay", 0)
+        betas = tuple(opt_cfg.get("betas", [0.9, 0.999]))
+        # Split decay/no-decay (biases, LayerNorm, gate_logits excluded)
+        split_fn = CognitiveResilienceLightningModule._split_weight_decay_params
+
+        if module._use_bayesian_svi:
+            guide_lr = opt_cfg.get("guide_lr", lr)
+            model_decay, model_no_decay = split_fn(module.model)
+            optimizer = torch.optim.Adam([
+                {"params": model_decay, "lr": lr, "weight_decay": wd},
+                {"params": model_no_decay, "lr": lr, "weight_decay": 0.0},
+                {"params": list(module.guide.parameters()), "lr": guide_lr, "weight_decay": 0.0},
+            ], betas=betas)
+            lrd = opt_cfg.get("lrd", 1.0)
+            scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lrd)
+            sched_interval = "step"
+        else:
+            decay_params, no_decay_params = split_fn(module)
+            param_groups = [
+                {"params": decay_params, "weight_decay": wd},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ]
+            if opt_cfg.type == "adamw":
+                optimizer = torch.optim.AdamW(
+                    param_groups, lr=lr, betas=betas,
+                )
+            else:
+                optimizer = torch.optim.Adam(
+                    param_groups, lr=lr, betas=betas,
+                )
+            sched_cfg = train_cfg.scheduler
+            warmup_epochs = sched_cfg.get("warmup_epochs", 0)
+            eta_min = sched_cfg.get("eta_min", 1e-6)
+            t_max = sched_cfg.get("T_max", max_epochs - warmup_epochs)
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=t_max, eta_min=eta_min,
+            )
+            if warmup_epochs > 0:
+                warmup = torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=0.01, end_factor=1.0,
+                    total_iters=warmup_epochs,
+                )
+                scheduler = torch.optim.lr_scheduler.SequentialLR(
+                    optimizer, schedulers=[warmup, cosine],
+                    milestones=[warmup_epochs],
+                )
+            else:
+                scheduler = cosine
+            sched_interval = "epoch"
+        return optimizer, scheduler, sched_interval
+
+    # --- Helper: train one epoch ---
+    def _train_one_epoch(module, optimizer, scheduler, sched_interval, train_dl):
+        module.train()
+        autocast_ctx = torch.autocast("cuda", dtype=torch.bfloat16) if use_bf16 else nullcontext()
+        n_steps = 0
+        for batch in train_dl:
+            # Move batch to GPU
+            batch = {
+                k: v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+            optimizer.zero_grad(set_to_none=True)
+            with autocast_ctx:
+                if module._use_bayesian_svi:
+                    loss = module._svi_forward(batch)
+                    if module._gene_gate_l1_lambda > 0:
+                        loss = loss + module._gene_gate_l1_penalty()
+                else:
+                    output = module._forward_batch(batch)
+                    loss = module._compute_loss(output, batch["cognition"])
+
+            if torch.isnan(loss):
+                continue  # skip NaN batches
+
+            loss.backward()
+            if grad_clip_val is not None:
+                torch.nn.utils.clip_grad_norm_(module.parameters(), grad_clip_val)
+            optimizer.step()
+            n_steps += 1
+            if sched_interval == "step":
+                scheduler.step()
+
+        if sched_interval == "epoch":
+            scheduler.step()
+
+    # --- Helper: validate one epoch, return val_nll and metrics dict ---
+    def _validate(module, val_dl):
+        module.eval()
+        all_means = []
+        all_targets = []
+        all_nlls = []
+        autocast_ctx = torch.autocast("cuda", dtype=torch.bfloat16) if use_bf16 else nullcontext()
+
+        with torch.no_grad():
+            for batch in val_dl:
+                batch = {
+                    k: v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+                with autocast_ctx:
+                    if module._use_bayesian_svi:
+                        output = module._forward_batch_posterior(batch)
+                    else:
+                        output = module._forward_batch(batch)
+                    nll = module._compute_loss(output, batch["cognition"])
+
+                all_nlls.append(nll.item() * batch["cognition"].shape[0])
+                all_means.append(output["mean"].cpu())
+                all_targets.append(batch["cognition"].cpu())
+
+        # Weighted mean NLL
+        total_samples = sum(t.shape[0] for t in all_targets)
+        val_nll = sum(all_nlls) / total_samples if total_samples > 0 else float("inf")
+
+        # Correlation metrics
+        metrics = {"val_nll": val_nll}
+        if all_means:
+            means_cat = torch.cat(all_means, dim=0)
+            targets_cat = torch.cat(all_targets, dim=0)
+            result = module.metrics.compute(means_cat, None, targets_cat)
+            for name, value in result.items():
+                metrics[f"val_{name}"] = float(value)
+
+        return metrics
+
+    # --- Setup K fold modules (CPU-resident) + dataloaders ---
+    fold_modules = []  # CPU-resident nn.Modules (swapped to GPU per fold per epoch)
+    fold_optimizers = []  # CPU-resident optimizers
+    fold_schedulers = []  # schedulers
+    fold_sched_intervals = []
+    fold_dataloaders = []  # (train_dl, val_dl, dm) per fold
 
     for fold_idx in range(n_folds):
-        # Re-seed per fold for independent reproducibility
         set_seed(seed + fold_idx, deterministic=False, benchmark=True)
 
-        # Build model
         module = CognitiveResilienceLightningModule(config)
 
-        # Setup callbacks, filtering those inappropriate for trials
-        callbacks = [
-            cb for cb in setup_callbacks(config)
-            if not isinstance(cb, _EXCLUDED_TRIAL_CALLBACKS)
-        ]
-        # Add Ray Tune reporting callback for per-epoch HyperBand feedback
-        callbacks.append(_make_tune_report_callback())
-
-        # CSVLogger for per-epoch val_nll curves (negligible overhead)
-        trial_logger = CSVLogger(
-            save_dir=str(Path(config.paths.get("logs_dir", "outputs/logs")) / "hpo_trials"),
-            name="ray_trial",
-            version=f"fold_{fold_idx}",
-        )
-
-        # Trainer: strategy="auto" overrides config's "ddp" — trials run single-GPU.
-        # GPU pinning is handled by Ray (no manual CUDA_VISIBLE_DEVICES).
-        trainer = pl.Trainer(
-            max_epochs=max_epochs,
-            min_epochs=config.training.early_stopping.get("min_epochs", 1),
-            accelerator="auto",
-            devices="auto",
-            strategy="auto",
-            precision=config.training.get("precision", "32-true"),
-            gradient_clip_val=config.training.get("gradient_clip_val", None),
-            gradient_clip_algorithm="norm",
-            callbacks=callbacks,
-            enable_progress_bar=False,
-            enable_model_summary=False,
-            enable_checkpointing=False,
-            logger=trial_logger,
-            log_every_n_steps=config.training.get("logging", {}).get("log_every_n_steps", 10),
-            val_check_interval=config.training.get("logging", {}).get("val_check_interval", 1.0),
-            deterministic=False,
-            benchmark=True,
-        )
-
-        # Data module for this fold
         dm = CognitiveResilienceDataModule(
-            config=config,
-            metadata=metadata,
-            splits=splits,
-            fold_idx=fold_idx,
-            adata=None,  # PrecomputedDataset path — no AnnData needed
+            config=config, metadata=metadata, splits=splits,
+            fold_idx=fold_idx, adata=None,
             precomputed_dir=config.data.get("precomputed_dir"),
             preloaded_cache=preloaded_cache,
         )
+        dm.setup("fit")
 
-        try:
-            trainer.fit(module, datamodule=dm)
-        except torch.cuda.OutOfMemoryError:
-            logger.error("OOM at fold %d/%d — reporting inf and terminating trial", fold_idx, n_folds)
+        if module._use_bayesian_svi:
+            module._prototype_guide_if_needed(caller="hpo_train_fn")
+            module.elbo.n_train = len(dm.train_dataset)
+
+        optimizer, scheduler, sched_interval = _build_optimizer(module)
+
+        # Module stays on CPU — will be swapped to GPU during training
+        fold_modules.append(module)
+        fold_optimizers.append(optimizer)
+        fold_schedulers.append(scheduler)
+        fold_sched_intervals.append(sched_interval)
+
+        train_dl = dm.train_dataloader()
+        val_dl = dm.val_dataloader()
+        fold_dataloaders.append((train_dl, val_dl, dm))
+
+    # --- Interleaved epoch loop with fold-swap ---
+    fold_last_nll = [float("inf")] * n_folds
+    best_mean_nll = float("inf")
+    epochs_without_improvement = 0
+
+    for epoch in range(max_epochs):
+        epoch_fold_nlls = []
+        epoch_fold_metrics = [{} for _ in range(n_folds)]
+
+        for fold_idx in range(n_folds):
+            set_seed(seed + fold_idx + epoch * 1000, deterministic=False, benchmark=True)
+
+            module = fold_modules[fold_idx]
+            optimizer = fold_optimizers[fold_idx]
+            scheduler = fold_schedulers[fold_idx]
+            sched_interval = fold_sched_intervals[fold_idx]
+
+            # --- Swap fold to GPU ---
+            module.cuda()
+
+            # Apply temperature annealing
+            tau = temp_annealer.get_temperature(epoch)
+            for gate in [
+                getattr(module.model, "hgt_gene_gate", None),
+                getattr(module.model.cell_transformer, "gene_gate", None)
+                if hasattr(module.model, "cell_transformer") else None,
+            ]:
+                if gate is not None:
+                    gate.temperature = tau
+
+            # Apply KL annealing
+            if kl_annealer is not None and hasattr(module, "elbo"):
+                kl_weight = kl_annealer.get_kl_weight(epoch)
+                if hasattr(module.elbo, "kl_weight"):
+                    module.elbo.kl_weight = kl_weight
+
+            # --- Train + validate one epoch ---
+            train_dl, val_dl, _ = fold_dataloaders[fold_idx]
+
+            try:
+                _train_one_epoch(module, optimizer, scheduler, sched_interval, train_dl)
+                metrics = _validate(module, val_dl)
+            except torch.cuda.OutOfMemoryError:
+                logger.error("OOM at fold %d epoch %d", fold_idx, epoch)
+                torch.cuda.empty_cache()
+                epoch_fold_nlls.append(float("inf"))
+                fold_last_nll[fold_idx] = float("inf")
+                module.cpu()
+                gc.collect()
+                torch.cuda.empty_cache()
+                continue
+
+            val_nll = metrics.get("val_nll", float("inf"))
+            fold_last_nll[fold_idx] = val_nll
+            epoch_fold_nlls.append(val_nll)
+            epoch_fold_metrics[fold_idx] = metrics
+
+            # --- Swap fold back to CPU ---
+            module.cpu()
+            pyro.clear_param_store()
+            gc.collect()
             torch.cuda.empty_cache()
-            _cleanup_fold(trainer, module, dm)
-            tune.report({"val_nll": float("inf")})
-            return
 
-        # Use val_nll (predictive quality) not val_loss (ELBO) as objective.
-        # ELBO = NLL + KL, and KL annealing makes ELBO non-stationary.
-        val_nll = trainer.callback_metrics.get("val_nll")
-        if val_nll is not None:
-            fold_val_losses.append(val_nll.item())
+        # --- Report mean across folds to Ray ---
+        mean_nll = sum(epoch_fold_nlls) / len(epoch_fold_nlls)
+        report_dict = {
+            "val_nll": mean_nll,
+            "val_nll_std": float(np.std(epoch_fold_nlls)),
+        }
+        for metric_name in ("val_r2", "val_pearson_r", "val_spearman_rho"):
+            vals = [m.get(metric_name, None) for m in epoch_fold_metrics]
+            vals = [v for v in vals if v is not None]
+            if vals:
+                report_dict[metric_name] = float(np.mean(vals))
 
-        _cleanup_fold(trainer, module, dm)
+        tune.report(report_dict)
 
-    # Report mean val_nll across folds
-    mean_val_nll = sum(fold_val_losses) / len(fold_val_losses) if fold_val_losses else float("inf")
-    tune.report({"val_nll": mean_val_nll})
+        # --- Mean-level early stopping ---
+        if epoch >= min_epochs:
+            if mean_nll < best_mean_nll - es_min_delta:
+                best_mean_nll = mean_nll
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= es_patience:
+                    logger.info(
+                        "Mean val_nll early stopping at epoch %d (patience %d)",
+                        epoch, es_patience,
+                    )
+                    break
+
+    # Cleanup
+    for _, _, dm in fold_dataloaders:
+        dm.shutdown_prefetchers()
+    del fold_modules, fold_optimizers, fold_schedulers, fold_dataloaders
+    pyro.clear_param_store()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 # ---------------------------------------------------------------------------
