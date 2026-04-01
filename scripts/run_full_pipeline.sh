@@ -56,7 +56,7 @@ SPLITS="outputs/splits.json"
 METADATA="data/metadata_ROSMAP"
 HPO_CONFIG="$PIPELINE_DIR/hpo_config.yaml"
 # Warm-start HPO from a prior run (set to empty string "" to skip warm-start)
-WARM_START_DIR="${WARM_START_DIR:-outputs/ray_results/cognitive_resilience_hpo7}"
+WARM_START_DIR="${WARM_START_DIR:-outputs/pipeline/ray_results/cognitive_resilience}"
 
 log "Pipeline started — output dir: $PIPELINE_DIR"
 
@@ -149,18 +149,14 @@ overlay = OmegaConf.create({
     'data': {'precomputed_dir': '$PRECOMPUTED'},
     'paths': {'output_dir': '$PIPELINE_DIR'},
     'hpo': {
-        'n_trials': 50,
-        'per_trial_timeout': 7200,
+        'n_trials': 39,
         'search_space': {
             'lr':             {'type': 'loguniform', 'low': 5e-5,  'high': 5e-3},
-            'd_embed':        {'type': 'categorical', 'choices': [64, 128]},
             'dropout':        {'type': 'uniform',    'low': 0.05, 'high': 0.4},
             'beta':           {'type': 'uniform',    'low': 0.1,  'high': 1.0},
             'weight_decay':   {'type': 'loguniform', 'low': 1e-6, 'high': 1e-3},
             'guide_lr':       {'type': 'loguniform', 'low': 5e-4, 'high': 0.05},
             'anneal_epochs':  {'type': 'int',        'low': 8,    'high': 30},
-            'n_hgt_layers':   {'type': 'int',        'low': 2,    'high': 3},
-            'n_inducing':     {'type': 'categorical', 'choices': [32, 64]},
             'gene_gate_temp': {'type': 'uniform',    'low': 0.3,  'high': 2.0},
         },
     },

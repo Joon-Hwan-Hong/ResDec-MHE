@@ -120,7 +120,6 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         "model.dropout": ((int, float), lambda v: 0 <= v < 1),
         "model.d_embed": (int, lambda v: v > 0),
         "model.d_fused": (int, lambda v: v > 0),
-        "model.n_genes": (int, lambda v: v > 0),
         "model.n_cell_types": (int, lambda v: v > 0),
         "model.head.type": (str, lambda v: v in ("bayesian", "deterministic")),
         "model.head.d_hidden": (int, lambda v: v > 0),

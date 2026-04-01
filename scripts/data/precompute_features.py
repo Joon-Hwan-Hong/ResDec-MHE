@@ -70,9 +70,8 @@ def main():
     args = parser.parse_args()
 
     # Load config
-    from src.utils.config import load_config, validate_config
+    from src.utils.config import load_config
     config = load_config(args.config)
-    validate_config(config, required_keys=["data", "model"])
     data_cfg = config.data
 
     # Load metadata

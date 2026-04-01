@@ -242,7 +242,6 @@ training:
 optuna:
   n_trials: 100
   timeout: null  # No global timeout — n_trials is the stopping condition
-  per_trial_timeout: 14400  # 4 hours per trial (worst case ~2.3h for 5-fold CV)
   pruner:
     type: "median"
     n_startup_trials: 5
