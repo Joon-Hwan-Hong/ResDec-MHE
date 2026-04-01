@@ -271,37 +271,36 @@ See `docs/results/2026-03-30-hpo7-ablation-interpretability.md` for full results
 
 ---
 
-## HPO Round 8 — Blocked HVG Experiment (planned)
-**Date:** 2026-03-31
+## HPO Round 8 — Blocked HVG Experiment
+**Date:** 2026-03-31 to 2026-04-01
 **Architecture:** 2-branch (HGT + CellTransformer), concat_normalized fusion
 **Framework:** Ray Tune + Optuna TPE + MedianStoppingRule
-**Trials:** 50 (3 folds)
+**Trials:** 39 new + 11 warm-start = 50 total (3 folds, interleaved epoch-by-epoch)
 **GPUs:** 2 parallel
 
 **Motivation:** Ridge regression on flattened pseudobulk achieved R²=0.290 — only +0.033 below our model. Investigation revealed the random 100K-cell subsample for HVG selection was biased toward dominant cell types (upper-layer IT neurons = 25% of cells). Rare types contributed almost nothing to gene variance estimates.
 
 **Changes from HPO7:**
-- **Blocked HVG:** scran-style per-cell-type variance with loess normalization (stratified subsample 5K/type, indicator matrix algebra, no for-loops)
+- **Blocked HVG:** scran-style per-cell-type variance with loess normalization (4,135 genes, down from 4,796)
 - **Holdout restored:** test_frac=0.1 (52 subjects held out)
 - **3-fold HPO** (up from 2-fold) for more robust estimates
-- **Broader search space** — all 10 HPs re-searched (HVG change may shift loss landscape)
-- **One seed from HPO7 best** — not full warm-start (new HVG regime invalidates old landscape)
+- **Fixed d_embed=64, n_hgt_layers=2, n_inducing=64** (converged in HPO1-4, not re-searched)
+- **Interleaved fold-swap training:** manual training loop replaces Lightning trainer.fit(). One model on GPU at a time, K-1 fold states in CPU RAM. Reports mean val_nll per epoch to Ray for correct MedianStoppingRule pruning.
+- **Weight decay param groups:** biases, LayerNorm, gate_logits excluded from weight decay (Loshchilov & Hutter 2019)
+- **Temperature annealing fixed:** gate attribute names were wrong in prior HPO code (gene_gate_hgt → hgt_gene_gate, gene_gate_ct → cell_transformer.gene_gate). All prior HPO rounds had broken temperature annealing during HPO trials.
 
-**Search space (10 HPs):**
+**Search space (7 HPs):**
 | HP | Range |
 |---|---|
 | lr | [5e-5, 5e-3] loguniform |
-| d_model | {64, 128} |
 | dropout | [0.05, 0.4] |
 | beta | [0.1, 1.0] |
 | weight_decay | [1e-6, 1e-3] loguniform |
 | guide_lr | [5e-4, 0.05] loguniform |
 | anneal_epochs | [8, 30] int |
-| n_hgt_layers | {2, 3} |
-| n_inducing | {32, 64} |
 | gene_gate_temp | [0.3, 2.0] |
 
-**Status:** Running in tmux `pipeline` session. Pipeline script: `scripts/run_full_pipeline.sh`. Pipeline dir: `outputs/pipeline_20260331/`.
+**Status:** Running in tmux `pipeline` session.
 
 ---
 
