@@ -966,10 +966,15 @@ class TestDDPBehavior:
         result = module.configure_optimizers()
         optimizer = result["optimizer"]
 
-        assert len(optimizer.param_groups) == 2
-        # Group 0 = model (encoder), Group 1 = guide
+        assert len(optimizer.param_groups) == 3
+        # Group 0 = model decay, Group 1 = model no-decay, Group 2 = guide
         assert optimizer.param_groups[0]["lr"] == bayesian_config.training.optimizer.lr
-        assert optimizer.param_groups[1]["lr"] == 0.005
+        assert optimizer.param_groups[1]["lr"] == bayesian_config.training.optimizer.lr
+        assert optimizer.param_groups[2]["lr"] == 0.005
+        # Weight decay only on group 0
+        assert optimizer.param_groups[0]["weight_decay"] > 0 or bayesian_config.training.optimizer.get("weight_decay", 0) == 0
+        assert optimizer.param_groups[1]["weight_decay"] == 0.0
+        assert optimizer.param_groups[2]["weight_decay"] == 0.0
 
     def test_guide_lr_fallback_to_encoder_lr(self, bayesian_config):
         """When guide_lr is not set, guide uses encoder LR."""
@@ -987,9 +992,9 @@ class TestDDPBehavior:
         result = module.configure_optimizers()
         optimizer = result["optimizer"]
 
-        assert len(optimizer.param_groups) == 2
-        # Both groups should have the same LR
-        assert optimizer.param_groups[0]["lr"] == optimizer.param_groups[1]["lr"]
+        assert len(optimizer.param_groups) == 3
+        # All groups should have the same LR (guide_lr falls back to encoder lr)
+        assert optimizer.param_groups[0]["lr"] == optimizer.param_groups[1]["lr"] == optimizer.param_groups[2]["lr"]
 
     def test_cold_posterior_temperature_passed_to_elbo(self, bayesian_config):
         """Cold posterior temperature from config is passed to ELBO."""

@@ -186,9 +186,32 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         if ct_gate is not None and hasattr(ct_gate, "gate_logits"):
             gate_values.append(torch.sigmoid(ct_gate.gate_logits))
         if not gate_values:
-            return torch.tensor(0.0, device=self.device)
+            return torch.zeros(1, device=self.device).squeeze()
         all_values = torch.cat([v.flatten() for v in gate_values])
         return self._gene_gate_l1_lambda * all_values.mean()
+
+    @staticmethod
+    def _split_weight_decay_params(module: torch.nn.Module):
+        """Split parameters into decay and no-decay groups.
+
+        Excludes biases, LayerNorm params, and gene gate logits from weight
+        decay (Loshchilov & Hutter 2019, "Decoupled Weight Decay Regularization").
+        """
+        _NO_DECAY_SUFFIXES = {"bias", "weight"}  # LayerNorm.weight should not decay
+        _NO_DECAY_KEYWORDS = {"LayerNorm", "layernorm", "layer_norm", "gate_logits"}
+
+        decay = []
+        no_decay = []
+        for name, param in module.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.endswith(".bias"):
+                no_decay.append(param)
+            elif any(kw in name for kw in _NO_DECAY_KEYWORDS):
+                no_decay.append(param)
+            else:
+                decay.append(param)
+        return decay, no_decay
 
     def _compute_loss(self, output: dict, cognition: torch.Tensor) -> torch.Tensor:
         """Compute loss with branching based on head type."""
@@ -374,10 +397,17 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         # Under DDP, each rank caches its own last batch. train_loss_nll is
         # logged with sync_dist=True, averaging each rank's NLL estimate.
         if self._use_bayesian_svi:
+            # Only cache keys needed by _forward_batch_posterior + _compute_loss
+            _NEEDED_KEYS = {
+                "region_pseudobulk", "region_mask", "pseudobulk",
+                "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr",
+                "cell_type_mask", "pathology", "cognition",
+                "cell_data", "cell_offsets",
+            }
             self._last_train_batch_ref = {
                 k: v.cpu() if isinstance(v, torch.Tensor) else v
                 for k, v in batch.items()
-                if isinstance(v, torch.Tensor) or k == "subject_ids"
+                if k in _NEEDED_KEYS
             }
 
         return loss
@@ -541,7 +571,11 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
             # Bootstrap CI on R² (validation only, ~50ms for 1000 resamples on N=93)
             if prefix == "val":
-                ci = self.metrics.bootstrap_ci(all_means, target=all_targets, metrics=["r2"])
+                exp_seed = self.config.get("experiment", {}).get("seed", 42)
+                ci = self.metrics.bootstrap_ci(
+                    all_means, target=all_targets, metrics=["r2"],
+                    seed=exp_seed,
+                )
                 if "r2" in ci:
                     self.log("val_r2_ci_lower", ci["r2"][0], rank_zero_only=True, sync_dist=True)
                     self.log("val_r2_ci_upper", ci["r2"][1], rank_zero_only=True, sync_dist=True)
@@ -770,10 +804,13 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
 
             weight_decay = opt_cfg.get("weight_decay", 0)
             betas = tuple(opt_cfg.get("betas", [0.9, 0.999]))
+            # Separate decay/no-decay for model params (Loshchilov & Hutter 2019)
+            model_decay, model_no_decay = self._split_weight_decay_params(self.model)
             optimizer = torch.optim.Adam([
-                {"params": list(self.model.parameters()), "lr": effective_lr},
-                {"params": list(self.guide.parameters()), "lr": guide_lr},
-            ], weight_decay=weight_decay, betas=betas)
+                {"params": model_decay, "lr": effective_lr, "weight_decay": weight_decay},
+                {"params": model_no_decay, "lr": effective_lr, "weight_decay": 0.0},
+                {"params": list(self.guide.parameters()), "lr": guide_lr, "weight_decay": 0.0},
+            ], betas=betas)
             # ExponentialLR replicates ClippedAdam's lrd parameter
             lrd = opt_cfg.get("lrd", 1.0)
             scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lrd)
@@ -783,18 +820,20 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
             }
 
         # Standard optimizer for deterministic head
+        weight_decay = opt_cfg.get("weight_decay", 0)
+        betas = tuple(opt_cfg.get("betas", [0.9, 0.999]))
+        decay_params, no_decay_params = self._split_weight_decay_params(self)
+        param_groups = [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ]
         if opt_cfg.type == "adamw":
             optimizer = torch.optim.AdamW(
-                self.parameters(),
-                lr=effective_lr,
-                weight_decay=opt_cfg.weight_decay,
-                betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
+                param_groups, lr=effective_lr, betas=betas,
             )
         elif opt_cfg.type == "adam":
             optimizer = torch.optim.Adam(
-                self.parameters(),
-                lr=effective_lr,
-                weight_decay=opt_cfg.get("weight_decay", 0),
+                param_groups, lr=effective_lr, betas=betas,
             )
         else:
             raise ValueError(f"Unknown optimizer type: {opt_cfg.type}")
