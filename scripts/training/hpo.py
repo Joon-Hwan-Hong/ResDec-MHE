@@ -628,8 +628,8 @@ def train_fn(ray_config: dict, base_config: dict, splits: dict, metadata, preloa
             "val_nll_std": float(np.std(epoch_fold_nlls)),
         }
         for metric_name in ("val_r2", "val_pearson_r", "val_spearman_rho"):
-            vals = [m.get(metric_name, None) for m in epoch_fold_metrics]
-            vals = [v for v in vals if v is not None]
+            vals = [m.get(metric_name) for m in epoch_fold_metrics]
+            vals = [v for v in vals if v is not None and not np.isnan(v)]
             if vals:
                 report_dict[metric_name] = float(np.mean(vals))
 
@@ -846,14 +846,20 @@ def main() -> None:
 
         # ---- Scheduler: MedianStoppingRule ----
         # Equivalent to Optuna's MedianPruner from HPO4.
-        # grace_period=10: don't prune before epoch 10 (past warmup)
+        # grace_period=20: don't prune before iter 20. HPO8 top-10 trials by
+        #   best val_r2 peaked at iter 10-27 (mean ~17). The previous
+        #   grace_period=10 risked pruning trials before they reached their
+        #   peak — combined with the (now-fixed) scope='last' selection bug,
+        #   it doubly penalized fast-then-degrading trials. Iter 20 is past
+        #   the peak window for early-converging trials and gives slow ones
+        #   one more chance before pruning.
         # min_samples_required=10: need 10 completed trials before comparing
         scheduler_cfg = hpo_cfg.get("scheduler", {})
         scheduler = MedianStoppingRule(
             time_attr="training_iteration",
             metric="val_nll",
             mode="min",
-            grace_period=scheduler_cfg.get("grace_period", 10),
+            grace_period=scheduler_cfg.get("grace_period", 20),
             min_samples_required=scheduler_cfg.get("min_samples_required", 10),
             hard_stop=True,
         )
@@ -901,9 +907,21 @@ def main() -> None:
         results = tuner.fit()
 
         # ---- Report results ----
-        best_result = results.get_best_result(metric="val_nll", mode="min")
+        # scope='all' picks the trial whose MIN val_nll across all reported
+        # iters is smallest, instead of comparing trials by their LAST iter
+        # value (default scope='last'). Top trials in HPO8 peaked at iter
+        # 10-27 then degraded — scope='last' was selecting trials by their
+        # degraded final value, not their actual best epoch.
+        best_result = results.get_best_result(metric="val_nll", mode="min", scope="all")
         logger.info("Best trial config: %s", best_result.config)
-        logger.info("Best val_nll: %.6f", best_result.metrics["val_nll"])
+        # Log both the true min val_nll (selection metric) and last-iter
+        # val_nll (which is what best_result.metrics defaults to).
+        try:
+            best_nll_min = float(best_result.metrics_dataframe["val_nll"].min())
+        except Exception:
+            best_nll_min = best_result.metrics.get("val_nll", float("nan"))
+        logger.info("Best val_nll (min over iters): %.6f", best_nll_min)
+        logger.info("Best val_nll (last iter, for reference): %.6f", best_result.metrics.get("val_nll", float("nan")))
 
         # Save best config
         best_config = build_config_from_ray(best_result.config, config)

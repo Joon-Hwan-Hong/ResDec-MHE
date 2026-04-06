@@ -146,11 +146,11 @@ model:
 # ─────────────────────────────────────────────────────────────────────────────
 
 training:
-  max_epochs: 100
+  max_epochs: 60                 # Lowered from 100 — top HPO8 trials peaked at iter 10-27, no benefit beyond ~50.
   early_stopping:
-    patience: 15
+    patience: 10                 # Lowered from 15 — val_nll degrades fast after peak.
     min_delta: 0.0001
-    min_epochs: 55               # Don't stop before temperature annealing completes (5 warmup + 50 anneal)
+    min_epochs: 30               # Lowered from 55 — matches warmup(5)+anneal(25). HPO8 top trials peaked at iter 10-27.
     monitor: "val_nll"
     mode: "min"
 
@@ -179,7 +179,7 @@ training:
     tau_max: 2.0                 # Starting temperature (soft)
     tau_min: 0.1                 # Final temperature (sharp)
     warmup_epochs: 5             # Keep tau_max for this many epochs (independent of scheduler.warmup_epochs above)
-    anneal_epochs: 50            # Anneal over this many epochs
+    anneal_epochs: 25            # Lowered from 50 to match observed HPO8 best trial (3fef4d69, anneal=25). Top trials peaked at iter 10-27.
     schedule: "exponential"      # Annealing schedule: "exponential", "linear", "cosine"
 
   # KL annealing (Bayesian head only)
