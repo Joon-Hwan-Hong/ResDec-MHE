@@ -36,6 +36,59 @@ done_file() { echo "$PIPELINE_DIR/.stage_${1}.done"; }
 mark_done() { touch "$(done_file "$1")"; log "Stage $1 COMPLETE"; }
 is_done() { [ -f "$(done_file "$1")" ]; }
 
+# Run inference on all trained checkpoints in $PIPELINE_DIR to produce predictions.csv
+run_inference_on_checkpoints() {
+    local PIDS=() GPU_IDX=0 N_INF=0
+    for RUN_DIR in "$PIPELINE_DIR"/20*/; do
+        [ -d "$RUN_DIR/checkpoints" ] || continue
+        [ -f "$RUN_DIR/analysis/predictions.csv" ] && continue  # already done
+
+        # Find best checkpoint (lowest val_nll)
+        local BEST_CKPT="" BEST_NLL="999"
+        for ckpt in "$RUN_DIR"/checkpoints/epoch=*-val_nll=*.ckpt; do
+            [ -f "$ckpt" ] || continue
+            [[ "$ckpt" == *"last"* ]] && continue
+            local nll; nll=$(echo "$ckpt" | grep -oP 'val_nll=\K[0-9.]+')
+            if python3 -c "exit(0 if $nll < $BEST_NLL else 1)" 2>/dev/null; then
+                BEST_NLL="$nll"
+                BEST_CKPT="$ckpt"
+            fi
+        done
+        [ -z "$BEST_CKPT" ] && continue
+
+        local CONFIG_YAML="$RUN_DIR/config.yaml"
+        [ -f "$CONFIG_YAML" ] || continue
+        local FOLD_IDX; FOLD_IDX=$(grep 'fold_idx:' "$CONFIG_YAML" | head -1 | awk '{print $2}')
+        [ -z "$FOLD_IDX" ] && FOLD_IDX=0
+
+        local OUTPUT_DIR="$RUN_DIR/analysis"
+        mkdir -p "$OUTPUT_DIR"
+
+        log "    Inference: $(basename "$RUN_DIR") fold=$FOLD_IDX -> GPU $GPU_IDX"
+        CUDA_VISIBLE_DEVICES=$GPU_IDX uv run python -u scripts/inference/run_inference.py \
+            --checkpoint "$BEST_CKPT" \
+            --config "$CONFIG_YAML" \
+            --output-dir "$OUTPUT_DIR" \
+            --data-path "$PRECOMPUTED" \
+            --splits-path "$SPLITS" \
+            --split val \
+            --fold "$FOLD_IDX" \
+            > "$OUTPUT_DIR/inference.log" 2>&1 &
+        PIDS+=($!)
+        N_INF=$((N_INF + 1))
+        GPU_IDX=$(( (GPU_IDX + 1) % N_GPUS ))
+
+        if [ "${#PIDS[@]}" -ge "$N_GPUS" ]; then
+            for pid in "${PIDS[@]}"; do wait "$pid" || true; done
+            PIDS=()
+        fi
+    done
+    for pid in "${PIDS[@]}"; do wait "$pid" || true; done
+    log "    Inference complete: $N_INF runs"
+}
+N_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+[ "$N_GPUS" -eq 0 ] && N_GPUS=1
+
 # --start-from: mark all stages before the target as done
 if [ -n "$START_FROM" ]; then
     ALL_STAGES=(1 1.5 2 3 4 5 6 6.5 7a 7b 7c 7d 8)
@@ -49,7 +102,7 @@ if [ -n "$START_FROM" ]; then
 fi
 
 # ── Paths ───────────────────────────────────────────────────────────────────
-ADATA_RAW="data/snRNAseq/adata_ROSMAP_merged.h5ad"
+ADATA_RAW="data/snRNAseq/adata_ROSMAP_merged.raw.h5ad"
 ADATA_PREP="data/snRNAseq/adata_ROSMAP_preprocessed.h5ad"
 PRECOMPUTED="data/precomputed"
 SPLITS="outputs/splits.json"
@@ -62,14 +115,14 @@ log "Pipeline started — output dir: $PIPELINE_DIR"
 
 # ─── Stage 1: Preprocess (blocked HVG) ─────────────────────────────────────
 if ! is_done 1; then
-    log "Stage 1: Preprocessing with blocked HVG..."
+    log "Stage 1: Preprocessing with seurat_v3 HVG (1M subsample)..."
     # Note: no --splits-path here because splits.json doesn't exist yet.
     # HVG selection on all subjects is standard practice (unsupervised step).
     uv run python -u -m src.data.preprocessing preprocess-only \
         --input "$ADATA_RAW" \
         --output "$ADATA_PREP" \
-        --hvg-flavor blocked \
-        --hvg-per-type-n 5000 \
+        --hvg-flavor seurat_v3 \
+        --hvg-subsample 1000000 \
         --n-hvg 4000 \
         2>&1 | tee "$LOG_DIR/stage1_preprocess.log"
     mark_done 1
@@ -119,14 +172,14 @@ print(pt['pseudobulk'].shape[1])
     mark_done 2
 fi
 
-# ─── Stage 3: Create splits (with 10% holdout) ─────────────────────────────
+# ─── Stage 3: Create splits (no holdout — all subjects in CV) ─────────────
 if ! is_done 3; then
-    log "Stage 3: Creating splits with test_frac=0.1..."
+    log "Stage 3: Creating splits with test_frac=0 (no holdout)..."
     uv run python -u scripts/data/create_splits.py \
         --config configs/default.yaml \
         --precomputed-dir "$PRECOMPUTED" \
         --output "$SPLITS" \
-        --test-frac 0.1 \
+        --test-frac 0 \
         2>&1 | tee "$LOG_DIR/stage3_splits.log"
     mark_done 3
 fi
@@ -149,14 +202,14 @@ overlay = OmegaConf.create({
     'data': {'precomputed_dir': '$PRECOMPUTED'},
     'paths': {'output_dir': '$PIPELINE_DIR'},
     'hpo': {
-        'n_trials': 39,
+        'n_trials': 50,
         'search_space': {
-            'lr':             {'type': 'loguniform', 'low': 5e-5,  'high': 5e-3},
+            'lr':             {'type': 'loguniform', 'low': 5e-5,  'high': 1e-3},
             'dropout':        {'type': 'uniform',    'low': 0.05, 'high': 0.4},
             'beta':           {'type': 'uniform',    'low': 0.1,  'high': 1.0},
             'weight_decay':   {'type': 'loguniform', 'low': 1e-6, 'high': 1e-3},
-            'guide_lr':       {'type': 'loguniform', 'low': 5e-4, 'high': 0.05},
-            'anneal_epochs':  {'type': 'int',        'low': 8,    'high': 30},
+            'guide_lr':       {'type': 'loguniform', 'low': 5e-4, 'high': 0.01},
+            'anneal_epochs':  {'type': 'int',        'low': 8,    'high': 25},
             'gene_gate_temp': {'type': 'uniform',    'low': 0.3,  'high': 2.0},
         },
     },
@@ -210,9 +263,9 @@ if ! is_done 5; then
         "$BEST_CFG" \
         2>&1 | tee "$LOG_DIR/stage5_production.log"
 
-    claude -p "Read production results in $LOG_DIR/production/. Compute mean R2, Pearson r, Spearman rho across folds. Write to $PIPELINE_DIR/production_results.md." \
-        --model opus --effort max --output-format text \
-        > "$LOG_DIR/stage5_agent.log" 2>&1 || true
+    # Run inference on production checkpoints to get predictions.csv with R²
+    log "  Running inference on production checkpoints..."
+    run_inference_on_checkpoints 2>&1 | tee "$LOG_DIR/stage5_inference.log"
     mark_done 5
 fi
 
@@ -238,9 +291,9 @@ if ! is_done 6; then
             2>&1 | tee -a "$LOG_DIR/stage6_ablations.log"
     done
 
-    claude -p "Read ablation results in $LOG_DIR/ablations/. Compare all ablation configs vs full model. Write comprehensive ablation analysis to $PIPELINE_DIR/ablation_results.md." \
-        --model opus --effort max --output-format text \
-        > "$LOG_DIR/stage6_agent.log" 2>&1 || true
+    # Run inference on ablation checkpoints to get predictions.csv with R²
+    log "  Running inference on ablation checkpoints..."
+    run_inference_on_checkpoints 2>&1 | tee "$LOG_DIR/stage6_inference.log"
     mark_done 6
 fi
 
@@ -309,7 +362,7 @@ if ! is_done 7c; then
     baselines/gpio/.venv/bin/python -u baselines/gpio/run_rosmap.py \
         --data-dir "$PRECOMPUTED" --splits "$SPLITS" --metadata-dir "$METADATA" \
         --results-dir "$PIPELINE_DIR/baselines/gpio" --device cuda:1 \
-        2>&1 | tee "$LOG_DIR/stage7c_gpio.log"
+        2>&1 | tee "$LOG_DIR/stage7c_gpio.log" || log "  WARNING: GPIO failed (non-fatal)"
     mark_done 7c
 fi
 

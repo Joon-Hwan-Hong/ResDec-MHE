@@ -42,7 +42,7 @@ data:
   # Uses StratifiedKFold for disjoint validation sets across folds.
   # val_frac is derived: (1 - test_frac) / n_folds ≈ 18% with 5-fold on 90% pool
   splits:
-    test_frac: 0.1  # 10% holdout test set for final evaluation
+    test_frac: 0.0  # No holdout — all subjects in 5-fold CV
     n_folds: 5      # CV folds (determines val size = 100%/5 = 20%)
     stratify_by:
       - "gpath"
@@ -59,7 +59,7 @@ data:
 
   # DataLoader
   dataloader:
-    batch_size: 16
+    batch_size: 24
     num_workers: 12  # Only used in AnnData mode; PrecomputedDataset always uses 0 workers (heap-loaded, no I/O)
     pin_memory: true
     prefetch_factor: 2

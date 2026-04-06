@@ -532,7 +532,7 @@ def main():
 
     # ---- 5-fold CV -----------------------------------------------------------
     fold_results = []
-    input_dim = 4796  # pseudobulk feature dim
+    input_dim = X_all.shape[-1] - args.pe_dim  # pseudobulk feature dim (auto-detected)
 
     for fold_idx, fold in enumerate(splits["folds"]):
         fold_num = fold_idx + 1
