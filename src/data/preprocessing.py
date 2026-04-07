@@ -24,6 +24,7 @@ Notes:
 """
 
 import argparse
+import gc
 import logging
 import time
 from pathlib import Path
@@ -479,7 +480,11 @@ def preprocess_adata(
 
     # This is the ONE copy — from 20K genes to ~4K genes
     logger.info("Subsetting to final gene set (this may take a few minutes)...")
-    adata = adata[:, final_mask].copy()
+    adata_subset = adata[:, final_mask].copy()
+    del adata
+    gc.collect()
+    adata = adata_subset
+    del adata_subset
     logger.info(f"After subset: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
 
     if sparse.issparse(adata.X):
