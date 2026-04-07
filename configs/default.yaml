@@ -80,7 +80,7 @@ model:
 
   # Gene Attention Gate (shared config for both HGT and CellTransformer gates)
   gene_gate:
-    initial_temperature: 2.0
+    initial_temperature: 1.0
     # min_temperature, warmup_epochs, anneal_epochs, anneal_schedule are
     # controlled via training.temperature_annealing.* (not model config)
 
@@ -150,7 +150,7 @@ training:
   early_stopping:
     patience: 10                 # Lowered from 15 — val_nll degrades fast after peak.
     min_delta: 0.0001
-    min_epochs: 30               # Lowered from 55 — matches warmup(5)+anneal(25). HPO8 top trials peaked at iter 10-27.
+    min_epochs: 25               # Lowered from 55 — matches warmup(5)+anneal(25). HPO8 top trials peaked at iter 10-27.
     monitor: "val_nll"
     mode: "min"
 
@@ -266,7 +266,7 @@ optuna:
       high: 0.001
     d_embed:
       type: "categorical"
-      choices: [64]  # 21/25 top trials; 128/256 consistently worse
+      choices: [64, 128, 256]  # widening study: 2026-04-07
     dropout:
       type: "uniform"
       low: 0.08
@@ -292,10 +292,6 @@ optuna:
     n_inducing:
       type: "categorical"
       choices: [64]  # 15/25 top trials; mean_nll=0.65 vs 0.79 for 16
-    gene_gate_temp:
-      type: "uniform"
-      low: 0.2
-      high: 1.0
     guide_lr:
       type: "loguniform"
       low: 0.001
