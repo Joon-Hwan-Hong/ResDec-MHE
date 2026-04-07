@@ -550,16 +550,52 @@ def main() -> None:
         import scanpy as sc
         adata = sc.read_h5ad(data_cfg.adata_path)
 
-    # Validate n_genes matches AnnData if available. Update config before
-    # building the model so the correct value is used on first construction.
+    # Always detect n_genes from the actual data source, before building the
+    # model. Two paths:
+    #   - AnnData mode: read adata.n_vars
+    #   - Precomputed mode: read pseudobulk.shape[-1] from the first .pt file
+    # The detected value overrides config.model.n_genes (which may be null,
+    # stale, or hardcoded from an older preprocessing run).
+    actual_n_genes = None
     if adata is not None:
         actual_n_genes = adata.n_vars
-        if config.model.n_genes != actual_n_genes:
+    elif args.precomputed_dir:
+        precomputed_path = Path(args.precomputed_dir)
+        first_pt = next(precomputed_path.glob("*.pt"), None)
+        if first_pt is None:
+            raise FileNotFoundError(
+                f"No .pt files found in {precomputed_path} — cannot detect n_genes."
+            )
+        sample = torch.load(first_pt, map_location="cpu", weights_only=False)
+        if "pseudobulk" not in sample:
+            raise KeyError(
+                f"Precomputed file {first_pt} missing 'pseudobulk' key — "
+                f"cannot detect n_genes. Found keys: {list(sample.keys())}"
+            )
+        actual_n_genes = int(sample["pseudobulk"].shape[-1])
+        logger.info("Detected n_genes=%d from %s", actual_n_genes, first_pt.name)
+        del sample
+
+    if actual_n_genes is not None and config.model.n_genes != actual_n_genes:
+        if config.model.n_genes is None:
+            logger.info(
+                "Config model.n_genes was null — setting to detected value %d.",
+                actual_n_genes,
+            )
+        else:
             logger.warning(
-                "Config model.n_genes=%d but AnnData has %d genes. Updating config.",
+                "Config model.n_genes=%d but data has %d genes. Updating config.",
                 config.model.n_genes, actual_n_genes,
             )
-            OmegaConf.update(config, "model.n_genes", actual_n_genes)
+        OmegaConf.update(config, "model.n_genes", actual_n_genes)
+        # Re-save config.yaml so the persisted version reflects the detected
+        # n_genes. The initial save in ExperimentManager.create_experiment
+        # happened earlier with the pre-detection (possibly null) value, which
+        # would later break inference (Predictor rebuilds the model from this
+        # saved config).
+        from src.utils.config import save_config as _save_config
+        _save_config(config, experiment.exp_dir / "config.yaml")
+        logger.info("Re-saved config.yaml with detected n_genes=%d", actual_n_genes)
 
     if args.final:
         # Defensive guard: splits should always be non-None here because

@@ -142,7 +142,7 @@ def validate_config(config: DictConfig, required_keys: list[str]) -> None:
         "data.cell_sampling.max_cells_per_type": (int, lambda v: v > 0),
         "data.cell_sampling.min_cells_threshold": (int, lambda v: v >= 0),
         # Splits
-        "data.splits.test_frac": ((int, float), lambda v: 0 < v < 1),
+        "data.splits.test_frac": ((int, float), lambda v: 0 <= v < 1),  # 0 = no holdout (all subjects in CV)
         "data.splits.n_folds": (int, lambda v: v >= 2),
         # Temperature annealing
         "training.temperature_annealing.tau_max": ((int, float), lambda v: v > 0),

@@ -37,7 +37,7 @@ data:
     pin_memory: true
     prefetch_factor: 2
 model:
-  n_genes: 4796
+  n_genes: null  # auto-detect from precomputed .pt files at runtime
   n_cell_types: 31
   d_embed: 64
   d_fused: 64
