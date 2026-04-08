@@ -942,14 +942,74 @@ def main() -> None:
         # Warm-start: if --warm-start is provided, inject prior trial results
         # into TPE via points_to_evaluate + evaluated_rewards. TPE uses these
         # to build l(x) (good region) and g(x) (bad region) models from trial 1.
+        # Approach decision: Ray Tune's OptunaSearch requires
+        # ``evaluated_rewards`` to be the same length as ``points_to_evaluate``
+        # (probed against ray==current; raises ValueError on mismatch). We
+        # therefore use Approach B (pessimistic reward padding, "Fallback A"
+        # in the d_embed-widening plan): forced-exploration seeds are paired
+        # with a worst-known + 0.1 reward so TPE treats them as expected-bad
+        # and explores them fresh, rather than biasing l(x) upward.
         warm_start_kwargs = {}
         if args.warm_start:
+            # Defaults for new search axes that weren't present in prior
+            # trials. HPO8 hardcoded d_embed=64 (no axis), so loading those
+            # trials into a search that adds d_embed needs this fallback.
+            # tau_min was fixed at 2.0 in HPO8; keep it loadable too in case
+            # a future search includes it.
+            warm_start_defaults = {
+                "d_embed": 64,
+                "tau_min": 2.0,
+            }
             points, rewards = load_warm_start_data(
-                args.warm_start, search_space_keys=list(search_space.keys()),
+                args.warm_start,
+                search_space_keys=list(search_space.keys()),
+                defaults=warm_start_defaults,
             )
             if points:
-                warm_start_kwargs["points_to_evaluate"] = points
-                warm_start_kwargs["evaluated_rewards"] = rewards
+                # Inject forced exploration points for new d_embed values.
+                # Only fires if d_embed is in the current search space AND
+                # has non-baseline (>64) categorical values.
+                d_embed_space = search_space.get("d_embed")
+                forced_values: list = []
+                if d_embed_space is not None:
+                    # Ray Tune Categorical exposes ``.categories`` (verified
+                    # via probe). Fall back to empty list if a future Ray
+                    # version renames it.
+                    try:
+                        all_choices = list(d_embed_space.categories)
+                    except AttributeError:
+                        all_choices = []
+                    forced_values = [v for v in all_choices if v != 64]
+
+                if forced_values:
+                    forced = inject_forced_seeds(
+                        points, rewards,
+                        top_k=2,
+                        forced_axis="d_embed",
+                        forced_values=forced_values,
+                    )
+                    # Pair forced seeds with a pessimistic reward
+                    # (worst known + 0.1). This tells TPE the forced seeds
+                    # are expected to be poor, so it explores them fresh
+                    # rather than biasing l(x) upward. With ~50 real rewards
+                    # vs. ~4 padded, the bias on g(x) is minor.
+                    pessimistic = max(rewards) + 0.1 if rewards else 1.0
+                    points_all = points + forced
+                    rewards_all = rewards + [pessimistic] * len(forced)
+                    logger.info(
+                        "Warm-start: %d evaluated points + %d forced-seed points "
+                        "(top-2 x d_embed in %s, pessimistic reward=%.4f)",
+                        len(points), len(forced), forced_values, pessimistic,
+                    )
+                else:
+                    points_all = points
+                    rewards_all = rewards
+                    logger.info(
+                        "Warm-start: %d evaluated points (no forced seeds needed)",
+                        len(points),
+                    )
+                warm_start_kwargs["points_to_evaluate"] = points_all
+                warm_start_kwargs["evaluated_rewards"] = rewards_all
 
         optuna_search = OptunaSearch(
             metric="val_nll",
