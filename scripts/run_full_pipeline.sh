@@ -332,39 +332,24 @@ if ! is_done 6; then
     log "Stage 6: Ablation study (HPs synced with overall best Stage 5 winner)..."
 
     # ─── 6.a: Pick the overall best winner across d_embed productions ──
-    BEST_WINNER=""
-    BEST_MEAN_NLL="999"
-    for DEMB in 64 128 256; do
-        CFG="$PIPELINE_DIR/best_config_d${DEMB}.yaml"
-        [ -f "$CFG" ] || continue
-        MEAN_AND_COUNT=$(uv run python -c "
-import glob, re
-nlls = []
-for d in sorted(glob.glob('outputs/pipeline/2026*HPO_d${DEMB}*/')):
-    best = 999.0
-    for c in glob.glob(d + 'checkpoints/epoch=*-val_nll=*.ckpt'):
-        m = re.search(r'val_nll=([0-9.]+)', c)
-        if m:
-            v = float(m.group(1))
-            if v < best:
-                best = v
-    if best < 999.0:
-        nlls.append(best)
-if nlls:
-    print(f'{sum(nlls)/len(nlls):.6f} {len(nlls)}')
-else:
-    print('999.000000 0')
-")
-        MEAN_NLL=$(echo "$MEAN_AND_COUNT" | awk '{print $1}')
-        N_FOLDS=$(echo "$MEAN_AND_COUNT" | awk '{print $2}')
-        log "  d_embed=$DEMB mean val_nll=$MEAN_NLL (from $N_FOLDS folds)"
-        if awk "BEGIN{exit !($MEAN_NLL < $BEST_MEAN_NLL)}"; then
-            BEST_MEAN_NLL="$MEAN_NLL"
-            BEST_WINNER="$CFG"
-        fi
-    done
+    # See scripts/training/pick_stage5_winner.py for the fold-count guard
+    # and mean-val_nll logic. Captures the winner path + mean as a single
+    # tab-separated line on stdout; diagnostics go to the log via stderr.
+    log "  Picking overall best Stage 5 winner across d_embed productions..."
+    WINNER_OUTPUT=$(uv run python scripts/training/pick_stage5_winner.py \
+        --pipeline-dir "$PIPELINE_DIR" \
+        --d-embeds 64 128 256 \
+        --min-folds 5 \
+        2> >(tee -a "$LOG_DIR/stage6_winner_pick.log" >&2))
+    PICK_EXIT=$?
+    if [ "$PICK_EXIT" -ne 0 ]; then
+        log "ERROR: pick_stage5_winner.py failed (exit=$PICK_EXIT) — see $LOG_DIR/stage6_winner_pick.log"
+        exit 1
+    fi
+    BEST_WINNER=$(echo "$WINNER_OUTPUT" | cut -f1)
+    BEST_MEAN_NLL=$(echo "$WINNER_OUTPUT" | cut -f2)
     if [ -z "$BEST_WINNER" ]; then
-        log "ERROR: Could not determine Stage 5 overall best winner"
+        log "ERROR: Stage 5 winner-pick returned empty output"
         exit 1
     fi
     log "  Overall best winner: $BEST_WINNER (mean val_nll=$BEST_MEAN_NLL)"
