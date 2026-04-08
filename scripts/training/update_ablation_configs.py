@@ -26,7 +26,9 @@ import logging
 import sys
 from pathlib import Path
 
+import yaml
 from omegaconf import DictConfig, OmegaConf
+from omegaconf.errors import OmegaConfBaseException
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +72,21 @@ def update_one_ablation(
     """Update one ablation YAML. Returns True on success, False on skip/error."""
     try:
         orig = OmegaConf.load(src)
-    except Exception as e:
+    except (OSError, ValueError, yaml.YAMLError, OmegaConfBaseException) as e:
         logger.warning("Failed to parse %s: %s — skipping", src, e)
         return False
 
     # resolve=True freezes interpolations so each ablation YAML is self-contained
     cfg = OmegaConf.create(OmegaConf.to_container(winner, resolve=True))
+
+    # Drop stale provenance. The winner deep-copy can carry a top-level
+    # _hpo_provenance from the winner itself (e.g., if someone passes a
+    # non-canonical winner config). In the production Stage 5 pipeline this
+    # is empty, but we enforce the drop unconditionally so the emitted YAML
+    # never claims provenance that doesn't match its HPs. See Task 12 design
+    # decision D: _ablation.base_config carries the only provenance hint.
+    if "_hpo_provenance" in cfg:
+        del cfg["_hpo_provenance"]
 
     # Preserve the _ablation metadata from the original ablation YAML so
     # the provenance stays intact (name + description).
@@ -101,7 +112,11 @@ def update_one_ablation(
         OmegaConf.update(cfg, key, value)
         logger.info("[%s] set %s = %r", ablation_name, key, value)
 
-    OmegaConf.save(cfg, out_path)
+    try:
+        OmegaConf.save(cfg, out_path)
+    except OSError as e:
+        logger.warning("Failed to save %s: %s — skipping", out_path, e)
+        return False
     logger.info("Wrote %s", out_path)
     return True
 
@@ -110,7 +125,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     parser = argparse.ArgumentParser(
-        description=__doc__.splitlines()[0] if __doc__ else None,
+        description=(__doc__.splitlines()[0] if __doc__ and __doc__.strip() else None),
     )
     parser.add_argument("--winner", required=True, type=Path,
                         help="Path to the Stage 5 winner config YAML")
@@ -124,16 +139,20 @@ def main() -> int:
         logger.error("Winner config not found: %s", args.winner)
         return 1
 
+    if not args.ablation_dir.is_dir():
+        logger.error("Ablation dir not found: %s", args.ablation_dir)
+        return 1
+
     try:
         winner = OmegaConf.load(args.winner)
-    except Exception as e:
+    except (OSError, ValueError, yaml.YAMLError, OmegaConfBaseException) as e:
         logger.error("Failed to parse winner %s: %s", args.winner, e)
         return 1
 
-    if "d_embed" not in winner.model:
+    if "model" not in winner or "d_embed" not in winner.model:
         logger.error("Winner config missing model.d_embed: %s", args.winner)
         return 1
-    d_embed_val = winner.model.d_embed
+    d_embed_val = int(winner.model.d_embed)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -143,6 +162,8 @@ def main() -> int:
             args.output_dir,
         )
 
+    n_ok = 0
+    n_total = len(ABLATION_OVERRIDES)
     for ablation_name, overrides in ABLATION_OVERRIDES.items():
         src = args.ablation_dir / f"{ablation_name}.yaml"
         if not src.is_file():
@@ -150,7 +171,7 @@ def main() -> int:
             continue
 
         out_path = args.output_dir / f"{ablation_name}.yaml"
-        update_one_ablation(
+        if update_one_ablation(
             winner=winner,
             src=src,
             out_path=out_path,
@@ -158,9 +179,11 @@ def main() -> int:
             overrides=overrides,
             winner_filename=args.winner.name,
             d_embed_val=d_embed_val,
-        )
+        ):
+            n_ok += 1
 
-    return 0
+    logger.info("Updated %d/%d ablations", n_ok, n_total)
+    return 0 if n_ok == n_total else 1
 
 
 if __name__ == "__main__":
