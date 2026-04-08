@@ -26,9 +26,8 @@ import logging
 import sys
 from pathlib import Path
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 # Each ablation's structural override. Verified against
@@ -59,8 +58,60 @@ ABLATION_OVERRIDES: dict[str, list[tuple[str, object]]] = {
 }
 
 
+def update_one_ablation(
+    winner: DictConfig,
+    src: Path,
+    out_path: Path,
+    ablation_name: str,
+    overrides: list[tuple[str, object]],
+    winner_filename: str,
+    d_embed_val: int,
+) -> bool:
+    """Update one ablation YAML. Returns True on success, False on skip/error."""
+    try:
+        orig = OmegaConf.load(src)
+    except Exception as e:
+        logger.warning("Failed to parse %s: %s — skipping", src, e)
+        return False
+
+    # resolve=True freezes interpolations so each ablation YAML is self-contained
+    cfg = OmegaConf.create(OmegaConf.to_container(winner, resolve=True))
+
+    # Preserve the _ablation metadata from the original ablation YAML so
+    # the provenance stays intact (name + description).
+    #
+    # _hpo_provenance is intentionally dropped: it would be stale (HPs now come
+    # from the Stage 5 winner, not the original HPO trial). Overwrite
+    # _ablation.base_config to reflect the new source so the YAML isn't lying
+    # about where its HPs came from. Full Stage 5 winner trial_id threading is
+    # deferred to a follow-up task.
+    if "_ablation" in orig:
+        OmegaConf.update(cfg, "_ablation", orig["_ablation"])
+    OmegaConf.update(
+        cfg, "_ablation.base_config",
+        f"{winner_filename} (Stage 5)",
+    )
+
+    run_name = f"{ablation_name}_d{d_embed_val}"
+    OmegaConf.update(cfg, "experiment.run_name", run_name)
+    logger.info("[%s] set experiment.run_name = %r", ablation_name, run_name)
+
+    # Apply the structural override last
+    for key, value in overrides:
+        OmegaConf.update(cfg, key, value)
+        logger.info("[%s] set %s = %r", ablation_name, key, value)
+
+    OmegaConf.save(cfg, out_path)
+    logger.info("Wrote %s", out_path)
+    return True
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0] if __doc__ else None,
+    )
     parser.add_argument("--winner", required=True, type=Path,
                         help="Path to the Stage 5 winner config YAML")
     parser.add_argument("--ablation-dir", required=True, type=Path,
@@ -73,8 +124,24 @@ def main() -> int:
         logger.error("Winner config not found: %s", args.winner)
         return 1
 
-    winner = OmegaConf.load(args.winner)
+    try:
+        winner = OmegaConf.load(args.winner)
+    except Exception as e:
+        logger.error("Failed to parse winner %s: %s", args.winner, e)
+        return 1
+
+    if "d_embed" not in winner.model:
+        logger.error("Winner config missing model.d_embed: %s", args.winner)
+        return 1
+    d_embed_val = winner.model.d_embed
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.output_dir.resolve() == args.ablation_dir.resolve():
+        logger.warning(
+            "Output dir == ablation dir (%s); updates will overwrite originals in place",
+            args.output_dir,
+        )
 
     for ablation_name, overrides in ABLATION_OVERRIDES.items():
         src = args.ablation_dir / f"{ablation_name}.yaml"
@@ -82,31 +149,16 @@ def main() -> int:
             logger.warning("Missing ablation file: %s (skipping)", src)
             continue
 
-        # Start from a deep-copy of the winner, then apply the ablation override.
-        updated = OmegaConf.create(OmegaConf.to_container(winner, resolve=True))
-
-        # Preserve the _ablation metadata from the original ablation YAML so
-        # the provenance stays intact (name + description)
-        orig = OmegaConf.load(src)
-        if "_ablation" in orig:
-            OmegaConf.update(updated, "_ablation", orig["_ablation"], merge=True)
-
-        # Set the ablation's run_name to reflect both the ablation and the
-        # winner's d_embed basin
-        d_embed_val = winner.model.get("d_embed", 64)
-        OmegaConf.update(
-            updated, "experiment.run_name",
-            f"{ablation_name}_d{d_embed_val}",
-        )
-
-        # Apply the structural override last
-        for key, value in overrides:
-            OmegaConf.update(updated, key, value)
-            logger.info("[%s] set %s = %r", ablation_name, key, value)
-
         out_path = args.output_dir / f"{ablation_name}.yaml"
-        OmegaConf.save(updated, out_path)
-        logger.info("Wrote %s", out_path)
+        update_one_ablation(
+            winner=winner,
+            src=src,
+            out_path=out_path,
+            ablation_name=ablation_name,
+            overrides=overrides,
+            winner_filename=args.winner.name,
+            d_embed_val=d_embed_val,
+        )
 
     return 0
 
