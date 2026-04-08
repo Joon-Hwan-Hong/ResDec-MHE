@@ -8,6 +8,12 @@ with a config key wins for config), groups by ``d_embed``, picks the lowest
 val_nll per group, loads the base config, applies the winning HPs via
 ``build_config_from_ray``, and saves the result.
 
+Trials whose logged config lacks a ``d_embed`` key (e.g., legacy HPO6/7/8
+runs that hardcoded d_embed outside the search space) fall back to
+``WARM_START_BASELINE_D_EMBED`` from ``scripts.training.hpo`` and emit an
+INFO log line so the operator can see the fallback was applied. This
+mirrors the warm-start defaults path used by ``hpo.py`` itself.
+
 Usage:
     uv run python scripts/training/extract_best_per_d_embed.py \\
         --ray-dir outputs/pipeline/ray_results/cognitive_resilience \\
@@ -29,7 +35,10 @@ from omegaconf import OmegaConf
 
 # Make scripts.training importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.training.hpo import build_config_from_ray  # noqa: E402
+from scripts.training.hpo import (  # noqa: E402
+    WARM_START_BASELINE_D_EMBED,
+    build_config_from_ray,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -99,8 +108,16 @@ def main() -> int:
         config, nll = loaded
         demb = config.get("d_embed")
         if demb is None:
-            logger.warning("Trial %s missing d_embed — skipping", trial_dir.name)
-            continue
+            # Legacy HPO runs (HPO6/7/8) hardcoded d_embed outside the search
+            # space, so the logged config dict has no d_embed key. Fall back
+            # to the baseline constant from hpo.py — same convention as the
+            # warm-start defaults path at hpo.py:976-983. INFO-level so the
+            # fallback is visible but not alarmist.
+            demb = WARM_START_BASELINE_D_EMBED
+            logger.info(
+                "Trial %s missing d_embed — using WARM_START_BASELINE_D_EMBED=%d",
+                trial_dir.name, demb,
+            )
         if demb not in (64, 128, 256):
             logger.warning("Unexpected d_embed=%s in trial %s — including anyway", demb, trial_dir.name)
         by_demb.setdefault(demb, []).append((config, nll))
