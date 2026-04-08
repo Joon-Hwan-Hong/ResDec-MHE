@@ -15,6 +15,7 @@ import argparse
 import gc
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pyro
@@ -184,12 +185,12 @@ def load_warm_start_data(
 
 
 def inject_forced_seeds(
-    points: list[dict],
+    points: list[dict[str, Any]],
     rewards: list[float],
     top_k: int,
     forced_axis: str,
-    forced_values: list,
-) -> list[dict]:
+    forced_values: list[Any],
+) -> list[dict[str, Any]]:
     """Build forced-exploration points by cloning the top-K warm-start trials
     with a new value on ``forced_axis`` for each entry in ``forced_values``.
 
@@ -199,31 +200,61 @@ def inject_forced_seeds(
     values guarantees the sampler sees at least ``top_k × len(forced_values)``
     trials on the new axis before it starts its own sampling.
 
+    Top-K selection uses Python's stable sort on ``rewards`` (ascending).
+    Ties are broken by the input order of ``points``.
+
     Args:
-        points: Loaded warm-start points (each dict must include ``forced_axis``).
-        rewards: Parallel list of val_nll rewards for each point.
+        points: Loaded warm-start points. ``forced_axis`` need not already
+            exist in each dict — it will be added if missing.
+        rewards: Parallel list of val_nll rewards for each point. Must have
+            the same length as ``points`` (enforced via ``zip(..., strict=True)``).
         top_k: Number of best (lowest-reward) points to use as templates.
+            Must be positive. If greater than ``len(points)``, clamps to
+            ``len(points)`` with a warning.
         forced_axis: Name of the HP to override (e.g., ``"d_embed"``).
         forced_values: Values to assign on the forced axis (e.g., ``[128, 256]``).
+            If empty, returns ``[]`` with a warning.
 
     Returns:
-        List of new points (length ``top_k × len(forced_values)``) with the
-        continuous HPs cloned from the top-K and ``forced_axis`` overridden.
-        These points are intended for ``points_to_evaluate`` without matching
-        entries in ``evaluated_rewards`` — they are fresh trials, not replays.
+        List of new points (length ``top_k × len(forced_values)``, or less
+        if ``top_k`` was clamped) with the continuous HPs cloned from the
+        top-K and ``forced_axis`` overridden. These points are intended for
+        ``points_to_evaluate`` without matching entries in
+        ``evaluated_rewards`` — they are fresh trials, not replays.
+
+    Raises:
+        ValueError: If ``top_k <= 0``.
     """
     if not points:
         return []
-    # Sort by reward ascending (lower val_nll is better)
-    ranked = sorted(zip(points, rewards), key=lambda pr: pr[1])
+    if top_k <= 0:
+        raise ValueError(f"top_k must be positive, got {top_k}")
+    if not forced_values:
+        logger.warning(
+            "inject_forced_seeds: forced_values is empty; returning []"
+        )
+        return []
+    if top_k > len(points):
+        logger.warning(
+            "inject_forced_seeds: top_k=%d > len(points)=%d; "
+            "using all %d available points as templates",
+            top_k, len(points), len(points),
+        )
+        top_k = len(points)
+
+    # Sort by reward ascending (lower val_nll is better). Python's sort is
+    # stable, so ties are broken by the input order of ``points``.
+    ranked = sorted(
+        zip(points, rewards, strict=True), key=lambda pr: pr[1]
+    )
     top_points = [p for p, _ in ranked[:top_k]]
-    forced = []
+    forced_seeds: list[dict[str, Any]] = []
     for template in top_points:
         for v in forced_values:
             new_point = dict(template)
             new_point[forced_axis] = v
-            forced.append(new_point)
-    return forced
+            forced_seeds.append(new_point)
+    return forced_seeds
 
 
 # ---------------------------------------------------------------------------

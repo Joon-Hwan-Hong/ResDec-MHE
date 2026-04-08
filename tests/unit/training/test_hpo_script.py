@@ -738,3 +738,89 @@ class TestLoadWarmStartData:
                 f"Forced point continuous HPs {nc} don't match any of the top-2 "
                 f"templates {top2_continuous}"
             )
+
+
+class TestInjectForcedSeeds:
+    """Edge cases for inject_forced_seeds helper."""
+
+    def _sample_points(self):
+        """Minimal 3-point fixture: trials with distinct val_nll."""
+        points = [
+            {"lr": 0.001, "dropout": 0.2, "d_embed": 64},
+            {"lr": 0.005, "dropout": 0.3, "d_embed": 64},
+            {"lr": 0.0001, "dropout": 0.1, "d_embed": 64},
+        ]
+        rewards = [0.40, 0.45, 0.50]
+        return points, rewards
+
+    def test_empty_points_returns_empty(self):
+        from scripts.training.hpo import inject_forced_seeds
+        result = inject_forced_seeds(
+            [], [], top_k=2, forced_axis="d_embed", forced_values=[128, 256]
+        )
+        assert result == []
+
+    def test_top_k_zero_raises(self):
+        from scripts.training.hpo import inject_forced_seeds
+        points, rewards = self._sample_points()
+        with pytest.raises(ValueError, match="top_k must be positive"):
+            inject_forced_seeds(
+                points, rewards,
+                top_k=0, forced_axis="d_embed", forced_values=[128, 256],
+            )
+
+    def test_top_k_negative_raises(self):
+        from scripts.training.hpo import inject_forced_seeds
+        points, rewards = self._sample_points()
+        with pytest.raises(ValueError, match="top_k must be positive"):
+            inject_forced_seeds(
+                points, rewards,
+                top_k=-1, forced_axis="d_embed", forced_values=[128, 256],
+            )
+
+    def test_top_k_exceeds_points_clamps(self, caplog):
+        """When top_k > len(points), use all points and log a warning."""
+        import logging
+        from scripts.training.hpo import inject_forced_seeds
+        points, rewards = self._sample_points()
+        with caplog.at_level(logging.WARNING, logger="scripts.training.hpo"):
+            result = inject_forced_seeds(
+                points, rewards,
+                top_k=10, forced_axis="d_embed", forced_values=[128, 256],
+            )
+        # All 3 points × 2 forced values = 6 new points
+        assert len(result) == 6
+        assert any("top_k=10 > len(points)=3" in rec.message for rec in caplog.records)
+
+    def test_empty_forced_values_returns_empty(self, caplog):
+        """When forced_values is empty, return [] and log a warning."""
+        import logging
+        from scripts.training.hpo import inject_forced_seeds
+        points, rewards = self._sample_points()
+        with caplog.at_level(logging.WARNING, logger="scripts.training.hpo"):
+            result = inject_forced_seeds(
+                points, rewards,
+                top_k=2, forced_axis="d_embed", forced_values=[],
+            )
+        assert result == []
+        assert any("forced_values is empty" in rec.message for rec in caplog.records)
+
+    def test_stable_sort_ties_broken_by_input_order(self):
+        """When two trials have identical val_nll, stable sort preserves
+        the input order, so top-2 selection is deterministic."""
+        from scripts.training.hpo import inject_forced_seeds
+        # Both rewards are identical — input order determines top-2
+        points = [
+            {"lr": 0.001, "d_embed": 64},  # first with tied reward
+            {"lr": 0.005, "d_embed": 64},  # second with tied reward
+            {"lr": 0.0001, "d_embed": 64}, # third, worse reward
+        ]
+        rewards = [0.40, 0.40, 0.50]
+        result = inject_forced_seeds(
+            points, rewards,
+            top_k=2, forced_axis="d_embed", forced_values=[128],
+        )
+        # Top-2 are the first two points (input order) — both have reward 0.40
+        assert len(result) == 2
+        result_lrs = {p["lr"] for p in result}
+        assert result_lrs == {0.001, 0.005}
