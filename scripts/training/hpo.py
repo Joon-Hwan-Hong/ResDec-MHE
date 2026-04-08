@@ -61,7 +61,11 @@ def _yaml_to_search_space(config: DictConfig) -> dict:
 # Warm-start from prior HPO run
 # ---------------------------------------------------------------------------
 
-def load_warm_start_data(ray_dir: str, search_space_keys: list[str]) -> tuple[list[dict], list[float]]:
+def load_warm_start_data(
+    ray_dir: str,
+    search_space_keys: list[str],
+    defaults: dict | None = None,
+) -> tuple[list[dict], list[float]]:
     """Load prior HPO trials as warm-start data for OptunaSearch.
 
     Parses result.json files from the most recent experiment in a Ray Tune
@@ -72,6 +76,11 @@ def load_warm_start_data(ray_dir: str, search_space_keys: list[str]) -> tuple[li
     Args:
         ray_dir: Path to prior Ray Tune experiment directory.
         search_space_keys: List of HP names in the current search space.
+        defaults: Optional mapping from HP name to default value. When a trial
+            config is missing a key in ``search_space_keys``, the default is
+            used instead of dropping the trial. Lets warm-start survive when
+            the search space is expanded with new dimensions (e.g., adding
+            ``d_embed`` to a search where prior trials had it hardcoded).
 
     Returns:
         Tuple of (points_to_evaluate, evaluated_rewards) ready for
@@ -128,11 +137,26 @@ def load_warm_start_data(ray_dir: str, search_space_keys: list[str]) -> tuple[li
         if not config or final_nll == float("inf"):
             continue
 
-        # Only include HPs that exist in the current search space
-        point = {k: config[k] for k in search_space_keys if k in config}
-        if len(point) == len(search_space_keys):
-            points.append(point)
-            rewards.append(final_nll)
+        # Build the point by looking up each search-space key in the trial
+        # config, falling back to the provided defaults if missing. This lets
+        # warm-start survive expansion of the search space (e.g., adding
+        # d_embed to a search where prior trials had it hardcoded).
+        _defaults = defaults or {}
+        point = {}
+        missing_critical = False
+        for k in search_space_keys:
+            if k in config:
+                point[k] = config[k]
+            elif k in _defaults:
+                point[k] = _defaults[k]
+            else:
+                # Key has no prior value and no default — drop this trial
+                missing_critical = True
+                break
+        if missing_critical:
+            continue
+        points.append(point)
+        rewards.append(final_nll)
 
     logger.info(
         "Loaded %d warm-start trials from %s (best val_nll=%.4f, worst=%.4f)",
