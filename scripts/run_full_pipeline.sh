@@ -91,7 +91,7 @@ N_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
 
 # --start-from: mark all stages before the target as done
 if [ -n "$START_FROM" ]; then
-    ALL_STAGES=(1 1.5 2 3 4 5 6 6.5 7a 7b 7c 7d 8)
+    ALL_STAGES=(1 1.5 2 3 4a 4 5 6 6.5 7a 7b 7c 7d 8)
     for s in "${ALL_STAGES[@]}"; do
         if [ "$s" = "$START_FROM" ]; then
             break
@@ -182,6 +182,45 @@ if ! is_done 3; then
         --test-frac 0 \
         2>&1 | tee "$LOG_DIR/stage3_splits.log"
     mark_done 3
+fi
+
+# ─── Stage 4a: d_embed smoke test (3 configs × 1 fold × 3 epochs) ─────────
+if ! is_done 4a; then
+    log "Stage 4a: Smoke test for d_embed in {64, 128, 256}..."
+
+    N_GENES=$(cat "$PIPELINE_DIR/n_genes.txt")
+    SMOKE_DIR="$PIPELINE_DIR/smoke_d_embed"
+    mkdir -p "$SMOKE_DIR"
+
+    for DEMB in 64 128 256; do
+        SMOKE_CFG="$SMOKE_DIR/config_d${DEMB}.yaml"
+        log "  Generating smoke config for d_embed=$DEMB"
+        uv run python -c "
+from omegaconf import OmegaConf
+base = OmegaConf.load('configs/default.yaml')
+overlay = OmegaConf.create({
+    'experiment': {'run_name': f'smoke_d_embed_${DEMB}'},
+    'model': {'n_genes': $N_GENES, 'd_embed': $DEMB, 'd_fused': $DEMB},
+    'data': {'precomputed_dir': '$PRECOMPUTED'},
+    'paths': {'output_dir': '$SMOKE_DIR'},
+    'training': {'max_epochs': 3, 'early_stopping': {'min_epochs': 1, 'patience': 3}},
+})
+merged = OmegaConf.merge(base, overlay)
+OmegaConf.save(merged, '$SMOKE_CFG')
+"
+        log "  Running smoke training (d_embed=$DEMB)..."
+        CUDA_VISIBLE_DEVICES=0 uv run python -u scripts/training/train.py \
+            --config "$SMOKE_CFG" \
+            --splits-path "$SPLITS" \
+            --precomputed-dir "$PRECOMPUTED" \
+            --fold 0 \
+            training.devices=1 training.strategy=auto \
+            > "$SMOKE_DIR/smoke_d${DEMB}.log" 2>&1
+        log "  Smoke d_embed=$DEMB OK"
+    done
+
+    log "  All 3 smoke runs passed — d_embed widening is safe to HPO"
+    mark_done 4a
 fi
 
 # ─── Stage 4: HPO (50 trials, 3-fold) ──────────────────────────────────────
