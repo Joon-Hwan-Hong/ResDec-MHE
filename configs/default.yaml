@@ -150,7 +150,7 @@ training:
   early_stopping:
     patience: 10                 # Lowered from 15 — val_nll degrades fast after peak.
     min_delta: 0.0001
-    min_epochs: 25               # Lowered from 55 — matches warmup(5)+anneal(25). HPO8 top trials peaked at iter 10-27.
+    min_epochs: 25               # Lowered from 55 — HPO8 top trials peaked at iter 10-27; production peaks at epoch 19-33.
     monitor: "val_nll"
     mode: "min"
 
@@ -266,7 +266,7 @@ optuna:
       high: 0.001
     d_embed:
       type: "categorical"
-      choices: [64, 128, 256]  # widening study: 2026-04-07
+      choices: [64, 128, 256]  # widening: re-test 128/256 after pipeline fixes (2026-04-07; see docs/plans/2026-04-06-d-embed-widening-design.md)
     dropout:
       type: "uniform"
       low: 0.08
