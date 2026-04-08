@@ -670,3 +670,51 @@ class TestLoadWarmStartData:
         )
         assert points == []
         assert rewards == []
+
+    def test_inject_forced_seeds_for_new_d_embed_values(self, fake_warm_start_dir):
+        """After warm-start loading, we must be able to append forced-exploration
+        points for new d_embed values. Top-2 HPO8 trials (by lowest val_nll)
+        should be paired with d_embed=128 and d_embed=256, producing 4 new
+        points whose continuous HPs are cloned from the top-2 templates."""
+        from scripts.training.hpo import load_warm_start_data, inject_forced_seeds
+
+        search_space_keys = [
+            "lr", "dropout", "beta", "weight_decay",
+            "guide_lr", "anneal_epochs", "d_embed",
+        ]
+        points, rewards = load_warm_start_data(
+            str(fake_warm_start_dir),
+            search_space_keys=search_space_keys,
+            defaults={"d_embed": 64},
+        )
+        # Inject 4 forced seeds: top-2 by lowest val_nll × {128, 256}
+        new_points = inject_forced_seeds(
+            points, rewards,
+            top_k=2,
+            forced_axis="d_embed",
+            forced_values=[128, 256],
+        )
+        # 4 new points (top-2 × 2 values)
+        assert len(new_points) == 4, f"Expected 4 forced seeds, got {len(new_points)}"
+        # Each new point has d_embed in {128, 256}
+        assert all(p["d_embed"] in (128, 256) for p in new_points), (
+            f"Some forced points have unexpected d_embed: "
+            f"{[p['d_embed'] for p in new_points]}"
+        )
+        # The two values are balanced (2 of each)
+        n_128 = sum(1 for p in new_points if p["d_embed"] == 128)
+        n_256 = sum(1 for p in new_points if p["d_embed"] == 256)
+        assert n_128 == 2, f"Expected 2 points with d_embed=128, got {n_128}"
+        assert n_256 == 2, f"Expected 2 points with d_embed=256, got {n_256}"
+        # Each new point's continuous HPs should match one of the top-2 by reward
+        top2_points = [
+            p for p, r in sorted(zip(points, rewards), key=lambda pr: pr[1])
+        ][:2]
+        top2_continuous = [
+            {k: v for k, v in p.items() if k != "d_embed"} for p in top2_points
+        ]
+        for nc in [{k: v for k, v in p.items() if k != "d_embed"} for p in new_points]:
+            assert nc in top2_continuous, (
+                f"Forced point continuous HPs {nc} don't match any of the top-2 "
+                f"templates {top2_continuous}"
+            )
