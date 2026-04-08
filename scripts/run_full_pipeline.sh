@@ -282,27 +282,46 @@ print(f'Wrote merged HPO config to $HPO_CONFIG')
     mark_done 4
 fi
 
-# ─── Stage 5: Production 5-fold (best HPO config) ──────────────────────────
+# ─── Stage 5: Production 5-fold (top-1 config per d_embed value) ───────────
 if ! is_done 5; then
-    log "Stage 5: Production 5-fold training..."
+    log "Stage 5: Production 5-fold training (top-1 per d_embed value)..."
 
-    # HPO auto-saves best config to paths.output_dir/best_config.yaml.
-    # The claude agent in Stage 4 may also write/refine it.
-    # run_sensitivity.sh takes config YAML(s) as positional args.
-    BEST_CFG="$PIPELINE_DIR/best_config.yaml"
-    if [ ! -f "$BEST_CFG" ]; then
-        log "ERROR: best_config.yaml not found in $PIPELINE_DIR — cannot run production training"
-        exit 1
+    # Stage 4's agent analysis should have produced one best config per d_embed.
+    # Expected files: best_config_d64.yaml, best_config_d128.yaml, best_config_d256.yaml.
+    # If the agent hasn't produced them, we extract them ourselves from ray_results
+    # via the scripts/training/extract_best_per_d_embed.py helper (created in Task 11).
+    MISSING=()
+    for DEMB in 64 128 256; do
+        [ -f "$PIPELINE_DIR/best_config_d${DEMB}.yaml" ] || MISSING+=("$DEMB")
+    done
+
+    if [ "${#MISSING[@]}" -gt 0 ]; then
+        log "  Missing best configs for d_embed=${MISSING[*]}, extracting from ray_results..."
+        uv run python scripts/training/extract_best_per_d_embed.py \
+            --ray-dir "$PIPELINE_DIR/ray_results/cognitive_resilience" \
+            --base-config configs/default.yaml \
+            --output-dir "$PIPELINE_DIR" \
+            2>&1 | tee -a "$LOG_DIR/stage5_extract.log"
     fi
 
-    bash scripts/training/run_sensitivity.sh \
-        --splits "$SPLITS" \
-        --precomputed "$PRECOMPUTED" \
-        --logdir "$LOG_DIR/production" \
-        "$BEST_CFG" \
-        2>&1 | tee "$LOG_DIR/stage5_production.log"
+    # Launch production 5-fold for each d_embed config sequentially.
+    # Each loop iteration uses both GPUs (parallel folds via run_sensitivity.sh).
+    for DEMB in 64 128 256; do
+        BEST_CFG="$PIPELINE_DIR/best_config_d${DEMB}.yaml"
+        if [ ! -f "$BEST_CFG" ]; then
+            log "  WARNING: $BEST_CFG missing, skipping d_embed=$DEMB"
+            continue
+        fi
+        log "  Production 5-fold for d_embed=$DEMB"
+        bash scripts/training/run_sensitivity.sh \
+            --splits "$SPLITS" \
+            --precomputed "$PRECOMPUTED" \
+            --logdir "$LOG_DIR/production_d${DEMB}" \
+            "$BEST_CFG" \
+            2>&1 | tee -a "$LOG_DIR/stage5_production.log"
+    done
 
-    # Run inference on production checkpoints to get predictions.csv with R²
+    # Run inference on all production checkpoints to get predictions.csv with R²
     log "  Running inference on production checkpoints..."
     run_inference_on_checkpoints 2>&1 | tee "$LOG_DIR/stage5_inference.log"
     mark_done 5
