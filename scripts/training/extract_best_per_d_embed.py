@@ -3,8 +3,8 @@ results directory, and save each as a standalone training config YAML.
 
 Used in Stage 5 of the pipeline when the Claude agent analysis failed to
 produce ``best_config_d{64,128,256}.yaml``. Walks the ray_results directory,
-finds each trial's ``result.json`` (last JSONL line is authoritative for
-val_nll, first line for config), groups by ``d_embed``, picks the lowest
+finds each trial's ``result.json`` (last finite val_nll wins; first record
+with a config key wins for config), groups by ``d_embed``, picks the lowest
 val_nll per group, loads the base config, applies the winning HPs via
 ``build_config_from_ray``, and saves the result.
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import re
 import sys
 from pathlib import Path
@@ -33,15 +34,17 @@ from scripts.training.hpo import build_config_from_ray  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+TRIAL_TIMESTAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$")
 
-def load_trial(trial_dir: Path) -> tuple[dict, float] | None:
+
+def load_trial(trial_dir: Path) -> tuple[dict[str, object], float] | None:
     """Return (config, final_val_nll) or None if the trial is incomplete."""
     result_file = trial_dir / "result.json"
     if not result_file.exists():
         return None
     final_nll = float("inf")
-    config: dict = {}
-    with open(result_file) as f:
+    config: dict[str, object] = {}
+    with open(result_file, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -50,16 +53,20 @@ def load_trial(trial_dir: Path) -> tuple[dict, float] | None:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            final_nll = record.get("val_nll", final_nll)
+            v = record.get("val_nll")
+            if v is not None and not (isinstance(v, float) and math.isnan(v)):
+                final_nll = v
             if not config and "config" in record:
                 config = record["config"]
-    if not config or final_nll == float("inf"):
+    if not config or not math.isfinite(final_nll):
         return None
     return config, final_nll
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0] if __doc__ else None
+    )
     parser.add_argument("--ray-dir", required=True, type=Path)
     parser.add_argument("--base-config", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -83,14 +90,19 @@ def main() -> int:
         if not trial_dir.is_dir() or not trial_dir.name.startswith("train_fn_"):
             continue
         if latest_ts:
-            ts_match = re.search(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$", trial_dir.name)
+            ts_match = TRIAL_TIMESTAMP_RE.search(trial_dir.name)
             if ts_match and ts_match.group(1) < latest_ts:
                 continue
         loaded = load_trial(trial_dir)
         if loaded is None:
             continue
         config, nll = loaded
-        demb = config.get("d_embed", 64)
+        demb = config.get("d_embed")
+        if demb is None:
+            logger.warning("Trial %s missing d_embed — skipping", trial_dir.name)
+            continue
+        if demb not in (64, 128, 256):
+            logger.warning("Unexpected d_embed=%s in trial %s — including anyway", demb, trial_dir.name)
         by_demb.setdefault(demb, []).append((config, nll))
 
     if not by_demb:
@@ -115,7 +127,7 @@ def main() -> int:
                 demb,
             )
             continue
-        merged.experiment.run_name = f"HPO_d{demb}"
+        OmegaConf.update(merged, "experiment.run_name", f"HPO_d{demb}", merge=True)
         out_path = args.output_dir / f"best_config_d{demb}.yaml"
         OmegaConf.save(merged, out_path)
         logger.info("Wrote %s", out_path)
