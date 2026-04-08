@@ -223,7 +223,7 @@ OmegaConf.save(merged, '$SMOKE_CFG')
     mark_done 4a
 fi
 
-# ─── Stage 4: HPO (50 trials, 3-fold) ──────────────────────────────────────
+# ─── Stage 4: HPO (90 trials, 3-fold, d_embed widening) ───────────────────
 if ! is_done 4; then
     log "Stage 4: HPO — 90 trials, 3-fold, 2 GPUs (d_embed widening search)..."
 
