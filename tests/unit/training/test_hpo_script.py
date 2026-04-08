@@ -57,6 +57,56 @@ def base_config():
     })
 
 
+@pytest.fixture
+def fake_warm_start_dir(tmp_path):
+    """Create a fake Ray Tune ray_results directory with 3 completed trials,
+    none of which have a d_embed key in their config (simulating HPO8 trials
+    where d_embed was hardcoded outside the search space).
+
+    Trial val_nll values are 0.40, 0.45, 0.50 — sortable for top-K selection
+    in tests of inject_forced_seeds.
+    """
+    import json
+
+    ray_dir = tmp_path / "ray_results"
+    ray_dir.mkdir()
+
+    # Latest experiment marker — load_warm_start_data filters trials by
+    # comparing the timestamp embedded in the trial dir name to this.
+    latest_ts = "2026-04-07_12-00-00"
+    (ray_dir / f"experiment_state-{latest_ts}.json").write_text("{}")
+
+    trials = [
+        ("train_fn_aaa_1_lr=0.001_2026-04-07_12-00-01", 0.001, 0.40),
+        ("train_fn_bbb_2_lr=0.005_2026-04-07_12-00-02", 0.005, 0.45),
+        ("train_fn_ccc_3_lr=0.0001_2026-04-07_12-00-03", 0.0001, 0.50),
+    ]
+
+    for dir_name, lr, final_nll in trials:
+        trial_dir = ray_dir / dir_name
+        trial_dir.mkdir()
+        # First JSONL line: early val_nll + full config (no d_embed key)
+        early_record = {
+            "val_nll": 0.9,
+            "config": {
+                "lr": lr,
+                "dropout": 0.2,
+                "beta": 0.5,
+                "weight_decay": 1e-5,
+                "guide_lr": 0.005,
+                "anneal_epochs": 20,
+            },
+        }
+        # Final JSONL line: final val_nll (overwrites the early one in load_warm_start_data)
+        final_record = {"val_nll": final_nll}
+        result_path = trial_dir / "result.json"
+        result_path.write_text(
+            json.dumps(early_record) + "\n" + json.dumps(final_record) + "\n"
+        )
+
+    return ray_dir
+
+
 # ---------------------------------------------------------------------------
 # Tests: _yaml_to_search_space
 # ---------------------------------------------------------------------------
