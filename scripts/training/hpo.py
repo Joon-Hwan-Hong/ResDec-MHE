@@ -25,6 +25,23 @@ from omegaconf import DictConfig, OmegaConf
 logger = logging.getLogger(__name__)
 
 
+# ── Warm-start widening constants (see docs/plans/2026-04-07-d-embed-widening-implementation.md) ──
+# HPO8 trials hardcoded d_embed at this value outside the search space.
+# When expanding to include d_embed as a search axis, the non-baseline
+# values (128, 256) get forced-seed expansion.
+WARM_START_BASELINE_D_EMBED = 64
+
+# Number of best warm-start trials (by lowest val_nll) to use as templates
+# for forced-seed expansion. See plan §"Warm-start strategy (Fix C)".
+WARM_START_FORCED_TOP_K = 2
+
+# Pessimistic-reward offset for forced warm-start seeds (Approach B / Fallback A
+# in d_embed-widening plan). Sized for val_nll ∈ [0.3, 0.8] — large enough that
+# TPE classifies forced seeds in g(x) (bad model), small enough that they don't
+# dominate g(x) when paired with ~50 real evaluated rewards.
+WARM_START_PESSIMISTIC_OFFSET = 0.1
+
+
 # ---------------------------------------------------------------------------
 # Search space translation
 # ---------------------------------------------------------------------------
@@ -957,7 +974,7 @@ def main() -> None:
             # tau_min was fixed at 2.0 in HPO8; keep it loadable too in case
             # a future search includes it.
             warm_start_defaults = {
-                "d_embed": 64,
+                "d_embed": WARM_START_BASELINE_D_EMBED,
                 "tau_min": 2.0,
             }
             points, rewards = load_warm_start_data(
@@ -970,46 +987,52 @@ def main() -> None:
                 # Only fires if d_embed is in the current search space AND
                 # has non-baseline (>64) categorical values.
                 d_embed_space = search_space.get("d_embed")
-                forced_values: list = []
+                forced_values: list[Any] = []
                 if d_embed_space is not None:
                     # Ray Tune Categorical exposes ``.categories`` (verified
-                    # via probe). Fall back to empty list if a future Ray
-                    # version renames it.
-                    try:
-                        all_choices = list(d_embed_space.categories)
-                    except AttributeError:
-                        all_choices = []
-                    forced_values = [v for v in all_choices if v != 64]
+                    # via probe). Let AttributeError propagate loudly if a
+                    # future Ray version renames this attribute.
+                    all_choices = list(d_embed_space.categories)
+                    forced_values = [
+                        v for v in all_choices if v != WARM_START_BASELINE_D_EMBED
+                    ]
 
                 if forced_values:
                     forced = inject_forced_seeds(
                         points, rewards,
-                        top_k=2,
+                        top_k=WARM_START_FORCED_TOP_K,
                         forced_axis="d_embed",
                         forced_values=forced_values,
                     )
                     # Pair forced seeds with a pessimistic reward
-                    # (worst known + 0.1). This tells TPE the forced seeds
-                    # are expected to be poor, so it explores them fresh
-                    # rather than biasing l(x) upward. With ~50 real rewards
-                    # vs. ~4 padded, the bias on g(x) is minor.
-                    pessimistic = max(rewards) + 0.1 if rewards else 1.0
-                    points_all = points + forced
-                    rewards_all = rewards + [pessimistic] * len(forced)
+                    # (worst known + WARM_START_PESSIMISTIC_OFFSET). This tells
+                    # TPE the forced seeds are expected to be poor, so it
+                    # explores them fresh rather than biasing l(x) upward. With
+                    # ~50 real rewards vs. ~4 padded, the bias on g(x) is minor.
+                    # load_warm_start_data maintains len(points) == len(rewards),
+                    # so rewards is non-empty when points is non-empty.
+                    assert rewards, (
+                        "load_warm_start_data returned non-empty points with "
+                        "empty rewards (broken invariant)"
+                    )
+                    pessimistic = max(rewards) + WARM_START_PESSIMISTIC_OFFSET
+                    combined_points = points + forced
+                    combined_rewards = rewards + [pessimistic] * len(forced)
                     logger.info(
                         "Warm-start: %d evaluated points + %d forced-seed points "
-                        "(top-2 x d_embed in %s, pessimistic reward=%.4f)",
-                        len(points), len(forced), forced_values, pessimistic,
+                        "(top-2 × d_embed in %s, worst observed=%.4f, pessimistic=%.4f)",
+                        len(points), len(forced), forced_values,
+                        max(rewards), pessimistic,
                     )
                 else:
-                    points_all = points
-                    rewards_all = rewards
+                    combined_points = points
+                    combined_rewards = rewards
                     logger.info(
                         "Warm-start: %d evaluated points (no forced seeds needed)",
                         len(points),
                     )
-                warm_start_kwargs["points_to_evaluate"] = points_all
-                warm_start_kwargs["evaluated_rewards"] = rewards_all
+                warm_start_kwargs["points_to_evaluate"] = combined_points
+                warm_start_kwargs["evaluated_rewards"] = combined_rewards
 
         optuna_search = OptunaSearch(
             metric="val_nll",
