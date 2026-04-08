@@ -327,17 +327,57 @@ if ! is_done 5; then
     mark_done 5
 fi
 
-# ─── Stage 6: Ablations (all ablation configs x 5 folds) ───────────────────
+# ─── Stage 6: Ablations (ablation configs synced with Stage 5 winner HPs) ──
 if ! is_done 6; then
-    log "Stage 6: Ablation study..."
-    N_GENES=$(cat "$PIPELINE_DIR/n_genes.txt")
+    log "Stage 6: Ablation study (HPs synced with overall best Stage 5 winner)..."
 
-    # Update all ablation configs to match current n_genes (may differ from hardcoded value)
-    for cfg in configs/ablations/ablation_*.yaml; do
-        sed -i "s/^  n_genes:.*/  n_genes: $N_GENES/" "$cfg"
+    # ─── 6.a: Pick the overall best winner across d_embed productions ──
+    BEST_WINNER=""
+    BEST_MEAN_NLL="999"
+    for DEMB in 64 128 256; do
+        CFG="$PIPELINE_DIR/best_config_d${DEMB}.yaml"
+        [ -f "$CFG" ] || continue
+        MEAN_AND_COUNT=$(uv run python -c "
+import glob, re
+nlls = []
+for d in sorted(glob.glob('outputs/pipeline/2026*HPO_d${DEMB}*/')):
+    best = 999.0
+    for c in glob.glob(d + 'checkpoints/epoch=*-val_nll=*.ckpt'):
+        m = re.search(r'val_nll=([0-9.]+)', c)
+        if m:
+            v = float(m.group(1))
+            if v < best:
+                best = v
+    if best < 999.0:
+        nlls.append(best)
+if nlls:
+    print(f'{sum(nlls)/len(nlls):.6f} {len(nlls)}')
+else:
+    print('999.000000 0')
+")
+        MEAN_NLL=$(echo "$MEAN_AND_COUNT" | awk '{print $1}')
+        N_FOLDS=$(echo "$MEAN_AND_COUNT" | awk '{print $2}')
+        log "  d_embed=$DEMB mean val_nll=$MEAN_NLL (from $N_FOLDS folds)"
+        if awk "BEGIN{exit !($MEAN_NLL < $BEST_MEAN_NLL)}"; then
+            BEST_MEAN_NLL="$MEAN_NLL"
+            BEST_WINNER="$CFG"
+        fi
     done
-    log "  Updated ablation configs to n_genes=$N_GENES"
+    if [ -z "$BEST_WINNER" ]; then
+        log "ERROR: Could not determine Stage 5 overall best winner"
+        exit 1
+    fi
+    log "  Overall best winner: $BEST_WINNER (mean val_nll=$BEST_MEAN_NLL)"
 
+    # ─── 6.b: Update ablation configs in-place to match winner HPs ──
+    log "  Syncing ablation configs to winner HPs (preserving structural overrides)..."
+    uv run python scripts/training/update_ablation_configs.py \
+        --winner "$BEST_WINNER" \
+        --ablation-dir configs/ablations \
+        --output-dir configs/ablations \
+        2>&1 | tee "$LOG_DIR/stage6_ablation_sync.log"
+
+    # ─── 6.c: Run each updated ablation as 5-fold production ──
     for cfg in configs/ablations/ablation_*.yaml; do
         NAME=$(basename "$cfg" .yaml)
         log "  Running $NAME..."
@@ -349,7 +389,7 @@ if ! is_done 6; then
             2>&1 | tee -a "$LOG_DIR/stage6_ablations.log"
     done
 
-    # Run inference on ablation checkpoints to get predictions.csv with R²
+    # ─── 6.d: Run inference on ablation checkpoints ──
     log "  Running inference on ablation checkpoints..."
     run_inference_on_checkpoints 2>&1 | tee "$LOG_DIR/stage6_inference.log"
     mark_done 6
