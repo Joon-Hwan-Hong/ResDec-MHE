@@ -4,8 +4,9 @@ Tests for scripts/training/hpo.py — Ray Tune HPO script helper functions.
 Tests the composable pieces of the HP optimization script:
 - YAML-to-Ray-Tune search space translation (_yaml_to_search_space)
 - Config building from Ray-sampled HPs (build_config_from_ray)
-- TuneReportCheckpointCallback factory (per-epoch val_nll reporting)
 - Annealing schedule shortening (shorten_annealing_for_hpo)
+- Subject ID collection from splits dict (_collect_all_subject_ids)
+- Warm-start trial loading from Ray Tune results (load_warm_start_data)
 """
 
 import pytest
@@ -611,7 +612,7 @@ class TestLoadWarmStartData:
 
         # 3 trials survive (the 4th is filtered by timestamp gate)
         assert len(points) == 3, f"Expected 3 points (4th is stale), got {len(points)}"
-        assert len(rewards) == 3
+        assert len(rewards) == 3, f"Expected 3 rewards (must match {len(points)} points), got {len(rewards)}"
 
         # Every returned point should have d_embed filled with the default
         for p in points:
