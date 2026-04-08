@@ -574,3 +574,53 @@ class TestCollectAllSubjectIds:
 
         ids = _collect_all_subject_ids({})
         assert ids == []
+
+
+class TestLoadWarmStartData:
+    """Tests for load_warm_start_data — ensures HPO warm-start survives
+    when the current search space contains keys that prior trials lacked
+    (e.g., adding d_embed to a search where prior HPO8 trials had d_embed
+    hardcoded outside the search space)."""
+
+    def test_survives_missing_d_embed_key(self, fake_warm_start_dir):
+        """Warm-start should load trials even if current search_space has keys
+        (d_embed) that prior trials lack — the missing key is filled from the
+        defaults dict instead of dropping the trial.
+
+        This is the core fix for d_embed widening: HPO8 trials had d_embed
+        hardcoded at 64 (not in the search space), so their result.json
+        configs have no d_embed key. Without this fix, all 50 HPO8 warm-start
+        trials would be silently dropped when the new search space adds
+        d_embed.
+
+        The fixture provides 4 trials; 1 is filtered out by the timestamp
+        gate, leaving 3. All 3 should be returned with d_embed=64 filled in.
+        """
+        from scripts.training.hpo import load_warm_start_data
+
+        # Current search space INCLUDES d_embed (simulating widened HPO).
+        search_space_keys = [
+            "lr", "dropout", "beta", "weight_decay",
+            "guide_lr", "anneal_epochs", "d_embed",
+        ]
+        points, rewards = load_warm_start_data(
+            str(fake_warm_start_dir),
+            search_space_keys=search_space_keys,
+            defaults={"d_embed": 64},
+        )
+
+        # 3 trials survive (the 4th is filtered by timestamp gate)
+        assert len(points) == 3, f"Expected 3 points (4th is stale), got {len(points)}"
+        assert len(rewards) == 3
+
+        # Every returned point should have d_embed filled with the default
+        for p in points:
+            assert "d_embed" in p, f"Missing d_embed in returned point: {p}"
+            assert p["d_embed"] == 64, f"Expected d_embed=64 (from defaults), got {p['d_embed']}"
+
+        # The 3 final val_nll values match the fixture's 3 KEPT trials
+        assert sorted(rewards) == [0.40, 0.45, 0.50], (
+            f"Expected sorted rewards [0.40, 0.45, 0.50] from kept trials; "
+            f"got {sorted(rewards)} — if this includes 0.30, the timestamp "
+            f"filter regressed."
+        )
