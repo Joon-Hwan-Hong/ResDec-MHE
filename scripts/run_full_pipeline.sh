@@ -225,7 +225,7 @@ fi
 
 # ─── Stage 4: HPO (50 trials, 3-fold) ──────────────────────────────────────
 if ! is_done 4; then
-    log "Stage 4: HPO — 50 trials, 3-fold, 2 GPUs..."
+    log "Stage 4: HPO — 90 trials, 3-fold, 2 GPUs (d_embed widening search)..."
 
     # Read auto-detected n_genes
     N_GENES=$(cat "$PIPELINE_DIR/n_genes.txt")
@@ -241,7 +241,7 @@ overlay = OmegaConf.create({
     'data': {'precomputed_dir': '$PRECOMPUTED'},
     'paths': {'output_dir': '$PIPELINE_DIR'},
     'hpo': {
-        'n_trials': 50,
+        'n_trials': 90,
         'search_space': {
             'lr':             {'type': 'loguniform', 'low': 5e-5,  'high': 1e-3},
             'dropout':        {'type': 'uniform',    'low': 0.05, 'high': 0.4},
@@ -249,7 +249,7 @@ overlay = OmegaConf.create({
             'weight_decay':   {'type': 'loguniform', 'low': 1e-6, 'high': 1e-3},
             'guide_lr':       {'type': 'loguniform', 'low': 5e-4, 'high': 0.01},
             'anneal_epochs':  {'type': 'int',        'low': 8,    'high': 25},
-            'gene_gate_temp': {'type': 'uniform',    'low': 0.3,  'high': 2.0},
+            'd_embed':        {'type': 'categorical','choices': [64, 128, 256]},
         },
     },
 })
@@ -264,7 +264,7 @@ print(f'Wrote merged HPO config to $HPO_CONFIG')
         --config "$HPO_CONFIG"
         --precomputed-dir "$PRECOMPUTED"
         --splits-path "$SPLITS"
-        --n-trials 50
+        --n-trials 90
         --n-folds 3
         --n-gpus 2)
     if [ -n "$WARM_START_DIR" ] && [ -d "$WARM_START_DIR" ]; then
