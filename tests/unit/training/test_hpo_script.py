@@ -675,7 +675,14 @@ class TestLoadWarmStartData:
         """After warm-start loading, we must be able to append forced-exploration
         points for new d_embed values. Top-2 HPO8 trials (by lowest val_nll)
         should be paired with d_embed=128 and d_embed=256, producing 4 new
-        points whose continuous HPs are cloned from the top-2 templates."""
+        points whose continuous HPs are cloned from the top-2 templates.
+
+        Why this matters: when expanding the search space with a new categorical
+        axis (here d_embed: {64, 128, 256}), TPE would otherwise need many
+        random samples before discovering the new axis is worth exploring.
+        Forcing top-K × new-values seeds guarantees the sampler sees coverage
+        of the new axis from trial 1.
+        """
         from scripts.training.hpo import load_warm_start_data, inject_forced_seeds
 
         search_space_keys = [
@@ -706,14 +713,27 @@ class TestLoadWarmStartData:
         n_256 = sum(1 for p in new_points if p["d_embed"] == 256)
         assert n_128 == 2, f"Expected 2 points with d_embed=128, got {n_128}"
         assert n_256 == 2, f"Expected 2 points with d_embed=256, got {n_256}"
-        # Each new point's continuous HPs should match one of the top-2 by reward
+        # Pin to fixture ground truth: the two lowest-val_nll trials are
+        # (lr=0.001, val_nll=0.40) and (lr=0.005, val_nll=0.45). Both must
+        # be represented in the forced points (each appears twice — once
+        # per forced d_embed value).
+        expected_lrs = {0.001, 0.005}
+        actual_lrs = {p["lr"] for p in new_points}
+        assert actual_lrs == expected_lrs, (
+            f"Expected forced points cloned from lr={expected_lrs} "
+            f"(top-2 by val_nll), got lr={actual_lrs}"
+        )
+        # Each new point's continuous HPs should match one of the top-2 templates (lowest val_nll = best)
         top2_points = [
             p for p, r in sorted(zip(points, rewards), key=lambda pr: pr[1])
         ][:2]
         top2_continuous = [
             {k: v for k, v in p.items() if k != "d_embed"} for p in top2_points
         ]
-        for nc in [{k: v for k, v in p.items() if k != "d_embed"} for p in new_points]:
+        new_continuous = [
+            {k: v for k, v in p.items() if k != "d_embed"} for p in new_points
+        ]
+        for nc in new_continuous:
             assert nc in top2_continuous, (
                 f"Forced point continuous HPs {nc} don't match any of the top-2 "
                 f"templates {top2_continuous}"
