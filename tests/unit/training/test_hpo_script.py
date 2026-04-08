@@ -59,30 +59,56 @@ def base_config():
 
 @pytest.fixture
 def fake_warm_start_dir(tmp_path):
-    """Create a fake Ray Tune ray_results directory with 3 completed trials,
-    none of which have a d_embed key in their config (simulating HPO8 trials
-    where d_embed was hardcoded outside the search space).
+    """Create a fake Ray Tune ray_results directory with 4 trials, none of
+    which have a d_embed key in their config (simulating HPO8 trials where
+    d_embed was hardcoded outside the search space).
 
-    Trial val_nll values are 0.40, 0.45, 0.50 — sortable for top-K selection
-    in tests of inject_forced_seeds.
+    3 trials are newer than the experiment_state timestamp and should be
+    loaded by ``load_warm_start_data``; 1 trial is older and should be
+    filtered out by the timestamp gate at ``scripts/training/hpo.py:100-103``.
+
+    The 3 kept trials have val_nll values 0.40, 0.45, 0.50 — sortable for
+    top-K selection in tests of ``inject_forced_seeds`` (Task 5). The
+    filtered-out trial has val_nll 0.30 (would be the best if not filtered),
+    so if the timestamp filter regresses, downstream top-K tests will fail.
+
+    Trial dirs use short placeholder IDs (e.g., ``aaa_1``) instead of real
+    8-char hex hashes for readability. The parser only checks the
+    ``train_fn_`` prefix and the trailing ``YYYY-MM-DD_HH-MM-SS`` timestamp,
+    both of which are preserved.
+
+    Returns:
+        pathlib.Path to the fake ``ray_results/`` directory. Pass
+        ``str(returned_path)`` to ``load_warm_start_data``.
     """
-    import json
+    import json  # Local import: fixture is the only consumer; keeps top-of-file imports minimal.
+
+    # Latest experiment marker — load_warm_start_data filters trials by
+    # comparing the timestamp embedded in the trial dir name to this.
+    LATEST_TS = "2026-04-07_12-00-00"
+
+    # Trial specs: (id_suffix, lr, timestamp_suffix, final_val_nll).
+    # Downstream tests depend on:
+    #   - The 3 kept trials being sortable by val_nll for top-K selection (Task 5)
+    #   - val_nll values being exactly 0.40, 0.45, 0.50 (Task 3 asserts sorted match)
+    #   - The 4th trial being filtered out by latest_ts (implicit filter coverage)
+    TRIALS = [
+        ("aaa_1", 0.001, "2026-04-07_12-00-01", 0.40),
+        ("bbb_2", 0.005, "2026-04-07_12-00-02", 0.45),
+        ("ccc_3", 0.0001, "2026-04-07_12-00-03", 0.50),
+        # Stale trial from a prior experiment — should be filtered out.
+        ("ddd_4", 0.01, "2026-04-06_23-59-59", 0.30),
+    ]
 
     ray_dir = tmp_path / "ray_results"
     ray_dir.mkdir()
 
-    # Latest experiment marker — load_warm_start_data filters trials by
-    # comparing the timestamp embedded in the trial dir name to this.
-    latest_ts = "2026-04-07_12-00-00"
-    (ray_dir / f"experiment_state-{latest_ts}.json").write_text("{}")
+    # The state file's content is never read; only its filename's timestamp
+    # is parsed via .stem in load_warm_start_data.
+    (ray_dir / f"experiment_state-{LATEST_TS}.json").write_text("{}")
 
-    trials = [
-        ("train_fn_aaa_1_lr=0.001_2026-04-07_12-00-01", 0.001, 0.40),
-        ("train_fn_bbb_2_lr=0.005_2026-04-07_12-00-02", 0.005, 0.45),
-        ("train_fn_ccc_3_lr=0.0001_2026-04-07_12-00-03", 0.0001, 0.50),
-    ]
-
-    for dir_name, lr, final_nll in trials:
+    for id_suffix, lr, ts, final_nll in TRIALS:
+        dir_name = f"train_fn_{id_suffix}_lr={lr}_{ts}"
         trial_dir = ray_dir / dir_name
         trial_dir.mkdir()
         # First JSONL line: early val_nll + full config (no d_embed key)
@@ -97,7 +123,8 @@ def fake_warm_start_dir(tmp_path):
                 "anneal_epochs": 20,
             },
         }
-        # Final JSONL line: final val_nll (overwrites the early one in load_warm_start_data)
+        # Final JSONL line: final val_nll (overwrites the early one in
+        # load_warm_start_data's parser loop at hpo.py:115-126)
         final_record = {"val_nll": final_nll}
         result_path = trial_dir / "result.json"
         result_path.write_text(
