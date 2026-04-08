@@ -336,18 +336,25 @@ if ! is_done 6; then
     # and mean-val_nll logic. Captures the winner path + mean as a single
     # tab-separated line on stdout; diagnostics go to the log via stderr.
     log "  Picking overall best Stage 5 winner across d_embed productions..."
+    # Temporarily disable errexit so we can capture the exit code + log a
+    # helpful error message before bailing. Under set -e, a failing $(...)
+    # would abort at the assignment line before PICK_EXIT=$? runs.
+    set +e
     WINNER_OUTPUT=$(uv run python scripts/training/pick_stage5_winner.py \
         --pipeline-dir "$PIPELINE_DIR" \
         --d-embeds 64 128 256 \
         --min-folds 5 \
         2> >(tee -a "$LOG_DIR/stage6_winner_pick.log" >&2))
     PICK_EXIT=$?
+    set -e
     if [ "$PICK_EXIT" -ne 0 ]; then
         log "ERROR: pick_stage5_winner.py failed (exit=$PICK_EXIT) — see $LOG_DIR/stage6_winner_pick.log"
         exit 1
     fi
     BEST_WINNER=$(echo "$WINNER_OUTPUT" | cut -f1)
     BEST_MEAN_NLL=$(echo "$WINNER_OUTPUT" | cut -f2)
+    # Belt-and-suspenders: pick_stage5_winner.py contract guarantees non-empty
+    # stdout on exit 0, but guard against future refactors of that script.
     if [ -z "$BEST_WINNER" ]; then
         log "ERROR: Stage 5 winner-pick returned empty output"
         exit 1
