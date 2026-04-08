@@ -98,8 +98,17 @@ def load_warm_start_data(
     if state_files:
         latest_ts = state_files[-1].stem.replace("experiment_state-", "")
 
+    # Normalize defaults: None becomes empty dict (no fallbacks). Use explicit
+    # `is not None` check rather than `or {}` so that accidentally-falsy values
+    # (e.g., False, []) raise a TypeError on the first key lookup instead of
+    # being silently coerced.
+    defaults_dict = defaults if defaults is not None else {}
+
     points = []
     rewards = []
+    # Track diagnostics for logging at the end (see end-of-function logger.warning)
+    dropped_count = 0
+    dropped_missing_keys: set[str] = set()
 
     for trial_dir in sorted(ray_dir.iterdir()):
         if not trial_dir.is_dir() or not trial_dir.name.startswith("train_fn_"):
@@ -138,25 +147,25 @@ def load_warm_start_data(
             continue
 
         # Build the point by looking up each search-space key in the trial
-        # config, falling back to the provided defaults if missing. This lets
+        # config, falling back to ``defaults_dict`` if missing. This lets
         # warm-start survive expansion of the search space (e.g., adding
         # d_embed to a search where prior trials had it hardcoded).
-        _defaults = defaults or {}
         point = {}
-        missing_critical = False
         for k in search_space_keys:
             if k in config:
                 point[k] = config[k]
-            elif k in _defaults:
-                point[k] = _defaults[k]
+            elif k in defaults_dict:
+                point[k] = defaults_dict[k]
             else:
                 # Key has no prior value and no default — drop this trial
-                missing_critical = True
+                dropped_count += 1
+                dropped_missing_keys.add(k)
                 break
-        if missing_critical:
-            continue
-        points.append(point)
-        rewards.append(final_nll)
+        else:
+            # for...else: ran when the for-loop completed WITHOUT a break,
+            # i.e., every key resolved to a value. Keep the trial.
+            points.append(point)
+            rewards.append(final_nll)
 
     logger.info(
         "Loaded %d warm-start trials from %s (best val_nll=%.4f, worst=%.4f)",
@@ -164,6 +173,13 @@ def load_warm_start_data(
         min(rewards) if rewards else float("nan"),
         max(rewards) if rewards else float("nan"),
     )
+    if dropped_count > 0:
+        logger.warning(
+            "Dropped %d warm-start trial(s) due to missing search-space keys "
+            "with no defaults: %s. Add these to the `defaults` kwarg to "
+            "preserve the trials.",
+            dropped_count, sorted(dropped_missing_keys),
+        )
     return points, rewards
 
 

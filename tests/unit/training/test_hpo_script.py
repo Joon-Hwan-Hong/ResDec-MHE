@@ -625,3 +625,48 @@ class TestLoadWarmStartData:
             f"got {sorted(rewards)} — if this includes 0.30, the timestamp "
             f"filter regressed."
         )
+
+    def test_backward_compat_no_defaults(self, fake_warm_start_dir):
+        """Without ``defaults``, the function preserves the original
+        behavior: it drops any trial whose config is missing a search-space
+        key. The 3 fixture trials have all 6 baseline keys (lr, dropout,
+        beta, weight_decay, guide_lr, anneal_epochs) so they all survive.
+        """
+        from scripts.training.hpo import load_warm_start_data
+
+        # Search space matches the keys actually present in HPO8 trials
+        search_space_keys = [
+            "lr", "dropout", "beta", "weight_decay",
+            "guide_lr", "anneal_epochs",
+        ]
+        points, rewards = load_warm_start_data(
+            str(fake_warm_start_dir),
+            search_space_keys=search_space_keys,
+        )
+        # All 3 kept trials should load (no d_embed key required)
+        assert len(points) == 3
+        assert len(rewards) == 3
+        for p in points:
+            assert "d_embed" not in p, (
+                "d_embed must NOT be filled when defaults is omitted"
+            )
+
+    def test_drops_trial_when_key_missing_and_no_default(self, fake_warm_start_dir):
+        """When a search_space_key is missing from BOTH the trial config
+        AND the ``defaults`` dict, the trial should be dropped (preserves
+        the original 'critical key missing' semantics)."""
+        from scripts.training.hpo import load_warm_start_data
+
+        # Search space includes tau_min, which the fixture trials don't have
+        # AND which we don't provide a default for. All trials should be dropped.
+        search_space_keys = [
+            "lr", "dropout", "beta", "weight_decay",
+            "guide_lr", "anneal_epochs", "d_embed", "tau_min",
+        ]
+        points, rewards = load_warm_start_data(
+            str(fake_warm_start_dir),
+            search_space_keys=search_space_keys,
+            defaults={"d_embed": 64},  # tau_min has no default → all drops
+        )
+        assert points == []
+        assert rewards == []
