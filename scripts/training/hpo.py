@@ -183,6 +183,49 @@ def load_warm_start_data(
     return points, rewards
 
 
+def inject_forced_seeds(
+    points: list[dict],
+    rewards: list[float],
+    top_k: int,
+    forced_axis: str,
+    forced_values: list,
+) -> list[dict]:
+    """Build forced-exploration points by cloning the top-K warm-start trials
+    with a new value on ``forced_axis`` for each entry in ``forced_values``.
+
+    Used when expanding the HPO search space with a new categorical axis:
+    TPE would otherwise need many random samples to discover that the new
+    axis is worth exploring. Forcing the top-K continuous HPs × new axis
+    values guarantees the sampler sees at least ``top_k × len(forced_values)``
+    trials on the new axis before it starts its own sampling.
+
+    Args:
+        points: Loaded warm-start points (each dict must include ``forced_axis``).
+        rewards: Parallel list of val_nll rewards for each point.
+        top_k: Number of best (lowest-reward) points to use as templates.
+        forced_axis: Name of the HP to override (e.g., ``"d_embed"``).
+        forced_values: Values to assign on the forced axis (e.g., ``[128, 256]``).
+
+    Returns:
+        List of new points (length ``top_k × len(forced_values)``) with the
+        continuous HPs cloned from the top-K and ``forced_axis`` overridden.
+        These points are intended for ``points_to_evaluate`` without matching
+        entries in ``evaluated_rewards`` — they are fresh trials, not replays.
+    """
+    if not points:
+        return []
+    # Sort by reward ascending (lower val_nll is better)
+    ranked = sorted(zip(points, rewards), key=lambda pr: pr[1])
+    top_points = [p for p, _ in ranked[:top_k]]
+    forced = []
+    for template in top_points:
+        for v in forced_values:
+            new_point = dict(template)
+            new_point[forced_axis] = v
+            forced.append(new_point)
+    return forced
+
+
 # ---------------------------------------------------------------------------
 # Config builder
 # ---------------------------------------------------------------------------
