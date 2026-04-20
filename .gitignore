@@ -6,6 +6,9 @@ __pycache__/
 dist/
 build/
 
+# Git worktrees (isolated feature-branch workspaces)
+.worktrees/
+
 # Virtual environments
 .venv/
 venv/
