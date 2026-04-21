@@ -85,6 +85,14 @@ def test_module_forward_dummy_batch(cfg):
     assert out["latent_1"].shape == (B, cfg.model.d_fused)
 
 
+def test_prediction_head_is_frozen(cfg):
+    mod = ResDecLightningModule(cfg)
+    # All prediction_head params should have requires_grad=False
+    if hasattr(mod.encoder, "prediction_head"):
+        for p in mod.encoder.prediction_head.parameters():
+            assert p.requires_grad is False
+
+
 def test_module_handles_missing_metadata(cfg):
     """Phase-1 placeholder: missing `metadata` → zero tensor of shape [B, d_metadata]."""
     mod = ResDecLightningModule(cfg)

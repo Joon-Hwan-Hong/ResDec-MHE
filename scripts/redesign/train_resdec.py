@@ -6,9 +6,10 @@ Lightning Trainer on a single fold. Saves a per-fold summary JSON with the
 validate() results.
 
 Design note: this is intentionally SIMPLER than scripts/training/train.py —
-no HPO hooks, no TensorBoard logger, no checkpointing, no ExperimentManager,
-no DDP coordination. The goal is to smoke-test the Phase-1 ResDec-H3 head
-end-to-end on a single GPU.
+no HPO hooks, no TensorBoard logger, no ExperimentManager, no DDP coordination.
+A minimal ModelCheckpoint (save_last + best-by-val/r2) IS enabled so runs can be
+resumed and best weights recovered. The goal is to smoke-test the Phase-1
+ResDec-H3 head end-to-end on a single GPU.
 
 Usage
 -----
@@ -29,6 +30,7 @@ from pathlib import Path
 import lightning.pytorch as pl
 import pandas as pd
 import torch
+from lightning.pytorch.callbacks import ModelCheckpoint
 from omegaconf import OmegaConf
 
 from src.data.datamodule import CognitiveResilienceDataModule
@@ -54,7 +56,7 @@ def main(args: argparse.Namespace) -> None:
     if args.max_epochs is not None:
         cfg.training.max_epochs = args.max_epochs
 
-    torch.manual_seed(int(cfg.experiment.seed))
+    pl.seed_everything(int(cfg.experiment.seed), workers=True)
     torch.set_float32_matmul_precision("high")
 
     # ------------------------------------------------------------------ #
@@ -98,17 +100,34 @@ def main(args: argparse.Namespace) -> None:
     logger.info("ResDecLightningModule built (d_fused=%d)", int(cfg.model.d_fused))
 
     # ------------------------------------------------------------------ #
-    # Trainer — minimal: no logger, no checkpointing                     #
+    # Output dir (computed early so checkpoints can be written into it)  #
     # ------------------------------------------------------------------ #
+    out_dir = Path(args.output_dir) / f"fold{args.fold}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------ #
+    # Trainer — minimal checkpointing (last + best-by-val/r2)             #
+    # ------------------------------------------------------------------ #
+    checkpoint_cb = ModelCheckpoint(
+        dirpath=str(out_dir / "checkpoints"),
+        save_last=True,
+        save_top_k=1,
+        monitor="val/r2",
+        mode="max",
+        filename="best-{epoch}-{val/r2:.4f}",
+        auto_insert_metric_name=False,
+    )
+
     trainer = pl.Trainer(
         max_epochs=int(cfg.training.max_epochs),
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
         logger=False,
-        enable_checkpointing=False,
+        enable_checkpointing=True,
+        callbacks=[checkpoint_cb],
         enable_progress_bar=True,
         precision=32,
-        deterministic=False,
+        enable_model_summary=True,
     )
     trainer.fit(model, datamodule=dm)
 
@@ -119,8 +138,6 @@ def main(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------ #
     # Summary JSON                                                       #
     # ------------------------------------------------------------------ #
-    out_dir = Path(args.output_dir) / f"fold{args.fold}"
-    out_dir.mkdir(parents=True, exist_ok=True)
     summary = {
         "fold": args.fold,
         "config": args.config,

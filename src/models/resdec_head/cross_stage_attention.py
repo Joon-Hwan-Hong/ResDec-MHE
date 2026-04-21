@@ -1,5 +1,8 @@
 """Cross-stage attention for ResDec-H3's multi-stage head.
 
+(Wired in Phase 3 for multi-stage heads. Unused in Phase 1 but committed for
+Phase 3 use per plan Task 3.1.)
+
 Query: current stage's conditioned subject embedding z_cond [B, d_subject]
 Keys+Values: concatenation of prior stages' latents [B, d_subject] each
 Returns: context vector [B, d_subject] to add to z_cond before the current stage's work

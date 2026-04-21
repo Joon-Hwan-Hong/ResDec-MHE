@@ -3,8 +3,9 @@
 Assembles FiLM metadata conditioning + NPTStage + scalar readout. Consumes a
 subject embedding produced by the existing CognitiveResilienceModel encoder.
 
-Phase 1 scope: single stage only. TabPFN residual base, H3 3-stage boosting,
-cross-stage attention, and TabMWrapper are added in Phase 2 and Phase 3.
+Phase 1 scope: single stage only.
+Phase 2 adds TabPFN residual base (prediction = ŷ_tabpfn + f̂_1) and aug-U uncertainty-weighted loss.
+Phase 3 adds 3-stage boosting with cross-stage attention and TabMWrapper for ensemble uncertainty.
 """
 from __future__ import annotations
 import torch

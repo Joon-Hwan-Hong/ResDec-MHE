@@ -81,6 +81,13 @@ class ResDecLightningModule(pl.LightningModule):
         model_cfg = config.model
         self.encoder = build_model_from_config(model_cfg)
 
+        # Encoder's own prediction_head is bypassed under ResDec-H3: we consume the
+        # 'attended' subject embedding directly and feed it to self.head. Freeze the
+        # prediction_head to avoid wasted optimizer state (verified: grad is always zero).
+        if hasattr(self.encoder, "prediction_head"):
+            for p in self.encoder.prediction_head.parameters():
+                p.requires_grad_(False)
+
         # d_subject == d_fused: the encoder's PathologyStratifiedAttention
         # returns `attended` of shape [B, d_fused]. (Not d_embed * 2 — verified
         # against src/models/fusion/pathology_attention.py.)
