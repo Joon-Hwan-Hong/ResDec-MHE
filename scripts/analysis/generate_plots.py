@@ -872,6 +872,52 @@ def main():
 
     logger.info(f"\nAll figures saved to: {output_dir}")
 
+    # Provenance manifest
+    try:
+        import sys as _sys
+        from src.utils.manifest import build_manifest, file_ref, write_manifest
+        predictions_parquet = analysis_dir / "predictions.parquet"
+        attention_h5 = attention_path
+        inputs = []
+        if predictions_parquet.exists():
+            inputs.append(file_ref(predictions_parquet, label="predictions.parquet", compute_sha=True))
+        if attention_h5.exists():
+            inputs.append(file_ref(attention_h5, label="attention_weights.h5", compute_sha=True))
+        if training_log_dir is not None and Path(training_log_dir).exists():
+            for ev in sorted(Path(training_log_dir).glob("**/events.out.tfevents.*")):
+                inputs.append(file_ref(ev, label=str(ev.relative_to(training_log_dir)), compute_sha=False))
+
+        output_refs = [
+            file_ref(p, label=str(Path(p).relative_to(output_dir)), compute_sha=False)
+            for p in sorted(all_generated)
+        ]
+
+        manifest = build_manifest(
+            title=f"generate_plots.py — {output_dir.name}",
+            description=(
+                f"Per-run figures for {args.experiment_dir or args.analysis_dir}."
+            ),
+            script_path=Path(__file__),
+            argv=_sys.argv,
+            config={
+                "experiment_dir": args.experiment_dir,
+                "analysis_dir": str(analysis_dir),
+                "attention_path": str(attention_path),
+                "output_dir": str(output_dir),
+                "training_log_dir": str(training_log_dir) if training_log_dir else None,
+                "plot_types": list(plot_categories),
+                "skip_plots": sorted(skip_plots),
+                "format": fmt,
+                "dpi": dpi,
+            },
+            inputs=inputs,
+            outputs=output_refs,
+        )
+        write_manifest(output_dir, manifest)
+        logger.info("Manifest written to %s / MANIFEST.md", output_dir / "manifest.json")
+    except Exception as e:
+        logger.warning("Failed to write manifest: %s", e)
+
 
 if __name__ == "__main__":
     logging.basicConfig(
