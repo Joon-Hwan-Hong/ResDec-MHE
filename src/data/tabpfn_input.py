@@ -36,7 +36,10 @@ def flatten_pseudobulk(pt_subject: dict) -> torch.Tensor:
 
 
 def load_metadata_vector(
-    subject_id: str, meta_csv: Path
+    subject_id: str,
+    meta_csv: Path,
+    age_mean: float = _AGE_MEAN,
+    age_std: float = _AGE_STD,
 ) -> tuple[torch.Tensor, list[str]]:
     """Build an 8-dim metadata vector for FiLM conditioning.
 
@@ -53,6 +56,14 @@ def load_metadata_vector(
 
     The numeric ``apoe_genotype`` column encodes allele pairs as two-digit
     integers: 22, 23, 24, 33, 34, 44 (digits 2, 3, 4 map to e2, e3, e4).
+
+    Args:
+        subject_id: ROSMAP_IndividualID, e.g. "R1015854".
+        meta_csv: Path to metadata CSV.
+        age_mean: Mean for age z-scoring. Defaults to cohort-wide approx
+            (86.0); pass fold-specific train-set stats to avoid val leakage.
+        age_std: Std for age z-scoring. Defaults to cohort-wide approx (6.5);
+            pass fold-specific train-set stats to avoid val leakage.
 
     Returns:
         (vector [8], field_names) — vector is float32 on CPU.
@@ -98,6 +109,6 @@ def load_metadata_vector(
     if pd.isna(age):
         vec[7] = 1.0
     else:
-        vec[6] = (float(age) - _AGE_MEAN) / _AGE_STD
+        vec[6] = (float(age) - age_mean) / age_std
 
     return vec, METADATA_FIELDS

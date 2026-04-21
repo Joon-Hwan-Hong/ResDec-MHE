@@ -1,59 +1,63 @@
 """Compute top-K feature indices per CV fold using XGBoost importance on the
 flat pseudobulk (148,335 features = 31 cell types * 4785 genes).
 Output used as input selector for TabPFN-2.6 residual-base predictions."""
-import json
 import argparse
+import json
+import logging
 import sys
 from pathlib import Path
+
 import numpy as np
-import torch
 import xgboost as xgb
-import pandas as pd
 
 # Ensure the worktree root is on sys.path so `src.data.tabpfn_input` resolves
 # from this worktree (uv run adds the main-repo path, which may lack newer
 # modules introduced in this branch).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from src.data.feature_loaders import load_flat_features, load_targets  # noqa: E402
 from src.data.splits import load_splits  # noqa: E402
-from src.data.tabpfn_input import flatten_pseudobulk  # noqa: E402
 
-
-def _load_all_flat_features(precomputed_dir: Path, subject_ids: list[str]) -> dict:
-    out = {}
-    for sid in subject_ids:
-        pt_path = precomputed_dir / f"{sid}.pt"
-        if not pt_path.exists():
-            continue
-        pt = torch.load(pt_path, weights_only=False)
-        out[sid] = flatten_pseudobulk(pt).numpy()
-    return out
-
-
-def _load_targets(meta_csv: Path, subject_ids: list[str]) -> dict:
-    """Load cogn_global per subject via ROSMAP_IndividualID (NOT projid)."""
-    df = pd.read_csv(meta_csv)
-    wanted = set(subject_ids)
-    return {
-        r["ROSMAP_IndividualID"]: float(r["cogn_global"])
-        for _, r in df.iterrows()
-        if r["ROSMAP_IndividualID"] in wanted and not pd.isna(r["cogn_global"])
-    }
+logger = logging.getLogger(__name__)
 
 
 def main(args):
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
     splits = load_splits(args.splits_path)
     precomputed_dir = Path(args.precomputed_dir)
     meta_csv = Path(args.metadata_csv)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    all_ids = sorted({sid for fold in splits["folds"] for sid in fold["train"] + fold["val"]})
-    features = _load_all_flat_features(precomputed_dir, all_ids)
-    targets = _load_targets(meta_csv, all_ids)
+    all_ids = sorted(
+        {sid for fold in splits["folds"] for sid in fold["train"] + fold["val"]}
+    )
+    logger.info("Union of all split subjects: %d", len(all_ids))
+    features = load_flat_features(precomputed_dir, all_ids)
+    targets = load_targets(meta_csv, all_ids)
 
     for fold_idx, fold_split in enumerate(splits["folds"]):
-        train_ids = [s for s in fold_split["train"] if s in features and s in targets]
+        n_train_raw = len(fold_split["train"])
+        train_ids = [
+            s for s in fold_split["train"] if s in features and s in targets
+        ]
+        dropped_no_feat = sum(
+            1 for s in fold_split["train"] if s not in features
+        )
+        dropped_no_tgt = sum(
+            1 for s in fold_split["train"]
+            if s in features and s not in targets
+        )
+        logger.info(
+            "fold %d: train subjects usable=%d/%d "
+            "(dropped: no_features=%d, no_target=%d)",
+            fold_idx, len(train_ids), n_train_raw,
+            dropped_no_feat, dropped_no_tgt,
+        )
         X_train = np.stack([features[s] for s in train_ids])
         y_train = np.array([targets[s] for s in train_ids], dtype=np.float32)
 
@@ -74,7 +78,10 @@ def main(args):
             "indices": top_k_idx,
             "seed": args.seed,
         }))
-        print(f"fold {fold_idx}: wrote {out_path} (top {args.top_k} of {X_train.shape[1]})")
+        logger.info(
+            "fold %d: wrote %s (top %d of %d)",
+            fold_idx, out_path, args.top_k, X_train.shape[1],
+        )
 
 
 if __name__ == "__main__":
