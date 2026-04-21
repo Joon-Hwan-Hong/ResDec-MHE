@@ -32,7 +32,7 @@ import pandas as pd
 
 # Reuse discovery helpers from the aggregate script
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aggregate_sensitivity_plots import SEED_LOG_DIRS, discover_experiment_dirs  # noqa: E402
+from aggregate_sensitivity_plots import SEED_LOG_DIRS, discover_experiment_dirs, experiment_path  # noqa: E402
 
 from src.utils.manifest import build_manifest, file_ref, write_manifest  # noqa: E402
 
@@ -128,7 +128,7 @@ def main() -> None:
         for config, folds in sorted(discovered.items()):
             for fold in sorted(folds):
                 exp = folds[fold]
-                exp_dir = outputs_root / exp
+                exp_dir = experiment_path(outputs_root, exp)
                 if not exp_dir.exists():
                     logger.warning("Experiment dir missing: %s", exp_dir)
                     continue

@@ -96,6 +96,21 @@ SEED_LOG_DIRS: dict[str, str] = {
 EXPERIMENT_RE = re.compile(r"Experiment created: (20260\d+_\S+)")
 LOG_NAME_RE = re.compile(r"^(.+)_fold(\d+)\.log$")
 
+
+def experiment_path(outputs_root: Path, exp: str) -> Path:
+    """Resolve an experiment dir — check outputs/runs/<exp> first (post-reorg), fall back to outputs/<exp>.
+
+    Supports graceful transition while the 322 experiment dirs are moved from
+    outputs/ to outputs/runs/. After the move, only the new location exists.
+    """
+    new_loc = outputs_root / "runs" / exp
+    if new_loc.exists():
+        return new_loc
+    old_loc = outputs_root / exp
+    if old_loc.exists():
+        return old_loc
+    return new_loc  # for error paths / missing-file messages
+
 # Baseline R² from memory (2026-03-20 5-fold run). NOT VERIFIED on-disk in
 # the current main-repo state (2026-04-21). Baselines were computed against
 # the HPO4 model (R²=0.323) whereas the "our model" number plotted here is
@@ -159,7 +174,7 @@ def load_sensitivity_data(outputs_root: Path, logs_root: Path, splits: dict) -> 
         discovered = discover_experiment_dirs(logs_root, seed_dir)
         for config, folds in discovered.items():
             for fold, exp in folds.items():
-                parquet = outputs_root / exp / "analysis" / "predictions.parquet"
+                parquet = experiment_path(outputs_root, exp) / "analysis" / "predictions.parquet"
                 if not parquet.exists():
                     logger.warning("Missing predictions: %s/%s/fold%d", seed, config, fold)
                     continue
@@ -363,6 +378,112 @@ def plot_pred_vs_actual_stacked(
     plt.close(fig)
 
 
+def plot_pred_vs_actual_calibrated(
+    results: dict, outputs_root: Path, splits: dict, output_dir: Path,
+    config: str = PRODUCTION_CONFIG, seed: str = "seed42",
+) -> None:
+    """Post-hoc scale-shift calibration (train-fit, val-apply) — 2-panel before/after figure.
+
+    Fits y_cal = a*predicted_mean + b on each fold's train subjects, applies to val.
+    No leakage (train subjects are 412 per fold; val is the held-out 104).
+    """
+    raw_parts, cal_parts = [], []
+    per_fold_calibration: list[dict] = []
+
+    for fold in range(5):
+        key = (seed, config, fold)
+        if key not in results:
+            continue
+        exp = results[key]["experiment_dir"]
+        parquet = experiment_path(outputs_root, exp) / "analysis" / "predictions.parquet"
+        if not parquet.exists():
+            continue
+        full = pd.read_parquet(parquet)
+        train_ids = set(splits["folds"][fold]["train"])
+        val_ids = set(splits["folds"][fold]["val"])
+        train = full[full["subject_id"].isin(train_ids)]
+        val = full[full["subject_id"].isin(val_ids)].copy()
+        if len(train) < 10 or len(val) < 2:
+            continue
+
+        # Fit on train, apply to val
+        slope, intercept, _, _, _ = stats.linregress(
+            train["predicted_mean"].to_numpy(), train["actual"].to_numpy()
+        )
+        val["predicted_raw"] = val["predicted_mean"]
+        val["predicted_cal"] = slope * val["predicted_mean"] + intercept
+        val["fold"] = fold
+        raw_parts.append(val[["subject_id", "actual", "predicted_raw", "fold"]])
+        cal_parts.append(val[["subject_id", "actual", "predicted_cal", "fold"]])
+        per_fold_calibration.append({
+            "fold": fold, "slope": float(slope), "intercept": float(intercept),
+            "n_train": len(train), "n_val": len(val),
+        })
+
+    if not raw_parts:
+        logger.warning("No data for calibrated plot — skipped")
+        return
+
+    raw = pd.concat(raw_parts, ignore_index=True)
+    cal = pd.concat(cal_parts, ignore_index=True)
+
+    def panel(ax, actual, predicted, title):
+        cmap = plt.get_cmap("tab10")
+        for f in sorted(set(raw["fold"])):
+            mask = (raw["fold"] == f) if predicted is raw["predicted_raw"].values else (cal["fold"] == f)
+            if predicted is raw["predicted_raw"].values:
+                sub = raw[raw["fold"] == f]
+                ax.scatter(sub["actual"], sub["predicted_raw"], color=cmap(f), s=24, alpha=0.7,
+                           edgecolor="white", linewidth=0.3, label=f"Fold {f}")
+            else:
+                sub = cal[cal["fold"] == f]
+                ax.scatter(sub["actual"], sub["predicted_cal"], color=cmap(f), s=24, alpha=0.7,
+                           edgecolor="white", linewidth=0.3, label=f"Fold {f}")
+        lo = float(min(actual.min(), predicted.min()))
+        hi = float(max(actual.max(), predicted.max()))
+        ax.plot([lo, hi], [lo, hi], "k--", linewidth=1.2, alpha=0.7, label="y = x")
+        slope_fit, intercept_fit, r_fit, _, _ = stats.linregress(actual, predicted)
+        xx = np.linspace(lo, hi, 60)
+        ax.plot(xx, slope_fit * xx + intercept_fit, color=ACCENT_CORAL,
+                linewidth=1.6, alpha=0.9, label="OLS fit")
+        r2 = float(r2_score(actual, predicted))
+        rmse = float(np.sqrt(mean_squared_error(actual, predicted)))
+        ax.text(
+            0.03, 0.97,
+            f"R² = {r2:.3f}\nslope = {slope_fit:.3f}\nintercept = {intercept_fit:+.3f}\n"
+            f"RMSE = {rmse:.3f}\nPearson r = {r_fit:.3f}",
+            transform=ax.transAxes, ha="left", va="top", fontsize=10,
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85),
+        )
+        ax.set_xlabel("Actual cogn_global")
+        ax.set_title(title)
+        return r2, slope_fit
+
+    fig, (ax_raw, ax_cal) = plt.subplots(1, 2, figsize=(14, 7), sharex=True, sharey=True)
+    ax_raw.set_ylabel("Predicted (raw)")
+    r2_raw, slope_raw = panel(
+        ax_raw, raw["actual"].to_numpy(), raw["predicted_raw"].to_numpy(),
+        "Before calibration — raw predictions",
+    )
+    ax_cal.set_ylabel("Predicted (calibrated)")
+    r2_cal, slope_cal = panel(
+        ax_cal, cal["actual"].to_numpy(), cal["predicted_cal"].to_numpy(),
+        "After calibration — y' = a·ŷ + b (train-fit per fold)",
+    )
+    ax_cal.legend(loc="lower right", fontsize=9)
+    fig.suptitle(
+        f"Post-hoc scale-shift calibration ({config}, {seed}) — "
+        f"slope {slope_raw:.2f} → {slope_cal:.2f}, R² {r2_raw:.3f} → {r2_cal:.3f}",
+        fontsize=13, fontweight="bold",
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    save_figure(fig, str(output_dir / "pred_vs_actual_calibrated.png"), dpi=200)
+    plt.close(fig)
+
+    # Also save per-fold calibration parameters for reproducibility
+    pd.DataFrame(per_fold_calibration).to_csv(output_dir / "calibration_parameters.csv", index=False)
+
+
 def plot_residual_violin(results: dict, output_dir: Path) -> None:
     rows = []
     for (seed, config, fold), m in results.items():
@@ -412,7 +533,7 @@ def plot_loss_curves_overlay(results: dict, output_dir: Path, outputs_root: Path
             if key not in results:
                 continue
             exp = results[key]["experiment_dir"]
-            tb_dir = outputs_root / exp / "logs" / "tensorboard" / "cognitive_resilience_hpo7" / "version_0"
+            tb_dir = experiment_path(outputs_root, exp) / "logs" / "tensorboard" / "cognitive_resilience_hpo7" / "version_0"
             if not tb_dir.exists():
                 continue
             df = load_tensorboard_scalars(tb_dir)
@@ -459,7 +580,8 @@ def load_interpretability_data(
         logger.warning("No run for %s/%s/fold%d — interpretability plots skipped", seed, config, fold)
         return None
     exp = results[key]["experiment_dir"]
-    h5_path = outputs_root / exp / "analysis" / "attention_weights.h5"
+    exp_dir = experiment_path(outputs_root, exp)
+    h5_path = exp_dir / "analysis" / "attention_weights.h5"
     if not h5_path.exists():
         logger.warning("attention_weights.h5 missing at %s", h5_path)
         return None
@@ -476,7 +598,7 @@ def load_interpretability_data(
     attn = patho_attn.mean(axis=1)
 
     # Merge with predictions for metadata (gpath, actual cogn, predicted_mean, predicted_std)
-    pred_path = outputs_root / exp / "analysis" / "predictions.parquet"
+    pred_path = exp_dir / "analysis" / "predictions.parquet"
     pred = pd.read_parquet(pred_path)
     pred_by_id = pred.set_index("subject_id")
     common = [s for s in subj_ids if s in pred_by_id.index]
@@ -567,19 +689,31 @@ def plot_pathology_attention_scatter(interp: dict, output_dir: Path) -> None:
     gpath = meta["gpath"].to_numpy()
     cogn = meta["actual"].to_numpy()
 
-    # Target cell types (from the doc's Tier-1/Tier-2 analysis)
-    targets = [
-        "Upper_layer_intratelencephalic",
-        "Astrocyte",
-        "Oligodendrocyte",
-        "Vascular",
-        "Fibroblast",
-        "LAMP5_LHX6_and_Chandelier",
-    ]
-    available = [t for t in targets if t in ct_names]
-    if not available:
-        logger.warning("None of the target cell types found in h5 — scatter skipped")
+    # Data-driven cell-type selection: top-3 positive r(attn, cogn) (Tier 1 equivalents)
+    # and top-3 negative (Tier 2 equivalents). Filter out low-attention types to avoid
+    # noisy rare-type correlations.
+    mean_attn = attn.mean(axis=0)
+    attn_floor = float(np.quantile(mean_attn, 0.25))  # require at least 25th-percentile attention
+
+    corr_rows = []
+    for i, ct in enumerate(ct_names):
+        if mean_attn[i] < attn_floor:
+            continue
+        mask = ~np.isnan(attn[:, i]) & ~np.isnan(cogn)
+        if mask.sum() < 10:
+            continue
+        r, _ = stats.pearsonr(attn[mask, i], cogn[mask])
+        corr_rows.append({"cell_type": ct, "r_cogn": float(r), "mean_attn": float(mean_attn[i])})
+    if not corr_rows:
+        logger.warning("No cell types passed attention floor — scatter skipped")
         return
+    corr_df = pd.DataFrame(corr_rows)
+    pos = corr_df.nlargest(3, "r_cogn")["cell_type"].tolist()
+    neg = corr_df.nsmallest(3, "r_cogn")["cell_type"].tolist()
+    available = pos + neg
+    logger.info("Slide-10 cell-type selection (data-driven from r(attn, cogn)):")
+    logger.info("  positive: %s", pos)
+    logger.info("  negative: %s", neg)
 
     n = len(available)
     ncols = 3
@@ -907,8 +1041,11 @@ def main() -> None:
     else:
         logger.info("[9-12/13] Skipped (interpretability data unavailable)")
 
-    logger.info("[13/13] Prediction ridgeline by pathology tertile")
+    logger.info("[13/14] Prediction ridgeline by pathology tertile")
     plot_prediction_ridgeline(results, run_dir)
+
+    logger.info("[14/14] Post-hoc calibrated pred-vs-actual (before/after)")
+    plot_pred_vs_actual_calibrated(results, outputs_root, splits, run_dir)
 
     logger.info("Writing summary CSVs")
     write_summary_csv(results, run_dir)
@@ -919,8 +1056,9 @@ def main() -> None:
     input_refs: list[FileRef] = [splits_ref]
     per_run_entries: list[dict] = []
     for (seed, config, fold), m in sorted(results.items()):
-        parquet = outputs_root / m["experiment_dir"] / "analysis" / "predictions.parquet"
-        tb_dir = outputs_root / m["experiment_dir"] / "logs" / "tensorboard" / "cognitive_resilience_hpo7" / "version_0"
+        exp_dir = experiment_path(outputs_root, m["experiment_dir"])
+        parquet = exp_dir / "analysis" / "predictions.parquet"
+        tb_dir = exp_dir / "logs" / "tensorboard" / "cognitive_resilience_hpo7" / "version_0"
         tb_events = sorted(tb_dir.glob("events.out.tfevents.*"))
         label = f"{seed}/{config}/fold{fold}/predictions.parquet"
         input_refs.append(file_ref(parquet, label=label, compute_sha=True))
