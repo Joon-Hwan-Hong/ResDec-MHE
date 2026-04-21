@@ -126,7 +126,11 @@ def main(args: argparse.Namespace) -> None:
         enable_checkpointing=True,
         callbacks=[checkpoint_cb],
         enable_progress_bar=True,
-        precision=32,
+        # Full-cohort NPT (bs~412) makes fp32 OOM on a 48 GB GPU; bf16-mixed
+        # (Ada-friendly) halves activation memory. See default.yaml precision
+        # notes — results are tied to precision setting but this script is a
+        # Phase-1 smoke run, not a reproducibility-critical production run.
+        precision="bf16-mixed",
         enable_model_summary=True,
     )
     trainer.fit(model, datamodule=dm)

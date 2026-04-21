@@ -4,8 +4,16 @@ Full-cohort NPT mode: the whole batch is treated as a sequence of subjects.
 Attention operates across the batch axis, letting each subject attend to all
 other subjects in the batch. This matches the NPT (Non-Parametric Transformers)
 original formulation (Kossen et al., NeurIPS 2021).
+
+The FFN that follows the DiffAttn step is wrapped in a multi-stream
+HyperConnection (Zhu et al., ICLR 2025). We lift the subject embedding ``x``
+from ``[B, d]`` to ``[B, N, d]`` (one stream per HC branch) via expansion,
+run the HC block, and pool the N streams back to ``[B, d]`` by mean-reduction.
+Stream initialisation is identical across streams but ``HyperConnection.A``
+breaks the symmetry after the first layer.
 """
 from __future__ import annotations
+
 import torch
 import torch.nn as nn
 
@@ -26,8 +34,14 @@ class NPTStage(nn.Module):
             nn.Linear(d_subject * 2, d_subject),
         )
         self.norm2 = nn.LayerNorm(d_subject)
+        self.n_hc_streams = n_hc_streams
         self.hc = HyperConnection(d_subject, n_streams=n_hc_streams)
         self.readout = nn.Linear(d_subject, 1)
+
+    def _ffn_block(self, xx: torch.Tensor) -> torch.Tensor:
+        """Pre-norm + FFN sublayer, kept as a bound method so HyperConnection
+        can call it uniformly across all streams."""
+        return self.ffn(self.norm2(xx))
 
     def forward(self, z_cond: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -40,8 +54,13 @@ class NPTStage(nn.Module):
         x_seq = x_seq + attn_out
         x = x_seq.squeeze(0)  # back to [B, d]
 
-        # FFN wrapped by HyperConnection
-        x = self.hc(x, lambda xx: self.ffn(self.norm2(xx)))
+        # Lift [B, d] → [B, N, d] multi-stream state for the HyperConnection.
+        # Streams start identical; HC's learnable A matrix breaks the symmetry
+        # layer-by-layer as it trains.
+        streams_init = x.unsqueeze(1).expand(-1, self.n_hc_streams, -1).contiguous()
+        streams_out = self.hc(streams_init, self._ffn_block)  # [B, N, d]
+        # Reduce streams → [B, d] via mean-pool (simplest, no extra params).
+        x = streams_out.mean(dim=1)
 
         scalar = self.readout(x).squeeze(-1)  # [B]
         return x, scalar

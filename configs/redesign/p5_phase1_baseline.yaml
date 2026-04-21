@@ -48,5 +48,11 @@ training:
 
 data:
   dataloader:
-    # Default is also 24; re-stated here for documentation / grep-ability.
-    batch_size: 24
+    # Full-cohort NPT: one optimizer step per epoch, the whole train cohort
+    # is a single batch so the NPT row-attention attends across all subjects
+    # (Kossen et al., NeurIPS 2021 full-cohort mode). 500 is a ceiling — fold
+    # train sizes are 412/413, so the DataLoader will just emit one batch with
+    # however many subjects exist. batch_size=24 (in-batch NPT) was the Phase-1
+    # default and caused the "NPT collapses to 24-subject row-attention"
+    # behaviour flagged in code review (I1 / I10).
+    batch_size: 500

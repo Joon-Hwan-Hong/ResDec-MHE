@@ -271,11 +271,17 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         use_prefetcher = torch.cuda.is_available() and self.trainer is not None
         pin = False if use_prefetcher else self._dl_cfg.get("pin_memory", True)
 
+        # drop_last is normally True (avoid partial final batches) but when the
+        # train cohort fits inside a single batch (full-cohort NPT mode used
+        # by the ResDec-H3 head), dropping that single partial batch would
+        # empty the loader. Auto-disable drop_last in that regime.
+        drop_last = len(self._train_ds) > self.batch_size
+
         dl = create_dataloader(
             self._train_ds,
             batch_size=self.batch_size,
             shuffle=True,
-            drop_last=True,
+            drop_last=drop_last,
             num_workers=nw,
             pin_memory=pin,
             multiregion=True,
