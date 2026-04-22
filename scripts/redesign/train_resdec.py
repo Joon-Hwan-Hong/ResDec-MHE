@@ -31,6 +31,7 @@ import lightning.pytorch as pl
 import pandas as pd
 import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import CSVLogger
 from omegaconf import OmegaConf
 
 from src.data.datamodule import CognitiveResilienceDataModule
@@ -177,11 +178,19 @@ def main(args: argparse.Namespace) -> None:
     else:
         logger.info("EarlyStopping disabled (no cfg.training.early_stopping block).")
 
+    # Optional CSVLogger (phase 3 task 3.2 diagnostic re-runs). Default=False
+    # to preserve the pre-phase3 behaviour (no per-epoch CSV dumps).
+    trainer_logger = False
+    if args.csv_log:
+        trainer_logger = CSVLogger(
+            save_dir=str(out_dir), name="csv_logs", version="",
+        )
+
     trainer = pl.Trainer(
         max_epochs=int(cfg.training.max_epochs),
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        logger=False,
+        logger=trainer_logger,
         enable_checkpointing=True,
         callbacks=callbacks,
         enable_progress_bar=True,
@@ -232,4 +241,7 @@ if __name__ == "__main__":
                    help="Override cfg.data.precomputed_dir (optional).")
     p.add_argument("--embeddings-npz", default=None,
                    help="Override cfg.data.embeddings_npz (optional, frozen-encoder path only).")
+    p.add_argument("--csv-log", action="store_true",
+                   help="Attach a CSVLogger to capture per-epoch train/val scalars "
+                        "(phase-3 task-3.2 diagnostic; default off).")
     main(p.parse_args())
