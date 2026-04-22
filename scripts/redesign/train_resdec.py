@@ -169,6 +169,11 @@ def main(args: argparse.Namespace) -> None:
         # Phase-1 smoke run, not a reproducibility-critical production run.
         precision="bf16-mixed",
         enable_model_summary=True,
+        # default_root_dir makes trainer.log_dir resolve to the fold's output
+        # directory so per-subject predictions dumped by Option B in
+        # ResDecLightningModule land in outputs/redesign/.../fold{N}/
+        # rather than being overwritten per-fold in cwd.
+        default_root_dir=str(out_dir),
     )
     trainer.fit(model, datamodule=dm)
 
