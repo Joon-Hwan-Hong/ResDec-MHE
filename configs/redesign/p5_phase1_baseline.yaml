@@ -56,3 +56,12 @@ data:
     # default and caused the "NPT collapses to 24-subject row-attention"
     # behaviour flagged in code review (I1 / I10).
     batch_size: 500
+  # Frozen-encoder path (option 2 of the D-OOM fix): precompute per-subject
+  # `attended` embeddings once via scripts/redesign/precompute_encoder_embeddings.py,
+  # then train the ResDec-H3 head at full-cohort batch on the cached
+  # embeddings. The encoder is used as a frozen feature extractor per P5
+  # ("encoder unchanged"); caching is safe because `attended` is a per-subject
+  # deterministic function of per-subject inputs (no cross-subject interactions
+  # in the encoder proper, dropout off in eval).
+  use_cached_embeddings: true
+  embeddings_npz: data/redesign/encoder_embeddings.npz

@@ -34,7 +34,9 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from omegaconf import OmegaConf
 
 from src.data.datamodule import CognitiveResilienceDataModule
+from src.data.embedding_datamodule import EmbeddingDataModule
 from src.data.splits import load_splits
+from src.training.resdec_frozen_lightning_module import ResDecFrozenLightningModule
 from src.training.resdec_lightning_module import ResDecLightningModule
 
 logger = logging.getLogger(__name__)
@@ -65,39 +67,69 @@ def main(args: argparse.Namespace) -> None:
     splits_path = Path(args.splits_path)
     if not splits_path.exists():
         raise FileNotFoundError(f"Splits file not found: {splits_path}")
-    splits = load_splits(str(splits_path))
-    logger.info("Loaded splits from %s", splits_path)
 
     metadata_csv = Path(cfg.data.metadata_path) / "metadata.csv"
     if not metadata_csv.exists():
         raise FileNotFoundError(f"Metadata CSV not found: {metadata_csv}")
-    metadata = pd.read_csv(metadata_csv)
 
-    precomputed_dir = args.precomputed_dir or cfg.data.get("precomputed_dir", None)
-    if precomputed_dir is None:
-        raise ValueError(
-            "No precomputed_dir available. Pass --precomputed-dir or set "
-            "data.precomputed_dir in the config."
+    # ------------------------------------------------------------------ #
+    # DataModule + LightningModule (branch on cached-embeddings flag)    #
+    # ------------------------------------------------------------------ #
+    use_cached = bool(cfg.data.get("use_cached_embeddings", False))
+    if use_cached:
+        # Frozen-encoder path (option 2 of the D-OOM fix). No encoder forward
+        # at train time — the ResDec-H3 head is trained on cached `attended`
+        # embeddings at full-cohort batch.
+        embeddings_npz = Path(
+            args.embeddings_npz
+            or cfg.data.get("embeddings_npz", "data/redesign/encoder_embeddings.npz")
         )
+        if not embeddings_npz.exists():
+            raise FileNotFoundError(
+                f"Cached embeddings not found: {embeddings_npz}. Run "
+                f"scripts/redesign/precompute_encoder_embeddings.py first."
+            )
+        dl_cfg = cfg.data.get("dataloader", {}) or {}
+        batch_size = int(dl_cfg.get("batch_size", 500))
+        dm = EmbeddingDataModule(
+            embeddings_npz=embeddings_npz,
+            splits_path=splits_path,
+            meta_csv=metadata_csv,
+            fold=args.fold,
+            batch_size=batch_size,
+        )
+        model = ResDecFrozenLightningModule(cfg)
+        logger.info(
+            "Frozen-encoder path: fold=%d, embeddings=%s, batch_size=%d, d_fused=%d",
+            args.fold, embeddings_npz, batch_size, int(cfg.model.d_fused),
+        )
+    else:
+        # Live-encoder path (original): encoder runs per step, head trains on
+        # its `attended` output.
+        splits = load_splits(str(splits_path))
+        logger.info("Loaded splits from %s", splits_path)
+        metadata = pd.read_csv(metadata_csv)
 
-    # ------------------------------------------------------------------ #
-    # DataModule                                                         #
-    # ------------------------------------------------------------------ #
-    dm = CognitiveResilienceDataModule(
-        config=cfg,
-        metadata=metadata,
-        splits=splits,
-        fold_idx=args.fold,
-        precomputed_dir=precomputed_dir,
-        adata=None,
-    )
-    logger.info("Fold %d DataModule created (precomputed=%s)", args.fold, precomputed_dir)
+        precomputed_dir = args.precomputed_dir or cfg.data.get("precomputed_dir", None)
+        if precomputed_dir is None:
+            raise ValueError(
+                "No precomputed_dir available. Pass --precomputed-dir or set "
+                "data.precomputed_dir in the config."
+            )
 
-    # ------------------------------------------------------------------ #
-    # Lightning module                                                   #
-    # ------------------------------------------------------------------ #
-    model = ResDecLightningModule(cfg)
-    logger.info("ResDecLightningModule built (d_fused=%d)", int(cfg.model.d_fused))
+        dm = CognitiveResilienceDataModule(
+            config=cfg,
+            metadata=metadata,
+            splits=splits,
+            fold_idx=args.fold,
+            precomputed_dir=precomputed_dir,
+            adata=None,
+        )
+        logger.info(
+            "Fold %d DataModule created (precomputed=%s)", args.fold, precomputed_dir,
+        )
+        model = ResDecLightningModule(cfg)
+        logger.info("ResDecLightningModule built (d_fused=%d)", int(cfg.model.d_fused))
 
     # ------------------------------------------------------------------ #
     # Output dir (computed early so checkpoints can be written into it)  #
@@ -166,4 +198,6 @@ if __name__ == "__main__":
                    help="Path to 5-fold splits JSON.")
     p.add_argument("--precomputed-dir", default=None,
                    help="Override cfg.data.precomputed_dir (optional).")
+    p.add_argument("--embeddings-npz", default=None,
+                   help="Override cfg.data.embeddings_npz (optional, frozen-encoder path only).")
     main(p.parse_args())
