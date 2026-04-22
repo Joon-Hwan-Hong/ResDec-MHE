@@ -224,6 +224,10 @@ def test_use_sigma_weighting_false_is_plain_mse(cfg):
     OmegaConf.set_struct(cfg.model, False)
     OmegaConf.set_struct(cfg.model.resdec_head, False)
     cfg.model.resdec_head.use_sigma_weighting = False
+    # This test exercises the full L_main + L_aux1/2/3 reduction; force n_stages=3
+    # so all three aux losses are present even if the project default changes.
+    cfg.model.resdec_head.n_stages = 3
+    cfg.model.resdec_head.aux_lambdas = [1.0, 1.0, 1.0]
 
     torch.manual_seed(0)
     mod = ResDecLightningModule(cfg).float()

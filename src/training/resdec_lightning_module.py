@@ -45,7 +45,11 @@ import torch
 from omegaconf import DictConfig
 
 from src.models.full_model import build_model_from_config
-from src.models.resdec_head.resdec_h3_head import DEFAULT_K_TABM, ResDecH3Head
+from src.models.resdec_head.resdec_h3_head import (
+    DEFAULT_K_TABM,
+    DEFAULT_N_STAGES,
+    ResDecH3Head,
+)
 from src.training.losses import mse_loss
 
 logger = logging.getLogger(__name__)
@@ -115,15 +119,15 @@ class ResDecLightningModule(pl.LightningModule):
         lambda_init = float(resdec_cfg.get("lambda_init", 0.8))
         # Phase-3 H3 extension knobs — ablation-friendly defaults match plan spec.
         k_tabm = int(resdec_cfg.get("k_tabm", DEFAULT_K_TABM))
-        aux_lambdas = list(resdec_cfg.get("aux_lambdas", [1.0, 1.0, 1.0]))
-        if len(aux_lambdas) != 3:
+        n_stages = int(resdec_cfg.get("n_stages", DEFAULT_N_STAGES))
+        aux_lambdas = list(resdec_cfg.get("aux_lambdas", [1.0] * n_stages))
+        if len(aux_lambdas) != n_stages:
             raise ValueError(
-                f"resdec_head.aux_lambdas must have exactly 3 entries "
-                f"(stage_1/2/3); got {len(aux_lambdas)}: {aux_lambdas}"
+                f"resdec_head.aux_lambdas must have exactly n_stages={n_stages} "
+                f"entries; got {len(aux_lambdas)}: {aux_lambdas}"
             )
-        self._aux_lambdas: tuple[float, float, float] = (
-            float(aux_lambdas[0]), float(aux_lambdas[1]), float(aux_lambdas[2]),
-        )
+        self._n_stages = n_stages
+        self._aux_lambdas: tuple[float, ...] = tuple(float(x) for x in aux_lambdas)
         self._use_sigma_weighting = bool(resdec_cfg.get("use_sigma_weighting", True))
         # Numerical floor for aug-U: w(σ) = 1 / (σ² + eps). See module-level
         # DEFAULT_SIGMA_EPS for rationale.
@@ -136,6 +140,7 @@ class ResDecLightningModule(pl.LightningModule):
             n_hc_streams=n_hc_streams,
             lambda_init=lambda_init,
             k_tabm=k_tabm,
+            n_stages=n_stages,
         )
         self._d_metadata = d_metadata
 
@@ -280,11 +285,12 @@ class ResDecLightningModule(pl.LightningModule):
         """Run encoder → extract `attended` → run ResDec-H3 head.
 
         Returns dict with:
-            prediction: [B] composer output = ``f̂_1 + f̂_2 + f̂_3`` (residual sum,
-                        not yet composite with ŷ_tabpfn — that happens in
-                        validation_step for the final composite prediction)
-            stage_1/2/3: [B] per-stage scalars for aux-loss construction
-            latent_1/2/3: [B, d_subject] per-stage pre-readout latents
+            prediction: [B] composer output = sum of present stage scalars
+                        (residual sum, not yet composite with ŷ_tabpfn — that
+                        happens in validation_step for the final composite)
+            stage_k:    [B] per-stage scalars for aux-loss construction
+                        (k ∈ [1, n_stages]; absent stages are NOT in the dict)
+            latent_k:   [B, d_subject] per-stage pre-readout latents
             attended:   [B, d_subject] encoder output, for downstream debugging/logging
             attention_weights: [B, n_heads, n_cell_types] pathology attention (from encoder)
         """
@@ -294,16 +300,11 @@ class ResDecLightningModule(pl.LightningModule):
         metadata = self._get_metadata(batch, B)
         head_out = self.head(z, metadata)
 
-        out: dict[str, Any] = {
-            "prediction": head_out["prediction"],
-            "stage_1": head_out["stage_1"],
-            "stage_2": head_out["stage_2"],
-            "stage_3": head_out["stage_3"],
-            "latent_1": head_out["latent_1"],
-            "latent_2": head_out["latent_2"],
-            "latent_3": head_out["latent_3"],
-            "attended": z,
-        }
+        # Pass through all head outputs (prediction + stage_k + latent_k for
+        # k <= n_stages). Absent stages don't appear in head_out and shouldn't
+        # appear in our output either — caller uses .get() to guard.
+        out: dict[str, Any] = dict(head_out)
+        out["attended"] = z
         if enc_out.get("attention_weights") is not None:
             out["attention_weights"] = enc_out["attention_weights"]
         return out
@@ -325,10 +326,9 @@ class ResDecLightningModule(pl.LightningModule):
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         out = self.forward(batch)
-        pred = out["prediction"]  # [B] — f̂_1 + f̂_2 + f̂_3 (residual sum)
-        stage_1 = out["stage_1"]
-        stage_2 = out["stage_2"]
-        stage_3 = out["stage_3"]
+        pred = out["prediction"]  # [B] — sum of present stage scalars
+        # Stage scalars: stage_1 always present; stage_2/3 only when n_stages >= 2/3.
+        stages: list[torch.Tensor] = [out[f"stage_{k}"] for k in range(1, self._n_stages + 1)]
         cognition = batch["cognition"]
         if cognition.dim() == 2 and cognition.shape[-1] == 1:
             cognition = cognition.squeeze(-1)
@@ -336,21 +336,15 @@ class ResDecLightningModule(pl.LightningModule):
 
         if self._tabpfn_enabled:
             # ============================================================= #
-            # Phase 3 — H3 boosting with aug-U uncertainty-weighted aux loss.#
+            # H3 boosting with aug-U uncertainty-weighted aux losses.        #
+            # n_stages ∈ {1, 2, 3} controls how many aux terms are computed. #
             # ============================================================= #
             #
-            # L = L_main
-            #   + λ_1 · MSE(f̂_1, y − ŷ_tabpfn)
-            #   + λ_2 · MSE(f̂_2, y − ŷ_tabpfn − f̂_1.detach()) · w(σ)
-            #   + λ_3 · MSE(f̂_3, y − ŷ_tabpfn − f̂_1.detach() − f̂_2.detach()) · w(σ)
+            # L = L_main + Σ_k λ_k · MSE(f̂_k, y − ŷ_tabpfn − Σ_{j<k} f̂_j.detach()) · w_k(σ)
+            #     where w_1 = 1 (no aug-U on stage 1), w_{k>1} = 1/(σ²+eps).
             #
-            # L_main = MSE(f̂_1+f̂_2+f̂_3, y − ŷ_tabpfn) — the composite residual
-            # target. This is equivalent in gradient to MSE of composite prediction
-            # ŷ_tabpfn + (f̂_1+f̂_2+f̂_3) against y, since y_tabpfn is a constant.
-            # w(σ) = 1 / (σ² + eps) is the aug-U per-subject weighting.
-            #
-            # All four loss terms share a single backward pass — this is the
-            # "single backward" guarantee in docs/plans/2026-04-21 §Phase 3.
+            # L_main = MSE(Σ_k f̂_k, y − ŷ_tabpfn) — composite residual target.
+            # All loss terms share a single backward pass.
 
             subject_ids = batch["subject_ids"]  # list[str] from collate_for_hgt
             y_tabpfn, sigma_tabpfn = self._tabpfn_train_batch(
@@ -361,25 +355,16 @@ class ResDecLightningModule(pl.LightningModule):
             # Main loss: composite residual MSE (no per-sample weighting).
             L_main = torch.nn.functional.mse_loss(pred, residual_target)
 
-            # Stage-1 aux: unweighted residual-target MSE.
-            L_aux1 = torch.nn.functional.mse_loss(stage_1, residual_target)
-
-            # Stage-2/3 aux: aug-U per-subject weighting w(σ) = 1/(σ²+eps),
-            # mean-reduced by hand so the weighting applies before reduction.
-            target_aux2 = residual_target - stage_1.detach()
-            target_aux3 = residual_target - stage_1.detach() - stage_2.detach()
-
-            if self._use_sigma_weighting:
+            # aug-U per-subject weights for stages 2+. Only build/log if there
+            # are aux losses past stage 1 to weight.
+            w = None
+            if self._use_sigma_weighting and self._n_stages >= 2:
                 w = 1.0 / (sigma_tabpfn * sigma_tabpfn + self._sigma_eps)  # [B]
                 # Weighted mean (NOT plain .mean()!) — normalize by sum of weights so a
                 # single confident subject (σ→0, w→1e6) cannot dominate the batch loss.
-                # This is the standard aug-U normalization used by the TabPFN uncertainty
-                # paper and reduces to a plain mean when all w are equal (see
+                # Reduces to a plain mean when all w are equal (see
                 # test_sigma_weight_constant_sigma_reduces_to_uniform).
                 w_sum = w.sum().clamp_min(self._sigma_eps)
-                L_aux2 = (w * (stage_2 - target_aux2).pow(2)).sum() / w_sum
-                L_aux3 = (w * (stage_3 - target_aux3).pow(2)).sum() / w_sum
-
                 # Diagnostic: log w statistics once per epoch so scale blow-up / single-
                 # subject domination is visible in train logs (min=worst-conf, max=most-conf).
                 self.log("train/sigma_weight_mean", w.mean(), on_step=False, on_epoch=True,
@@ -388,13 +373,24 @@ class ResDecLightningModule(pl.LightningModule):
                          batch_size=bs, sync_dist=True)
                 self.log("train/sigma_weight_min", w.min(), on_step=False, on_epoch=True,
                          batch_size=bs, sync_dist=True)
-            else:
-                # Ablation knob: uniform weighting.
-                L_aux2 = torch.nn.functional.mse_loss(stage_2, target_aux2)
-                L_aux3 = torch.nn.functional.mse_loss(stage_3, target_aux3)
 
-            lam1, lam2, lam3 = self._aux_lambdas
-            loss = L_main + lam1 * L_aux1 + lam2 * L_aux2 + lam3 * L_aux3
+            # Per-stage aux losses: stage k's target is residual − sum of detached
+            # prior-stage scalars. Stage 1 uses unweighted MSE; stages 2+ use
+            # aug-U weighting (per the plan formula).
+            running_detached = torch.zeros_like(residual_target)
+            aux_losses: list[torch.Tensor] = []
+            for k_idx, stage_k in enumerate(stages, start=1):
+                target_k = residual_target - running_detached
+                if k_idx == 1 or w is None:
+                    L_aux_k = torch.nn.functional.mse_loss(stage_k, target_k)
+                else:
+                    L_aux_k = (w * (stage_k - target_k).pow(2)).sum() / w_sum
+                aux_losses.append(L_aux_k)
+                self.log(f"train/L_aux{k_idx}", L_aux_k, prog_bar=False,
+                         batch_size=bs, sync_dist=True)
+                running_detached = running_detached + stage_k.detach()
+
+            loss = L_main + sum(lam * Lk for lam, Lk in zip(self._aux_lambdas, aux_losses))
 
             # Composite MSE (detached, for monitoring parity with Phase 2).
             # detach: composite MSE is log-only, no gradient contribution — the
@@ -406,9 +402,6 @@ class ResDecLightningModule(pl.LightningModule):
 
             self.log("train/loss", loss, prog_bar=True, batch_size=bs, sync_dist=True)
             self.log("train/L_main", L_main, prog_bar=False, batch_size=bs, sync_dist=True)
-            self.log("train/L_aux1", L_aux1, prog_bar=False, batch_size=bs, sync_dist=True)
-            self.log("train/L_aux2", L_aux2, prog_bar=False, batch_size=bs, sync_dist=True)
-            self.log("train/L_aux3", L_aux3, prog_bar=False, batch_size=bs, sync_dist=True)
             self.log("train/residual_mse", L_main, prog_bar=False, batch_size=bs, sync_dist=True)
             self.log("train/composite_mse", comp_mse, prog_bar=False, batch_size=bs, sync_dist=True)
         else:

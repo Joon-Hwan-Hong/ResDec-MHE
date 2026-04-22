@@ -25,6 +25,10 @@ model:
   resdec_head:
     d_metadata: 8
     n_heads: 4
+    # Boosting depth. n_stages=3 ties n_stages=1 on 5-fold mean R² (0.4310 vs
+    # 0.4330) with stage-3-collapse on 2/5 folds (2026-04-22 finding) — current
+    # default is 2 (active investigation). Set to 1 or 3 for ablation runs.
+    n_stages: 2
 
 training:
   # Flat-top-level overrides honoured by ResDecLightningModule.configure_optimizers.

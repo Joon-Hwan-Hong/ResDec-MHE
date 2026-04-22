@@ -1,10 +1,12 @@
-"""Phase 3 Task 3.1 — ResDec-H3 3-stage composer tests.
+"""ResDec-H3 N-stage composer tests (n_stages ∈ {1, 2, 3}).
 
 Verifies:
-    * forward-pass shapes / dict keys for the 3-stage composer
-    * cross-stage attention is actually wired (stage_2 depends on h_1, stage_3 on both)
-    * gradient detach for stage-2 and stage-3 auxiliary losses
-    * TabMWrapper k_tabm=1 degenerate case
+    * forward-pass shapes / dict keys for n_stages=1, 2, 3 (only k <= n_stages
+      keys are present; prediction = sum of present stage scalars)
+    * cross-stage attention is wired (stage_2 depends on h_1 when n>=2;
+      stage_3 depends on h_1 and h_2 when n>=3)
+    * gradient detach for stage-2 (when n>=2) and stage-3 (when n>=3) aux losses
+    * TabMWrapper k_tabm=1 degenerate case across all n_stages
 
 All gradient-detach tests run in fp32 so that bf16 noise cannot mask tiny non-zero
 gradients that would signal a broken detach.
@@ -17,7 +19,8 @@ import torch
 from src.models.resdec_head.resdec_h3_head import ResDecH3Head
 
 
-def _mk_head(d_subject: int = 64, d_metadata: int = 8, k_tabm: int = 2) -> ResDecH3Head:
+def _mk_head(d_subject: int = 64, d_metadata: int = 8,
+             k_tabm: int = 2, n_stages: int = 3) -> ResDecH3Head:
     """Smaller k_tabm keeps tests fast — the semantics are identical to k=8."""
     torch.manual_seed(0)
     head = ResDecH3Head(
@@ -27,65 +30,91 @@ def _mk_head(d_subject: int = 64, d_metadata: int = 8, k_tabm: int = 2) -> ResDe
         n_hc_streams=2,
         lambda_init=0.8,
         k_tabm=k_tabm,
+        n_stages=n_stages,
     )
     return head.to(torch.float32)
 
 
-def test_forward_shapes():
-    """Head accepts z_encoder [B, 64] + metadata [B, 8], returns dict with the
-    full Phase-3 key set and correct shapes. Verify that ``prediction`` is the
-    sum of the three stage scalars."""
-    head = _mk_head(d_subject=64, d_metadata=8, k_tabm=2)
+# --------------------------------------------------------------------------- #
+# Forward shapes per n_stages                                                 #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("n_stages", [1, 2, 3])
+def test_forward_shapes(n_stages):
+    """Head returns dict with `stage_k` and `latent_k` only for k <= n_stages.
+    `prediction` equals the sum of present stage scalars."""
+    head = _mk_head(d_subject=64, d_metadata=8, k_tabm=2, n_stages=n_stages)
     head.eval()
     B = 4
     z = torch.randn(B, 64)
     m = torch.randn(B, 8)
     out = head(z, m)
 
-    for key in ("prediction", "stage_1", "stage_2", "stage_3",
-                "latent_1", "latent_2", "latent_3"):
-        assert key in out, f"Missing key: {key!r} (got {sorted(out.keys())})"
-
+    assert "prediction" in out
     assert out["prediction"].shape == (B,)
-    for k in ("stage_1", "stage_2", "stage_3"):
-        assert out[k].shape == (B,), f"{k} shape mismatch: {out[k].shape}"
-    for k in ("latent_1", "latent_2", "latent_3"):
-        assert out[k].shape == (B, 64), f"{k} shape mismatch: {out[k].shape}"
 
-    # prediction MUST equal stage_1 + stage_2 + stage_3 (composer contract)
-    expected = out["stage_1"] + out["stage_2"] + out["stage_3"]
-    assert torch.allclose(out["prediction"], expected, atol=1e-6), \
-        "prediction != stage_1 + stage_2 + stage_3"
+    expected_keys = {"prediction"}
+    for k in range(1, n_stages + 1):
+        expected_keys.add(f"stage_{k}")
+        expected_keys.add(f"latent_{k}")
+        assert out[f"stage_{k}"].shape == (B,), f"stage_{k} shape mismatch"
+        assert out[f"latent_{k}"].shape == (B, 64), f"latent_{k} shape mismatch"
+
+    # Absent stages must NOT be in the dict (caller uses .get() to guard).
+    for k in range(n_stages + 1, 4):
+        assert f"stage_{k}" not in out, f"stage_{k} should be absent for n_stages={n_stages}"
+        assert f"latent_{k}" not in out, f"latent_{k} should be absent for n_stages={n_stages}"
+
+    # prediction MUST equal sum of present stage scalars.
+    expected_pred = sum(out[f"stage_{k}"] for k in range(1, n_stages + 1))
+    assert torch.allclose(out["prediction"], expected_pred, atol=1e-6), \
+        f"prediction != sum of present stages (n_stages={n_stages})"
 
 
-def test_cross_stage_attention_wired():
-    """Stage 2's output must depend on stage-1's latent (because stage 2 consumes
-    a cross-stage-attention context built from h_1). Stage 3 must depend on both
-    h_1 and h_2. We verify this by perturbing each prior latent via a forward hook
-    and asserting downstream outputs change."""
-    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2)
+# --------------------------------------------------------------------------- #
+# n_stages=1 sanity: composer reduces to FiLM + single TabM[NPT] + readout    #
+# --------------------------------------------------------------------------- #
+def test_n_stages_1_only_builds_stage_1():
+    """At n_stages=1, no cross-stage-attention or stage 2/3 modules should be
+    constructed (saves params + optimizer state). Verify via state_dict."""
+    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2, n_stages=1)
+    sd_keys = set(head.state_dict().keys())
+    # Stage 2/3 modules' submodule names should NOT appear.
+    forbidden = ["stage_2_npt", "stage_2_tabm", "stage_2_readout", "stage_2_cross_attn",
+                 "stage_3_npt", "stage_3_tabm", "stage_3_readout", "stage_3_cross_attn"]
+    leaks = [name for name in sd_keys for f in forbidden if name.startswith(f + ".")]
+    assert not leaks, f"n_stages=1 head leaked stage 2/3 params: {leaks[:5]}"
+
+
+def test_invalid_n_stages_rejected():
+    """Constructor must reject n_stages outside {1, 2, 3}."""
+    for bad in (0, 4, -1):
+        with pytest.raises(ValueError, match="n_stages must be one of"):
+            ResDecH3Head(d_subject=32, d_metadata=4, n_stages=bad)
+
+
+# --------------------------------------------------------------------------- #
+# Cross-stage attention wiring                                                #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("n_stages", [2, 3])
+def test_cross_stage_attention_wired_h1(n_stages):
+    """When n_stages >= 2, stage_2's output depends on stage-1's latent.
+    When n_stages >= 3, stage_3 also changes (it has h_1 in its priors list)."""
+    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2, n_stages=n_stages)
     head.eval()
     B = 3
     z = torch.randn(B, 32)
     m = torch.randn(B, 4)
 
-    # --- Baseline forward ---
     with torch.no_grad():
         base = head(z, m)
+    perturb = torch.randn_like(base["latent_1"]) * 3.0
 
-    # --- Perturb latent_1 (stage_1 output) via hook on the TabM wrapper that
-    # computes h_1. After perturbation stage_2 and stage_3 outputs should both
-    # change, confirming that stage-2 input depends on h_1 and stage-3 input
-    # (which takes both h_1 and h_2 as priors) also depends on h_1. ---
-    perturb = torch.randn_like(base["latent_1"]) * 3.0  # big kick
-
-    def _hook_latent_1(module, inputs, output):
-        # TabMWrapper.forward returns (mean, std); we replace the mean.
+    def _hook(module, inputs, output):
         if isinstance(output, tuple):
             return (output[0] + perturb, output[1])
         return output + perturb
 
-    handle = head.stage_1_tabm.register_forward_hook(_hook_latent_1)
+    handle = head.stage_1_tabm.register_forward_hook(_hook)
     try:
         with torch.no_grad():
             perturbed = head(z, m)
@@ -93,36 +122,46 @@ def test_cross_stage_attention_wired():
         handle.remove()
 
     delta_s2 = (perturbed["stage_2"] - base["stage_2"]).abs().max().item()
-    delta_s3 = (perturbed["stage_3"] - base["stage_3"]).abs().max().item()
     assert delta_s2 > 1e-5, \
-        f"stage_2 did not change when latent_1 was perturbed (delta={delta_s2}); " \
-        "cross-stage attention is not wired."
-    assert delta_s3 > 1e-5, \
-        f"stage_3 did not change when latent_1 was perturbed (delta={delta_s3}); " \
-        "cross-stage attention is not wired."
+        f"stage_2 unchanged when latent_1 perturbed (delta={delta_s2}); cross-attn not wired."
+    if n_stages >= 3:
+        delta_s3 = (perturbed["stage_3"] - base["stage_3"]).abs().max().item()
+        assert delta_s3 > 1e-5, \
+            f"stage_3 unchanged when latent_1 perturbed (delta={delta_s3}); cross-attn not wired."
 
-    # --- Now perturb latent_2 (stage_2 output). stage_3 should change (since its
-    # priors list contains h_2); stage_1 and stage_2 outputs are already past. ---
+
+def test_cross_stage_attention_wired_h2_to_s3():
+    """At n_stages=3, perturbing latent_2 must change stage_3's output."""
+    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2, n_stages=3)
+    head.eval()
+    B = 3
+    z = torch.randn(B, 32)
+    m = torch.randn(B, 4)
+
+    with torch.no_grad():
+        base = head(z, m)
     perturb2 = torch.randn_like(base["latent_2"]) * 3.0
 
-    def _hook_latent_2(module, inputs, output):
+    def _hook(module, inputs, output):
         if isinstance(output, tuple):
             return (output[0] + perturb2, output[1])
         return output + perturb2
 
-    handle = head.stage_2_tabm.register_forward_hook(_hook_latent_2)
+    handle = head.stage_2_tabm.register_forward_hook(_hook)
     try:
         with torch.no_grad():
-            perturbed2 = head(z, m)
+            perturbed = head(z, m)
     finally:
         handle.remove()
 
-    delta_s3_from_h2 = (perturbed2["stage_3"] - base["stage_3"]).abs().max().item()
-    assert delta_s3_from_h2 > 1e-5, \
-        f"stage_3 did not change when latent_2 was perturbed (delta={delta_s3_from_h2}); " \
-        "stage 3 is not attending to h_2."
+    delta_s3 = (perturbed["stage_3"] - base["stage_3"]).abs().max().item()
+    assert delta_s3 > 1e-5, \
+        f"stage_3 unchanged when latent_2 perturbed (delta={delta_s3}); stage 3 not attending to h_2."
 
 
+# --------------------------------------------------------------------------- #
+# Gradient detach contracts                                                   #
+# --------------------------------------------------------------------------- #
 def _collect_stage_params(head: ResDecH3Head, which: str) -> list[torch.nn.Parameter]:
     """Return the leaf params belonging to ``stage_{which}``'s TabM+readout path.
 
@@ -145,8 +184,8 @@ def test_gradient_detach_stage2():
     """Aux-2 loss uses ``y - y_tabpfn - stage_1.detach()``. Backward through it
     must produce zero gradient on stage_1's TabM+readout params."""
     torch.manual_seed(0)
-    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2)
-    head.train()  # ensure everything requires_grad
+    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2, n_stages=2)
+    head.train()
     B = 4
     z = torch.randn(B, 32)
     m = torch.randn(B, 4)
@@ -154,27 +193,23 @@ def test_gradient_detach_stage2():
     y_tabpfn = torch.randn(B)
 
     out = head(z, m)
-    # aux_2 target mirrors the composer's training-step formula exactly.
     target_aux2 = y - y_tabpfn - out["stage_1"].detach()
     aux2_loss = torch.nn.functional.mse_loss(out["stage_2"], target_aux2)
 
-    # Zero all grads, then backward ONLY the aux_2 loss.
     for p in head.parameters():
         if p.grad is not None:
             p.grad.zero_()
     aux2_loss.backward()
 
     stage1_params = _collect_stage_params(head, "1")
-    stage1_grad_norms = [
+    max_stage1_grad = max(
         (0.0 if p.grad is None else p.grad.abs().max().item()) for p in stage1_params
-    ]
-    max_stage1_grad = max(stage1_grad_norms) if stage1_grad_norms else 0.0
+    )
     assert max_stage1_grad == 0.0, (
-        f"aux_2 loss leaked gradient into stage_1 params: max |grad| = {max_stage1_grad}. "
+        f"aux_2 loss leaked gradient into stage_1 params: max |grad|={max_stage1_grad}. "
         "Detach() on stage_1 in the aux_2 target is not blocking gradient flow."
     )
 
-    # Sanity: stage_2 params DID get gradients (else the test itself is broken).
     stage2_params = _collect_stage_params(head, "2")
     max_stage2_grad = max(
         (0.0 if p.grad is None else p.grad.abs().max().item()) for p in stage2_params
@@ -187,7 +222,7 @@ def test_gradient_detach_stage3():
     Backward must produce zero gradient on stage_1 AND stage_2 TabM+readout
     params."""
     torch.manual_seed(1)
-    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2)
+    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2, n_stages=3)
     head.train()
     B = 4
     z = torch.randn(B, 32)
@@ -211,10 +246,9 @@ def test_gradient_detach_stage3():
         )
         assert max_grad == 0.0, (
             f"aux_3 loss leaked gradient into stage_{which} params: "
-            f"max |grad| = {max_grad}. Detach() is not blocking gradient flow."
+            f"max |grad|={max_grad}. Detach() is not blocking gradient flow."
         )
 
-    # Sanity: stage_3 DID get gradient.
     stage3_params = _collect_stage_params(head, "3")
     max_stage3_grad = max(
         (0.0 if p.grad is None else p.grad.abs().max().item()) for p in stage3_params
@@ -222,11 +256,14 @@ def test_gradient_detach_stage3():
     assert max_stage3_grad > 0.0, "aux_3 loss did not flow into stage_3 (test is broken)"
 
 
-def test_tabm_k_param():
-    """k_tabm=1 makes each TabMWrapper a single-member pass. Must produce valid
-    shapes and finite outputs (no ensemble-dim collapse errors), and the std
-    return must be exactly zero (std over a single element is zero)."""
-    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=1)
+# --------------------------------------------------------------------------- #
+# TabMWrapper k_tabm=1 degenerate case (parametrized over n_stages)           #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("n_stages", [1, 2, 3])
+def test_tabm_k_param(n_stages):
+    """k_tabm=1 makes each TabMWrapper a single-member pass. Outputs must be finite,
+    and TabM std must be exactly zero (population std over a single element)."""
+    head = _mk_head(d_subject=32, d_metadata=4, k_tabm=1, n_stages=n_stages)
     head.eval()
     B = 4
     z = torch.randn(B, 32)
@@ -234,37 +271,19 @@ def test_tabm_k_param():
     with torch.no_grad():
         out = head(z, m)
     assert out["prediction"].shape == (B,)
-    for k in ("stage_1", "stage_2", "stage_3"):
-        assert torch.isfinite(out[k]).all(), f"{k} produced non-finite values at k_tabm=1"
-    for k in ("latent_1", "latent_2", "latent_3"):
-        assert out[k].shape == (B, 32)
-        assert torch.isfinite(out[k]).all(), f"{k} produced non-finite values at k_tabm=1"
+    for k in range(1, n_stages + 1):
+        assert torch.isfinite(out[f"stage_{k}"]).all(), \
+            f"stage_{k} non-finite at k_tabm=1"
+        assert torch.isfinite(out[f"latent_{k}"]).all(), \
+            f"latent_{k} non-finite at k_tabm=1"
 
-    # Verify each TabMWrapper really has k=1.
-    for which in ("1", "2", "3"):
-        wrapper = getattr(head, f"stage_{which}_tabm")
-        assert wrapper.k == 1, f"stage_{which}_tabm.k should be 1, got {wrapper.k}"
-
-    # Directly call each TabMWrapper at k=1 and verify the std return is zero.
-    # Rationale: torch.std over a single element (unbiased=True by default)
-    # returns NaN; torch.std with unbiased=False returns 0. TabMWrapper should
-    # behave consistently at k=1 (either always zero or all finite) so downstream
-    # uncertainty-consumers aren't surprised. We assert finite + all-zero here.
     z_probe = torch.randn(B, 32)
-    for which in ("1", "2", "3"):
-        wrapper = getattr(head, f"stage_{which}_tabm")
-        # stage_2 / stage_3 wrappers expect a shifted input equivalent to z_cond
-        # + ctx_{2,3}; since we're only probing std behaviour, calling with any
-        # valid [B, d] tensor is sufficient — TabMWrapper's std doesn't depend
-        # on the upstream cross-attn context.
+    for k in range(1, n_stages + 1):
+        wrapper = getattr(head, f"stage_{k}_tabm")
+        assert wrapper.k == 1, f"stage_{k}_tabm.k should be 1, got {wrapper.k}"
         with torch.no_grad():
-            mean, std = wrapper(z_probe)
-        assert torch.isfinite(std).all(), (
-            f"stage_{which}_tabm std is non-finite at k=1 "
-            f"(torch.std with unbiased=True returns NaN for a single element; "
-            "check TabMWrapper.forward's reduction)."
-        )
-        assert torch.all(std == 0.0), (
-            f"stage_{which}_tabm std is not exactly 0 at k=1, got max |std|="
-            f"{std.abs().max().item()}"
-        )
+            _, std = wrapper(z_probe)
+        assert torch.isfinite(std).all(), \
+            f"stage_{k}_tabm std non-finite at k=1 (check TabMWrapper.forward reduction)."
+        assert torch.all(std == 0.0), \
+            f"stage_{k}_tabm std not exactly 0 at k=1, got max |std|={std.abs().max().item()}"
