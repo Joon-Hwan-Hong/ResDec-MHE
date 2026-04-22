@@ -93,7 +93,7 @@ class ResDecH3Head(nn.Module):
         k_tabm: int = DEFAULT_K_TABM,
         n_stages: int = DEFAULT_N_STAGES,
         use_film: bool = True,
-        use_diff_attn: bool = True,
+        use_diff_attn: bool = False,   # canonical: vanilla MHA (Phase 5.3 #6)
         use_hyper_conn: bool = True,
     ):
         super().__init__()

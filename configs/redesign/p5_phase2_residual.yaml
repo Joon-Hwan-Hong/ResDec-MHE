@@ -25,19 +25,22 @@ model:
   resdec_head:
     d_metadata: 8
     n_heads: 4
-    # CANONICAL — n_stages=1 + TabM(k=8). Phase-3 5-fold ablation (2026-04-22)
-    # compared n ∈ {1, 2, 3} on the same 5 folds:
-    #   n=1 + TabM: R² = 0.4373 ± 0.085  ← BEST
-    #   n=2:        R² = 0.4305 ± 0.079
-    #   n=3:        R² = 0.4310 ± 0.083
-    # See configs/redesign/p5_phase3_n1.yaml (preserved) for the n=1-only
-    # ablation run; this canonical config matches it.
+    # CANONICAL — n_stages=1 + TabM(k=8) + vanilla MHA + HyperConn + FiLM.
+    # Phase-5.3 ablation matrix (2026-04-22) tested 9 variants on same 5 folds.
+    # Headline R² (5-fold, seed 42):
+    #   canonical (this):                      0.4436 ± 0.089  ← BEST
+    #   with-DiffAttn (old canonical):         0.4373 ± 0.085
+    #   n=2, no aug-U:                         0.4427 ± 0.079
+    #   no HyperConn:                          0.4305 ± 0.081
+    #   no FiLM:                               0.4328 ± 0.087
+    #   k_tabm=1:                              0.4342 ± 0.076
+    #   no TabPFN residual:                    0.2659 ± 0.039  (ONLY essential)
+    # Full metric suite in docs; canonical is Pareto-best on R², RMSE, Spearman.
     n_stages: 1
-    # aux_lambdas length must match n_stages. At n=1 the aux_1 loss collapses
-    # to the same MSE as L_main — keeping λ_1=1.0 effectively double-weights
-    # MSE(stage_1, residual_target). This matches the architecture we tested
-    # (R²=0.4373); set [0.0] to disable the aux_1 redundancy as an ablation.
+    # aux_lambdas length must match n_stages. At n=1, L_aux_1 == L_main exactly
+    # (since prediction == stage_1), so λ_1=1 effectively double-weights MSE.
     aux_lambdas: [1.0]
+    use_diff_attn: false  # canonical: vanilla nn.MultiheadAttention (Phase 5.3 #6)
 
 training:
   # Flat-top-level overrides honoured by ResDecLightningModule.configure_optimizers.
