@@ -125,7 +125,7 @@ def _apoe_e4_count(genotype: object) -> object:
     return g_str.count("4")
 
 
-def _age_quartile_labels(ages: pd.Series) -> pd.Series:
+def age_quartile_labels(ages: pd.Series) -> pd.Series:
     """Assign Q1..Q4 labels using pandas quantiles on the non-null subset.
 
     Entries with NaN age receive ``None`` so the downstream subgroup logic drops them.
@@ -143,7 +143,7 @@ def _age_quartile_labels(ages: pd.Series) -> pd.Series:
     return labels
 
 
-def _apoe_e4_count_label(genotype: object) -> str | None:
+def apoe_e4_count_label(genotype: object) -> str | None:
     """Stringify the ε4 count, preserving None for missing genotypes."""
     c = _apoe_e4_count(genotype)
     return str(c) if c is not None else None
@@ -152,14 +152,14 @@ def _apoe_e4_count_label(genotype: object) -> str | None:
 def _build_subgroups(df: pd.DataFrame) -> dict[str, np.ndarray]:
     """Build the three stratifications required by the spec."""
     # APOE-ε4 count → "0" / "1" / "2"; None when APOE genotype is missing.
-    apoe_str = df["apoe_genotype"].apply(_apoe_e4_count_label)
+    apoe_str = df["apoe_genotype"].apply(apoe_e4_count_label)
 
     # Sex: msex ∈ {0, 1}. Keep NaN → None.
     msex_str = df["msex"].apply(
         lambda x: str(int(x)) if pd.notna(x) else None
     )
 
-    age_q = _age_quartile_labels(df["age_death"])
+    age_q = age_quartile_labels(df["age_death"])
 
     return {
         "by_apoe_e4_count": apoe_str.to_numpy(dtype=object),

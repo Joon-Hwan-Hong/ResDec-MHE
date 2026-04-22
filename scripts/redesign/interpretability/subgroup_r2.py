@@ -46,8 +46,8 @@ sys.path.insert(0, str(_WORKTREE_ROOT))
 # Reuse the per-fold loader + APOE labelling from the C.1 variance script so
 # both analyses see the same subject set and the same stratification labels.
 from scripts.redesign.interpretability.variance_decomposition import (  # noqa: E402
-    _age_quartile_labels,
-    _apoe_e4_count_label,
+    age_quartile_labels,
+    apoe_e4_count_label,
     load_all_folds,
 )
 from src.analysis.resdec_subgroup_analysis import stratified_metrics  # noqa: E402
@@ -63,7 +63,7 @@ _METADATA_COLS = ["ROSMAP_IndividualID", "apoe_genotype", "msex", "age_death", "
 def _pathology_quartile_labels(gpath: pd.Series) -> pd.Series:
     """Q1..Q4 pathology quartiles on ``gpath`` rank; None for NaN entries.
 
-    Mirrors ``_age_quartile_labels`` (rank-then-qcut to tie-break cleanly).
+    Mirrors ``age_quartile_labels`` (rank-then-qcut to tie-break cleanly).
     """
     labels = pd.Series([None] * len(gpath), index=gpath.index, dtype=object)
     valid = gpath.notna()
@@ -96,7 +96,7 @@ def _build_flat_masks(df: pd.DataFrame) -> tuple[dict[str, np.ndarray], dict[str
     family_by_group: dict[str, str] = {}
 
     # --- APOE-ε4 count --------------------------------------------------
-    apoe_labels = df["apoe_genotype"].apply(_apoe_e4_count_label)
+    apoe_labels = df["apoe_genotype"].apply(apoe_e4_count_label)
     for count in ("0", "1", "2"):
         group_name = f"APOE_e4_{count}"
         masks[group_name] = (apoe_labels == count).to_numpy(dtype=bool)
@@ -110,7 +110,7 @@ def _build_flat_masks(df: pd.DataFrame) -> tuple[dict[str, np.ndarray], dict[str
         family_by_group[group_name] = "msex"
 
     # --- Age quartile ---------------------------------------------------
-    age_q = _age_quartile_labels(df["age_death"])
+    age_q = age_quartile_labels(df["age_death"])
     for q in ("Q1", "Q2", "Q3", "Q4"):
         group_name = f"age_quartile_{q}"
         masks[group_name] = (age_q == q).to_numpy(dtype=bool)
