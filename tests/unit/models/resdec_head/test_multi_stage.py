@@ -130,6 +130,10 @@ def _collect_stage_params(head: ResDecH3Head, which: str) -> list[torch.nn.Param
     across stages or feed all of them — their gradients aren't what detach()
     is supposed to block. The detach contract is:
         aux_k loss must not update stage_{k-1}'s TabM wrapper + its readout.
+
+    FiLM and cross_attn_* are intentionally shared across stages, so they
+    receive gradient from every aux loss — this is expected and not a detach
+    violation.
     """
     wrapper = getattr(head, f"stage_{which}_tabm")
     readout = getattr(head, f"stage_{which}_readout")
@@ -220,7 +224,8 @@ def test_gradient_detach_stage3():
 
 def test_tabm_k_param():
     """k_tabm=1 makes each TabMWrapper a single-member pass. Must produce valid
-    shapes and finite outputs (no ensemble-dim collapse errors)."""
+    shapes and finite outputs (no ensemble-dim collapse errors), and the std
+    return must be exactly zero (std over a single element is zero)."""
     head = _mk_head(d_subject=32, d_metadata=4, k_tabm=1)
     head.eval()
     B = 4
@@ -239,3 +244,27 @@ def test_tabm_k_param():
     for which in ("1", "2", "3"):
         wrapper = getattr(head, f"stage_{which}_tabm")
         assert wrapper.k == 1, f"stage_{which}_tabm.k should be 1, got {wrapper.k}"
+
+    # Directly call each TabMWrapper at k=1 and verify the std return is zero.
+    # Rationale: torch.std over a single element (unbiased=True by default)
+    # returns NaN; torch.std with unbiased=False returns 0. TabMWrapper should
+    # behave consistently at k=1 (either always zero or all finite) so downstream
+    # uncertainty-consumers aren't surprised. We assert finite + all-zero here.
+    z_probe = torch.randn(B, 32)
+    for which in ("1", "2", "3"):
+        wrapper = getattr(head, f"stage_{which}_tabm")
+        # stage_2 / stage_3 wrappers expect a shifted input equivalent to z_cond
+        # + ctx_{2,3}; since we're only probing std behaviour, calling with any
+        # valid [B, d] tensor is sufficient — TabMWrapper's std doesn't depend
+        # on the upstream cross-attn context.
+        with torch.no_grad():
+            mean, std = wrapper(z_probe)
+        assert torch.isfinite(std).all(), (
+            f"stage_{which}_tabm std is non-finite at k=1 "
+            f"(torch.std with unbiased=True returns NaN for a single element; "
+            "check TabMWrapper.forward's reduction)."
+        )
+        assert torch.all(std == 0.0), (
+            f"stage_{which}_tabm std is not exactly 0 at k=1, got max |std|="
+            f"{std.abs().max().item()}"
+        )

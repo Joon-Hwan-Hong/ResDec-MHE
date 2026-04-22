@@ -39,5 +39,9 @@ class TabMWrapper(nn.Module):
             outputs.append(sub_out * self.r[ki])
         stacked = torch.stack(outputs, dim=1)  # [B, k, d_out]
         mean = stacked.mean(dim=1)
-        std = stacked.std(dim=1)
+        # unbiased=False (population std) so k=1 returns 0 instead of NaN.
+        # For k≥2 this differs from the Bessel-corrected estimate by a factor
+        # of sqrt(k/(k-1)), which is ≤1.07 for k=8 (the project default) — a
+        # negligible bias compared to the benefit of well-defined k=1 behavior.
+        std = stacked.std(dim=1, unbiased=False)
         return mean, std

@@ -1,28 +1,36 @@
 """PyTorch Lightning wrapper composing the existing CognitiveResilienceModel
-encoder with the new ResDec-H3 head (Phase 1 single-stage composer).
+encoder with the ResDec-H3 head (Phase 3: 3-stage H3 composer with aug-U
+uncertainty-weighted auxiliary losses).
 
-Phase 1 scope
--------------
+Phase 3 scope (current)
+-----------------------
 - Encoder: existing ``CognitiveResilienceModel`` (unchanged), built via
   :func:`build_model_from_config`. Forward returns a dict with ``attended``
   ``[B, d_fused]`` — this is the subject embedding consumed by the head.
-- Head: :class:`ResDecH3Head` (FiLM + single NPTStage + scalar readout).
-- Loss: MSE against ``cognition`` (deterministic head — the Bayesian SVI
-  machinery in :class:`CognitiveResilienceLightningModule` is not needed here
-  because the ResDec-H3 head produces its own scalar readout).
-- Optimizer: AdamW with cosine annealing + linear warmup, following the same
-  pattern as the existing deterministic-head path in
-  :class:`CognitiveResilienceLightningModule`.
+- Head: :class:`ResDecH3Head` (FiLM + 3× [NPTStage wrapped in TabM with
+  cross-stage attention] + per-stage scalar readouts).
+- Loss: composite residual MSE + 3 detached-residual aux losses
+  (``L_main + λ_1·L_aux1 + λ_2·L_aux2 + λ_3·L_aux3``). ``L_aux{2,3}`` use the
+  aug-U weighting ``w(σ) = 1/(σ² + sigma_eps)`` with a **weighted-mean**
+  reduction (``(w·diff²).sum() / w.sum()``) so a single confident subject
+  cannot dominate the loss. TabPFN predictions / σ are loaded from per-fold
+  caches (see ``_load_tabpfn_caches``).
+- Optimizer: AdamW with cosine annealing + linear warmup.
 
 Metadata wiring
 ---------------
 ResDecH3Head consumes an 8-dim metadata vector (APOE/sex/age FiLM conditioning).
-The current datamodule does not yet produce a ``metadata`` key, so Phase 1 uses
-a zero placeholder (FiLM initialises near-identity, so zeros → no-op). Proper
-wiring is deferred to Phase 4 — see the TODO in :meth:`ResDecLightningModule.forward`.
+Datamodule wiring is deferred to Phase 4 — the current fallback uses a zero
+tensor (FiLM initialises near-identity, so zeros → no-op at init).
 
-This task (1.9a) only writes + unit-tests the wrapper. Training is exercised
-downstream in task 1.9b.
+History
+-------
+- Phase 1 (task 1.9a): built the wrapper around a single-stage composer with
+  plain MSE against cognition.
+- Phase 2 (task 2.2): added TabPFN OOF / outer-fold residual caches so the
+  head could learn on ``y − ŷ_tabpfn`` instead of raw y.
+- Phase 3 (task 3.1, current): extended to 3 stages, introduced detached
+  residual aux losses and aug-U σ-weighting.
 """
 from __future__ import annotations
 
@@ -37,10 +45,16 @@ import torch
 from omegaconf import DictConfig
 
 from src.models.full_model import build_model_from_config
-from src.models.resdec_head.resdec_h3_head import ResDecH3Head
+from src.models.resdec_head.resdec_h3_head import DEFAULT_K_TABM, ResDecH3Head
 from src.training.losses import mse_loss
 
 logger = logging.getLogger(__name__)
+
+# Numerical floor for the aug-U per-subject weighting w(σ) = 1 / (σ² + eps).
+# 1e-6 is small enough not to distort well-calibrated σ (median σ≈0.3 in the
+# TabPFN-2.6 cache → σ² + 1e-6 ≈ σ²) but large enough to keep w bounded when
+# σ → 0 from a pathologically confident subject (w ≤ 1e6).
+DEFAULT_SIGMA_EPS = 1e-6
 
 # Keys required by the encoder's forward (mirrors
 # CognitiveResilienceLightningModule._batch_to_model_kwargs).
@@ -100,7 +114,7 @@ class ResDecLightningModule(pl.LightningModule):
         n_hc_streams = int(resdec_cfg.get("n_hc_streams", 4))
         lambda_init = float(resdec_cfg.get("lambda_init", 0.8))
         # Phase-3 H3 extension knobs — ablation-friendly defaults match plan spec.
-        k_tabm = int(resdec_cfg.get("k_tabm", 8))
+        k_tabm = int(resdec_cfg.get("k_tabm", DEFAULT_K_TABM))
         aux_lambdas = list(resdec_cfg.get("aux_lambdas", [1.0, 1.0, 1.0]))
         if len(aux_lambdas) != 3:
             raise ValueError(
@@ -111,8 +125,9 @@ class ResDecLightningModule(pl.LightningModule):
             float(aux_lambdas[0]), float(aux_lambdas[1]), float(aux_lambdas[2]),
         )
         self._use_sigma_weighting = bool(resdec_cfg.get("use_sigma_weighting", True))
-        # Numerical floor for aug-U: w(σ) = 1 / (σ² + eps).
-        self._sigma_eps = float(resdec_cfg.get("sigma_eps", 1e-6))
+        # Numerical floor for aug-U: w(σ) = 1 / (σ² + eps). See module-level
+        # DEFAULT_SIGMA_EPS for rationale.
+        self._sigma_eps = float(resdec_cfg.get("sigma_eps", DEFAULT_SIGMA_EPS))
 
         self.head = ResDecH3Head(
             d_subject=d_subject,
@@ -356,9 +371,23 @@ class ResDecLightningModule(pl.LightningModule):
 
             if self._use_sigma_weighting:
                 w = 1.0 / (sigma_tabpfn * sigma_tabpfn + self._sigma_eps)  # [B]
-                # Mean of weighted per-subject squared error.
-                L_aux2 = (w * (stage_2 - target_aux2).pow(2)).mean()
-                L_aux3 = (w * (stage_3 - target_aux3).pow(2)).mean()
+                # Weighted mean (NOT plain .mean()!) — normalize by sum of weights so a
+                # single confident subject (σ→0, w→1e6) cannot dominate the batch loss.
+                # This is the standard aug-U normalization used by the TabPFN uncertainty
+                # paper and reduces to a plain mean when all w are equal (see
+                # test_sigma_weight_constant_sigma_reduces_to_uniform).
+                w_sum = w.sum().clamp_min(self._sigma_eps)
+                L_aux2 = (w * (stage_2 - target_aux2).pow(2)).sum() / w_sum
+                L_aux3 = (w * (stage_3 - target_aux3).pow(2)).sum() / w_sum
+
+                # Diagnostic: log w statistics once per epoch so scale blow-up / single-
+                # subject domination is visible in train logs (min=worst-conf, max=most-conf).
+                self.log("train/sigma_weight_mean", w.mean(), on_step=False, on_epoch=True,
+                         batch_size=bs, sync_dist=True)
+                self.log("train/sigma_weight_max", w.max(), on_step=False, on_epoch=True,
+                         batch_size=bs, sync_dist=True)
+                self.log("train/sigma_weight_min", w.min(), on_step=False, on_epoch=True,
+                         batch_size=bs, sync_dist=True)
             else:
                 # Ablation knob: uniform weighting.
                 L_aux2 = torch.nn.functional.mse_loss(stage_2, target_aux2)
@@ -368,6 +397,10 @@ class ResDecLightningModule(pl.LightningModule):
             loss = L_main + lam1 * L_aux1 + lam2 * L_aux2 + lam3 * L_aux3
 
             # Composite MSE (detached, for monitoring parity with Phase 2).
+            # detach: composite MSE is log-only, no gradient contribution — the
+            # gradient path for pred is through L_main/L_aux* above. Do NOT
+            # "simplify" by removing .detach(); doing so would add a redundant
+            # gradient path that double-counts pred.
             composite = pred.detach() + y_tabpfn
             comp_mse = torch.nn.functional.mse_loss(composite, cognition)
 

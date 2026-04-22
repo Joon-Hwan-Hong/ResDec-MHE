@@ -36,6 +36,10 @@ from .film_metadata import FiLMMetadata
 from .npt_stage import NPTStage
 from .tabm_wrapper import TabMWrapper
 
+# Number of TabM BatchEnsemble members per stage. 8 is the TabM paper default and
+# matches the value used across HPO configs / ablation sweeps in this project.
+DEFAULT_K_TABM = 8
+
 
 class ResDecH3Head(nn.Module):
     def __init__(
@@ -45,7 +49,7 @@ class ResDecH3Head(nn.Module):
         n_heads: int = 4,
         n_hc_streams: int = 4,
         lambda_init: float = 0.8,
-        k_tabm: int = 8,
+        k_tabm: int = DEFAULT_K_TABM,
     ):
         super().__init__()
         self.d_subject = d_subject
@@ -54,11 +58,15 @@ class ResDecH3Head(nn.Module):
         self.film = FiLMMetadata(d_subject=d_subject, d_metadata=d_metadata)
 
         # ---- Stage 1: TabM-wrapped NPTStage + dedicated scalar readout ----
-        # NPTStage.forward returns (latent[B, d], scalar[B]); TabMWrapper picks
+        # NPTStage.forward returns (latent[B, d], None); TabMWrapper picks
         # [0] from that tuple and ensembles the latent across k members.
+        # emit_scalar=False: NPTStage's own readout Linear(d, 1) would be dead
+        # weight here (TabMWrapper discards sub_out[1]), so we skip constructing
+        # it and use the per-stage stage_N_readout below instead.
         self.stage_1_npt = NPTStage(
             d_subject=d_subject, n_heads=n_heads,
             n_hc_streams=n_hc_streams, lambda_init=lambda_init,
+            emit_scalar=False,
         )
         self.stage_1_tabm = TabMWrapper(
             submodule=self.stage_1_npt, d_in=d_subject, d_out=d_subject, k=k_tabm,
@@ -66,10 +74,11 @@ class ResDecH3Head(nn.Module):
         self.stage_1_readout = nn.Linear(d_subject, 1)
 
         # ---- Stage 2: cross-attn over [h_1] → add to z_cond → TabM[NPT] → readout ----
-        self.cross_attn_2 = CrossStageAttention(d_subject=d_subject, n_heads=n_heads)
+        self.stage_2_cross_attn = CrossStageAttention(d_subject=d_subject, n_heads=n_heads)
         self.stage_2_npt = NPTStage(
             d_subject=d_subject, n_heads=n_heads,
             n_hc_streams=n_hc_streams, lambda_init=lambda_init,
+            emit_scalar=False,
         )
         self.stage_2_tabm = TabMWrapper(
             submodule=self.stage_2_npt, d_in=d_subject, d_out=d_subject, k=k_tabm,
@@ -77,10 +86,11 @@ class ResDecH3Head(nn.Module):
         self.stage_2_readout = nn.Linear(d_subject, 1)
 
         # ---- Stage 3: cross-attn over [h_1, h_2] → TabM[NPT] → readout ----
-        self.cross_attn_3 = CrossStageAttention(d_subject=d_subject, n_heads=n_heads)
+        self.stage_3_cross_attn = CrossStageAttention(d_subject=d_subject, n_heads=n_heads)
         self.stage_3_npt = NPTStage(
             d_subject=d_subject, n_heads=n_heads,
             n_hc_streams=n_hc_streams, lambda_init=lambda_init,
+            emit_scalar=False,
         )
         self.stage_3_tabm = TabMWrapper(
             submodule=self.stage_3_npt, d_in=d_subject, d_out=d_subject, k=k_tabm,
@@ -106,12 +116,12 @@ class ResDecH3Head(nn.Module):
         # TabM/readout params — matching the H3 detached-residual-boosting
         # contract (plan §Phase 3, "stage-2 gradient does NOT flow into stage-1").
         # L_main still trains every stage jointly via its own non-detached path.
-        ctx_2 = self.cross_attn_2(z_cond, [h_1.detach()])  # [B, d_subject]
+        ctx_2 = self.stage_2_cross_attn(z_cond, [h_1.detach()])  # [B, d_subject]
         h_2, _ = self.stage_2_tabm(z_cond + ctx_2)
         scalar_2 = self.stage_2_readout(h_2).squeeze(-1)
 
         # ------- Stage 3 -------
-        ctx_3 = self.cross_attn_3(z_cond, [h_1.detach(), h_2.detach()])
+        ctx_3 = self.stage_3_cross_attn(z_cond, [h_1.detach(), h_2.detach()])
         h_3, _ = self.stage_3_tabm(z_cond + ctx_3)
         scalar_3 = self.stage_3_readout(h_3).squeeze(-1)
 
