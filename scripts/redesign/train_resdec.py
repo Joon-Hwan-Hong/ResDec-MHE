@@ -59,6 +59,8 @@ def main(args: argparse.Namespace) -> None:
     cfg.model.head.type = "deterministic"
     if args.max_epochs is not None:
         cfg.training.max_epochs = args.max_epochs
+    if args.seed is not None:
+        cfg.experiment.seed = int(args.seed)
 
     # Propagate fold index into cfg.data so Phase-2 ResDecLightningModule can
     # load the fold-specific TabPFN residual caches (harmless no-op for other
@@ -233,6 +235,8 @@ if __name__ == "__main__":
     p.add_argument("--fold", type=int, default=0, help="CV fold index (0-indexed).")
     p.add_argument("--max-epochs", type=int, default=None,
                    help="Override cfg.training.max_epochs for smoke runs.")
+    p.add_argument("--seed", type=int, default=None,
+                   help="Override cfg.experiment.seed (e.g. 43 for sanity rerun).")
     p.add_argument("--output-dir", default="outputs/redesign/p5_phase1",
                    help="Root output directory; a fold<N>/ subdir is created for artifacts.")
     p.add_argument("--splits-path", default="outputs/splits.json",

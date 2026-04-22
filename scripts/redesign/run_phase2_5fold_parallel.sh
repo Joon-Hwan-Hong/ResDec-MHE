@@ -8,6 +8,7 @@
 #   CONFIG        phase YAML (default: configs/redesign/p5_phase2_residual.yaml)
 #   OUTROOT       output directory (default: outputs/redesign/p5_phase2_residual)
 #   MAX_EPOCHS    override cfg.training.max_epochs (default: unset → config wins)
+#   SEED          override cfg.experiment.seed (default: unset → config wins; e.g. 43)
 #   RUN_REINFER   1|0 auto-run reinfer_best_ckpt after training (default: 1)
 #   N_GPUS        number of GPUs to use (default: all visible)
 #   GPU_LIST      comma-separated GPU list, e.g. "0,1"
@@ -22,6 +23,7 @@ ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
 CONFIG="${CONFIG:-configs/redesign/p5_phase2_residual.yaml}"
 OUTROOT="${OUTROOT:-outputs/redesign/p5_phase2_residual}"
 MAX_EPOCHS="${MAX_EPOCHS:-}"
+SEED="${SEED:-}"
 RUN_REINFER="${RUN_REINFER:-1}"
 FOLDS=(0 1 2 3 4)
 
@@ -58,6 +60,9 @@ while (( idx < ${#FOLDS[@]} )); do
              --output-dir "$OUTROOT")
         if [[ -n "$MAX_EPOCHS" ]]; then
             CMD+=(--max-epochs "$MAX_EPOCHS")
+        fi
+        if [[ -n "$SEED" ]]; then
+            CMD+=(--seed "$SEED")
         fi
         env "${CMD[@]}" > "$out/fold${fold}_train.log" 2>&1 &
         PIDS+=($!)
