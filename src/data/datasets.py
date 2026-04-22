@@ -85,7 +85,7 @@ def _build_metadata_vectors(
     """
     if meta_csv is None:
         return None
-    kwargs: dict = {}
+    kwargs: dict[str, float] = {}
     if age_mean is not None:
         kwargs["age_mean"] = float(age_mean)
     if age_std is not None:
@@ -95,6 +95,10 @@ def _build_metadata_vectors(
         for sid in subject_ids
     ]
     if not vecs:
+        logger.debug(
+            "_build_metadata_vectors: subject_ids is empty; returning [0, %d] tensor",
+            len(METADATA_FIELDS),
+        )
         return torch.zeros(0, len(METADATA_FIELDS), dtype=torch.float32)
     return torch.stack(vecs).float()
 
