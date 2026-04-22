@@ -176,7 +176,8 @@ def _print_summary(decomposition: dict) -> None:
     upstream decomposition also returns NaN for ``total_explained_fraction``.
     """
     g = decomposition["global"]
-    denom = g["var_y"] if g.get("var_y") and g["var_y"] > 0 else float("nan")
+    var_y = g["var_y"]
+    denom = var_y if var_y > 0 else float("nan")
     print("\n=== Variance Decomposition (global) ===")
     print(f"  n                      : {g['n']}")
     print(f"  Var(y)                 : {g['var_y']:.4f}")
@@ -185,7 +186,7 @@ def _print_summary(decomposition: dict) -> None:
     print(f"  Var(f_1)               : {g['var_f1']:.4f}  "
           f"({g['var_f1'] / denom:.1%} of Var(y))")
     print(f"  2 Cov(y_tabpfn, f_1)   : {2 * g['cov_tabpfn_f1']:+.4f}  "
-          f"({2 * g['cov_tabpfn_f1'] / denom:.1%} of Var(y))")
+          f"({2 * g['cov_tabpfn_f1'] / denom:+.1%} of Var(y))")
     print(f"  Var(resid)             : {g['var_resid']:.4f}  "
           f"({g['var_resid'] / denom:.1%} of Var(y))")
     print(f"  Total explained (1 - Var(resid)/Var(y)) : "
@@ -279,11 +280,11 @@ if __name__ == "__main__":
     )
     p.add_argument(
         "--pred-root", default="outputs/redesign/p5_canonical_seed42",
-        help="Directory containing fold{0..4}/val_predictions_best.npz",
+        help="Directory containing fold{0..N-1}/val_predictions_best.npz",
     )
     p.add_argument(
         "--tabpfn-dir", default="data/redesign",
-        help="Directory containing tabpfn_outer_fold{0..4}.npz",
+        help="Directory containing tabpfn_outer_fold{0..N-1}.npz",
     )
     p.add_argument(
         "--metadata-csv", default="data/metadata_ROSMAP/metadata.csv",
