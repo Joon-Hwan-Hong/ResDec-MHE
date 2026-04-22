@@ -25,10 +25,19 @@ model:
   resdec_head:
     d_metadata: 8
     n_heads: 4
-    # Boosting depth. n_stages=3 ties n_stages=1 on 5-fold mean R² (0.4310 vs
-    # 0.4330) with stage-3-collapse on 2/5 folds (2026-04-22 finding) — current
-    # default is 2 (active investigation). Set to 1 or 3 for ablation runs.
-    n_stages: 2
+    # CANONICAL — n_stages=1 + TabM(k=8). Phase-3 5-fold ablation (2026-04-22)
+    # compared n ∈ {1, 2, 3} on the same 5 folds:
+    #   n=1 + TabM: R² = 0.4373 ± 0.085  ← BEST
+    #   n=2:        R² = 0.4305 ± 0.079
+    #   n=3:        R² = 0.4310 ± 0.083
+    # See configs/redesign/p5_phase3_n1.yaml (preserved) for the n=1-only
+    # ablation run; this canonical config matches it.
+    n_stages: 1
+    # aux_lambdas length must match n_stages. At n=1 the aux_1 loss collapses
+    # to the same MSE as L_main — keeping λ_1=1.0 effectively double-weights
+    # MSE(stage_1, residual_target). This matches the architecture we tested
+    # (R²=0.4373); set [0.0] to disable the aux_1 redundancy as an ablation.
+    aux_lambdas: [1.0]
 
 training:
   # Flat-top-level overrides honoured by ResDecLightningModule.configure_optimizers.

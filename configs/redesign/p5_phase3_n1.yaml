@@ -1,0 +1,44 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 3 ablation: n_stages=1 with TabM ensembling.
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: isolate the TabM-ensembling effect from the multi-stage-boosting
+# effect. Compared to:
+#   - p5_phase2_residual.yaml (default n_stages=2, current canonical)
+#   - q2b run (n_stages=1, NO TabM — original Phase 2 architecture)
+#
+# Differences from p5_phase2_residual.yaml: n_stages=1 only.
+#
+# Caches and TabPFN paths inherited from default.yaml + p5_phase2_residual.yaml
+# pattern. Fold index is filled by train script via cfg.data.fold.
+
+experiment:
+  run_name: "p5_phase3_n1_with_tabm"
+
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+    # n_stages=1: only stage 1 builds. With TabM k=8 still wrapping NPTStage,
+    # this isolates the ensembling-only effect (no cross-stage attention).
+    n_stages: 1
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
+    monitor: "val/r2"
+    mode: "max"
+
+data:
+  dataloader:
+    batch_size: 24
+  use_cached_embeddings: false
+  tabpfn_oof_dir: data/redesign
+  tabpfn_outer_dir: data/redesign

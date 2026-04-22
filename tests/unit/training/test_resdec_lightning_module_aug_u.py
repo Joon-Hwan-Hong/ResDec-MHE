@@ -102,6 +102,15 @@ def test_sigma_weight_stability_sigma_near_zero(cfg):
     """If one subject has σ=0, weighted-mean normalization must not produce
     NaN/Inf gradients and the max |grad| on stage_2 params must stay within
     ~2× of the uniform-σ baseline."""
+    # aug-U sigma weighting only activates at n_stages>=2 (see training_step
+    # guard). Force n_stages=2 so this test exercises the weighting path.
+    cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    OmegaConf.set_struct(cfg, False)
+    OmegaConf.set_struct(cfg.model, False)
+    OmegaConf.set_struct(cfg.model.resdec_head, False)
+    cfg.model.resdec_head.n_stages = 2
+    cfg.model.resdec_head.aux_lambdas = [1.0, 1.0]
+
     torch.manual_seed(0)
     mod = ResDecLightningModule(cfg).float()
     mod.train()
@@ -131,6 +140,7 @@ def test_sigma_weight_stability_sigma_near_zero(cfg):
     assert max_grad_uniform > 0.0, "baseline test is broken: stage_2 got no gradient"
 
     # ---- σ=0 case: one subject with σ=0, rest σ=1 ----
+    # cfg already has n_stages=2 from the override above; mod2 inherits it.
     torch.manual_seed(0)
     mod2 = ResDecLightningModule(cfg).float()
     mod2.train()
@@ -179,6 +189,14 @@ def test_sigma_weight_constant_sigma_reduces_to_uniform(cfg):
     """With all σ = const, the weighted-mean aux loss must equal the plain MSE
     (up to fp tolerance). This is the sanity check that weighted-mean is the
     correct generalisation of ``.mean()``."""
+    # aug-U sigma weighting only activates at n_stages>=2; force it here.
+    cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    OmegaConf.set_struct(cfg, False)
+    OmegaConf.set_struct(cfg.model, False)
+    OmegaConf.set_struct(cfg.model.resdec_head, False)
+    cfg.model.resdec_head.n_stages = 2
+    cfg.model.resdec_head.aux_lambdas = [1.0, 1.0]
+
     torch.manual_seed(0)
     mod = ResDecLightningModule(cfg).float()
     mod.eval()  # deterministic forward

@@ -45,9 +45,14 @@ from .tabm_wrapper import TabMWrapper
 # matches the value used across HPO configs / ablation sweeps in this project.
 DEFAULT_K_TABM = 8
 
-# Default boosting depth. Phase-3 5-fold (2026-04-22) showed n_stages=3 ties
-# n_stages=1 on mean R²; n_stages=2 is the active investigation target.
-DEFAULT_N_STAGES = 2
+# Default boosting depth. Phase-3 5-fold ablation (2026-04-22) compared
+# n_stages ∈ {1, 2, 3} with TabM(k=8) ensembling on the same 5 folds (seed 42):
+#   n=1 + TabM: R² = 0.4373 ± 0.085  ← BEST mean (canonical)
+#   n=2:        R² = 0.4305 ± 0.079
+#   n=3:        R² = 0.4310 ± 0.083
+# Multi-stage boosting did not earn its parameters in this small-N residual-
+# target regime; TabM ensembling alone is the win. Locked at n_stages=1.
+DEFAULT_N_STAGES = 1
 
 # Allowed values for n_stages. Keep narrow — anything beyond 3 has no design
 # justification in the plan doc and would silently expand the loss formula.
