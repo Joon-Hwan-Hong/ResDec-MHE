@@ -469,9 +469,12 @@ class ResDecLightningModule(pl.LightningModule):
 
         # Pearson r (linear correlation) + Spearman ρ (rank correlation)
         # via numpy-on-CPU — simpler than torch-corrcoef broadcasting.
+        # .float() cast: numpy doesn't support bf16; under bf16-mixed precision
+        # the no-TabPFN-fallback path (Phase-1 plain MSE) leaves preds as bf16
+        # because there's no float-promotion via TabPFN-residual addition.
         import numpy as _np
-        p_np = preds.detach().numpy()
-        t_np = targets.detach().numpy()
+        p_np = preds.detach().float().numpy()
+        t_np = targets.detach().float().numpy()
         if p_np.std() > 0 and t_np.std() > 0:
             pearson_r = float(_np.corrcoef(p_np, t_np)[0, 1])
             # Spearman via rank-corr on np.argsort orderings
