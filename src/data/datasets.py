@@ -49,6 +49,7 @@ from anndata import AnnData
 
 from src.data.constants import CELL_TYPE_ORDER, REGION_ORDER
 from src.data.cell_sampling import CellSampler
+from src.data.tabpfn_input import METADATA_FIELDS, load_metadata_vector
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,9 @@ class CognitiveResilienceDataset(Dataset):
         region_column: str = "BrainRegion",
         max_missing_subject_fraction: float = 0.1,
         transform: Any = None,
+        meta_csv: Path | None = None,
+        age_mean: float | None = None,
+        age_std: float | None = None,
     ):
         """
         Initialize dataset.
@@ -169,6 +173,16 @@ class CognitiveResilienceDataset(Dataset):
                 missing from adata/metadata before raising an error (default: 0.1 = 10%).
                 Set via data.max_missing_subject_fraction in config.
             transform: Optional transform to apply to samples
+            meta_csv: Path to metadata.csv for FiLM metadata vectors. When
+                provided, per-subject 8-dim metadata tensors are precomputed
+                at __init__ (APOE / sex / age + missingness bits) and added to
+                each sample under the "metadata" key. Required together with
+                age_mean/age_std to avoid val leakage via age z-scoring.
+            age_mean: Mean of age_death on the TRAIN fold only, used for
+                z-scoring. Must come from the train split (not pooled) to
+                prevent leakage from val into train statistics.
+            age_std: Std of age_death on the TRAIN fold only, used for
+                z-scoring. Same leakage guard as age_mean.
 
         Note:
             Cell-level data is provided for ALL cell types. The model's CellTypeSelector
@@ -209,6 +223,14 @@ class CognitiveResilienceDataset(Dataset):
 
         # Validate subjects exist in both adata and metadata
         self._validate_subjects()
+
+        # FiLM metadata: precompute per-subject 8-dim vectors once using the
+        # fold's train-only age_mean/age_std (passed in from the datamodule)
+        # to avoid val leakage via z-scoring statistics.
+        self.meta_csv = Path(meta_csv) if meta_csv is not None else None
+        self.age_mean = age_mean
+        self.age_std = age_std
+        self._metadata_vectors = self._precompute_metadata_vectors()
 
         # Pre-compute subject-to-row index mapping to avoid O(n_cells) string
         # scan in __getitem__. Single-pass O(n_cells) groupby instead of
@@ -307,6 +329,32 @@ class CognitiveResilienceDataset(Dataset):
                     val = self.metadata.loc[sid, self.target_column]
                     if not pd.isna(val):
                         self._target_array[i] = float(val)
+
+    def _precompute_metadata_vectors(self) -> torch.Tensor | None:
+        """Precompute per-subject 8-dim FiLM metadata vectors.
+
+        Called once at __init__ (after ``_validate_subjects`` finalizes
+        ``self.subject_ids``). When ``meta_csv`` is None the dataset skips
+        FiLM wiring entirely — the lightning module's None→zeros fallback
+        covers tests / legacy callers that don't pass metadata.
+
+        Returns:
+            Tensor of shape [n_subjects, len(METADATA_FIELDS)] or None.
+        """
+        if self.meta_csv is None:
+            return None
+        kwargs = {}
+        if self.age_mean is not None:
+            kwargs["age_mean"] = float(self.age_mean)
+        if self.age_std is not None:
+            kwargs["age_std"] = float(self.age_std)
+        vecs = [
+            load_metadata_vector(sid, self.meta_csv, **kwargs)[0]
+            for sid in self.subject_ids
+        ]
+        return torch.stack(vecs).float() if vecs else torch.zeros(
+            0, len(METADATA_FIELDS), dtype=torch.float32
+        )
 
     def __len__(self) -> int:
         return len(self.subject_ids)
@@ -414,6 +462,12 @@ class CognitiveResilienceDataset(Dataset):
             "pathology": torch.from_numpy(pathology).float(),
             "cognition": torch.tensor([target], dtype=torch.float32),
         }
+
+        # FiLM metadata vector (APOE + sex + age + missingness bits). Only
+        # attached when meta_csv was provided at __init__ — the lightning
+        # module's None→zeros fallback covers the unconfigured case.
+        if self._metadata_vectors is not None:
+            sample["metadata"] = self._metadata_vectors[idx]
 
         # Add multi-region pseudobulk data (if BrainRegion column exists)
         for key, value in region_pseudobulks.items():
@@ -699,6 +753,9 @@ class PrecomputedDataset(Dataset):
         cell_type_order: list[str] | None = None,
         max_missing_subject_fraction: float = 0.1,
         preloaded_cache: dict[str, dict[str, Any]] | None = None,
+        meta_csv: Path | None = None,
+        age_mean: float | None = None,
+        age_std: float | None = None,
     ):
         """
         Initialize from precomputed .pt features (loaded into RAM).
@@ -718,6 +775,15 @@ class PrecomputedDataset(Dataset):
             preloaded_cache: Pre-loaded subject data from :meth:`load_subject_cache`.
                 When provided, validation runs from cache with zero disk I/O
                 (``_validate_from_cache``) instead of loading from disk.
+            meta_csv: Path to metadata.csv for FiLM metadata vectors. When
+                provided, per-subject 8-dim metadata tensors are precomputed
+                and baked into each sample template under the "metadata" key.
+                Required together with age_mean/age_std to avoid val leakage.
+            age_mean: Mean of age_death on the TRAIN fold only, used for
+                z-scoring. Must come from the train split (not pooled) to
+                prevent leakage from val into train statistics.
+            age_std: Std of age_death on the TRAIN fold only, used for
+                z-scoring. Same leakage guard as age_mean.
         """
         self.feature_dir = Path(feature_dir)
         self.subject_ids = list(subject_ids)
@@ -726,6 +792,9 @@ class PrecomputedDataset(Dataset):
         self.target_column = target_column
         self.pathology_columns = pathology_columns or ["gpath", "amylsqrt", "tangsqrt"]
         self.max_missing_subject_fraction = max_missing_subject_fraction
+        self.meta_csv = Path(meta_csv) if meta_csv is not None else None
+        self.age_mean = age_mean
+        self.age_std = age_std
 
         # Single-pass load + validate: loads each .pt file exactly once,
         # detecting cell_type_order, filtering degenerate subjects, and
@@ -767,6 +836,11 @@ class PrecomputedDataset(Dataset):
             self._target_array, dtype=torch.float32
         ).unsqueeze(1)  # [N_subjects, 1]
 
+        # FiLM metadata: precompute per-subject 8-dim vectors once using the
+        # fold's train-only age_mean/age_std. Subjects use the same train-only
+        # stats for both train and val datasets to avoid leakage.
+        self._metadata_vectors = self._precompute_metadata_vectors()
+
         # Pre-build sample templates (avoids dict construction per __getitem__)
         from src.data.constants import N_REGIONS, PFC_REGION_IDX
 
@@ -787,6 +861,8 @@ class PrecomputedDataset(Dataset):
                 "pathology": torch.from_numpy(self._pathology_array[i]).float(),
                 "cognition": self._cognition_tensors[i],
             }
+            if self._metadata_vectors is not None:
+                template["metadata"] = self._metadata_vectors[i]
             # Pre-stack region pseudobulks into [n_regions, n_cell_types, n_genes]
             # so collation can torch.stack directly instead of allocating zeros
             # + nested fill loop over the 36 MB region_pseudobulk tensor.
@@ -1358,6 +1434,31 @@ class PrecomputedDataset(Dataset):
         _validate_no_nan_columns(
             self.metadata, self.subject_ids,
             self.pathology_columns, "pathology",
+        )
+
+    def _precompute_metadata_vectors(self) -> torch.Tensor | None:
+        """Precompute per-subject 8-dim FiLM metadata vectors.
+
+        Called once at __init__ after subject_ids is finalized. When
+        ``meta_csv`` is None the dataset skips FiLM wiring — the lightning
+        module's None→zeros fallback covers tests / legacy callers.
+
+        Returns:
+            Tensor of shape [n_subjects, len(METADATA_FIELDS)] or None.
+        """
+        if self.meta_csv is None:
+            return None
+        kwargs = {}
+        if self.age_mean is not None:
+            kwargs["age_mean"] = float(self.age_mean)
+        if self.age_std is not None:
+            kwargs["age_std"] = float(self.age_std)
+        vecs = [
+            load_metadata_vector(sid, self.meta_csv, **kwargs)[0]
+            for sid in self.subject_ids
+        ]
+        return torch.stack(vecs).float() if vecs else torch.zeros(
+            0, len(METADATA_FIELDS), dtype=torch.float32
         )
 
     def get_gene_names(self) -> list[str] | None:

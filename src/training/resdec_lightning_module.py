@@ -19,9 +19,12 @@ Scope (current)
 
 Metadata wiring
 ---------------
-ResDecH3Head consumes an 8-dim metadata vector (APOE/sex/age FiLM conditioning).
-Datamodule wiring is deferred to Phase 4 — the current fallback uses a zero
-tensor (FiLM initialises near-identity, so zeros → no-op at init).
+ResDecH3Head consumes an 8-dim metadata vector (APOE/sex/age FiLM conditioning)
+populated by the datamodule via ``src.data.tabpfn_input.load_metadata_vector``.
+Age is z-scored with fold-train-only ``age_mean``/``age_std`` to avoid val
+leakage. A zero-tensor fallback remains for tests / legacy callers that
+construct minimal batches without metadata (FiLM initialises near-identity,
+so zeros → no-op at init).
 
 History
 -------
@@ -283,10 +286,12 @@ class ResDecLightningModule(pl.LightningModule):
     def _get_metadata(self, batch: dict, batch_size: int) -> torch.Tensor:
         """Return [B, d_metadata] FiLM conditioning vector.
 
-        # TODO(phase4): wire metadata from datamodule via
-        #   src.data.tabpfn_input.load_metadata_vector
-        # Phase 1 placeholder: zero tensor. FiLM is initialised so that
-        # gamma=1, beta=0 → zero metadata leaves z unchanged (near-identity).
+        Reads ``batch["metadata"]`` populated by the datamodule via
+        ``src.data.tabpfn_input.load_metadata_vector`` (APOE + sex + age +
+        missingness bits). Falls back to a zero tensor when the key is
+        absent — tests and legacy callers that construct minimal batches
+        rely on this path. FiLM is initialised so that gamma=1, beta=0, so
+        a zero metadata vector leaves z unchanged (near-identity).
         """
         md = batch.get("metadata")
         if md is None:

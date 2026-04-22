@@ -218,6 +218,7 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         - cell_counts: [batch, n_cell_types] number of cells per type
         - pathology: [batch, n_pathology]
         - cognition: [batch, 1]
+        - metadata: [batch, d_metadata] FiLM conditioning (only if samples carry it)
         - ccc_edge_index: [2, total_edges] batched edge indices (with node offsets)
         - ccc_edge_type: [total_edges] edge type indices
         - ccc_edge_attr: [total_edges, 1] edge attributes
@@ -242,6 +243,11 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     pathology = torch.empty(batch_size, *s0["pathology"].shape, dtype=torch.float32)
     cognition = torch.empty(batch_size, *s0["cognition"].shape, dtype=torch.float32)
     region_mask = torch.empty(batch_size, *s0["region_mask"].shape, dtype=torch.bool)
+    has_metadata = "metadata" in s0
+    metadata = (
+        torch.empty(batch_size, *s0["metadata"].shape, dtype=torch.float32)
+        if has_metadata else None
+    )
 
     for i, s in enumerate(batch):
         pseudobulk[i] = s["pseudobulk"]
@@ -250,6 +256,8 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         pathology[i] = s["pathology"]
         cognition[i] = s["cognition"]
         region_mask[i] = s["region_mask"]
+        if has_metadata:
+            metadata[i] = s["metadata"]
 
     # ─────────────────────────────────────────────────────────────────────────
     # Cell-level data: flat format (cell_data + cell_offsets)
@@ -299,6 +307,9 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "batch_size": batch_size,
     }
 
+    if metadata is not None:
+        result["metadata"] = metadata
+
     return result
 
 
@@ -324,6 +335,7 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
         - ccc_edge_attr: [E_total, edge_dim] edge attributes
         - pathology: [batch, n_pathology]
         - cognition: [batch, 1]
+        - metadata: [batch, d_metadata] FiLM conditioning (only if samples carry it)
         - cell_data: [total_cells, n_genes] concatenated cell expressions
         - cell_offsets: [batch, n_cell_types + 1] cumulative offsets
         - region_mask: [batch, n_regions] bool mask for available regions
@@ -341,6 +353,11 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
     cognition = torch.empty(batch_size, *s0["cognition"].shape, dtype=torch.float32)
     if not skip_region_mask:
         region_mask = torch.empty(batch_size, *s0["region_mask"].shape, dtype=torch.bool)
+    has_metadata = "metadata" in s0
+    metadata = (
+        torch.empty(batch_size, *s0["metadata"].shape, dtype=torch.float32)
+        if has_metadata else None
+    )
 
     for i, s in enumerate(batch):
         pseudobulk[i] = s["pseudobulk"]
@@ -350,6 +367,8 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
         cognition[i] = s["cognition"]
         if not skip_region_mask:
             region_mask[i] = s["region_mask"]
+        if has_metadata:
+            metadata[i] = s["metadata"]
 
     # ─────────────────────────────────────────────────────────────────────────
     # Cell-level data: flat format (cell_data + cell_offsets)
@@ -385,6 +404,9 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
 
     if not skip_region_mask:
         result["region_mask"] = region_mask
+
+    if metadata is not None:
+        result["metadata"] = metadata
 
     return result
 
