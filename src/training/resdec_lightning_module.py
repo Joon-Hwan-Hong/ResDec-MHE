@@ -109,9 +109,10 @@ class ResDecLightningModule(pl.LightningModule):
         )
         self._d_metadata = d_metadata
 
-        # Validation accumulators for epoch-level R² / MSE.
+        # Validation accumulators for epoch-level R² / MSE / full metric suite.
         self._val_preds: list[torch.Tensor] = []
         self._val_targets: list[torch.Tensor] = []
+        self._val_subject_ids: list[str] = []
 
         # ------------------------------------------------------------------ #
         # Phase 2 (Task 2.2): TabPFN residual base                            #
@@ -323,6 +324,8 @@ class ResDecLightningModule(pl.LightningModule):
 
         self._val_preds.append(pred.cpu())
         self._val_targets.append(target.cpu())
+        if "subject_ids" in batch:
+            self._val_subject_ids.extend(list(batch["subject_ids"]))
 
     def on_validation_epoch_end(self) -> None:
         if not self._val_preds:
@@ -331,7 +334,9 @@ class ResDecLightningModule(pl.LightningModule):
         targets = torch.cat(self._val_targets, dim=0)
 
         # Epoch MSE over full val set (not batch-mean, which is sample-size biased).
-        mse = torch.mean((preds - targets) ** 2)
+        mse = torch.mean((preds - targets) ** 2).item()
+        mae = torch.mean(torch.abs(preds - targets)).item()
+        rmse = math.sqrt(mse)
 
         # R² = 1 - SS_res / SS_tot. If SS_tot == 0 (constant targets), R² is
         # undefined — log NaN so it's visible rather than silently 0.
@@ -342,12 +347,61 @@ class ResDecLightningModule(pl.LightningModule):
         else:
             r2 = float("nan")
 
+        # Pearson r (linear correlation) + Spearman ρ (rank correlation)
+        # via numpy-on-CPU — simpler than torch-corrcoef broadcasting.
+        import numpy as _np
+        p_np = preds.detach().numpy()
+        t_np = targets.detach().numpy()
+        if p_np.std() > 0 and t_np.std() > 0:
+            pearson_r = float(_np.corrcoef(p_np, t_np)[0, 1])
+            # Spearman via rank-corr on np.argsort orderings
+            from scipy.stats import spearmanr as _spearmanr  # noqa: PLC0415
+            spearman_rho = float(_spearmanr(p_np, t_np).correlation)
+        else:
+            pearson_r = float("nan")
+            spearman_rho = float("nan")
+
         self.log("val/mse", mse, prog_bar=True, sync_dist=True)
+        self.log("val/mae", mae, prog_bar=False, sync_dist=True)
+        self.log("val/rmse", rmse, prog_bar=False, sync_dist=True)
         if not math.isnan(r2):
             self.log("val/r2", r2, prog_bar=True, sync_dist=True)
+        if not math.isnan(pearson_r):
+            self.log("val/pearson_r", pearson_r, prog_bar=False, sync_dist=True)
+        if not math.isnan(spearman_rho):
+            self.log("val/spearman_rho", spearman_rho, prog_bar=False, sync_dist=True)
+
+        # Persist per-subject predictions for downstream full-metric recomputation
+        # and interpretability. Overwritten each val epoch; the final .npz reflects
+        # the final epoch. Best-epoch predictions can be recovered via ModelCheckpoint.
+        if self._val_subject_ids and len(self._val_subject_ids) == len(p_np):
+            try:
+                log_dir = None
+                try:
+                    log_dir = Path(self.trainer.log_dir) if self.trainer.log_dir else None
+                except Exception:
+                    log_dir = None
+                if log_dir is None:
+                    log_dir = Path("outputs/redesign/val_predictions")
+                log_dir.mkdir(parents=True, exist_ok=True)
+                _np.savez(
+                    log_dir / "val_predictions_final.npz",
+                    subject_ids=_np.array(self._val_subject_ids, dtype=object),
+                    predictions=p_np.astype(_np.float32),
+                    targets=t_np.astype(_np.float32),
+                    epoch=int(self.current_epoch),
+                    mse=mse, mae=mae, rmse=rmse,
+                    r2=r2, pearson_r=pearson_r, spearman_rho=spearman_rho,
+                )
+            except Exception as e:  # do not let IO crash training
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Failed to persist val predictions: %s", e,
+                )
 
         self._val_preds.clear()
         self._val_targets.clear()
+        self._val_subject_ids.clear()
 
     # ------------------------------------------------------------------ #
     # Optimizer                                                          #
