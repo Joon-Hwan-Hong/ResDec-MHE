@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import logging
 import math
+from pathlib import Path
 from typing import Any
 
 import lightning.pytorch as pl
+import numpy as np
 import torch
 from omegaconf import DictConfig
 
@@ -111,6 +113,100 @@ class ResDecLightningModule(pl.LightningModule):
         self._val_preds: list[torch.Tensor] = []
         self._val_targets: list[torch.Tensor] = []
 
+        # ------------------------------------------------------------------ #
+        # Phase 2 (Task 2.2): TabPFN residual base                            #
+        # ------------------------------------------------------------------ #
+        # If cfg.data.tabpfn_oof_dir / tabpfn_outer_dir are provided, load the
+        # fold-specific cached TabPFN predictions and build subject_id -> (y, σ)
+        # lookup dicts. The head then trains on residuals y - y_tabpfn_oof and
+        # validates on composite prediction ŷ = y_tabpfn_outer + f̂_1.
+        # When the paths are absent we fall back to plain MSE (Phase 1 behaviour).
+        self.tabpfn_train_map: dict[str, tuple[float, float]] = {}
+        self.tabpfn_val_map: dict[str, tuple[float, float]] = {}
+        self._tabpfn_enabled = False
+        data_cfg = config.get("data", {}) or {}
+        oof_dir = data_cfg.get("tabpfn_oof_dir", None)
+        outer_dir = data_cfg.get("tabpfn_outer_dir", None)
+        fold = data_cfg.get("fold", None)
+        if oof_dir is not None and outer_dir is not None:
+            if fold is None:
+                raise ValueError(
+                    "TabPFN residual base requires cfg.data.fold to be set "
+                    "so the correct fold's .npz files can be loaded."
+                )
+            self._load_tabpfn_caches(
+                oof_dir=Path(str(oof_dir)),
+                outer_dir=Path(str(outer_dir)),
+                fold=int(fold),
+            )
+            self._tabpfn_enabled = True
+            logger.info(
+                "TabPFN residual base enabled (fold=%d): %d train-OOF subjects, "
+                "%d outer-val subjects",
+                int(fold), len(self.tabpfn_train_map), len(self.tabpfn_val_map),
+            )
+
+    # ------------------------------------------------------------------ #
+    # TabPFN cache loading (Phase 2 Task 2.2)                             #
+    # ------------------------------------------------------------------ #
+    def _load_tabpfn_caches(
+        self, oof_dir: Path, outer_dir: Path, fold: int,
+    ) -> None:
+        """Load cached TabPFN OOF + outer-fold predictions for this fold.
+
+        OOF (training) file keys: subject_ids, y_true, y_tabpfn_oof, sigma_tabpfn_oof.
+        Outer (validation) file keys: val_subject_ids, y_true, y_tabpfn, sigma_tabpfn.
+        """
+        oof_path = oof_dir / f"tabpfn_oof_fold{fold}.npz"
+        outer_path = outer_dir / f"tabpfn_outer_fold{fold}.npz"
+        if not oof_path.exists():
+            raise FileNotFoundError(f"TabPFN OOF cache not found: {oof_path}")
+        if not outer_path.exists():
+            raise FileNotFoundError(f"TabPFN outer cache not found: {outer_path}")
+
+        oof = np.load(oof_path, allow_pickle=True)
+        outer = np.load(outer_path, allow_pickle=True)
+
+        oof_sids = [str(s) for s in oof["subject_ids"]]
+        self.tabpfn_train_map = {
+            sid: (float(oof["y_tabpfn_oof"][i]), float(oof["sigma_tabpfn_oof"][i]))
+            for i, sid in enumerate(oof_sids)
+        }
+
+        outer_sids = [str(s) for s in outer["val_subject_ids"]]
+        self.tabpfn_val_map = {
+            sid: (float(outer["y_tabpfn"][i]), float(outer["sigma_tabpfn"][i]))
+            for i, sid in enumerate(outer_sids)
+        }
+
+    def _tabpfn_train_batch(
+        self, subject_ids: list[str], device: torch.device, dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Gather TabPFN OOF predictions for training subjects in batch order."""
+        try:
+            values = [self.tabpfn_train_map[sid][0] for sid in subject_ids]
+        except KeyError as exc:
+            raise KeyError(
+                f"Subject {exc.args[0]!r} is missing from the TabPFN OOF cache "
+                f"(fold cache has {len(self.tabpfn_train_map)} subjects). "
+                f"Check cfg.data.fold matches the DataModule fold_idx."
+            ) from exc
+        return torch.tensor(values, device=device, dtype=dtype)
+
+    def _tabpfn_val_batch(
+        self, subject_ids: list[str], device: torch.device, dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Gather TabPFN outer predictions for val subjects in batch order."""
+        try:
+            values = [self.tabpfn_val_map[sid][0] for sid in subject_ids]
+        except KeyError as exc:
+            raise KeyError(
+                f"Val subject {exc.args[0]!r} is missing from the TabPFN outer "
+                f"cache (fold cache has {len(self.tabpfn_val_map)} subjects). "
+                f"Check cfg.data.fold matches the DataModule fold_idx."
+            ) from exc
+        return torch.tensor(values, device=device, dtype=dtype)
+
     # ------------------------------------------------------------------ #
     # Forward                                                            #
     # ------------------------------------------------------------------ #
@@ -180,9 +276,30 @@ class ResDecLightningModule(pl.LightningModule):
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         out = self.forward(batch)
-        loss = self._mse(out["prediction"], batch["cognition"])
-        bs = batch["cognition"].shape[0]
-        self.log("train/mse", loss, prog_bar=True, batch_size=bs, sync_dist=True)
+        pred = out["prediction"]  # [B] — head output
+        cognition = batch["cognition"]
+        if cognition.dim() == 2 and cognition.shape[-1] == 1:
+            cognition = cognition.squeeze(-1)
+        bs = cognition.shape[0]
+
+        if self._tabpfn_enabled:
+            # Phase 2: train on residual target y - y_tabpfn_oof.
+            # Composite prediction = ŷ_tabpfn + f̂_1 (for monitoring).
+            subject_ids = batch["subject_ids"]  # list[str] from collate_for_hgt
+            y_tabpfn = self._tabpfn_train_batch(
+                subject_ids, device=cognition.device, dtype=cognition.dtype,
+            )
+            residual_target = cognition - y_tabpfn
+            loss = torch.nn.functional.mse_loss(pred, residual_target)
+            composite = pred.detach() + y_tabpfn
+            comp_mse = torch.nn.functional.mse_loss(composite, cognition)
+            self.log("train/residual_mse", loss, prog_bar=True, batch_size=bs, sync_dist=True)
+            self.log("train/composite_mse", comp_mse, prog_bar=False, batch_size=bs, sync_dist=True)
+        else:
+            # Phase 1 fallback: plain MSE against cognition.
+            loss = torch.nn.functional.mse_loss(pred, cognition)
+            self.log("train/mse", loss, prog_bar=True, batch_size=bs, sync_dist=True)
+
         return loss
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
@@ -191,6 +308,14 @@ class ResDecLightningModule(pl.LightningModule):
         target = batch["cognition"].detach()
         if target.dim() == 2 and target.shape[-1] == 1:
             target = target.squeeze(-1)
+
+        if self._tabpfn_enabled:
+            # Phase 2: composite prediction ŷ = y_tabpfn_outer + f̂_1.
+            subject_ids = batch["subject_ids"]
+            y_tabpfn = self._tabpfn_val_batch(
+                subject_ids, device=target.device, dtype=target.dtype,
+            )
+            pred = pred + y_tabpfn  # composite
 
         loss = torch.nn.functional.mse_loss(pred, target)
         bs = target.shape[0]

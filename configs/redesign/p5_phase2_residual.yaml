@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ResDec-H3 Phase 2 (Task 2.2) — TabPFN-2.6 as inference-time residual base.
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Training targets become y - y_tabpfn_oof (residuals from the cached
+# within-train OOF predictions). Validation prediction is the composite
+# ŷ = y_tabpfn_outer + f̂_1 where f̂_1 is the encoder+head head output.
+# TabPFN itself is NOT trained here — its predictions are read from the
+# cached .npz files produced in Phase 0.
+#
+# Cache files are fold-specific:
+#   data/redesign/tabpfn_oof_fold{fold}.npz   — inner-OOF predictions for training
+#   data/redesign/tabpfn_outer_fold{fold}.npz — outer-fold predictions for val
+#
+# Design note: this is the LIVE-encoder path (use_cached_embeddings: false) so
+# we train encoder + head end-to-end. Batch size 24 matches Phase 1 live.
+
+experiment:
+  run_name: "p5_phase2_tabpfn_residual"
+
+model:
+  # Dataset-specific dims (filled here because default.yaml leaves n_genes null).
+  n_genes: 4785
+  n_cell_types: 31
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+
+training:
+  # Flat-top-level overrides honoured by ResDecLightningModule.configure_optimizers.
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 60
+  early_stopping:
+    patience: 10
+    min_epochs: 5
+    monitor: "val/r2"
+    mode: "max"
+
+data:
+  dataloader:
+    # Live-encoder regime; matches Phase 1 live step count.
+    batch_size: 24
+  use_cached_embeddings: false
+  # Phase-2 TabPFN residual cache paths (fold index is filled by train script).
+  tabpfn_oof_dir: data/redesign
+  tabpfn_outer_dir: data/redesign
