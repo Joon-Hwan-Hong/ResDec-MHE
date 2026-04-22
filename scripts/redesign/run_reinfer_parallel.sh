@@ -10,8 +10,8 @@
 set -euo pipefail
 
 ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
-CONFIG="configs/redesign/p5_phase2_residual.yaml"
-OUTROOT="outputs/redesign/p5_phase2_residual"
+CONFIG="${CONFIG:-configs/redesign/p5_phase2_residual.yaml}"
+OUTROOT="${OUTROOT:-outputs/redesign/p5_phase2_residual}"
 FOLDS=(0 1 2 3 4)
 
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"

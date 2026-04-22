@@ -36,6 +36,7 @@ from omegaconf import OmegaConf
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.embedding_datamodule import EmbeddingDataModule
 from src.data.splits import load_splits
+from src.training.callbacks import MinEpochEarlyStopping
 from src.training.resdec_frozen_lightning_module import ResDecFrozenLightningModule
 from src.training.resdec_lightning_module import ResDecLightningModule
 
@@ -155,13 +156,34 @@ def main(args: argparse.Namespace) -> None:
         auto_insert_metric_name=False,
     )
 
+    # Early stopping: active iff cfg.training.early_stopping is present. The
+    # existing redesign runs showed every fold overfits past epoch ~8 on the
+    # residual target (seed 42), so the callback is essential for q2+ runs.
+    # MinEpochEarlyStopping guards warmup; min_epochs below ES patience prevents
+    # premature stop on fold-2-like early peaks.
+    callbacks: list = [checkpoint_cb]
+    es_cfg = cfg.training.get("early_stopping", None)
+    if es_cfg is not None:
+        es_cb = MinEpochEarlyStopping(
+            min_epochs=int(es_cfg.get("min_epochs", 3)),
+            monitor=str(es_cfg.get("monitor", "val/r2")),
+            mode=str(es_cfg.get("mode", "max")),
+            patience=int(es_cfg.get("patience", 5)),
+            min_delta=float(es_cfg.get("min_delta", 0.0)),
+            verbose=True,
+        )
+        callbacks.append(es_cb)
+        logger.info("EarlyStopping: %r", es_cb)
+    else:
+        logger.info("EarlyStopping disabled (no cfg.training.early_stopping block).")
+
     trainer = pl.Trainer(
         max_epochs=int(cfg.training.max_epochs),
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
         logger=False,
         enable_checkpointing=True,
-        callbacks=[checkpoint_cb],
+        callbacks=callbacks,
         enable_progress_bar=True,
         # Pulls from cfg.training.precision (default.yaml: "bf16-mixed"). Full-
         # cohort NPT (bs~412) makes fp32 OOM on a 48 GB GPU; bf16-mixed (Ada-

@@ -30,10 +30,14 @@ training:
   # Flat-top-level overrides honoured by ResDecLightningModule.configure_optimizers.
   lr: 0.0015
   weight_decay: 5.6e-6
-  max_epochs: 60
+  # max_epochs trimmed from 60 → 20. Seed-42 5-fold best-epoch peaks spanned
+  # 0-8 on this residual-target + near-identity-init + N=412 regime; 20 gives
+  # ES patience room without wasteful post-peak training.
+  max_epochs: 20
   early_stopping:
-    patience: 10
-    min_epochs: 5
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
     monitor: "val/r2"
     mode: "max"
 

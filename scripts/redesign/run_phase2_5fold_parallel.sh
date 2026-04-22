@@ -4,15 +4,25 @@
 # (mirrors scripts/training/run_sensitivity.sh). Waits for each batch to
 # complete before dispatching the next.
 #
+# Env overrides (all optional):
+#   CONFIG        phase YAML (default: configs/redesign/p5_phase2_residual.yaml)
+#   OUTROOT       output directory (default: outputs/redesign/p5_phase2_residual)
+#   MAX_EPOCHS    override cfg.training.max_epochs (default: unset → config wins)
+#   RUN_REINFER   1|0 auto-run reinfer_best_ckpt after training (default: 1)
+#   N_GPUS        number of GPUs to use (default: all visible)
+#   GPU_LIST      comma-separated GPU list, e.g. "0,1"
+#
 # Usage:
-#   bash scripts/redesign/run_phase2_5fold_parallel.sh        # uses all GPUs
-#   N_GPUS=2 bash scripts/redesign/run_phase2_5fold_parallel.sh
-#   GPU_LIST="0,1" bash scripts/redesign/run_phase2_5fold_parallel.sh
+#   bash scripts/redesign/run_phase2_5fold_parallel.sh
+#   MAX_EPOCHS=20 bash scripts/redesign/run_phase2_5fold_parallel.sh
+#   RUN_REINFER=0 bash scripts/redesign/run_phase2_5fold_parallel.sh
 set -euo pipefail
 
 ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
-CONFIG="configs/redesign/p5_phase2_residual.yaml"
-OUTROOT="outputs/redesign/p5_phase2_residual"
+CONFIG="${CONFIG:-configs/redesign/p5_phase2_residual.yaml}"
+OUTROOT="${OUTROOT:-outputs/redesign/p5_phase2_residual}"
+MAX_EPOCHS="${MAX_EPOCHS:-}"
+RUN_REINFER="${RUN_REINFER:-1}"
 FOLDS=(0 1 2 3 4)
 
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"
@@ -42,12 +52,14 @@ while (( idx < ${#FOLDS[@]} )); do
         out="$OUTROOT/fold${fold}"
         mkdir -p "$out"
         echo "[$(date '+%H:%M:%S')] fold $fold -> GPU $gpu"
-        CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/redesign/train_resdec.py \
-            --config "$CONFIG" \
-            --fold "$fold" \
-            --max-epochs 60 \
-            --output-dir "$OUTROOT" \
-            > "$out/fold${fold}_train.log" 2>&1 &
+        CMD=(CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/redesign/train_resdec.py
+             --config "$CONFIG"
+             --fold "$fold"
+             --output-dir "$OUTROOT")
+        if [[ -n "$MAX_EPOCHS" ]]; then
+            CMD+=(--max-epochs "$MAX_EPOCHS")
+        fi
+        env "${CMD[@]}" > "$out/fold${fold}_train.log" 2>&1 &
         PIDS+=($!)
         DESCR+=("fold${fold}:gpu${gpu}:pid=$!")
         idx=$((idx + 1))
@@ -63,6 +75,16 @@ while (( idx < ${#FOLDS[@]} )); do
 done
 
 echo ""
+if [[ "$RUN_REINFER" == "1" ]]; then
+    echo "=== Running reinfer_best_ckpt across all folds for val_predictions_best.npz ==="
+    # Propagate GPU selection if the caller set one; reinfer driver reads the
+    # same env var. Default: reinfer uses whatever GPUs it sees.
+    CONFIG="$CONFIG" OUTROOT="$OUTROOT" \
+        bash scripts/redesign/run_reinfer_parallel.sh || \
+        echo "WARN: reinfer driver returned non-zero; check per-fold *_reinfer.log"
+    echo ""
+fi
+
 echo "=== All 5 folds attempted. Summarizing... ==="
 uv run python -c "
 import json
