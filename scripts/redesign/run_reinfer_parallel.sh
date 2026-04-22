@@ -14,7 +14,7 @@
 #
 # Usage:
 #   bash scripts/redesign/run_reinfer_parallel.sh
-#   OUTROOT=outputs/redesign/p5_phase3 bash scripts/redesign/run_reinfer_parallel.sh
+#   OUTROOT=outputs/redesign/<your_run> bash scripts/redesign/run_reinfer_parallel.sh
 set -euo pipefail
 
 ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
@@ -69,7 +69,7 @@ echo "=== Reinfer done. Summarizing best-epoch metrics + TabPFN comparison... ==
 # Pass paths via env so the heredoc stays quoted (no $-substitution surprises).
 OUTROOT="$OUTROOT" TABPFN_DIR="$TABPFN_DIR" uv run python - <<'PY'
 import json
-import os
+import os  # only for os.environ — path ops use pathlib below
 from pathlib import Path
 import numpy as np
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error

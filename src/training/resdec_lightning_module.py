@@ -1,16 +1,16 @@
 """PyTorch Lightning wrapper composing the existing CognitiveResilienceModel
-encoder with the ResDec-H3 head (Phase 3: 3-stage H3 composer with aug-U
-uncertainty-weighted auxiliary losses).
+encoder with the ResDec-H3 head (N-stage H3 composer, N ∈ {1, 2, 3},
+default 1, with aug-U uncertainty-weighted auxiliary losses).
 
-Phase 3 scope (current)
------------------------
+Scope (current)
+---------------
 - Encoder: existing ``CognitiveResilienceModel`` (unchanged), built via
   :func:`build_model_from_config`. Forward returns a dict with ``attended``
   ``[B, d_fused]`` — this is the subject embedding consumed by the head.
-- Head: :class:`ResDecH3Head` (FiLM + 3× [NPTStage wrapped in TabM with
-  cross-stage attention] + per-stage scalar readouts).
-- Loss: composite residual MSE + 3 detached-residual aux losses
-  (``L_main + λ_1·L_aux1 + λ_2·L_aux2 + λ_3·L_aux3``). ``L_aux{2,3}`` use the
+- Head: :class:`ResDecH3Head` (FiLM + N × [NPTStage wrapped in TabM with
+  cross-stage attention for stages k > 1] + per-stage scalar readouts).
+- Loss: composite residual MSE + N detached-residual aux losses
+  (``L_main + Σ_k λ_k·L_aux_k``). For N >= 2, ``L_aux_{k>=2}`` uses the
   aug-U weighting ``w(σ) = 1/(σ² + sigma_eps)`` with a **weighted-mean**
   reduction (``(w·diff²).sum() / w.sum()``) so a single confident subject
   cannot dominate the loss. TabPFN predictions / σ are loaded from per-fold
@@ -29,8 +29,11 @@ History
   plain MSE against cognition.
 - Phase 2 (task 2.2): added TabPFN OOF / outer-fold residual caches so the
   head could learn on ``y − ŷ_tabpfn`` instead of raw y.
-- Phase 3 (task 3.1, current): extended to 3 stages, introduced detached
-  residual aux losses and aug-U σ-weighting.
+- Phase 3 (task 3.1): extended to N stages (N ∈ {1, 2, 3}), introduced
+  detached residual aux losses and aug-U σ-weighting.
+- Phase 3 lock-in (2026-04-22): 5-fold ablation on n_stages ∈ {1, 2, 3}
+  with TabM(k=8) picked n_stages=1 as canonical (R² = 0.4373 ± 0.085,
+  best of the three). Multi-stage support is preserved for ablations.
 """
 from __future__ import annotations
 
@@ -128,6 +131,13 @@ class ResDecLightningModule(pl.LightningModule):
             )
         self._n_stages = n_stages
         self._aux_lambdas: tuple[float, ...] = tuple(float(x) for x in aux_lambdas)
+        if n_stages == 1 and self._aux_lambdas[0] != 0.0:
+            logger.warning(
+                "n_stages=1 with aux_lambdas[0]=%.3f: L_aux_1 is identical to L_main "
+                "(double-weights MSE). Set aux_lambdas=[0.0] to disable, or keep as-is "
+                "for the canonical Phase-3-locked config.",
+                self._aux_lambdas[0],
+            )
         self._use_sigma_weighting = bool(resdec_cfg.get("use_sigma_weighting", True))
         # Numerical floor for aug-U: w(σ) = 1 / (σ² + eps). See module-level
         # DEFAULT_SIGMA_EPS for rationale.
@@ -413,8 +423,9 @@ class ResDecLightningModule(pl.LightningModule):
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
         out = self.forward(batch)
-        # Phase 3: pred["prediction"] is the sum f̂_1+f̂_2+f̂_3. Composite prediction
-        # at val time is ŷ_tabpfn + f̂_1 + f̂_2 + f̂_3.
+        # pred["prediction"] is the sum Σ_k f̂_k over present stages
+        # (N ∈ {1, 2, 3}, default 1). Composite prediction at val time is
+        # ŷ_tabpfn + Σ_k f̂_k.
         pred = out["prediction"].detach()
         target = batch["cognition"].detach()
         if target.dim() == 2 and target.shape[-1] == 1:

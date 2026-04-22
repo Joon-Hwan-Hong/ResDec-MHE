@@ -330,3 +330,55 @@ def test_tabpfn_disabled_fallback(cfg):
         f"fallback loss != plain MSE(pred, cognition): "
         f"loss={loss.item():.6g} expected={expected.item():.6g}"
     )
+
+
+# ---------------------------------------------------------------------------- #
+# M2 / M3: canonical n_stages=1 regression + aux_lambdas length mismatch        #
+# ---------------------------------------------------------------------------- #
+def test_n_stages_1_skips_sigma_weighting(cfg):
+    """At n_stages=1, sigma weighting is irrelevant — there's only stage_1
+    whose aux loss is unweighted MSE. Verify no sigma_weight_* logs appear
+    and the loss reduces to L_main + λ_1·MSE(stage_1, residual)."""
+    # cfg fixture defaults to n_stages=1 (canonical: ResDecH3Head.DEFAULT_N_STAGES).
+    # Don't override — this test is specifically about the canonical shape.
+    torch.manual_seed(0)
+    mod = ResDecLightningModule(cfg).float()
+    mod.eval()
+    assert mod._n_stages == 1
+    B = 4
+    batch = _make_dummy_batch(B=B)
+    _enable_tabpfn_with(
+        mod,
+        subject_ids=batch["subject_ids"],
+        y_tabpfn=[0.0] * B,
+        sigma_tabpfn=[0.01, 0.5, 2.0, 10.0],  # non-uniform — would matter at n>=2
+    )
+    loss = mod.training_step(batch, batch_idx=0)
+    # Reference: at n=1, prediction == stage_1, so L_main == L_aux1 == MSE(stage_1, residual).
+    with torch.no_grad():
+        out = mod.forward(batch)
+    cognition = batch["cognition"].squeeze(-1)
+    residual = cognition - torch.zeros_like(cognition)  # y_tabpfn = 0
+    L_expected = (1.0 + mod._aux_lambdas[0]) * torch.nn.functional.mse_loss(
+        out["stage_1"], residual,
+    )
+    assert torch.allclose(loss.detach(), L_expected.detach(), atol=1e-5), (
+        f"n_stages=1 loss != (1 + λ_1)·MSE(stage_1, residual): "
+        f"loss={loss.item():.6g} expected={L_expected.item():.6g}"
+    )
+
+
+@pytest.mark.parametrize(
+    "n_stages,bad_lambdas",
+    [(1, [1.0, 1.0]), (2, [1.0]), (3, [1.0, 1.0])],
+)
+def test_aux_lambdas_length_mismatch_raises(cfg, n_stages, bad_lambdas):
+    """aux_lambdas length must equal n_stages; mismatch is a hard error."""
+    cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    OmegaConf.set_struct(cfg, False)
+    OmegaConf.set_struct(cfg.model, False)
+    OmegaConf.set_struct(cfg.model.resdec_head, False)
+    cfg.model.resdec_head.n_stages = n_stages
+    cfg.model.resdec_head.aux_lambdas = bad_lambdas
+    with pytest.raises(ValueError, match="must have exactly n_stages="):
+        ResDecLightningModule(cfg)

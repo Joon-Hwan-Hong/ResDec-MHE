@@ -33,8 +33,8 @@ class NPTStage(nn.Module):
                 and return ``(latent, scalar)``. If False, omit the readout and
                 return ``(latent, None)``. Set False when wrapped in a TabMWrapper
                 that already supplies its own per-stage readout (e.g. ResDecH3Head's
-                3-stage composer), so that the unused scalar Linear isn't added to
-                the optimizer / weight-decay.
+                N-stage composer, N ∈ {1, 2, 3}, default 1), so that the unused
+                scalar Linear isn't added to the optimizer / weight-decay.
         """
         super().__init__()
         self.diff_attn = DifferentialAttention(d_subject, n_heads=n_heads,

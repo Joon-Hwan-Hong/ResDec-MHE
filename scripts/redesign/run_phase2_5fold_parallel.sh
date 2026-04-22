@@ -88,7 +88,7 @@ fi
 echo "=== All 5 folds attempted. Summarizing... ==="
 # Pass OUTROOT via env so the heredoc stays quoted (no $-substitution surprises).
 OUTROOT="$OUTROOT" uv run python - <<'PY'
-import os
+import os  # only for os.environ — path ops use pathlib below
 from pathlib import Path
 import numpy as np
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
