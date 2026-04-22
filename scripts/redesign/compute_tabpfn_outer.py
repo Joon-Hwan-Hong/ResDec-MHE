@@ -25,10 +25,28 @@ import torch
 from tabpfn import TabPFNRegressor
 from tabpfn.constants import ModelVersion
 
+from src.data.enriched_features import (
+    FEATURE_SETS,
+    FEATURE_SET_SIZES,
+    load_enriched_features,
+    load_pathology,
+)
 from src.data.feature_loaders import load_flat_features, load_targets
 from src.data.splits import load_splits
 
 logger = logging.getLogger(__name__)
+
+
+def _top_k_filename(top_k_dir: Path, top_k: int, fold_idx: int, feature_set: str) -> Path:
+    if feature_set == "A":
+        return top_k_dir / f"top_{top_k}_features_fold{fold_idx}.json"
+    return top_k_dir / f"top_{top_k}_features_fold{fold_idx}_{feature_set}.json"
+
+
+def _outer_output_filename(output_dir: Path, fold_idx: int, feature_set: str) -> Path:
+    if feature_set == "A":
+        return output_dir / f"tabpfn_outer_fold{fold_idx}.npz"
+    return output_dir / f"tabpfn_outer_fold{fold_idx}_{feature_set}.npz"
 
 
 def _predict_with_sigma(reg: TabPFNRegressor, X: np.ndarray):
@@ -77,8 +95,19 @@ def main(args):
     all_ids = sorted(
         {sid for fold in splits["folds"] for sid in fold["train"] + fold["val"]}
     )
-    logger.info("Loading features for %d subjects...", len(all_ids))
-    features = load_flat_features(precomputed_dir, all_ids)
+    logger.info(
+        "Loading features for %d subjects... feature_set=%s (dim=%d)",
+        len(all_ids), args.feature_set, FEATURE_SET_SIZES[args.feature_set],
+    )
+    if args.feature_set == "A":
+        features = load_flat_features(precomputed_dir, all_ids)
+    else:
+        pathology = None
+        if args.feature_set == "A+C+E+P+R":
+            pathology = load_pathology(meta_csv, all_ids)
+        features = load_enriched_features(
+            precomputed_dir, all_ids, args.feature_set, pathology=pathology,
+        )
     targets = load_targets(meta_csv, all_ids)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Device: %s  (TabPFN model_version=ModelVersion.V2_6)", device)
@@ -115,9 +144,8 @@ def main(args):
             len(train_ids), n_train_raw, dropped_train_no_feat, dropped_train_no_tgt,
             len(val_ids), n_val_raw, dropped_val_no_feat, dropped_val_no_tgt,
         )
-        top_k = json.loads(
-            (top_k_dir / f"top_{args.top_k}_features_fold{fold_idx}.json").read_text()
-        )["indices"]
+        top_k_path = _top_k_filename(top_k_dir, args.top_k, fold_idx, args.feature_set)
+        top_k = json.loads(top_k_path.read_text())["indices"]
 
         X_train = np.stack(
             [features[s] for s in train_ids]
@@ -137,7 +165,7 @@ def main(args):
         reg.fit(X_train, y_train)
         mean, sigma = _predict_with_sigma(reg, X_val)
 
-        out_path = output_dir / f"tabpfn_outer_fold{fold_idx}.npz"
+        out_path = _outer_output_filename(output_dir, fold_idx, args.feature_set)
         np.savez(
             out_path,
             val_subject_ids=np.array(val_ids, dtype=object),
@@ -171,7 +199,10 @@ def main(args):
     # Write CSV for paper table
     outputs_pipeline = Path("outputs/pipeline")
     outputs_pipeline.mkdir(parents=True, exist_ok=True)
-    csv_path = outputs_pipeline / "baseline_results_tabpfn.csv"
+    if args.feature_set == "A":
+        csv_path = outputs_pipeline / "baseline_results_tabpfn.csv"
+    else:
+        csv_path = outputs_pipeline / f"baseline_results_tabpfn_{args.feature_set}.csv"
     pd.DataFrame(results).to_csv(csv_path, index=False)
     logger.info("Wrote baseline CSV: %s", csv_path)
 
@@ -184,5 +215,14 @@ if __name__ == "__main__":
     p.add_argument("--top-k-dir", default="data/redesign")
     p.add_argument("--output-dir", default="data/redesign")
     p.add_argument("--top-k", type=int, default=2000)
+    p.add_argument(
+        "--feature-set",
+        default="A",
+        choices=list(FEATURE_SETS),
+        help=(
+            "Feature set consumed by TabPFN. Must match the --feature-set "
+            "that compute_top_k_features.py used to produce the top-K JSON."
+        ),
+    )
     p.add_argument("--seed", type=int, default=42)
     main(p.parse_args())
