@@ -123,6 +123,12 @@ class ResDecLightningModule(pl.LightningModule):
         # Phase-3 H3 extension knobs — ablation-friendly defaults match plan spec.
         k_tabm = int(resdec_cfg.get("k_tabm", DEFAULT_K_TABM))
         n_stages = int(resdec_cfg.get("n_stages", DEFAULT_N_STAGES))
+        # Phase-5.3 ablation flags — default True (canonical). False disables
+        # the corresponding component for ablation runs (#6 DiffAttn, #7 HC,
+        # #8 FiLM).
+        use_film = bool(resdec_cfg.get("use_film", True))
+        use_diff_attn = bool(resdec_cfg.get("use_diff_attn", True))
+        use_hyper_conn = bool(resdec_cfg.get("use_hyper_conn", True))
         aux_lambdas = list(resdec_cfg.get("aux_lambdas", [1.0] * n_stages))
         if len(aux_lambdas) != n_stages:
             raise ValueError(
@@ -151,6 +157,9 @@ class ResDecLightningModule(pl.LightningModule):
             lambda_init=lambda_init,
             k_tabm=k_tabm,
             n_stages=n_stages,
+            use_film=use_film,
+            use_diff_attn=use_diff_attn,
+            use_hyper_conn=use_hyper_conn,
         )
         self._d_metadata = d_metadata
 

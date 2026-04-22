@@ -1,0 +1,38 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 5.3 ablation #6: No Differential Attention (vanilla MHA replaces it).
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Identical to canonical except use_diff_attn=False → NPTStage uses
+# nn.MultiheadAttention instead of DifferentialAttention. Isolates the
+# DiffAttn-specific contribution (per-head λ stabilization + 2-pair pattern).
+
+experiment:
+  run_name: "p5_ablation_no_diff_attn"
+
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+    n_stages: 1
+    aux_lambdas: [1.0]
+    use_diff_attn: false  # ablation: vanilla MHA in place of DifferentialAttention
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
+    monitor: "val/r2"
+    mode: "max"
+
+data:
+  dataloader:
+    batch_size: 24
+  use_cached_embeddings: false
+  tabpfn_oof_dir: data/redesign
+  tabpfn_outer_dir: data/redesign

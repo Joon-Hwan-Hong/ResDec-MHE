@@ -60,16 +60,23 @@ _VALID_N_STAGES = (1, 2, 3)
 
 
 def _make_npt_tabm(d_subject: int, n_heads: int, n_hc_streams: int,
-                   lambda_init: float, k_tabm: int) -> tuple[NPTStage, TabMWrapper]:
+                   lambda_init: float, k_tabm: int,
+                   use_diff_attn: bool = True,
+                   use_hyper_conn: bool = True) -> tuple[NPTStage, TabMWrapper]:
     """Build a (NPTStage, TabMWrapper) pair for one boosting stage.
 
     NPTStage is constructed with emit_scalar=False because TabMWrapper discards
     sub_out[1] — keeping a stage-internal scalar readout would be dead weight.
+
+    use_diff_attn / use_hyper_conn forwarded to NPTStage for Phase-5.3 ablations
+    (#6 vanilla MHA, #7 plain residual).
     """
     npt = NPTStage(
         d_subject=d_subject, n_heads=n_heads,
         n_hc_streams=n_hc_streams, lambda_init=lambda_init,
         emit_scalar=False,
+        use_diff_attn=use_diff_attn,
+        use_hyper_conn=use_hyper_conn,
     )
     tabm = TabMWrapper(submodule=npt, d_in=d_subject, d_out=d_subject, k=k_tabm)
     return npt, tabm
@@ -85,6 +92,9 @@ class ResDecH3Head(nn.Module):
         lambda_init: float = 0.8,
         k_tabm: int = DEFAULT_K_TABM,
         n_stages: int = DEFAULT_N_STAGES,
+        use_film: bool = True,
+        use_diff_attn: bool = True,
+        use_hyper_conn: bool = True,
     ):
         super().__init__()
         if n_stages not in _VALID_N_STAGES:
@@ -94,13 +104,25 @@ class ResDecH3Head(nn.Module):
         self.d_subject = d_subject
         self.k_tabm = k_tabm
         self.n_stages = n_stages
+        self.use_film = use_film
 
-        self.film = FiLMMetadata(d_subject=d_subject, d_metadata=d_metadata)
+        if use_film:
+            self.film = FiLMMetadata(d_subject=d_subject, d_metadata=d_metadata)
+        # When use_film=False, no module is constructed; forward bypasses it
+        # entirely and feeds z_encoder directly to stage_1. Phase-5.3 ablation #8.
+
+        # NPTStage internals are toggleable via use_diff_attn / use_hyper_conn
+        # (Phase-5.3 ablations #6 / #7) — flags forwarded into _make_npt_tabm.
+        npt_kwargs = {
+            "d_subject": d_subject, "n_heads": n_heads,
+            "n_hc_streams": n_hc_streams, "lambda_init": lambda_init,
+            "k_tabm": k_tabm,
+            "use_diff_attn": use_diff_attn,
+            "use_hyper_conn": use_hyper_conn,
+        }
 
         # ---- Stage 1: always present ----
-        self.stage_1_npt, self.stage_1_tabm = _make_npt_tabm(
-            d_subject, n_heads, n_hc_streams, lambda_init, k_tabm,
-        )
+        self.stage_1_npt, self.stage_1_tabm = _make_npt_tabm(**npt_kwargs)
         self.stage_1_readout = nn.Linear(d_subject, 1)
 
         # ---- Stage 2: only if n_stages >= 2 ----
@@ -108,9 +130,7 @@ class ResDecH3Head(nn.Module):
             self.stage_2_cross_attn = CrossStageAttention(
                 d_subject=d_subject, n_heads=n_heads,
             )
-            self.stage_2_npt, self.stage_2_tabm = _make_npt_tabm(
-                d_subject, n_heads, n_hc_streams, lambda_init, k_tabm,
-            )
+            self.stage_2_npt, self.stage_2_tabm = _make_npt_tabm(**npt_kwargs)
             self.stage_2_readout = nn.Linear(d_subject, 1)
 
         # ---- Stage 3: only if n_stages >= 3 ----
@@ -118,9 +138,7 @@ class ResDecH3Head(nn.Module):
             self.stage_3_cross_attn = CrossStageAttention(
                 d_subject=d_subject, n_heads=n_heads,
             )
-            self.stage_3_npt, self.stage_3_tabm = _make_npt_tabm(
-                d_subject, n_heads, n_hc_streams, lambda_init, k_tabm,
-            )
+            self.stage_3_npt, self.stage_3_tabm = _make_npt_tabm(**npt_kwargs)
             self.stage_3_readout = nn.Linear(d_subject, 1)
 
     def forward(self, z_encoder: torch.Tensor, metadata: torch.Tensor) -> dict:
@@ -133,7 +151,12 @@ class ResDecH3Head(nn.Module):
         are NOT in the dict — downstream consumers must use `.get()` or
         guard on n_stages.
         """
-        z_cond = self.film(z_encoder, metadata)
+        # Bypass FiLM entirely under ablation #8 (use_film=False). When enabled,
+        # FiLM modulates z_encoder by metadata-derived γ/β.
+        if self.use_film:
+            z_cond = self.film(z_encoder, metadata)
+        else:
+            z_cond = z_encoder
 
         # ------- Stage 1 (always) -------
         h_1, _ = self.stage_1_tabm(z_cond)                # [B, d_subject]
