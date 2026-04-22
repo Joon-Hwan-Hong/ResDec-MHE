@@ -99,6 +99,20 @@ class ResDecLightningModule(pl.LightningModule):
         n_heads = int(resdec_cfg.get("n_heads", 4))
         n_hc_streams = int(resdec_cfg.get("n_hc_streams", 4))
         lambda_init = float(resdec_cfg.get("lambda_init", 0.8))
+        # Phase-3 H3 extension knobs — ablation-friendly defaults match plan spec.
+        k_tabm = int(resdec_cfg.get("k_tabm", 8))
+        aux_lambdas = list(resdec_cfg.get("aux_lambdas", [1.0, 1.0, 1.0]))
+        if len(aux_lambdas) != 3:
+            raise ValueError(
+                f"resdec_head.aux_lambdas must have exactly 3 entries "
+                f"(stage_1/2/3); got {len(aux_lambdas)}: {aux_lambdas}"
+            )
+        self._aux_lambdas: tuple[float, float, float] = (
+            float(aux_lambdas[0]), float(aux_lambdas[1]), float(aux_lambdas[2]),
+        )
+        self._use_sigma_weighting = bool(resdec_cfg.get("use_sigma_weighting", True))
+        # Numerical floor for aug-U: w(σ) = 1 / (σ² + eps).
+        self._sigma_eps = float(resdec_cfg.get("sigma_eps", 1e-6))
 
         self.head = ResDecH3Head(
             d_subject=d_subject,
@@ -106,6 +120,7 @@ class ResDecLightningModule(pl.LightningModule):
             n_heads=n_heads,
             n_hc_streams=n_hc_streams,
             lambda_init=lambda_init,
+            k_tabm=k_tabm,
         )
         self._d_metadata = d_metadata
 
@@ -182,31 +197,41 @@ class ResDecLightningModule(pl.LightningModule):
 
     def _tabpfn_train_batch(
         self, subject_ids: list[str], device: torch.device, dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """Gather TabPFN OOF predictions for training subjects in batch order."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gather TabPFN OOF ``(y, σ)`` for training subjects in batch order.
+
+        Returns ``(y_tabpfn [B], sigma_tabpfn [B])``. σ is needed for the
+        aug-U weighting ``w(σ) = 1 / (σ² + eps)`` applied to aux_2/aux_3 losses.
+        """
         try:
-            values = [self.tabpfn_train_map[sid][0] for sid in subject_ids]
+            y_vals = [self.tabpfn_train_map[sid][0] for sid in subject_ids]
+            sigma_vals = [self.tabpfn_train_map[sid][1] for sid in subject_ids]
         except KeyError as exc:
             raise KeyError(
                 f"Subject {exc.args[0]!r} is missing from the TabPFN OOF cache "
                 f"(fold cache has {len(self.tabpfn_train_map)} subjects). "
                 f"Check cfg.data.fold matches the DataModule fold_idx."
             ) from exc
-        return torch.tensor(values, device=device, dtype=dtype)
+        y = torch.tensor(y_vals, device=device, dtype=dtype)
+        sigma = torch.tensor(sigma_vals, device=device, dtype=dtype)
+        return y, sigma
 
     def _tabpfn_val_batch(
         self, subject_ids: list[str], device: torch.device, dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """Gather TabPFN outer predictions for val subjects in batch order."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gather TabPFN outer ``(y, σ)`` for val subjects in batch order."""
         try:
-            values = [self.tabpfn_val_map[sid][0] for sid in subject_ids]
+            y_vals = [self.tabpfn_val_map[sid][0] for sid in subject_ids]
+            sigma_vals = [self.tabpfn_val_map[sid][1] for sid in subject_ids]
         except KeyError as exc:
             raise KeyError(
                 f"Val subject {exc.args[0]!r} is missing from the TabPFN outer "
                 f"cache (fold cache has {len(self.tabpfn_val_map)} subjects). "
                 f"Check cfg.data.fold matches the DataModule fold_idx."
             ) from exc
-        return torch.tensor(values, device=device, dtype=dtype)
+        y = torch.tensor(y_vals, device=device, dtype=dtype)
+        sigma = torch.tensor(sigma_vals, device=device, dtype=dtype)
+        return y, sigma
 
     # ------------------------------------------------------------------ #
     # Forward                                                            #
@@ -240,8 +265,11 @@ class ResDecLightningModule(pl.LightningModule):
         """Run encoder → extract `attended` → run ResDec-H3 head.
 
         Returns dict with:
-            prediction: [B] scalar cognition prediction from the head
-            latent_1:   [B, d_subject] stage-1 latent (reserved for cross-stage attention in Phase 3)
+            prediction: [B] composer output = ``f̂_1 + f̂_2 + f̂_3`` (residual sum,
+                        not yet composite with ŷ_tabpfn — that happens in
+                        validation_step for the final composite prediction)
+            stage_1/2/3: [B] per-stage scalars for aux-loss construction
+            latent_1/2/3: [B, d_subject] per-stage pre-readout latents
             attended:   [B, d_subject] encoder output, for downstream debugging/logging
             attention_weights: [B, n_heads, n_cell_types] pathology attention (from encoder)
         """
@@ -253,7 +281,12 @@ class ResDecLightningModule(pl.LightningModule):
 
         out: dict[str, Any] = {
             "prediction": head_out["prediction"],
+            "stage_1": head_out["stage_1"],
+            "stage_2": head_out["stage_2"],
+            "stage_3": head_out["stage_3"],
             "latent_1": head_out["latent_1"],
+            "latent_2": head_out["latent_2"],
+            "latent_3": head_out["latent_3"],
             "attended": z,
         }
         if enc_out.get("attention_weights") is not None:
@@ -277,27 +310,76 @@ class ResDecLightningModule(pl.LightningModule):
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         out = self.forward(batch)
-        pred = out["prediction"]  # [B] — head output
+        pred = out["prediction"]  # [B] — f̂_1 + f̂_2 + f̂_3 (residual sum)
+        stage_1 = out["stage_1"]
+        stage_2 = out["stage_2"]
+        stage_3 = out["stage_3"]
         cognition = batch["cognition"]
         if cognition.dim() == 2 and cognition.shape[-1] == 1:
             cognition = cognition.squeeze(-1)
         bs = cognition.shape[0]
 
         if self._tabpfn_enabled:
-            # Phase 2: train on residual target y - y_tabpfn_oof.
-            # Composite prediction = ŷ_tabpfn + f̂_1 (for monitoring).
+            # ============================================================= #
+            # Phase 3 — H3 boosting with aug-U uncertainty-weighted aux loss.#
+            # ============================================================= #
+            #
+            # L = L_main
+            #   + λ_1 · MSE(f̂_1, y − ŷ_tabpfn)
+            #   + λ_2 · MSE(f̂_2, y − ŷ_tabpfn − f̂_1.detach()) · w(σ)
+            #   + λ_3 · MSE(f̂_3, y − ŷ_tabpfn − f̂_1.detach() − f̂_2.detach()) · w(σ)
+            #
+            # L_main = MSE(f̂_1+f̂_2+f̂_3, y − ŷ_tabpfn) — the composite residual
+            # target. This is equivalent in gradient to MSE of composite prediction
+            # ŷ_tabpfn + (f̂_1+f̂_2+f̂_3) against y, since y_tabpfn is a constant.
+            # w(σ) = 1 / (σ² + eps) is the aug-U per-subject weighting.
+            #
+            # All four loss terms share a single backward pass — this is the
+            # "single backward" guarantee in docs/plans/2026-04-21 §Phase 3.
+
             subject_ids = batch["subject_ids"]  # list[str] from collate_for_hgt
-            y_tabpfn = self._tabpfn_train_batch(
+            y_tabpfn, sigma_tabpfn = self._tabpfn_train_batch(
                 subject_ids, device=cognition.device, dtype=cognition.dtype,
             )
-            residual_target = cognition - y_tabpfn
-            loss = torch.nn.functional.mse_loss(pred, residual_target)
+            residual_target = cognition - y_tabpfn  # [B]
+
+            # Main loss: composite residual MSE (no per-sample weighting).
+            L_main = torch.nn.functional.mse_loss(pred, residual_target)
+
+            # Stage-1 aux: unweighted residual-target MSE.
+            L_aux1 = torch.nn.functional.mse_loss(stage_1, residual_target)
+
+            # Stage-2/3 aux: aug-U per-subject weighting w(σ) = 1/(σ²+eps),
+            # mean-reduced by hand so the weighting applies before reduction.
+            target_aux2 = residual_target - stage_1.detach()
+            target_aux3 = residual_target - stage_1.detach() - stage_2.detach()
+
+            if self._use_sigma_weighting:
+                w = 1.0 / (sigma_tabpfn * sigma_tabpfn + self._sigma_eps)  # [B]
+                # Mean of weighted per-subject squared error.
+                L_aux2 = (w * (stage_2 - target_aux2).pow(2)).mean()
+                L_aux3 = (w * (stage_3 - target_aux3).pow(2)).mean()
+            else:
+                # Ablation knob: uniform weighting.
+                L_aux2 = torch.nn.functional.mse_loss(stage_2, target_aux2)
+                L_aux3 = torch.nn.functional.mse_loss(stage_3, target_aux3)
+
+            lam1, lam2, lam3 = self._aux_lambdas
+            loss = L_main + lam1 * L_aux1 + lam2 * L_aux2 + lam3 * L_aux3
+
+            # Composite MSE (detached, for monitoring parity with Phase 2).
             composite = pred.detach() + y_tabpfn
             comp_mse = torch.nn.functional.mse_loss(composite, cognition)
-            self.log("train/residual_mse", loss, prog_bar=True, batch_size=bs, sync_dist=True)
+
+            self.log("train/loss", loss, prog_bar=True, batch_size=bs, sync_dist=True)
+            self.log("train/L_main", L_main, prog_bar=False, batch_size=bs, sync_dist=True)
+            self.log("train/L_aux1", L_aux1, prog_bar=False, batch_size=bs, sync_dist=True)
+            self.log("train/L_aux2", L_aux2, prog_bar=False, batch_size=bs, sync_dist=True)
+            self.log("train/L_aux3", L_aux3, prog_bar=False, batch_size=bs, sync_dist=True)
+            self.log("train/residual_mse", L_main, prog_bar=False, batch_size=bs, sync_dist=True)
             self.log("train/composite_mse", comp_mse, prog_bar=False, batch_size=bs, sync_dist=True)
         else:
-            # Phase 1 fallback: plain MSE against cognition.
+            # Phase 1 fallback: plain MSE against cognition (no TabPFN cache).
             loss = torch.nn.functional.mse_loss(pred, cognition)
             self.log("train/mse", loss, prog_bar=True, batch_size=bs, sync_dist=True)
 
@@ -305,15 +387,16 @@ class ResDecLightningModule(pl.LightningModule):
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
         out = self.forward(batch)
+        # Phase 3: pred["prediction"] is the sum f̂_1+f̂_2+f̂_3. Composite prediction
+        # at val time is ŷ_tabpfn + f̂_1 + f̂_2 + f̂_3.
         pred = out["prediction"].detach()
         target = batch["cognition"].detach()
         if target.dim() == 2 and target.shape[-1] == 1:
             target = target.squeeze(-1)
 
         if self._tabpfn_enabled:
-            # Phase 2: composite prediction ŷ = y_tabpfn_outer + f̂_1.
             subject_ids = batch["subject_ids"]
-            y_tabpfn = self._tabpfn_val_batch(
+            y_tabpfn, _sigma = self._tabpfn_val_batch(
                 subject_ids, device=target.device, dtype=target.dtype,
             )
             pred = pred + y_tabpfn  # composite
