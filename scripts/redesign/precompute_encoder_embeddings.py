@@ -138,6 +138,40 @@ def main(args: argparse.Namespace) -> None:
                 device, cfg.model.n_genes, cfg.model.n_cell_types)
     model = build_model_from_config(cfg.model).to(device).eval()
 
+    # Load trained encoder weights from a Lightning checkpoint if provided.
+    # Expected source: ResDecLightningModule checkpoint (live-encoder mode) where
+    # the encoder state_dict lives under the `encoder.*` prefix within the LM.
+    if args.encoder_ckpt is not None:
+        logger.info("Loading encoder weights from %s", args.encoder_ckpt)
+        ckpt = torch.load(args.encoder_ckpt, map_location="cpu", weights_only=False)
+        state_dict = ckpt.get("state_dict", ckpt)
+        # Extract keys under the "encoder." prefix (Lightning nesting)
+        encoder_sd = {
+            k[len("encoder."):]: v
+            for k, v in state_dict.items()
+            if k.startswith("encoder.")
+        }
+        if not encoder_sd:
+            # Checkpoint may already be just the encoder state dict (no prefix)
+            logger.warning("No 'encoder.' prefix found; attempting direct load of full state_dict")
+            encoder_sd = state_dict
+        missing, unexpected = model.load_state_dict(encoder_sd, strict=False)
+        # prediction_head keys may be missing if frozen during training, and
+        # Bayesian-head keys may be unexpected if ckpt came from a different head type.
+        if missing:
+            logger.info("  load_state_dict: %d missing keys (first 5): %s",
+                        len(missing), list(missing)[:5])
+        if unexpected:
+            logger.info("  load_state_dict: %d unexpected keys (first 5): %s",
+                        len(unexpected), list(unexpected)[:5])
+        logger.info("Encoder weights loaded (strict=False)")
+    else:
+        logger.warning(
+            "No --encoder-ckpt provided; using RANDOM-INIT encoder. "
+            "Downstream head training will see random-projection features. "
+            "For real training pass --encoder-ckpt <path-to-trained.ckpt>."
+        )
+
     d_subject = int(cfg.model.d_fused)
     cfg_hash = _encoder_config_hash(cfg.model)
     logger.info("encoder_config_hash=%s, d_subject=%d", cfg_hash, d_subject)
@@ -237,5 +271,12 @@ if __name__ == "__main__":
         "--output",
         default="data/redesign/encoder_embeddings.npz",
         help="Path to write the cached embeddings npz.",
+    )
+    p.add_argument(
+        "--encoder-ckpt",
+        default=None,
+        help="Path to a Lightning checkpoint from live-encoder Phase 1 training. "
+             "If provided, loads encoder.* keys into the model before running forward passes. "
+             "If omitted, uses random init (sanity-check mode only).",
     )
     main(p.parse_args())

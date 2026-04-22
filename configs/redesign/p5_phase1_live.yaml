@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ResDec-H3 Phase 1 LIVE-encoder training — for producing a trained encoder
+# checkpoint to feed the frozen-encoder path (D-EncoderSource option α).
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# This config trains encoder + single-stage ResDec-H3 head END-TO-END at
+# batch_size=24 (in-batch NPT, safe for encoder memory). The resulting encoder
+# checkpoint is then loaded by precompute_encoder_embeddings.py to produce
+# cached `attended` embeddings, after which the frozen-encoder Phase 1 config
+# (p5_phase1_baseline.yaml) can run head-only training at full-cohort NPT.
+#
+# This config DOES NOT use cached embeddings — it produces them via joint
+# encoder+head training.
+
+experiment:
+  run_name: "p5_phase1_live_for_encoder_ckpt"
+
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 60
+  early_stopping:
+    patience: 10
+    min_epochs: 5
+    monitor: "val/r2"
+    mode: "max"
+
+data:
+  dataloader:
+    # In-batch NPT at bs=24 — safe for the encoder's memory envelope.
+    batch_size: 24
+  # Produce the encoder checkpoint here; do NOT read cached embeddings.
+  use_cached_embeddings: false
