@@ -9,6 +9,11 @@ build/
 # Git worktrees (isolated feature-branch workspaces)
 .worktrees/
 
+# Worktree-level symlinks pointing to parent repo data/outputs dirs.
+# Belong only to the worktree filesystem; never tracked.
+/data
+/outputs
+
 # Virtual environments
 .venv/
 venv/
