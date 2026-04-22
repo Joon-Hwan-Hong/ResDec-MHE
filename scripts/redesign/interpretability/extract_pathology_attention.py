@@ -14,7 +14,7 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
-    uv run python scripts/redesign/extract_pathology_attention.py \\
+    uv run python scripts/redesign/interpretability/extract_pathology_attention.py \\
         --pred-root outputs/redesign/p5_phase3_1stage_with_tabm \\
         --out-dir outputs/redesign/interpretability
 

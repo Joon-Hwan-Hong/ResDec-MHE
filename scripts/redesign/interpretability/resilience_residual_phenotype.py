@@ -22,7 +22,7 @@ Outputs (default ``outputs/redesign/interpretability/``):
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/resilience_residual_phenotype.py \\
+    uv run python scripts/redesign/interpretability/resilience_residual_phenotype.py \\
         --pred-root outputs/redesign/p5_phase3_1stage_with_tabm \\
         --out-dir outputs/redesign/interpretability
 

@@ -38,7 +38,7 @@ Outputs (default ``outputs/redesign/interpretability/``):
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/analyze_pathology_attention_heads.py \\
+    uv run python scripts/redesign/interpretability/analyze_pathology_attention_heads.py \\
         --attn-npz outputs/redesign/interpretability/pathology_attention_per_subject.npz \\
         --residual-csv outputs/redesign/interpretability/residual_per_subject.csv \\
         --out-dir outputs/redesign/interpretability
