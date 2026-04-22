@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # Parallel 5-fold re-inference of best-by-val/r2 checkpoints across both GPUs.
 # Per fold: loads max-R² best-*.ckpt, runs validate(), dumps val_predictions_best.npz
-# + best_summary.json into outputs/redesign/p5_phase2_residual/fold{N}/.
+# + best_summary.json into $OUTROOT/fold{N}/.
+#
+# Env overrides (all optional):
+#   CONFIG       phase YAML (default: configs/redesign/p5_phase2_residual.yaml)
+#   OUTROOT      output dir to read ckpts from + write best.npz to
+#                (default: outputs/redesign/p5_phase2_residual)
+#   TABPFN_DIR   directory holding tabpfn_outer_fold{N}*.npz files for
+#                the comparison summary (default: data/redesign)
+#   N_GPUS       number of GPUs (default: all visible)
+#   GPU_LIST     comma-separated GPU list, e.g. "0,1"
 #
 # Usage:
 #   bash scripts/redesign/run_reinfer_parallel.sh
-#   N_GPUS=2 bash scripts/redesign/run_reinfer_parallel.sh
-#   GPU_LIST="0,1" bash scripts/redesign/run_reinfer_parallel.sh
+#   OUTROOT=outputs/redesign/p5_phase3 bash scripts/redesign/run_reinfer_parallel.sh
 set -euo pipefail
 
 ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
 CONFIG="${CONFIG:-configs/redesign/p5_phase2_residual.yaml}"
 OUTROOT="${OUTROOT:-outputs/redesign/p5_phase2_residual}"
+TABPFN_DIR="${TABPFN_DIR:-data/redesign}"
 FOLDS=(0 1 2 3 4)
 
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"
@@ -57,15 +66,17 @@ done
 
 echo ""
 echo "=== Reinfer done. Summarizing best-epoch metrics + TabPFN comparison... ==="
-uv run python - <<'PY'
+# Pass paths via env so the heredoc stays quoted (no $-substitution surprises).
+OUTROOT="$OUTROOT" TABPFN_DIR="$TABPFN_DIR" uv run python - <<'PY'
 import json
+import os
 from pathlib import Path
 import numpy as np
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from scipy.stats import pearsonr, spearmanr
 
-root = Path("outputs/redesign/p5_phase2_residual")
-tabpfn_dir = Path("data/redesign")
+root = Path(os.environ["OUTROOT"])
+tabpfn_dir = Path(os.environ["TABPFN_DIR"])
 
 rows = []
 for f in range(5):
@@ -136,9 +147,11 @@ if len(rows) >= 2:
 
 summary = {
     "per_fold": rows,
-    "threshold_note": "Phase 3 gate: mean R² > TabPFN-enriched (0.4145) + full metric comparison",
+    "threshold_note": "Paper threshold: mean R² > TabPFN-enriched (~0.4145) + full metric comparison",
+    "outroot": str(root),
+    "tabpfn_dir": str(tabpfn_dir),
 }
-out = Path("outputs/redesign/p5_phase2_residual/best_vs_tabpfn_summary.json")
+out = root / "best_vs_tabpfn_summary.json"
 out.write_text(json.dumps(summary, indent=2, default=float))
 print(f"\nWrote {out}")
 PY

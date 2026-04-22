@@ -22,12 +22,18 @@ import argparse
 import json
 import logging
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 from omegaconf import OmegaConf
+
+# Make the script standalone-runnable: ensure the worktree root is on sys.path
+# so `src.*` imports resolve without the caller having to set PYTHONPATH.
+# Mirrors the pattern used by scripts/redesign/run_tabpfn_attribution.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits

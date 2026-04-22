@@ -86,34 +86,35 @@ if [[ "$RUN_REINFER" == "1" ]]; then
 fi
 
 echo "=== All 5 folds attempted. Summarizing... ==="
-uv run python -c "
-import json
+# Pass OUTROOT via env so the heredoc stays quoted (no $-substitution surprises).
+OUTROOT="$OUTROOT" uv run python - <<'PY'
+import os
 from pathlib import Path
 import numpy as np
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from scipy.stats import pearsonr, spearmanr
 
-root = Path('$OUTROOT')
+root = Path(os.environ["OUTROOT"])
 results = []
 for f in range(5):
-    preds_path = root / f'fold{f}/val_predictions_final.npz'
+    preds_path = root / f"fold{f}/val_predictions_final.npz"
     if not preds_path.exists():
-        print(f'  fold {f}: no predictions npz (check log at fold{f}/fold{f}_train.log)')
+        print(f"  fold {f}: no predictions npz (check log at fold{f}/fold{f}_train.log)")
         continue
     d = np.load(preds_path, allow_pickle=True)
-    p = d['predictions']; t = d['targets']
+    p = d["predictions"]; t = d["targets"]
     r2 = r2_score(t, p)
     mae = mean_absolute_error(t, p)
-    rmse = np.sqrt(mean_squared_error(t, p))
-    pr = pearsonr(p, t).statistic
-    sr = spearmanr(p, t).correlation
-    results.append({'fold': f, 'r2': r2, 'mae': mae, 'rmse': rmse,
-                    'pearson_r': pr, 'spearman_rho': sr, 'n_val': len(t)})
-    print(f'  fold {f}: R²={r2:+.4f} MAE={mae:.4f} RMSE={rmse:.4f} r={pr:+.4f} ρ={sr:+.4f} (n={len(t)})')
+    rmse = float(np.sqrt(mean_squared_error(t, p)))
+    pr = float(pearsonr(p, t).statistic)
+    sr = float(spearmanr(p, t).correlation)
+    results.append({"fold": f, "r2": r2, "mae": mae, "rmse": rmse,
+                    "pearson_r": pr, "spearman_rho": sr, "n_val": len(t)})
+    print(f"  fold {f}: R²={r2:+.4f} MAE={mae:.4f} RMSE={rmse:.4f} r={pr:+.4f} ρ={sr:+.4f} (n={len(t)})")
 
 if len(results) >= 2:
-    for key, label in [('r2','R²'), ('mae','MAE'), ('rmse','RMSE'),
-                       ('pearson_r','Pearson r'), ('spearman_rho','Spearman ρ')]:
+    for key, label in [("r2", "R²"), ("mae", "MAE"), ("rmse", "RMSE"),
+                       ("pearson_r", "Pearson r"), ("spearman_rho", "Spearman ρ")]:
         vals = [r[key] for r in results]
-        print(f'  {label:10s}: {np.mean(vals):+.4f} ± {np.std(vals):.4f}')
-"
+        print(f"  {label:10s}: {np.mean(vals):+.4f} ± {np.std(vals):.4f}")
+PY
