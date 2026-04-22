@@ -71,6 +71,34 @@ def _shared_mmap():
         torch.serialization.set_default_mmap_options(_mmap.MAP_PRIVATE)
 
 
+def _build_metadata_vectors(
+    subject_ids: list[str],
+    meta_csv: Path | None,
+    age_mean: float | None,
+    age_std: float | None,
+) -> torch.Tensor | None:
+    """Build a [N, 8] tensor of FiLM metadata vectors for the given subjects.
+
+    Returns None when meta_csv is None so callers can fall back to zero-metadata
+    training. Age stats are forwarded to load_metadata_vector only when both are
+    provided; otherwise the loader falls back to cohort-wide constants.
+    """
+    if meta_csv is None:
+        return None
+    kwargs: dict = {}
+    if age_mean is not None:
+        kwargs["age_mean"] = float(age_mean)
+    if age_std is not None:
+        kwargs["age_std"] = float(age_std)
+    vecs = [
+        load_metadata_vector(sid, meta_csv, **kwargs)[0]
+        for sid in subject_ids
+    ]
+    if not vecs:
+        return torch.zeros(0, len(METADATA_FIELDS), dtype=torch.float32)
+    return torch.stack(vecs).float()
+
+
 def _validate_no_nan_columns(
     metadata: pd.DataFrame,
     subject_ids: list,
@@ -230,7 +258,9 @@ class CognitiveResilienceDataset(Dataset):
         self.meta_csv = Path(meta_csv) if meta_csv is not None else None
         self.age_mean = age_mean
         self.age_std = age_std
-        self._metadata_vectors = self._precompute_metadata_vectors()
+        self._metadata_vectors = _build_metadata_vectors(
+            self.subject_ids, self.meta_csv, self.age_mean, self.age_std,
+        )
 
         # Pre-compute subject-to-row index mapping to avoid O(n_cells) string
         # scan in __getitem__. Single-pass O(n_cells) groupby instead of
@@ -329,32 +359,6 @@ class CognitiveResilienceDataset(Dataset):
                     val = self.metadata.loc[sid, self.target_column]
                     if not pd.isna(val):
                         self._target_array[i] = float(val)
-
-    def _precompute_metadata_vectors(self) -> torch.Tensor | None:
-        """Precompute per-subject 8-dim FiLM metadata vectors.
-
-        Called once at __init__ (after ``_validate_subjects`` finalizes
-        ``self.subject_ids``). When ``meta_csv`` is None the dataset skips
-        FiLM wiring entirely — the lightning module's None→zeros fallback
-        covers tests / legacy callers that don't pass metadata.
-
-        Returns:
-            Tensor of shape [n_subjects, len(METADATA_FIELDS)] or None.
-        """
-        if self.meta_csv is None:
-            return None
-        kwargs = {}
-        if self.age_mean is not None:
-            kwargs["age_mean"] = float(self.age_mean)
-        if self.age_std is not None:
-            kwargs["age_std"] = float(self.age_std)
-        vecs = [
-            load_metadata_vector(sid, self.meta_csv, **kwargs)[0]
-            for sid in self.subject_ids
-        ]
-        return torch.stack(vecs).float() if vecs else torch.zeros(
-            0, len(METADATA_FIELDS), dtype=torch.float32
-        )
 
     def __len__(self) -> int:
         return len(self.subject_ids)
@@ -839,7 +843,9 @@ class PrecomputedDataset(Dataset):
         # FiLM metadata: precompute per-subject 8-dim vectors once using the
         # fold's train-only age_mean/age_std. Subjects use the same train-only
         # stats for both train and val datasets to avoid leakage.
-        self._metadata_vectors = self._precompute_metadata_vectors()
+        self._metadata_vectors = _build_metadata_vectors(
+            self.subject_ids, self.meta_csv, self.age_mean, self.age_std,
+        )
 
         # Pre-build sample templates (avoids dict construction per __getitem__)
         from src.data.constants import N_REGIONS, PFC_REGION_IDX
@@ -1434,31 +1440,6 @@ class PrecomputedDataset(Dataset):
         _validate_no_nan_columns(
             self.metadata, self.subject_ids,
             self.pathology_columns, "pathology",
-        )
-
-    def _precompute_metadata_vectors(self) -> torch.Tensor | None:
-        """Precompute per-subject 8-dim FiLM metadata vectors.
-
-        Called once at __init__ after subject_ids is finalized. When
-        ``meta_csv`` is None the dataset skips FiLM wiring — the lightning
-        module's None→zeros fallback covers tests / legacy callers.
-
-        Returns:
-            Tensor of shape [n_subjects, len(METADATA_FIELDS)] or None.
-        """
-        if self.meta_csv is None:
-            return None
-        kwargs = {}
-        if self.age_mean is not None:
-            kwargs["age_mean"] = float(self.age_mean)
-        if self.age_std is not None:
-            kwargs["age_std"] = float(self.age_std)
-        vecs = [
-            load_metadata_vector(sid, self.meta_csv, **kwargs)[0]
-            for sid in self.subject_ids
-        ]
-        return torch.stack(vecs).float() if vecs else torch.zeros(
-            0, len(METADATA_FIELDS), dtype=torch.float32
         )
 
     def get_gene_names(self) -> list[str] | None:

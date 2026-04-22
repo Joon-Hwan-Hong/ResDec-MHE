@@ -33,7 +33,7 @@ def test_load_metadata_vector_present_subject(tmp_path):
     csv = tmp_path / "metadata.csv"
     df.to_csv(csv, index=False)
 
-    vec, fields = load_metadata_vector(
+    vec, _ = load_metadata_vector(
         "R0000001", csv, age_mean=86.0, age_std=6.5,
     )
     assert vec.shape == (8,)
@@ -144,6 +144,7 @@ def test_datamodule_age_stats_train_only(tmp_path):
     """
     from src.data.datamodule import CognitiveResilienceDataModule
 
+    rng = np.random.default_rng(0)
     train_ids = [f"R_train_{i:02d}" for i in range(10)]
     val_ids = [f"R_val_{i:02d}" for i in range(5)]
     all_ids = train_ids + val_ids
@@ -155,7 +156,7 @@ def test_datamodule_age_stats_train_only(tmp_path):
 
     metadata = pd.DataFrame({
         "ROSMAP_IndividualID": all_ids,
-        "cogn_global": np.random.randn(len(all_ids)),
+        "cogn_global": rng.standard_normal(len(all_ids)),
         "apoe_genotype": [33] * len(all_ids),
         "msex": [0] * len(all_ids),
         "age_death": ages,
@@ -230,3 +231,88 @@ def test_datamodule_age_stats_train_only(tmp_path):
     assert abs(pooled_mean - expected_mean) > 1.0, (
         "Fixture is degenerate — pooled and train-only means should differ."
     )
+
+
+def test_cognitive_resilience_dataset_metadata_wiring(tmp_path):
+    """CognitiveResilienceDataset.__getitem__ returns correct FiLM metadata.
+
+    Builds a minimal AnnData fixture (a few subjects, few cells, few genes) and
+    constructs the dataset with explicit ``meta_csv`` / ``age_mean`` / ``age_std``.
+    Retrieves one sample via ``__getitem__`` and asserts the ``metadata`` tensor
+    has the correct shape, the age slot matches the expected z-score, and the
+    APOE slot reflects the subject's apoe_genotype (34 → e3 + e4 set).
+    """
+    import anndata
+    from src.data.constants import CELL_TYPE_ORDER
+    from src.data.datasets import CognitiveResilienceDataset
+
+    rng = np.random.default_rng(0)
+
+    # Three subjects: two train-like (APOE 34 for the target subject, 33 for
+    # a second), one with a different APOE to verify per-row wiring.
+    subject_ids = ["R_A", "R_B", "R_C"]
+    ages = [86.0, 80.0, 92.0]
+    apoe = [34, 33, 24]
+    sexes = [1, 0, 1]
+
+    # Minimal AnnData: 2 cells per subject across a couple of cell types.
+    n_cells_per_subject = 2
+    n_genes = 5
+    total_cells = len(subject_ids) * n_cells_per_subject
+    X = rng.standard_normal((total_cells, n_genes)).astype(np.float32)
+    obs = pd.DataFrame({
+        "ROSMAP_IndividualID": np.repeat(subject_ids, n_cells_per_subject),
+        "supercluster_name": np.tile([CELL_TYPE_ORDER[0]] * n_cells_per_subject, len(subject_ids)),
+        "BrainRegion": ["PFC"] * total_cells,
+    })
+    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+    adata = anndata.AnnData(X=X, obs=obs, var=var)
+
+    metadata_df = pd.DataFrame({
+        "ROSMAP_IndividualID": subject_ids,
+        "apoe_genotype": apoe,
+        "msex": sexes,
+        "age_death": ages,
+        "gpath": [0.1, 0.2, 0.3],
+        "amylsqrt": [0.4, 0.5, 0.6],
+        "tangsqrt": [0.7, 0.8, 0.9],
+        "cogn_global": [0.0, -0.5, 0.5],
+    })
+
+    meta_csv = tmp_path / "metadata.csv"
+    metadata_df.to_csv(meta_csv, index=False)
+
+    age_mean = 85.0
+    age_std = 5.0
+
+    ds = CognitiveResilienceDataset(
+        adata=adata,
+        metadata=metadata_df,
+        subject_ids=subject_ids,
+        # Relax the cell-count threshold so the tiny fixture is admissible.
+        min_cells_threshold=1,
+        max_cells_per_type=8,
+        meta_csv=meta_csv,
+        age_mean=age_mean,
+        age_std=age_std,
+    )
+
+    # Drive __getitem__ (not just __init__) to verify the metadata slot is
+    # threaded through to the per-sample dict.
+    target_idx = ds.subject_ids.index("R_A")
+    sample = ds[target_idx]
+    assert "metadata" in sample, (
+        "CognitiveResilienceDataset.__getitem__ must include 'metadata' when "
+        "meta_csv is wired."
+    )
+    md = sample["metadata"]
+    assert md.shape == (8,)
+    # Age slot (index 6) = (age - age_mean) / age_std
+    expected_z = (ages[0] - age_mean) / age_std
+    assert md[6].item() == pytest.approx(expected_z, abs=1e-5)
+    assert md[7].item() == 0.0  # age_missing
+    # APOE 34 → indices 1 (e3) and 2 (e4) set, e2 absent, apoe_missing = 0
+    assert md[0].item() == 0.0  # e2 absent
+    assert md[1].item() == 1.0  # e3 present
+    assert md[2].item() == 1.0  # e4 present
+    assert md[3].item() == 0.0  # apoe_missing

@@ -18,6 +18,7 @@ import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig
 
+from src.data.tabpfn_input import METADATA_FIELDS
 from src.models.resdec_head.resdec_h3_head import ResDecH3Head
 
 
@@ -31,7 +32,7 @@ class ResDecFrozenLightningModule(pl.LightningModule):
         self.cfg = cfg
         self.d_subject = int(cfg.model.d_fused)
         resdec_cfg = cfg.model.get("resdec_head", {}) or {}
-        self._d_metadata = int(resdec_cfg.get("d_metadata", 8))
+        self._d_metadata = int(resdec_cfg.get("d_metadata", len(METADATA_FIELDS)))
         n_heads = int(resdec_cfg.get("n_heads", 4))
         n_hc_streams = int(resdec_cfg.get("n_hc_streams", 4))
         lambda_init = float(resdec_cfg.get("lambda_init", 0.8))

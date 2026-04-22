@@ -258,17 +258,23 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         which case ``metadata.csv`` is appended) or directly at a CSV file.
         Returns None if the resolved path does not exist — the dataset then
         skips FiLM metadata wiring and the lightning module's None→zeros
-        fallback kicks in.
+        fallback kicks in. Emits a ``logger.warning`` when ``metadata_path``
+        was configured but resolves to a nonexistent file so misconfiguration
+        (e.g. a typo) doesn't silently degrade FiLM to a no-op.
         """
         meta_path_str = self._data_cfg.get("metadata_path", None)
         if meta_path_str is None:
             return None
         meta_path = Path(meta_path_str)
-        if meta_path.is_dir():
-            meta_csv = meta_path / "metadata.csv"
-        else:
-            meta_csv = meta_path
-        return meta_csv if meta_csv.exists() else None
+        meta_csv = meta_path / "metadata.csv" if meta_path.is_dir() else meta_path
+        if not meta_csv.exists():
+            logger.warning(
+                "metadata_path=%r resolves to %s which does not exist — "
+                "FiLM will run with zero metadata (no-op). Check data.metadata_path.",
+                meta_path_str, meta_csv,
+            )
+            return None
+        return meta_csv
 
     def _compute_train_age_stats(self, train_subjects: list[str]) -> None:
         """Compute train-only age_mean / age_std for FiLM z-scoring.

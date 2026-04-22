@@ -68,6 +68,10 @@ class EmbeddingDataset(Dataset):
             [targets[s] for s in self.subject_ids], dtype=np.float32
         )
         # Precompute 8-dim metadata vectors once per subject (no per-step cost).
+        # NOTE: the canonical helper is ``_build_metadata_vectors`` in
+        # ``src/data/datasets.py``; this dataset differs in signature (meta_csv
+        # is required, no age_mean/age_std propagation) so we inline a minimal
+        # variant here rather than bending the helper API to fit both callers.
         meta_csv = Path(meta_csv)
         metas = [load_metadata_vector(s, meta_csv)[0] for s in self.subject_ids]
         self.metadata = torch.stack(metas).float()

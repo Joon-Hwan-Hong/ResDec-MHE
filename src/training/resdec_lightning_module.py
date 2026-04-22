@@ -50,6 +50,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 
+from src.data.tabpfn_input import METADATA_FIELDS
 from src.models.full_model import build_model_from_config
 from src.models.resdec_head.resdec_h3_head import (
     DEFAULT_K_TABM,
@@ -119,7 +120,7 @@ class ResDecLightningModule(pl.LightningModule):
         # against src/models/fusion/pathology_attention.py.)
         d_subject = int(model_cfg.d_fused)
         resdec_cfg = model_cfg.get("resdec_head", {}) or {}
-        d_metadata = int(resdec_cfg.get("d_metadata", 8))
+        d_metadata = int(resdec_cfg.get("d_metadata", len(METADATA_FIELDS)))
         n_heads = int(resdec_cfg.get("n_heads", 4))
         n_hc_streams = int(resdec_cfg.get("n_hc_streams", 4))
         lambda_init = float(resdec_cfg.get("lambda_init", 0.8))
