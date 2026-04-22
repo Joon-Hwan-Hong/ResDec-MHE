@@ -157,11 +157,9 @@ def main(args):
         y_val = np.array([targets[s] for s in val_ids], dtype=np.float32)
         logger.info("  train %s, val %s", X_train.shape, X_val.shape)
 
-        reg = TabPFNRegressor(
-            device=device,
-            random_state=args.seed,
-            model_version=ModelVersion.V2_6,
-        )
+        # model_version is NOT a TabPFNRegressor constructor kwarg — set via
+        # tabpfn.settings (default is ModelVersion.V2_6 per tabpfn/settings.py:36).
+        reg = TabPFNRegressor(device=device, random_state=args.seed)
         reg.fit(X_train, y_train)
         mean, sigma = _predict_with_sigma(reg, X_val)
 
