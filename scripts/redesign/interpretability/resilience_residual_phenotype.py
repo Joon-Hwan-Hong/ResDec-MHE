@@ -45,8 +45,8 @@ import numpy as np
 import pandas as pd
 
 # Make the script standalone-runnable: ensure the worktree root is on sys.path.
-# Anchored at parents[2] (i.e. scripts/redesign/<this_file> → worktree_root/).
-_WORKTREE_ROOT = Path(__file__).resolve().parents[2]
+# Anchored at parents[3] (i.e. scripts/redesign/interpretability/<this_file> → worktree_root/).
+_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if not (_WORKTREE_ROOT / "src").is_dir():
     raise RuntimeError(
         f"sys.path bootstrap failed: {_WORKTREE_ROOT}/src not found; "

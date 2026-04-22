@@ -53,7 +53,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[2]
+_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if not (_WORKTREE_ROOT / "src").is_dir():
     raise RuntimeError(
         f"sys.path bootstrap failed: {_WORKTREE_ROOT}/src not found; "
