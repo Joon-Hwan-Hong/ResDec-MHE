@@ -78,8 +78,8 @@ def test_known_covariance():
 
     out = decompose_variance(y_true, y_tabpfn, f1)
     g = out["global"]
-    assert g["var_tabpfn"] == pytest.approx(np.var(y_tabpfn, ddof=1), abs=1e-6)
-    assert g["var_f1"] == pytest.approx(np.var(f1, ddof=1), abs=1e-6)
+    assert g["var_tabpfn"] == pytest.approx(np.var(y_tabpfn, ddof=1))
+    assert g["var_f1"] == pytest.approx(np.var(f1, ddof=1))
     # Additivity — spec contract: var_y = var_tabpfn + var_f1 + 2 cov + var_resid.
     # Exact at float precision because noise was constructed orthogonal to the predictors.
     reconstructed = g["var_tabpfn"] + g["var_f1"] + 2 * g["cov_tabpfn_f1"] + g["var_resid"]
@@ -205,3 +205,13 @@ def test_tiny_group_returns_nan():
     assert np.isnan(out["by_label"]["A"]["var_y"])
     assert out["by_label"]["B"]["n"] == 49
     assert not np.isnan(out["by_label"]["B"]["var_y"])
+
+
+def test_zero_variance_y_returns_nan_fraction():
+    """When Var(y) == 0, total_explained_fraction is NaN (avoids 0/0)."""
+    y = np.zeros(10)
+    t = np.zeros(10)
+    f = np.zeros(10)
+    out = decompose_variance(y, t, f)
+    assert np.isnan(out["global"]["total_explained_fraction"])
+    assert out["global"]["var_y"] == 0.0

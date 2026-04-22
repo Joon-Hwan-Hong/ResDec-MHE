@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -41,11 +42,10 @@ sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.resdec_variance_decomposition import decompose_variance  # noqa: E402
 
+logger = logging.getLogger(__name__)
 
-N_FOLDS = 5
 
-
-def _load_fold_predictions(
+def load_fold_predictions(
     pred_root: Path, tabpfn_dir: Path, fold: int,
 ) -> pd.DataFrame:
     """Load predictions + TabPFN for a single fold and align by subject_id.
@@ -99,10 +99,12 @@ def _load_fold_predictions(
     ]
 
 
-def _load_all_folds(pred_root: Path, tabpfn_dir: Path) -> pd.DataFrame:
-    """Concatenate all 5 folds' val predictions into a single long DataFrame."""
+def load_all_folds(
+    pred_root: Path, tabpfn_dir: Path, n_folds: int = 5,
+) -> pd.DataFrame:
+    """Concatenate all folds' val predictions into a single long DataFrame."""
     return pd.concat(
-        [_load_fold_predictions(pred_root, tabpfn_dir, f) for f in range(N_FOLDS)],
+        [load_fold_predictions(pred_root, tabpfn_dir, f) for f in range(n_folds)],
         ignore_index=True,
     )
 
@@ -141,12 +143,16 @@ def _age_quartile_labels(ages: pd.Series) -> pd.Series:
     return labels
 
 
+def _apoe_e4_count_label(genotype: object) -> str | None:
+    """Stringify the ε4 count, preserving None for missing genotypes."""
+    c = _apoe_e4_count(genotype)
+    return str(c) if c is not None else None
+
+
 def _build_subgroups(df: pd.DataFrame) -> dict[str, np.ndarray]:
     """Build the three stratifications required by the spec."""
     # APOE-ε4 count → "0" / "1" / "2"; None when APOE genotype is missing.
-    apoe_str = df["apoe_genotype"].apply(
-        lambda g: (lambda c: str(c) if c is not None else None)(_apoe_e4_count(g))
-    )
+    apoe_str = df["apoe_genotype"].apply(_apoe_e4_count_label)
 
     # Sex: msex ∈ {0, 1}. Keep NaN → None.
     msex_str = df["msex"].apply(
@@ -163,19 +169,25 @@ def _build_subgroups(df: pd.DataFrame) -> dict[str, np.ndarray]:
 
 
 def _print_summary(decomposition: dict) -> None:
-    """Human-readable stdout summary (global fractions + per-subgroup counts)."""
+    """Human-readable stdout summary (global fractions + per-subgroup counts).
+
+    When ``var_y == 0`` (degenerate target), the fraction-of-Var(y) columns
+    divide by NaN so they render as "nan%" — still valid output, and the
+    upstream decomposition also returns NaN for ``total_explained_fraction``.
+    """
     g = decomposition["global"]
+    denom = g["var_y"] if g.get("var_y") and g["var_y"] > 0 else float("nan")
     print("\n=== Variance Decomposition (global) ===")
     print(f"  n                      : {g['n']}")
     print(f"  Var(y)                 : {g['var_y']:.4f}")
     print(f"  Var(y_tabpfn)          : {g['var_tabpfn']:.4f}  "
-          f"({g['var_tabpfn'] / g['var_y']:.1%} of Var(y))")
+          f"({g['var_tabpfn'] / denom:.1%} of Var(y))")
     print(f"  Var(f_1)               : {g['var_f1']:.4f}  "
-          f"({g['var_f1'] / g['var_y']:.1%} of Var(y))")
-    print(f"  2 Cov(y_tabpfn, f_1)   : {2 * g['cov_tabpfn_f1']:.4f}  "
-          f"({2 * g['cov_tabpfn_f1'] / g['var_y']:.1%} of Var(y))")
+          f"({g['var_f1'] / denom:.1%} of Var(y))")
+    print(f"  2 Cov(y_tabpfn, f_1)   : {2 * g['cov_tabpfn_f1']:+.4f}  "
+          f"({2 * g['cov_tabpfn_f1'] / denom:.1%} of Var(y))")
     print(f"  Var(resid)             : {g['var_resid']:.4f}  "
-          f"({g['var_resid'] / g['var_y']:.1%} of Var(y))")
+          f"({g['var_resid'] / denom:.1%} of Var(y))")
     print(f"  Total explained (1 - Var(resid)/Var(y)) : "
           f"{g['total_explained_fraction']:.4f}")
 
@@ -193,6 +205,11 @@ def _print_summary(decomposition: dict) -> None:
 
 
 def main(args: argparse.Namespace) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     pred_root = Path(args.pred_root)
     tabpfn_dir = Path(args.tabpfn_dir)
     metadata_csv = Path(args.metadata_csv)
@@ -203,8 +220,9 @@ def main(args: argparse.Namespace) -> int:
     print(f"[variance_decomposition] tabpfn-dir  = {tabpfn_dir}")
     print(f"[variance_decomposition] metadata    = {metadata_csv}")
     print(f"[variance_decomposition] out-dir     = {out_dir}")
+    print(f"[variance_decomposition] n-folds     = {args.n_folds}")
 
-    df_pred = _load_all_folds(pred_root, tabpfn_dir)
+    df_pred = load_all_folds(pred_root, tabpfn_dir, n_folds=args.n_folds)
     print(f"[variance_decomposition] loaded {len(df_pred)} subjects across "
           f"{df_pred['fold'].nunique()} folds")
 
@@ -227,6 +245,18 @@ def main(args: argparse.Namespace) -> int:
           f"age_death for {n_age}/{len(df)}")
 
     subgroups = _build_subgroups(df)
+    # Explicit visibility on subjects silently dropped for missing metadata.
+    for key, labels in subgroups.items():
+        missing = sum(
+            1 for lbl in labels
+            if lbl is None or (isinstance(lbl, float) and np.isnan(lbl))
+        )
+        n_labeled = len(labels) - missing
+        logger.info(
+            "[variance_decomposition] %s: %d/%d subjects labeled "
+            "(%d dropped - missing metadata)",
+            key, n_labeled, len(labels), missing,
+        )
 
     decomposition = decompose_variance(
         df["y_true"].to_numpy(),
@@ -262,5 +292,9 @@ if __name__ == "__main__":
     p.add_argument(
         "--out-dir", default="outputs/redesign/interpretability",
         help="Output directory (will be created if missing)",
+    )
+    p.add_argument(
+        "--n-folds", type=int, default=5,
+        help="Number of outer folds (default: 5).",
     )
     sys.exit(main(p.parse_args()))

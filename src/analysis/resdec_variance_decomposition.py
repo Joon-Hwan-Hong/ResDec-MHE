@@ -26,9 +26,12 @@ without a systematic bias.
 """
 from __future__ import annotations
 
+import logging
 from typing import Mapping
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _component_stats(
@@ -122,6 +125,14 @@ def decompose_variance(
         Additivity always holds:
         ``var_y == var_tabpfn + var_f1 + 2 * cov_tabpfn_f1 + var_resid``
         (up to floating-point precision).
+
+    Notes
+    -----
+    Subgroup labels are sorted lexicographically as strings before
+    iterating, so e.g. numeric-string labels ``"0"``, ``"1"``, ``"10"``,
+    ``"2"`` sort as ``["0", "1", "10", "2"]``. Callers wanting natural
+    numeric ordering should pre-process labels to a zero-padded or
+    otherwise lex-sortable form.
     """
     y_true = np.asarray(y_true)
     y_tabpfn = np.asarray(y_tabpfn)
@@ -156,6 +167,15 @@ def decompose_variance(
             valid_labels = labels[valid_mask]
             unique_labels = sorted({lbl for lbl in valid_labels.tolist()},
                                    key=lambda x: str(x))
+
+            if not unique_labels:
+                logger.warning(
+                    "Subgroup %r has 0 non-null labels; emitting empty dict "
+                    "for this subgroup.",
+                    key,
+                )
+                out[key] = {}
+                continue
 
             group_out: dict = {}
             for lbl in unique_labels:
