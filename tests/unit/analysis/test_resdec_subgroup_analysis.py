@@ -82,14 +82,55 @@ def test_tiny_subgroup_returns_nan():
 
 
 def test_empty_subgroup_returns_nan_and_warns():
-    """Subgroup with n=0 gives NaN metrics and n_valid_bootstraps=0."""
+    """Subgroup with n=0 gives NaN metrics, n_valid_bootstraps=0, AND emits UserWarning."""
     y = np.array([1.0, 2.0, 3.0])
     y_pred = np.array([1.0, 2.0, 3.0])
     mask = np.array([False, False, False])
-    out = stratified_metrics(y, y_pred, {"empty": mask}, n_bootstrap=50)
+    with pytest.warns(UserWarning, match="empty"):
+        out = stratified_metrics(y, y_pred, {"empty": mask}, n_bootstrap=50)
     assert out["empty"]["n"] == 0
     assert np.isnan(out["empty"]["r2"])
     assert out["empty"]["n_valid_bootstraps"] == 0
+
+
+def test_percentile_ci_not_normal_approx():
+    """CI must be percentile method (q2.5, q97.5), NOT mean ± 1.96*std.
+
+    On a skewed target distribution, the bootstrap resample distribution of
+    R² is asymmetric. The percentile method preserves this asymmetry (the
+    left and right arms of the CI differ). A normal-approximation CI would
+    force symmetry (lo = r2 - k*std, hi = r2 + k*std), which would be wrong
+    for skewed distributions.
+    """
+    rng = np.random.default_rng(0)
+    n = 500
+    y = rng.exponential(scale=2.0, size=n)
+    y_pred = y + rng.standard_normal(n) * 0.3
+    mask = np.ones(n, dtype=bool)
+    out = stratified_metrics(y, y_pred, {"skewed": mask}, n_bootstrap=2000, seed=0)
+    r2 = out["skewed"]["r2"]
+    lo, hi = out["skewed"]["r2_ci"]
+    assert r2 > 0.8
+    left_arm = r2 - lo
+    right_arm = hi - r2
+    # Skewed bootstrap distribution → asymmetric arms. Normal-approx would force
+    # symmetry exactly; percentile preserves the empirical asymmetry.
+    assert abs(left_arm - right_arm) > 1e-4
+
+
+def test_orchestration_uses_public_names():
+    """Verify subgroup_r2.py imports public (non-underscore) helpers.
+
+    If the quantile helpers are ever re-privatised (renamed back to
+    ``_age_quartile_labels`` or similar), the module-load of
+    ``scripts.redesign.interpretability.subgroup_r2`` would fail on the
+    import statement and this test would error out rather than pass.
+    """
+    import scripts.redesign.interpretability.subgroup_r2 as mod
+    assert hasattr(mod, "apoe_e4_count_label")
+    # M1 consolidated the quartile helpers into the shared `quantile_labels`;
+    # either name is acceptable for rename-safety.
+    assert hasattr(mod, "age_quartile_labels") or hasattr(mod, "quantile_labels")
 
 
 def test_reproducibility_across_seeds():

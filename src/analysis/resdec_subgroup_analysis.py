@@ -33,7 +33,7 @@ import warnings
 from typing import Mapping
 
 import numpy as np
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import ConstantInputWarning, pearsonr, spearmanr
 from sklearn.metrics import r2_score
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 _MIN_N_FOR_METRICS = 3
 
 _NAN_CI: tuple[float, float] = (float("nan"), float("nan"))
+
+# 95% percentile-method CI quantiles. Named so the bootstrap code reads as
+# "take the 95% percentile CI" rather than a bare ``[0.025, 0.975]`` literal.
+_CI_QUANTILES: tuple[float, float] = (0.025, 0.975)
 
 
 def _point_metrics(y: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
@@ -77,10 +81,12 @@ def _point_metrics(y: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
         r2 = float(r2_score(y, y_pred))
 
     # scipy raises a ConstantInputWarning when variance is 0. Suppress it
-    # here and emit NaN — the warning adds noise without new information
-    # since the caller already sees NaN + n_valid_bootstraps.
+    # narrowly here and emit NaN — the warning adds noise without new
+    # information since the caller already sees NaN + n_valid_bootstraps.
+    # Only ConstantInputWarning is filtered so any other scipy warning
+    # (e.g. NearConstantInputWarning) still surfaces.
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+        warnings.simplefilter("ignore", ConstantInputWarning)
         pearson_r = float(pearsonr(y, y_pred).statistic)
         spearman_rho = float(spearmanr(y, y_pred).statistic)
 
@@ -135,7 +141,7 @@ def _bootstrap_cis(
         finite = samples[np.isfinite(samples)]
         if finite.size == 0:
             return _NAN_CI
-        lo, hi = np.quantile(finite, [0.025, 0.975])
+        lo, hi = np.quantile(finite, _CI_QUANTILES)
         return (float(lo), float(hi))
 
     # ``n_valid_bootstraps`` = count of resamples where ALL four metrics
@@ -226,6 +232,17 @@ def stratified_metrics(
         y_grp = y_true[mask_arr]
         yp_grp = y_pred[mask_arr]
         n = int(y_grp.shape[0])
+
+        # Explicit warning on empty subgroups: n=0 is almost always a sign of
+        # a bad mask (typo in family label, missing metadata, etc.), not a
+        # legitimate "no members" case. Emit a UserWarning so pytest can
+        # assert it and so the caller sees it in normal runtime.
+        if n == 0:
+            warnings.warn(
+                f"Subgroup {group_name!r} is empty (n=0); metrics are NaN.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         point = _point_metrics(y_grp, yp_grp)
         cis, n_valid = _bootstrap_cis(

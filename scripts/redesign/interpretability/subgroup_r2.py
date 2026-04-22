@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 
@@ -43,14 +44,18 @@ if not (_WORKTREE_ROOT / "src").is_dir():
     )
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
-# Reuse the per-fold loader + APOE labelling from the C.1 variance script so
-# both analyses see the same subject set and the same stratification labels.
+# Reuse the per-fold loader from the C.1 variance script so both analyses see
+# the same subject set. Stratification labels come from the shared helper
+# module so both scripts bucket subjects identically.
 from scripts.redesign.interpretability.variance_decomposition import (  # noqa: E402
-    age_quartile_labels,
-    apoe_e4_count_label,
     load_all_folds,
 )
 from src.analysis.resdec_subgroup_analysis import stratified_metrics  # noqa: E402
+from src.analysis.subgroup_helpers import (  # noqa: E402
+    apoe_e4_count_label,
+    msex_label,
+    quantile_labels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,29 +64,12 @@ logger = logging.getLogger(__name__)
 # source CSV surfaces as a KeyError rather than silently skipping a subgroup.
 _METADATA_COLS = ["ROSMAP_IndividualID", "apoe_genotype", "msex", "age_death", "gpath"]
 
-
-def _pathology_quartile_labels(gpath: pd.Series) -> pd.Series:
-    """Q1..Q4 pathology quartiles on ``gpath`` rank; None for NaN entries.
-
-    Mirrors ``age_quartile_labels`` (rank-then-qcut to tie-break cleanly).
-    """
-    labels = pd.Series([None] * len(gpath), index=gpath.index, dtype=object)
-    valid = gpath.notna()
-    if valid.sum() >= 4:
-        q = pd.qcut(
-            gpath.loc[valid].rank(method="first"),
-            q=4,
-            labels=[f"Q{i + 1}" for i in range(4)],
-        )
-        labels.loc[valid] = q.astype(str).to_numpy()
-    return labels
-
-
-def _msex_label(x: object) -> str | None:
-    """Stringify msex (0/1), preserving None for NaN entries."""
-    if pd.isna(x):
-        return None
-    return str(int(x))
+# Subgroups with fewer than this many subjects yield bootstrap CIs that are
+# too wide to be informative (<10 subjects → percentile CI dominated by
+# resample noise, not data variation). We still compute and report metrics
+# for them, but the orchestration emits an explicit warning so downstream
+# readers know to discount those intervals.
+MIN_N_FOR_CI_TRUST = 10
 
 
 def _build_flat_masks(df: pd.DataFrame) -> tuple[dict[str, np.ndarray], dict[str, str]]:
@@ -103,21 +91,21 @@ def _build_flat_masks(df: pd.DataFrame) -> tuple[dict[str, np.ndarray], dict[str
         family_by_group[group_name] = "APOE_e4"
 
     # --- Sex ------------------------------------------------------------
-    msex_labels = df["msex"].apply(_msex_label)
+    msex_labels = df["msex"].apply(msex_label)
     for sex in ("0", "1"):
         group_name = f"msex_{sex}"
         masks[group_name] = (msex_labels == sex).to_numpy(dtype=bool)
         family_by_group[group_name] = "msex"
 
     # --- Age quartile ---------------------------------------------------
-    age_q = age_quartile_labels(df["age_death"])
+    age_q = quantile_labels(df["age_death"], n_quantiles=4, prefix="Q")
     for q in ("Q1", "Q2", "Q3", "Q4"):
         group_name = f"age_quartile_{q}"
         masks[group_name] = (age_q == q).to_numpy(dtype=bool)
         family_by_group[group_name] = "age_quartile"
 
     # --- Pathology quartile ---------------------------------------------
-    gpath_q = _pathology_quartile_labels(df["gpath"])
+    gpath_q = quantile_labels(df["gpath"], n_quantiles=4, prefix="Q")
     for q in ("Q1", "Q2", "Q3", "Q4"):
         group_name = f"pathology_quartile_{q}"
         masks[group_name] = (gpath_q == q).to_numpy(dtype=bool)
@@ -183,10 +171,10 @@ def _print_summary(metrics: dict[str, dict], family_by_group: dict[str, str]) ->
             s = metrics[g]
             r2 = s["r2"]
             lo, hi = s["r2_ci"]
-            r2_s = f"{r2:8.4f}" if r2 == r2 else "     nan"
+            r2_s = f"{r2:8.4f}" if not math.isnan(r2) else "     nan"
             ci_s = (
                 f"[{lo:7.4f}, {hi:7.4f}]"
-                if lo == lo and hi == hi
+                if not (math.isnan(lo) or math.isnan(hi))
                 else "[    nan,     nan]"
             )
             print(f"    {g:<28s}  {s['n']:5d}  {r2_s}  {ci_s:>22s}")
@@ -195,7 +183,7 @@ def _print_summary(metrics: dict[str, dict], family_by_group: dict[str, str]) ->
 def main(args: argparse.Namespace) -> int:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s | %(levelname)s | %(message)s",
     )
 
     pred_root = Path(args.pred_root)
@@ -204,18 +192,20 @@ def main(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[subgroup_r2] pred-root     = {pred_root}")
-    print(f"[subgroup_r2] tabpfn-dir    = {tabpfn_dir}")
-    print(f"[subgroup_r2] metadata      = {metadata_csv}")
-    print(f"[subgroup_r2] out-dir       = {out_dir}")
-    print(f"[subgroup_r2] n-folds       = {args.n_folds}")
-    print(f"[subgroup_r2] n-bootstrap   = {args.n_bootstrap}")
-    print(f"[subgroup_r2] seed          = {args.seed}")
+    logger.info("[subgroup_r2] pred-root     = %s", pred_root)
+    logger.info("[subgroup_r2] tabpfn-dir    = %s", tabpfn_dir)
+    logger.info("[subgroup_r2] metadata      = %s", metadata_csv)
+    logger.info("[subgroup_r2] out-dir       = %s", out_dir)
+    logger.info("[subgroup_r2] n-folds       = %d", args.n_folds)
+    logger.info("[subgroup_r2] n-bootstrap   = %d", args.n_bootstrap)
+    logger.info("[subgroup_r2] seed          = %d", args.seed)
 
     # 1. Load concatenated per-fold val predictions via the C.1 loader.
     df_pred = load_all_folds(pred_root, tabpfn_dir, n_folds=args.n_folds)
-    print(f"[subgroup_r2] loaded {len(df_pred)} subjects across "
-          f"{df_pred['fold'].nunique()} folds")
+    logger.info(
+        "[subgroup_r2] loaded %d subjects across %d folds",
+        len(df_pred), df_pred["fold"].nunique(),
+    )
 
     # 2. Metadata join.
     if not metadata_csv.exists():
@@ -226,16 +216,25 @@ def main(args: argparse.Namespace) -> int:
             raise KeyError(f"metadata.csv missing required column: {col!r}")
 
     df = df_pred.merge(meta[_METADATA_COLS], on="ROSMAP_IndividualID", how="left")
-    print(
-        f"[subgroup_r2] metadata join: "
-        f"APOE available for {df['apoe_genotype'].notna().sum()}/{len(df)}, "
-        f"msex for {df['msex'].notna().sum()}/{len(df)}, "
-        f"age_death for {df['age_death'].notna().sum()}/{len(df)}, "
-        f"gpath for {df['gpath'].notna().sum()}/{len(df)}"
+    logger.info(
+        "[subgroup_r2] metadata join: "
+        "APOE available for %d/%d, msex for %d/%d, "
+        "age_death for %d/%d, gpath for %d/%d",
+        df["apoe_genotype"].notna().sum(), len(df),
+        df["msex"].notna().sum(), len(df),
+        df["age_death"].notna().sum(), len(df),
+        df["gpath"].notna().sum(), len(df),
     )
 
     # 3. Build flat boolean masks for every subgroup family.
     masks, family_by_group = _build_flat_masks(df)
+    # Sanity: masks and family_by_group must cover the exact same set of
+    # group names. A mismatch indicates a refactor drift (e.g., a new family
+    # added to one dict but not the other).
+    assert set(masks.keys()) == set(family_by_group.keys()), (
+        f"mask/family key drift: "
+        f"{set(masks.keys()) ^ set(family_by_group.keys())}"
+    )
     for group_name, mask in masks.items():
         logger.info(
             "[subgroup_r2] %s: n=%d (family=%s)",
@@ -251,15 +250,27 @@ def main(args: argparse.Namespace) -> int:
         seed=args.seed,
     )
 
+    # 4b. Flag subgroups too small for trustworthy CIs. The metrics are still
+    # computed and written to disk, but the reader should treat the bootstrap
+    # interval as dominated by resample noise rather than data variation.
+    for group_name, stats in metrics.items():
+        if stats["n"] < MIN_N_FOR_CI_TRUST:
+            logger.warning(
+                "[subgroup_r2] %s: n=%d is below reliability threshold "
+                "(n<%d); R²=%.3f CI=%s is highly uncertain",
+                group_name, stats["n"], MIN_N_FOR_CI_TRUST,
+                stats["r2"], stats["r2_ci"],
+            )
+
     # 5. Write JSON + CSV.
     out_json = out_dir / "subgroup_metrics.json"
     out_json.write_text(json.dumps(metrics, indent=2, default=float))
-    print(f"\n[subgroup_r2] wrote {out_json}")
+    logger.info("[subgroup_r2] wrote %s", out_json)
 
     rows = _metrics_to_rows(metrics, family_by_group)
     out_csv = out_dir / "subgroup_metrics_table.csv"
     pd.DataFrame(rows).to_csv(out_csv, index=False)
-    print(f"[subgroup_r2] wrote {out_csv}")
+    logger.info("[subgroup_r2] wrote %s", out_csv)
 
     # 6. Readable summary to stdout.
     _print_summary(metrics, family_by_group)

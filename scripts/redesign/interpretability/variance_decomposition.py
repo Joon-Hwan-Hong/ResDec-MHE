@@ -41,6 +41,11 @@ if not (_WORKTREE_ROOT / "src").is_dir():
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.resdec_variance_decomposition import decompose_variance  # noqa: E402
+from src.analysis.subgroup_helpers import (  # noqa: E402
+    apoe_e4_count_label,
+    msex_label,
+    quantile_labels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,57 +114,15 @@ def load_all_folds(
     )
 
 
-def _apoe_e4_count(genotype: object) -> object:
-    """Return the number of ε4 alleles in an APOE genotype string (0/1/2) or None."""
-    if genotype is None:
-        return None
-    try:
-        g_float = float(genotype)
-        if np.isnan(g_float):
-            return None
-        g_str = str(int(g_float))
-    except (TypeError, ValueError):
-        g_str = str(genotype)
-    # APOE genotypes are encoded as two-digit concatenations of allele numbers
-    # (22, 23, 24, 33, 34, 44) — the number of "4"s is the ε4 count.
-    return g_str.count("4")
-
-
-def age_quartile_labels(ages: pd.Series) -> pd.Series:
-    """Assign Q1..Q4 labels using pandas quantiles on the non-null subset.
-
-    Entries with NaN age receive ``None`` so the downstream subgroup logic drops them.
-    """
-    labels = pd.Series([None] * len(ages), index=ages.index, dtype=object)
-    valid = ages.notna()
-    if valid.sum() >= 4:
-        # rank(method='first') breaks ties so qcut always gets 4 equal-sized buckets.
-        q = pd.qcut(
-            ages.loc[valid].rank(method="first"),
-            q=4,
-            labels=[f"Q{i + 1}" for i in range(4)],
-        )
-        labels.loc[valid] = q.astype(str).to_numpy()
-    return labels
-
-
-def apoe_e4_count_label(genotype: object) -> str | None:
-    """Stringify the ε4 count, preserving None for missing genotypes."""
-    c = _apoe_e4_count(genotype)
-    return str(c) if c is not None else None
-
-
 def _build_subgroups(df: pd.DataFrame) -> dict[str, np.ndarray]:
     """Build the three stratifications required by the spec."""
     # APOE-ε4 count → "0" / "1" / "2"; None when APOE genotype is missing.
     apoe_str = df["apoe_genotype"].apply(apoe_e4_count_label)
 
     # Sex: msex ∈ {0, 1}. Keep NaN → None.
-    msex_str = df["msex"].apply(
-        lambda x: str(int(x)) if pd.notna(x) else None
-    )
+    msex_str = df["msex"].apply(msex_label)
 
-    age_q = age_quartile_labels(df["age_death"])
+    age_q = quantile_labels(df["age_death"], n_quantiles=4, prefix="Q")
 
     return {
         "by_apoe_e4_count": apoe_str.to_numpy(dtype=object),
