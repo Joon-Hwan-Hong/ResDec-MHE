@@ -138,11 +138,10 @@ def main(args):
             n_splits=args.n_inner_folds, shuffle=True, random_state=args.seed
         )
         for inner_fold, (tr_idx, va_idx) in enumerate(inner_kf.split(X_train_full)):
-            reg = TabPFNRegressor(
-                device=device,
-                random_state=args.seed,
-                model_version=ModelVersion.V2_6,
-            )
+            # model_version is NOT a TabPFNRegressor constructor kwarg — it's set
+            # via tabpfn.settings (env var TABPFN_MODEL_VERSION or settings default).
+            # Package default is ModelVersion.V2_6 per tabpfn/settings.py:36.
+            reg = TabPFNRegressor(device=device, random_state=args.seed)
             reg.fit(X_train_full[tr_idx], y_train[tr_idx])
             try:
                 mean, sigma = _predict_with_sigma(reg, X_train_full[va_idx])
