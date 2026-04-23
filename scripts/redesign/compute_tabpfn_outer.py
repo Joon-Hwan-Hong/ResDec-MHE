@@ -22,10 +22,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import StandardScaler
 from tabpfn import TabPFNRegressor
-from tabpfn.constants import ModelVersion
 
+from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
 from src.data.enriched_features import (
     FEATURE_SETS,
     FEATURE_SET_SIZES,
@@ -36,22 +35,6 @@ from src.data.feature_loaders import load_flat_features, load_targets
 from src.data.splits import load_splits
 
 logger = logging.getLogger(__name__)
-
-
-def _apply_zscore(
-    X_train: np.ndarray, X_val: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Per-feature z-score using TRAIN-ONLY stats.
-
-    Fits a sklearn StandardScaler on X_train (outer-fold train features only)
-    and transforms BOTH X_train and X_val with the same fitted scaler.
-    Critical: stats come exclusively from the train split — no pooled stats,
-    no val-leakage. Zero-variance features become mean-centered only.
-    """
-    scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X_train).astype(np.float32, copy=False)
-    X_val_s = scaler.transform(X_val).astype(np.float32, copy=False)
-    return X_train_s, X_val_s
 
 
 def _top_k_filename(top_k_dir: Path, top_k: int, fold_idx: int, feature_set: str) -> Path:
@@ -114,11 +97,7 @@ def _build_regressor(
 
 
 def main(args):
-    # --ignore-pretraining-limits: override TabPFN-2.6's 2000-feature safety
-    # check. Use ONLY when deliberately testing >2000-feature behavior. Accepts
-    # the distributional-extrapolation risk; TabPFN's prior was trained on
-    # ≤2000 features. Documented in plan Task D.2 (ablation: top-k=4000
-    # sensitivity test).
+    # See _build_regressor() for --ignore-pretraining-limits override semantics.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -154,6 +133,13 @@ def main(args):
     targets = load_targets(meta_csv, all_ids)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Device: %s  (TabPFN model_version=ModelVersion.V2_6)", device)
+    if args.ignore_pretraining_limits:
+        logger.warning(
+            "ignore_pretraining_limits=True: TabPFN-2.6's 2000-feature safety "
+            "check is DISABLED. User-approved override for ablation studies of "
+            ">2000-feature behavior. TabPFN's prior was trained on ≤2000 features; "
+            "predictions beyond that regime are distributional extrapolation."
+        )
 
     results = []
     for fold_idx, fold_split in enumerate(splits["folds"]):
@@ -204,7 +190,7 @@ def main(args):
             # Per-feature z-score fit on OUTER-fold train ONLY; transform
             # both outer-train and outer-val with those train stats. No
             # pooled stats.
-            X_train, X_val = _apply_zscore(X_train, X_val)
+            X_train, X_val = apply_zscore_train_only(X_train, X_val)
 
         reg = _build_regressor(
             device=device,

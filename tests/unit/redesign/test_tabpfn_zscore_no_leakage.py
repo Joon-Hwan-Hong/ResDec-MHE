@@ -25,18 +25,18 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Helper-level tests: verify the extracted _apply_zscore is leakage-free.
+# Helper-level tests: verify the shared apply_zscore_train_only is leakage-free.
 # ---------------------------------------------------------------------------
-def test_apply_zscore_oof_helper_train_only_stats():
-    """OOF helper: val-transformed mean reflects TRAIN stats, not val stats."""
-    from scripts.redesign.compute_tabpfn_oof import _apply_zscore
+def test_apply_zscore_train_only_stats():
+    """Helper: val-transformed mean reflects TRAIN stats, not val stats."""
+    from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
 
     rng = np.random.default_rng(0)
     # Train ~ N(0, 1). Val ~ N(10, 1) — 10σ offset from train mean.
     X_train = rng.standard_normal((100, 3)).astype(np.float32)
     X_val = (rng.standard_normal((20, 3)) + 10.0).astype(np.float32)
 
-    X_train_s, X_val_s = _apply_zscore(X_train, X_val)
+    X_train_s, X_val_s = apply_zscore_train_only(X_train, X_val)
 
     # Train after transform: ~mean=0, ~std=1 (sample-size dependent).
     assert abs(X_train_s.mean()) < 0.2, (
@@ -55,15 +55,15 @@ def test_apply_zscore_oof_helper_train_only_stats():
     )
 
 
-def test_apply_zscore_outer_helper_train_only_stats():
-    """Outer helper: val-transformed mean reflects TRAIN stats, not val stats."""
-    from scripts.redesign.compute_tabpfn_outer import _apply_zscore
+def test_apply_zscore_train_only_reproducibility_second_rng():
+    """Second RNG seed sanity check on train-only stats (same contract)."""
+    from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
 
     rng = np.random.default_rng(1)
     X_train = rng.standard_normal((100, 3)).astype(np.float32)
     X_val = (rng.standard_normal((20, 3)) + 10.0).astype(np.float32)
 
-    X_train_s, X_val_s = _apply_zscore(X_train, X_val)
+    X_train_s, X_val_s = apply_zscore_train_only(X_train, X_val)
 
     assert abs(X_train_s.mean()) < 0.2
     assert abs(X_train_s.std() - 1.0) < 0.2
@@ -75,22 +75,38 @@ def test_apply_zscore_outer_helper_train_only_stats():
 
 def test_apply_zscore_preserves_input_shape_and_dtype():
     """The helper must not change shape; dtype must stay float32."""
-    from scripts.redesign.compute_tabpfn_oof import _apply_zscore
+    from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
 
     rng = np.random.default_rng(2)
     X_train = rng.standard_normal((50, 7)).astype(np.float32)
     X_val = rng.standard_normal((10, 7)).astype(np.float32)
 
-    X_train_s, X_val_s = _apply_zscore(X_train, X_val)
+    X_train_s, X_val_s = apply_zscore_train_only(X_train, X_val)
     assert X_train_s.shape == X_train.shape
     assert X_val_s.shape == X_val.shape
     assert X_train_s.dtype == np.float32
     assert X_val_s.dtype == np.float32
 
 
+def test_apply_zscore_does_not_mutate_inputs():
+    """Inputs must not be modified in place; outputs are fresh arrays."""
+    from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
+
+    rng = np.random.default_rng(4)
+    X_train = (rng.standard_normal((30, 5)) + 7.0).astype(np.float32)
+    X_val = (rng.standard_normal((10, 5)) + 7.0).astype(np.float32)
+    X_train_orig = X_train.copy()
+    X_val_orig = X_val.copy()
+
+    _ = apply_zscore_train_only(X_train, X_val)
+
+    assert np.array_equal(X_train, X_train_orig), "X_train was mutated"
+    assert np.array_equal(X_val, X_val_orig), "X_val was mutated"
+
+
 def test_apply_zscore_handles_zero_variance_feature():
     """sklearn StandardScaler must NOT divide-by-zero on constant features."""
-    from scripts.redesign.compute_tabpfn_oof import _apply_zscore
+    from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
 
     rng = np.random.default_rng(3)
     X_train = rng.standard_normal((50, 4)).astype(np.float32)
@@ -98,7 +114,7 @@ def test_apply_zscore_handles_zero_variance_feature():
     X_val = rng.standard_normal((10, 4)).astype(np.float32)
     X_val[:, 1] = 5.0
 
-    X_train_s, X_val_s = _apply_zscore(X_train, X_val)
+    X_train_s, X_val_s = apply_zscore_train_only(X_train, X_val)
     # Constant column should become all-zeros (mean-centered, std=1 fallback).
     assert np.all(np.isfinite(X_train_s))
     assert np.all(np.isfinite(X_val_s))
@@ -252,13 +268,21 @@ def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     top_k = 5
     train_ids = [f"t{i:03d}" for i in range(n_train)]
     val_ids = [f"v{i:03d}" for i in range(n_val)]
-    all_ids = train_ids + val_ids
     rng = np.random.default_rng(1)
+    # Train features drawn from mean=100, val features drawn from mean=110:
+    # a 10-unit offset that lets us directly distinguish train-only vs pooled
+    # stats in the X_pred leakage-direction assertion below.
     features = {
         s: (rng.standard_normal(n_feats_total) + 100.0).astype(np.float32)
-        for s in all_ids
+        for s in train_ids
     }
-    targets = {s: float(rng.standard_normal()) for s in all_ids}
+    features.update({
+        s: (rng.standard_normal(n_feats_total) + 110.0).astype(np.float32)
+        for s in val_ids
+    })
+    targets = {
+        s: float(rng.standard_normal()) for s in train_ids + val_ids
+    }
 
     monkeypatch.setattr(
         compute_tabpfn_outer, "load_flat_features", lambda d, ids: features
@@ -331,18 +355,234 @@ def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
         assert abs(X_fit.mean()) < 1.0, (
             f"zscore on but fit() saw mean={X_fit.mean():.3f}"
         )
-        # Val predict: val is drawn from same shifted distribution as train, so
-        # after train-mean subtraction val-transformed mean should also be ~0.
-        # Direction-of-leakage test: if POOLED stats were used, val-transformed
-        # mean would be IDENTICAL to 0 (pooling includes val). With train-only
-        # stats, val-transformed mean is slightly offset (by small sample noise).
-        # Here we simply require the scaling happened (std close to 1 if at
-        # all the fit block ran).
-        assert abs(X_pred.mean()) < 5.0  # sanity: not at 100 anymore
+        # Direction-of-leakage test: train features have mean=100, val has
+        # mean=110. Under TRAIN-ONLY stats, scaler subtracts ~100 and divides
+        # by ~1; val mean shifts to ~+10. Under POOLED stats (leakage), both
+        # train and val would be centered at ~0 (pooled mean ≈ 102) and
+        # X_pred.mean() would collapse to near-0. Requiring >3.0 catches a
+        # pooled-stats regression that would otherwise slip through.
+        assert X_pred.mean() > 3.0, (
+            f"X_pred.mean()={X_pred.mean():.3f} — too close to 0, suggests "
+            "pooled stats were used instead of train-only (val mean should "
+            "remain offset since val is drawn from mean=110, train from mean=100)"
+        )
     else:
         assert X_fit.mean() > 50.0, (
             f"zscore off but fit() saw mean={X_fit.mean():.3f} (expected ~100)"
         )
         assert X_pred.mean() > 50.0, (
             f"zscore off but predict() saw mean={X_pred.mean():.3f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Combinability: --zscore and --ignore-pretraining-limits are orthogonal.
+# Each must reach its own sink (scaler vs TabPFNRegressor kwarg) when set,
+# regardless of the other's value. Skip the (False, False) case because it is
+# already exercised by the zscore_on=False branch of the backward-compat tests.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "zscore_on,ignore_on",
+    [(True, True), (True, False), (False, True)],
+)
+def test_oof_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
+    """--zscore and --ignore-pretraining-limits are orthogonal in OOF main()."""
+    from scripts.redesign import compute_tabpfn_oof
+
+    n_train = 20
+    n_feats_total = 50
+    top_k = 5
+    subject_ids = [f"s{i:03d}" for i in range(n_train)]
+    rng = np.random.default_rng(0)
+    features = {
+        s: (rng.standard_normal(n_feats_total) + 100.0).astype(np.float32)
+        for s in subject_ids
+    }
+    targets = {s: float(rng.standard_normal()) for s in subject_ids}
+
+    monkeypatch.setattr(
+        compute_tabpfn_oof, "load_flat_features", lambda d, ids: features
+    )
+    monkeypatch.setattr(
+        compute_tabpfn_oof, "load_targets", lambda csv, ids: targets
+    )
+    monkeypatch.setattr(
+        compute_tabpfn_oof, "load_splits",
+        lambda p: {"folds": [{"train": subject_ids, "val": []}]},
+    )
+
+    captured_fit_X: list[np.ndarray] = []
+    mock_cls = MagicMock()
+    mock_instance = MagicMock()
+
+    def fit_capture(X, y):
+        captured_fit_X.append(np.asarray(X).copy())
+
+    def predict_full(X, output_type=None, quantiles=None):
+        n = len(X)
+        return {
+            "median": np.zeros(n, dtype=np.float32),
+            "quantiles": [
+                np.full(n, -0.1, dtype=np.float32),
+                np.full(n, 0.1, dtype=np.float32),
+            ],
+        }
+
+    mock_instance.fit.side_effect = fit_capture
+    mock_instance.predict.side_effect = predict_full
+    mock_cls.return_value = mock_instance
+    monkeypatch.setattr(compute_tabpfn_oof, "TabPFNRegressor", mock_cls)
+
+    top_k_dir = tmp_path / "topk"
+    top_k_dir.mkdir()
+    (top_k_dir / f"top_{top_k}_features_fold0.json").write_text(
+        json.dumps({"indices": list(range(top_k))})
+    )
+    output_dir = tmp_path / "out"
+
+    class _Args:
+        pass
+
+    a = _Args()
+    a.splits_path = "dummy.json"
+    a.precomputed_dir = "dummy"
+    a.metadata_csv = "dummy.csv"
+    a.top_k_dir = str(top_k_dir)
+    a.output_dir = str(output_dir)
+    a.top_k = top_k
+    a.n_inner_folds = 2
+    a.seed = 42
+    a.ignore_pretraining_limits = ignore_on
+    a.zscore = zscore_on
+
+    monkeypatch.setattr(
+        compute_tabpfn_oof.torch.cuda, "is_available", lambda: False
+    )
+
+    compute_tabpfn_oof.main(a)
+
+    # zscore sink: check X passed to fit() was scaled iff zscore_on
+    assert len(captured_fit_X) == 2
+    for X_fit in captured_fit_X:
+        if zscore_on:
+            assert abs(X_fit.mean()) < 1.0, (
+                f"zscore_on={zscore_on}, ignore_on={ignore_on}: fit() saw "
+                f"mean={X_fit.mean():.3f} (expected ~0 after z-score)"
+            )
+        else:
+            assert X_fit.mean() > 50.0, (
+                f"zscore_on={zscore_on}, ignore_on={ignore_on}: fit() saw "
+                f"mean={X_fit.mean():.3f} (expected ~100, raw features)"
+            )
+
+    # ignore sink: every TabPFNRegressor ctor must see the flag value
+    assert mock_cls.call_count == 2
+    for call in mock_cls.call_args_list:
+        assert call.kwargs["ignore_pretraining_limits"] is ignore_on, (
+            f"zscore_on={zscore_on}, ignore_on={ignore_on}: ctor kwargs="
+            f"{call.kwargs}"
+        )
+
+
+@pytest.mark.parametrize(
+    "zscore_on,ignore_on",
+    [(True, True), (True, False), (False, True)],
+)
+def test_outer_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
+    """--zscore and --ignore-pretraining-limits are orthogonal in outer main()."""
+    from scripts.redesign import compute_tabpfn_outer
+
+    n_train = 16
+    n_val = 4
+    n_feats_total = 50
+    top_k = 5
+    train_ids = [f"t{i:03d}" for i in range(n_train)]
+    val_ids = [f"v{i:03d}" for i in range(n_val)]
+    all_ids = train_ids + val_ids
+    rng = np.random.default_rng(1)
+    features = {
+        s: (rng.standard_normal(n_feats_total) + 100.0).astype(np.float32)
+        for s in all_ids
+    }
+    targets = {s: float(rng.standard_normal()) for s in all_ids}
+
+    monkeypatch.setattr(
+        compute_tabpfn_outer, "load_flat_features", lambda d, ids: features
+    )
+    monkeypatch.setattr(
+        compute_tabpfn_outer, "load_targets", lambda csv, ids: targets
+    )
+    monkeypatch.setattr(
+        compute_tabpfn_outer, "load_splits",
+        lambda p: {"folds": [{"train": train_ids, "val": val_ids}]},
+    )
+
+    captured_fit_X: list[np.ndarray] = []
+    mock_cls = MagicMock()
+    mock_instance = MagicMock()
+
+    def fit_capture(X, y):
+        captured_fit_X.append(np.asarray(X).copy())
+
+    def predict_full(X, output_type=None, quantiles=None):
+        n = len(X)
+        return {
+            "median": np.zeros(n, dtype=np.float32),
+            "quantiles": [
+                np.full(n, -0.1, dtype=np.float32),
+                np.full(n, 0.1, dtype=np.float32),
+            ],
+        }
+
+    mock_instance.fit.side_effect = fit_capture
+    mock_instance.predict.side_effect = predict_full
+    mock_cls.return_value = mock_instance
+    monkeypatch.setattr(compute_tabpfn_outer, "TabPFNRegressor", mock_cls)
+
+    top_k_dir = tmp_path / "topk"
+    top_k_dir.mkdir()
+    (top_k_dir / f"top_{top_k}_features_fold0.json").write_text(
+        json.dumps({"indices": list(range(top_k))})
+    )
+    output_dir = tmp_path / "out"
+
+    class _Args:
+        pass
+
+    a = _Args()
+    a.splits_path = "dummy.json"
+    a.precomputed_dir = "dummy"
+    a.metadata_csv = "dummy.csv"
+    a.top_k_dir = str(top_k_dir)
+    a.output_dir = str(output_dir)
+    a.top_k = top_k
+    a.feature_set = "A"
+    a.seed = 42
+    a.ignore_pretraining_limits = ignore_on
+    a.zscore = zscore_on
+
+    monkeypatch.setattr(
+        compute_tabpfn_outer.torch.cuda, "is_available", lambda: False
+    )
+
+    compute_tabpfn_outer.main(a)
+
+    assert len(captured_fit_X) == 1
+    X_fit = captured_fit_X[0]
+    if zscore_on:
+        assert abs(X_fit.mean()) < 1.0, (
+            f"zscore_on={zscore_on}, ignore_on={ignore_on}: fit() saw "
+            f"mean={X_fit.mean():.3f} (expected ~0 after z-score)"
+        )
+    else:
+        assert X_fit.mean() > 50.0, (
+            f"zscore_on={zscore_on}, ignore_on={ignore_on}: fit() saw "
+            f"mean={X_fit.mean():.3f} (expected ~100, raw features)"
+        )
+
+    assert mock_cls.call_count == 1
+    for call in mock_cls.call_args_list:
+        assert call.kwargs["ignore_pretraining_limits"] is ignore_on, (
+            f"zscore_on={zscore_on}, ignore_on={ignore_on}: ctor kwargs="
+            f"{call.kwargs}"
         )
