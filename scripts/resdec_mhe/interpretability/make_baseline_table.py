@@ -497,13 +497,49 @@ def collect_dl_baseline_rows(baselines_root: Path) -> list[dict]:
     return rows
 
 
-def collect_nonresult_rows() -> list[dict]:
-    """Rows for baselines that exist in ``baselines/`` as source but have no output.
+def _try_read_rosmap_baseline_summary(results_dir: Path) -> tuple[dict, int, Path] | None:
+    """Parse ``Summary_<MODEL_NAME>_ROSMAP.csv`` + ``AllFolds_<MODEL_NAME>_ROSMAP.csv``.
 
-    MixMIL and scPhase: source code present (``baselines/mixmil/run_rosmap.py``,
-    ``baselines/scPhase/run_rosmap.py``) but no ``outputs/baselines/<name>/``
-    directory. These are blocked on preprocessed inputs (see
-    ``docs/results/2026-03-30-baseline-benchmarks.md``).
+    These are the long-form CSVs written by ``baselines/{mixmil,scPhase}/run_rosmap.py``:
+    Summary has columns ``metric, mean, std`` (one row per metric); AllFolds has per-fold
+    rows with columns ``r2, mae, pearson_r, spearman_rho, fold, train_time_s``.
+
+    Returns (metric_dict, n_folds, source_path) if the Summary file exists, else None.
+    rmse is always NaN because run_rosmap.py scripts do not emit it.
+    """
+    summary_files = sorted(results_dir.glob("Summary_*_ROSMAP.csv"))
+    if not summary_files:
+        return None
+    summary_path = summary_files[0]
+    summary_df = pd.read_csv(summary_path)
+
+    metric_dict: dict[str, float] = {
+        f"{k}_mean": float("nan") for k in _METRIC_KEYS
+    }
+    metric_dict.update({f"{k}_std": float("nan") for k in _METRIC_KEYS})
+    # Summary CSV rows use sklearn-idiomatic keys matching _METRIC_KEYS (r2, mae,
+    # pearson_r, spearman_rho). rmse is absent from run_rosmap outputs.
+    for _, row in summary_df.iterrows():
+        metric = str(row["metric"])
+        if metric in _METRIC_KEYS:
+            metric_dict[f"{metric}_mean"] = float(row["mean"])
+            metric_dict[f"{metric}_std"] = float(row["std"])
+
+    n_folds = 0
+    allfolds_files = sorted(results_dir.glob("AllFolds_*_ROSMAP.csv"))
+    if allfolds_files:
+        n_folds = len(pd.read_csv(allfolds_files[0]))
+
+    return metric_dict, n_folds, summary_path
+
+
+def collect_nonresult_rows(baselines_root: Path) -> list[dict]:
+    """Rows for MixMIL / scPhase (auto-detects real results when present) + legacy reference.
+
+    MixMIL and scPhase emit ``Summary_<MODEL>_ROSMAP.csv`` + ``AllFolds_<MODEL>_ROSMAP.csv``
+    under ``<baselines_root>/<mixmil|scphase>/``. If those files are present, the row is
+    populated from them; otherwise, a "source only, no output" placeholder row is emitted
+    so the table stays idempotent across re-runs.
 
     "Current encoder alone" (R² = :data:`CURRENT_ENCODER_ALONE_R2_REF`)
     comes from MEMORY.md's project_ablation findings and is a mean-only
@@ -511,30 +547,57 @@ def collect_nonresult_rows() -> list[dict]:
     """
     rows: list[dict] = []
 
-    # MixMIL — source only.
-    rows.append({
-        "model": "mixmil",
-        "display_name": "MixMIL (Engelmann et al. 2024)",
-        "n_folds": 0,
-        **{f"{k}_mean": float("nan") for k in _METRIC_KEYS},
-        **{f"{k}_std": float("nan") for k in _METRIC_KEYS},
-        "source_path": "baselines/mixmil/run_rosmap.py",
-        "notes": (
-            "source only, no output: blocked on baselines/shared/mixmil_input.h5ad"
-        ),
-    })
-    # scPhase — source only.
-    rows.append({
-        "model": "scphase",
-        "display_name": "scPhase (Berson et al. 2025)",
-        "n_folds": 0,
-        **{f"{k}_mean": float("nan") for k in _METRIC_KEYS},
-        **{f"{k}_std": float("nan") for k in _METRIC_KEYS},
-        "source_path": "baselines/scPhase/run_rosmap.py",
-        "notes": (
-            "source only, no output: blocked on baselines/shared/scphase_input.h5ad"
-        ),
-    })
+    # MixMIL — auto-detect real results, fall back to source-only placeholder.
+    mixmil_dir = baselines_root / "mixmil"
+    mixmil_result = _try_read_rosmap_baseline_summary(mixmil_dir)
+    if mixmil_result is not None:
+        metrics, n_folds, summary_path = mixmil_result
+        rows.append({
+            "model": "mixmil",
+            "display_name": "MixMIL (Engelmann et al. 2024)",
+            "n_folds": n_folds,
+            **metrics,
+            "source_path": str(summary_path),
+            "notes": "",
+        })
+    else:
+        rows.append({
+            "model": "mixmil",
+            "display_name": "MixMIL (Engelmann et al. 2024)",
+            "n_folds": 0,
+            **{f"{k}_mean": float("nan") for k in _METRIC_KEYS},
+            **{f"{k}_std": float("nan") for k in _METRIC_KEYS},
+            "source_path": "baselines/mixmil/run_rosmap.py",
+            "notes": (
+                "source only, no output: blocked on baselines/shared/mixmil_input.h5ad"
+            ),
+        })
+
+    # scPhase — auto-detect real results, fall back to source-only placeholder.
+    scphase_dir = baselines_root / "scphase"
+    scphase_result = _try_read_rosmap_baseline_summary(scphase_dir)
+    if scphase_result is not None:
+        metrics, n_folds, summary_path = scphase_result
+        rows.append({
+            "model": "scphase",
+            "display_name": "scPhase (Berson et al. 2025)",
+            "n_folds": n_folds,
+            **metrics,
+            "source_path": str(summary_path),
+            "notes": "",
+        })
+    else:
+        rows.append({
+            "model": "scphase",
+            "display_name": "scPhase (Berson et al. 2025)",
+            "n_folds": 0,
+            **{f"{k}_mean": float("nan") for k in _METRIC_KEYS},
+            **{f"{k}_std": float("nan") for k in _METRIC_KEYS},
+            "source_path": "baselines/scPhase/run_rosmap.py",
+            "notes": (
+                "source only, no output: blocked on baselines/shared/scphase_input.h5ad"
+            ),
+        })
     # Current encoder alone — mean-only reference (legacy, no per-fold file).
     rows.append({
         "model": "current_encoder_alone",
@@ -831,7 +894,7 @@ def main(args: argparse.Namespace) -> int:
     if not scphase_src.exists():
         logger.warning("scPhase source path %s no longer exists", scphase_src)
 
-    nonresult_rows = collect_nonresult_rows()
+    nonresult_rows = collect_nonresult_rows(args.baselines_root)
     rows.extend(nonresult_rows)
     logger.info(
         "[baseline_table] non-result (source-only / legacy-reference) rows: %d",
