@@ -42,6 +42,8 @@ def prepare_scphase_input(
     subject_col: str,
     target_col: str,
     output_path: Path,
+    max_cells_per_subject: int | None = None,
+    rng_seed: int = 42,
 ) -> None:
     """Create scPhase-compatible .h5ad.
 
@@ -51,6 +53,11 @@ def prepare_scphase_input(
     - .obs['phenotype']: continuous target value per cell (same for all cells of a subject)
     - .obs['batch']: batch/cohort label (single cohort → 'ROSMAP' constant)
     - .obs['cell_type']: cell type annotations (for interpretability)
+
+    max_cells_per_subject: if set, deterministically subsample each subject's cells to at most
+        this many. Prevents OOM when per-subject cell counts are large; scPhase's own
+        max_instances=20000 training-time cap makes pre-capping at or below 20000 effectively
+        equivalent for training while dramatically shrinking the h5ad + in-memory data object.
     """
     logger.info("Preparing scPhase input...")
 
@@ -68,6 +75,32 @@ def prepare_scphase_input(
     if (~valid_mask).sum() > 0:
         logger.warning(f"Dropping {(~valid_mask).sum():,} cells with missing target")
         adata_sub = adata_sub[valid_mask].copy()
+
+    # Per-subject cell cap (deterministic subsample). Writes a reproducible subset sized for
+    # memory fit at our ROSMAP scale; matches scPhase's own training-time max_instances cap.
+    if max_cells_per_subject is not None:
+        logger.info(
+            f"Applying per-subject cell cap: max {max_cells_per_subject} cells/subject "
+            f"(rng_seed={rng_seed})"
+        )
+        rng = np.random.default_rng(rng_seed)
+        subj_labels = adata_sub.obs[subject_col].to_numpy()
+        keep_chunks: list[np.ndarray] = []
+        for sid in subject_ids:
+            subj_indices = np.where(subj_labels == sid)[0]
+            if subj_indices.size > max_cells_per_subject:
+                chosen = rng.choice(subj_indices, size=max_cells_per_subject, replace=False)
+                keep_chunks.append(chosen)
+            else:
+                keep_chunks.append(subj_indices)
+        keep_indices = np.sort(np.concatenate(keep_chunks)) if keep_chunks else np.array([], dtype=int)
+        n_before = adata_sub.shape[0]
+        adata_sub = adata_sub[keep_indices].copy()
+        n_after = adata_sub.shape[0]
+        logger.info(
+            f"Per-subject cap: {n_before:,} cells → {n_after:,} cells "
+            f"({n_after / max(n_before, 1) * 100:.1f}% retained)"
+        )
 
     # Rename columns for scPhase conventions
     adata_sub.obs["sample_id"] = adata_sub.obs[subject_col]
@@ -210,6 +243,15 @@ def main():
         choices=["scphase", "mixmil"],
         help="Which methods to prepare data for",
     )
+    parser.add_argument(
+        "--scphase-max-cells-per-subject", type=int, default=10000,
+        help=(
+            "Per-subject cell cap for scPhase (deterministic subsample, seed=42). "
+            "Defaults to 10000 which is below scPhase's own training-time max_instances=20000 "
+            "and keeps the h5ad + in-memory data object within our 251 GB RAM budget. "
+            "Set to 0 to disable (warning: may OOM on large cohorts)."
+        ),
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -248,6 +290,11 @@ def main():
             adata, metadata, subject_ids,
             args.subject_col, args.target_col,
             output_dir / "scphase_input.h5ad",
+            max_cells_per_subject=(
+                args.scphase_max_cells_per_subject
+                if args.scphase_max_cells_per_subject > 0
+                else None
+            ),
         )
 
     if "mixmil" in args.methods:
