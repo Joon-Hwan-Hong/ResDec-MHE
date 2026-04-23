@@ -69,7 +69,10 @@ DEFAULT_SIGMA_EPS = 1e-6
 
 # Keys required by the encoder's forward (mirrors
 # CognitiveResilienceLightningModule._batch_to_model_kwargs).
-_ENCODER_KWARG_KEYS = (
+# Public constant: shared with interpretability modules
+# (src/analysis/resdec_ccc_importance.py, scripts/redesign/interpretability/
+# ccc_composite_attribution.py). Do not duplicate — import from here.
+ENCODER_KWARG_KEYS = (
     "region_pseudobulk",
     "region_mask",
     "pseudobulk",
@@ -282,7 +285,7 @@ class ResDecLightningModule(pl.LightningModule):
     @staticmethod
     def _batch_to_encoder_kwargs(batch: dict) -> dict:
         """Select encoder-relevant keys from the batch dict."""
-        return {k: batch.get(k) for k in _ENCODER_KWARG_KEYS}
+        return {k: batch.get(k) for k in ENCODER_KWARG_KEYS}
 
     def _get_metadata(self, batch: dict, batch_size: int) -> torch.Tensor:
         """Return [B, d_metadata] FiLM conditioning vector.

@@ -31,8 +31,10 @@ from src.analysis.resdec_ccc_importance import (
     drop_edges_of_type,
     extract_hgt_edge_attention,
     liana_correlation,
+    load_liana_reference,
 )
 from src.data.constants import ALL_EDGE_TYPES, CELL_TYPE_ORDER, N_EDGE_TYPES
+from src.training.resdec_lightning_module import ENCODER_KWARG_KEYS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,6 +64,13 @@ class _FakeHGTModel(torch.nn.Module):
         return_hgt_attention: bool = False,
         **kwargs,
     ) -> dict:
+        # Sanity: any extra kwargs must be in the public encoder contract —
+        # catches regressions where the extractor starts passing private keys.
+        unexpected = set(kwargs) - set(ENCODER_KWARG_KEYS)
+        assert not unexpected, (
+            f"_FakeHGTModel received non-encoder kwargs: {sorted(unexpected)}; "
+            f"allowed = {sorted(ENCODER_KWARG_KEYS)}"
+        )
         E = ccc_edge_type.shape[0]
         # Deterministic: layer ℓ attention = (edge_type + 1) * (ℓ + 1)
         # Use dtype float to simulate real scatter-softmax output.
@@ -156,6 +165,44 @@ def test_extract_hgt_edge_attention_values():
     per_et = result["per_edge_type_attention"]
     np.testing.assert_allclose(per_et[:3], np.array([2.0, 4.0, 6.0]))  # mean of [1,2,3], [2,4,6], [3,6,9]
     assert np.isnan(per_et[3:]).all()
+
+
+def test_extract_hgt_edge_attention_pair_breakdown():
+    """With return_pair_breakdown=True the extractor also returns a (source_ct,
+    target_ct, edge_type) DataFrame whose row count == number of unique triples."""
+    device = torch.device("cpu")
+    model = _FakeHGTModel(n_heads=2, n_layers=3, n_edge_types=5).to(device).eval()
+    batch = _make_toy_batch(device)
+
+    result = extract_hgt_edge_attention(
+        model,
+        batch,
+        device=device,
+        n_edge_types=5,
+        n_nodes_per_graph=31,
+        return_pair_breakdown=True,
+    )
+
+    pair_df = result["per_pair_attention"]
+    # 4 toy edges, all distinct (src_ct, tgt_ct, edge_type) triples.
+    assert len(pair_df) == 4
+    assert set(pair_df.columns) >= {
+        "source_ct_idx", "target_ct_idx", "edge_type", "mean_attention", "n_edges",
+    }
+    # n_edges per row sums to 4 (total edges in batch).
+    assert int(pair_df["n_edges"].sum()) == 4
+
+
+def test_extract_hgt_edge_attention_pair_breakdown_requires_n_nodes():
+    """return_pair_breakdown=True without n_nodes_per_graph raises ValueError."""
+    device = torch.device("cpu")
+    model = _FakeHGTModel(n_heads=2, n_layers=3, n_edge_types=5).to(device).eval()
+    batch = _make_toy_batch(device)
+    with pytest.raises(ValueError, match="n_nodes_per_graph"):
+        extract_hgt_edge_attention(
+            model, batch, device=device, n_edge_types=5,
+            return_pair_breakdown=True,
+        )
 
 
 def test_extract_hgt_edge_attention_zero_edges():
@@ -376,3 +423,60 @@ def test_liana_correlation_constant_ranking_returns_nan():
     assert result["n_pairs"] == 3
     # Spearman of constant vector is undefined → NaN.
     assert np.isnan(result["spearman_rho"])
+
+
+def test_liana_correlation_result_has_aggregation_level_field():
+    """M5: downstream consumers rely on ``aggregation_level`` for figure captions."""
+    our = _ranking_df(src=["A", "B"], tgt=["C", "D"], imp=[1.0, 2.0])
+    liana = _liana_df(src=["A", "B"], tgt=["C", "D"], score=[10.0, 20.0])
+    result = liana_correlation(our, liana, score_col="score", higher_is_better=True)
+    assert "aggregation_level" in result
+    assert result["aggregation_level"] == "population_mean_source_target"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# load_liana_reference (M2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_load_liana_reference_roundtrip(tmp_path):
+    """Happy path: write a LIANA parquet, round-trip back with expected columns."""
+    df = pd.DataFrame({
+        "source": ["A", "B"],
+        "target": ["C", "D"],
+        "magnitude_rank": [0.1, 0.5],
+        "subject_id": ["s1", "s1"],
+    })
+    df.to_parquet(tmp_path / "liana_s1.parquet")
+    loaded = load_liana_reference(tmp_path, subject_ids=["s1"])
+    assert len(loaded) == 2
+    assert set(loaded.columns) >= {"source", "target", "magnitude_rank", "subject_id"}
+
+
+def test_load_liana_reference_missing_subject_raises(tmp_path):
+    """Requesting a nonexistent subject leaves zero parquets → FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        load_liana_reference(tmp_path, subject_ids=["nonexistent"])
+
+
+def test_load_liana_reference_missing_score_col_raises(tmp_path):
+    """Schema check raises ValueError with the available columns listed."""
+    df = pd.DataFrame({
+        "source": ["A"], "target": ["B"],
+        "magnitude_rank": [0.1], "subject_id": ["s1"],
+    })
+    df.to_parquet(tmp_path / "liana_s1.parquet")
+    with pytest.raises(ValueError, match="missing required columns"):
+        load_liana_reference(tmp_path, subject_ids=["s1"], score_col="lrscore")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# drop_edges_of_type edge cases (M3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_drop_edges_of_type_no_edges_key_returns_as_is():
+    """If the batch has no ccc_edge_type key, drop_edges_of_type is a no-op."""
+    batch = {"pathology": torch.ones(2, 3)}
+    out = drop_edges_of_type(batch, edge_type_idx=0)
+    assert out is batch  # shallow no-op: same object, no copy

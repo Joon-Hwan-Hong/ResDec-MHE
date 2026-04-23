@@ -2,12 +2,15 @@
 
 Three deterministic pieces (plus one ablation driver that hits a real checkpoint):
 
-1. ``extract_hgt_edge_attention(model, batch, device, n_edge_types)`` — runs the
-   encoder with ``return_hgt_attention=True`` (already supported by
+1. ``extract_hgt_edge_attention(model, batch, device, n_edge_types,
+   return_pair_breakdown=False)`` — runs the encoder with
+   ``return_hgt_attention=True`` (already supported by
    :class:`CognitiveResilienceModel` and :class:`HGTEncoderTensor`) and
    aggregates the list of per-layer ``[E_total, H]`` attention tensors into
    per-edge-type summaries: a ``[n_edge_types]`` head-averaged mean and a
    ``[n_layers, n_edge_types]`` per-layer variant, plus edge-type counts.
+   When ``return_pair_breakdown=True``, also returns a per (source_ct,
+   target_ct, edge_type) DataFrame for LIANA correlation.
 
 2. ``drop_edges_of_type(batch, edge_type_idx)`` — returns a shallow copy of
    ``batch`` with rows of ``ccc_edge_index``, ``ccc_edge_type`` and
@@ -16,11 +19,12 @@ Three deterministic pieces (plus one ablation driver that hits a real checkpoint
    the ablation — no mask-fiddling needed. All non-edge keys are passed through.
 
 3. ``per_edge_type_ablation(lit_module, val_dataloader, n_edge_types, device,
-   tabpfn_val_map)`` — for each edge type ``k``, walks the val dataloader,
-   drops type-``k`` edges from every batch, runs the ResDec composite forward
-   (head residual + TabPFN outer), accumulates predictions + targets, and
-   returns the per-edge-type R² delta (baseline R² − ablated R²). Baseline is
-   computed in the same pass (first loop iteration, ``k == None``).
+   edge_type_names=None, cache_on_device=True)`` — for each edge type ``k``,
+   walks the val dataloader, drops type-``k`` edges from every batch, runs
+   the ResDec composite forward (head residual + TabPFN outer), accumulates
+   predictions + targets, and returns the per-edge-type R² delta (baseline
+   R² − ablated R²). Baseline is computed in the same pass (first loop
+   iteration, ``k == None``).
 
 4. ``liana_correlation(our_ranking, liana_df, score_col)`` — pure Pandas join
    on ``(source_ct, target_ct)`` with ``(source, target)`` + Pearson / Spearman
@@ -47,6 +51,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.training.resdec_lightning_module import ENCODER_KWARG_KEYS
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,7 +66,10 @@ def extract_hgt_edge_attention(
     batch: dict,
     device: torch.device,
     n_edge_types: int,
-) -> dict[str, np.ndarray]:
+    *,
+    n_nodes_per_graph: Optional[int] = None,
+    return_pair_breakdown: bool = False,
+) -> dict[str, Any]:
     """Run one forward pass with ``return_hgt_attention=True`` and aggregate.
 
     Relies on :class:`CognitiveResilienceModel` (and :class:`HGTEncoderTensor`)
@@ -77,6 +86,12 @@ def extract_hgt_edge_attention(
             on ``device``).
         device: Compute device.
         n_edge_types: Total number of edge types (index range: ``[0, n_edge_types)``).
+        n_nodes_per_graph: Number of cell types (nodes) per subject graph; required
+            when ``return_pair_breakdown=True`` so batch-offset node indices can
+            be de-offset (via modulo) back to per-graph cell-type ids.
+        return_pair_breakdown: When True, also return a DataFrame breaking down
+            per-layer-averaged attention by (source_ct, target_ct, edge_type).
+            Used by the LIANA correlation pipeline.
 
     Returns:
         Dict with keys:
@@ -87,20 +102,37 @@ def extract_hgt_edge_attention(
           attention (head-averaged). NaN where the type has zero edges.
         - ``per_edge_type_counts``: ``[n_edge_types]`` integer counts of edges
           per type in the batch (unchanged across layers).
+        - ``per_pair_attention`` (only if ``return_pair_breakdown=True``):
+          DataFrame with columns ``["source_ct_idx", "target_ct_idx",
+          "edge_type", "mean_attention", "n_edges"]`` — layer-and-head-averaged
+          per-edge attention grouped by cell-type pair + edge type.
     """
     edge_type = batch["ccc_edge_type"]
     E = edge_type.shape[0]
     if E == 0:
-        return {
+        out_dict: dict[str, Any] = {
             "per_edge_type_attention": np.full(n_edge_types, np.nan, dtype=np.float64),
             "per_layer_attention": np.full((0, n_edge_types), np.nan, dtype=np.float64),
             "per_edge_type_counts": np.zeros(n_edge_types, dtype=np.int64),
         }
+        if return_pair_breakdown:
+            out_dict["per_pair_attention"] = pd.DataFrame(
+                columns=["source_ct_idx", "target_ct_idx", "edge_type", "mean_attention", "n_edges"]
+            )
+        return out_dict
+
+    if return_pair_breakdown and n_nodes_per_graph is None:
+        raise ValueError(
+            "return_pair_breakdown=True requires n_nodes_per_graph (number of "
+            "cell types per subject graph) to de-offset batch node indices."
+        )
 
     # ``model`` expected to be in eval mode; caller's responsibility. We still
     # wrap in no_grad for memory + safety.
+    kwargs = {k: batch.get(k) for k in ENCODER_KWARG_KEYS if k in batch}
+    kwargs["return_hgt_attention"] = True
     with torch.no_grad():
-        out = model(**_forward_kwargs(batch, return_hgt_attention=True))
+        out = model(**kwargs)
 
     attn_list = out.get("hgt_attention")
     if attn_list is None or len(attn_list) == 0:
@@ -138,35 +170,23 @@ def extract_hgt_edge_attention(
         with np.errstate(invalid="ignore"):
             per_edge_type_attention = np.nanmean(per_layer_attention, axis=0)
 
-    return {
+    result: dict[str, Any] = {
         "per_edge_type_attention": per_edge_type_attention,
         "per_layer_attention": per_layer_attention,
         "per_edge_type_counts": counts,
     }
 
+    if return_pair_breakdown:
+        # Layer-mean of head-averaged attention → one scalar per edge. Shape [E].
+        attn_mean_per_edge = per_edge.mean(axis=0)  # [E]
+        result["per_pair_attention"] = aggregate_attention_by_celltype_pair(
+            attention=torch.from_numpy(attn_mean_per_edge).unsqueeze(-1),  # [E, 1 "head"]
+            edge_index=batch["ccc_edge_index"],
+            edge_type=batch["ccc_edge_type"],
+            n_nodes_per_graph=int(n_nodes_per_graph),
+        )
 
-def _forward_kwargs(batch: dict, *, return_hgt_attention: bool = False) -> dict:
-    """Select keys that :class:`CognitiveResilienceModel.forward` accepts.
-
-    Matches :data:`src.training.resdec_lightning_module._ENCODER_KWARG_KEYS`
-    plus the interpretability flag(s).
-    """
-    keys = (
-        "region_pseudobulk",
-        "region_mask",
-        "pseudobulk",
-        "ccc_edge_index",
-        "ccc_edge_type",
-        "ccc_edge_attr",
-        "cell_type_mask",
-        "pathology",
-        "cognition",
-        "cell_data",
-        "cell_offsets",
-    )
-    kwargs = {k: batch.get(k) for k in keys if k in batch}
-    kwargs["return_hgt_attention"] = return_hgt_attention
-    return kwargs
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,6 +349,8 @@ def per_edge_type_ablation(
     n_edge_types: int,
     device: torch.device,
     edge_type_names: Optional[list[str]] = None,
+    *,
+    cache_on_device: bool = True,
 ) -> dict:
     """For each edge type ``k``, run inference with type-``k`` edges dropped.
 
@@ -344,6 +366,12 @@ def per_edge_type_ablation(
         n_edge_types: Number of edge types to sweep.
         device: Compute device.
         edge_type_names: Optional human-readable names for the reported table.
+        cache_on_device: When True (default) the val batches are materialised
+            on ``device`` once and reused across all (1 + n_edge_types) passes.
+            This is the fast path for the canonical val set (~500 subjects fit
+            easily in 48 GB). Set False for larger sweeps; the dataloader is
+            then iterated per pass — edge-type counts are still gathered on the
+            baseline iteration so total-edges-ablated is still reported.
 
     Returns:
         Dict with:
@@ -367,41 +395,61 @@ def per_edge_type_ablation(
                 out[k] = v
         return out
 
-    # Cache the batches once so we don't iterate the dataloader twice (slow on
-    # big datasets + sampler state matters). Edges are small — the memory cost
-    # is in the pseudobulk + cell_data tensors which share the loader's buffer.
-    cached_batches: list[dict] = []
-    for b in val_dataloader:
-        cached_batches.append(_move_batch(b))
+    def _count_edge_types(b: dict, counts: np.ndarray) -> None:
+        """Accumulate per-type edge counts from a single batch."""
+        et = b.get("ccc_edge_type")
+        if et is None or et.numel() == 0:
+            return
+        et_np = et.detach().cpu().numpy()
+        for k in range(n_edge_types):
+            counts[k] += int((et_np == k).sum())
 
-    # Baseline pass
+    total_edges_per_type = np.zeros(n_edge_types, dtype=np.int64)
+
+    # Baseline pass: optionally cache batches on device so ablated passes
+    # can skip re-loading (big speedup on large val sets).
     preds_base: list[np.ndarray] = []
     targets_base: list[np.ndarray] = []
-    for b in cached_batches:
-        p, t, _sids = _run_composite_inference(lit_module, b, device)
-        preds_base.append(p)
-        targets_base.append(t)
+    cached_batches: list[dict] = []
+    if cache_on_device:
+        # Materialise every batch on device, run baseline inline, and keep the
+        # batches for ablation passes.
+        for b in val_dataloader:
+            b_dev = _move_batch(b)
+            cached_batches.append(b_dev)
+            _count_edge_types(b_dev, total_edges_per_type)
+            p, t, _sids = _run_composite_inference(lit_module, b_dev, device)
+            preds_base.append(p)
+            targets_base.append(t)
+        if torch.cuda.is_available():
+            logger.info(
+                "Ablation sweep GPU peak memory after caching: %.1f MB",
+                torch.cuda.max_memory_allocated() / 1e6,
+            )
+    else:
+        # No-cache path: iterate the dataloader once per pass.
+        for b in val_dataloader:
+            b_dev = _move_batch(b)
+            _count_edge_types(b_dev, total_edges_per_type)
+            p, t, _sids = _run_composite_inference(lit_module, b_dev, device)
+            preds_base.append(p)
+            targets_base.append(t)
+
     y_pred_base = np.concatenate(preds_base, axis=0)
     y_true_base = np.concatenate(targets_base, axis=0)
     baseline_r2 = float(r2_score(y_true_base, y_pred_base))
     logger.info("Ablation baseline R²=%.4f  (n=%d)", baseline_r2, len(y_true_base))
-
-    # Count total edges per type across the val set (diagnostic).
-    total_edges_per_type = np.zeros(n_edge_types, dtype=np.int64)
-    for b in cached_batches:
-        et = b.get("ccc_edge_type")
-        if et is None or et.numel() == 0:
-            continue
-        et_np = et.detach().cpu().numpy()
-        for k in range(n_edge_types):
-            total_edges_per_type[k] += int((et_np == k).sum())
 
     # Ablated passes
     per_edge_results: list[dict] = []
     for k in range(n_edge_types):
         preds_abl: list[np.ndarray] = []
         targets_abl: list[np.ndarray] = []
-        for b in cached_batches:
+        if cache_on_device:
+            batches_iter: Any = cached_batches
+        else:
+            batches_iter = (_move_batch(b) for b in val_dataloader)
+        for b in batches_iter:
             b_abl = drop_edges_of_type(b, edge_type_idx=k)
             p, t, _sids = _run_composite_inference(lit_module, b_abl, device)
             preds_abl.append(p)
@@ -509,6 +557,7 @@ def liana_correlation(
             "n_pairs": 0,
             "n_missing": int(n_missing),
             "score_col": score_col,
+            "aggregation_level": "population_mean_source_target",
         }
 
     from scipy.stats import pearsonr, spearmanr
@@ -522,7 +571,7 @@ def liana_correlation(
         spearman_rho = float("nan")
     else:
         pearson_r = float(pearsonr(our_vec, liana_vec).statistic)
-        spearman_rho = float(spearmanr(our_vec, liana_vec).correlation)
+        spearman_rho = float(spearmanr(our_vec, liana_vec).statistic)
 
     return {
         "pearson_r": pearson_r,
@@ -530,6 +579,7 @@ def liana_correlation(
         "n_pairs": int(n_pairs),
         "n_missing": int(n_missing),
         "score_col": score_col,
+        "aggregation_level": "population_mean_source_target",
     }
 
 
@@ -581,6 +631,20 @@ def load_liana_reference(
 
     if not paths:
         raise FileNotFoundError(f"No LIANA parquets matched in {liana_dir}")
+
+    # Schema check: surface missing columns with a clear message rather than
+    # letting pyarrow emit its own cryptic "not found in any source" traceback.
+    import pyarrow.parquet as pq
+
+    sample_schema = pq.read_schema(paths[0])
+    available = set(sample_schema.names)
+    required = {"source", "target", score_col, "subject_id"}
+    missing = required - available
+    if missing:
+        raise ValueError(
+            f"LIANA parquet {paths[0].name} missing required columns {sorted(missing)}. "
+            f"Available: {sorted(available)}"
+        )
 
     dfs = []
     for p in paths:

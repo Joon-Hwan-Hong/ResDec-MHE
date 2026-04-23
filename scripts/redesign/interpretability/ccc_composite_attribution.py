@@ -15,7 +15,10 @@ For each fold:
 
 4. Aggregates (source_ct, target_ct, edge_type) attention across folds, then
    correlates the per-(source, target) summary against LIANA's CellChatDB
-   reference (mean ``magnitude_rank`` over the same subject set).
+   reference (mean ``magnitude_rank`` over the same subject set). Aggregation
+   across edge types is an edge-weighted mean (equivalent to summing attention
+   mass and dividing by total edge count), which aligns with LIANA's pair-level
+   score that does not split by edge type.
 
 Outputs (default ``outputs/redesign/interpretability/ccc/``):
 
@@ -36,9 +39,11 @@ Usage
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/redesign/interpretability/ccc_composite_attribution.py \\
         --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --tabpfn-dir data/redesign \\
         --liana-dir data/liana_cache/rosmap \\
         --out-dir outputs/redesign/interpretability/ccc
+
+``--tabpfn-dir`` is no longer a CLI arg — the TabPFN outer cache path is read
+from ``cfg.data.tabpfn_outer_dir`` and recorded in the provenance block.
 """
 from __future__ import annotations
 
@@ -65,8 +70,7 @@ if not (_WORKTREE_ROOT / "src").is_dir():
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.resdec_ccc_importance import (  # noqa: E402
-    aggregate_attention_by_celltype_pair,
-    aggregate_attention_by_edge_type,
+    extract_hgt_edge_attention,
     liana_correlation,
     load_liana_reference,
     per_edge_type_ablation,
@@ -81,6 +85,11 @@ from src.data.datamodule import CognitiveResilienceDataModule  # noqa: E402
 from src.data.splits import load_splits  # noqa: E402
 from src.training.resdec_lightning_module import ResDecLightningModule  # noqa: E402
 
+# LIANA columns where "higher = more important" (no sign flip needed for
+# correlation). Rank-percentile columns (magnitude_rank / specificity_rank) are
+# "lower = more important" and are handled with the default sign flip.
+HIGHER_IS_BETTER_LIANA_COLS: frozenset[str] = frozenset({"lrscore", "lr_means"})
+
 logger = logging.getLogger(__name__)
 _BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
 
@@ -90,6 +99,7 @@ def _pick_max_r2_ckpt(ckpt_dir: Path) -> Path:
     for p in ckpt_dir.glob("best-*.ckpt"):
         m = _BEST_CKPT_RE.match(p.name)
         if not m:
+            logger.debug("Skipping non-standard ckpt name: %s", p.name)
             continue
         r2 = float(m.group(2))
         if best is None or r2 > best[1]:
@@ -149,10 +159,12 @@ def analyze_one_fold(
     n_nodes_per_graph = len(CELL_TYPE_ORDER)  # 31
 
     # ---------------------------------------------------------------- #
-    # 1. Walk val loader once with return_hgt_attention=True           #
-    #    + aggregate per-edge-type attention + per-pair attention.     #
-    #    We also capture per-subject "importance" as mean attention    #
-    #    over (source_ct, target_ct) triples for LIANA correlation.    #
+    # 1. Walk val loader once with return_hgt_attention=True, calling  #
+    #    the library extractor with return_pair_breakdown=True so the  #
+    #    per-(source_ct, target_ct, edge_type) DataFrame is assembled  #
+    #    in one place. We accumulate per-edge-type sums directly from  #
+    #    the extractor's per-batch counts, then take an edge-weighted  #
+    #    mean across batches.                                          #
     # ---------------------------------------------------------------- #
     per_type_sums = np.zeros(n_edge_types, dtype=np.float64)
     per_type_counts = np.zeros(n_edge_types, dtype=np.int64)
@@ -161,52 +173,42 @@ def analyze_one_fold(
     val_subject_ids: list[str] = []
 
     logger.info("fold %d: extracting HGT edge attention from val set", fold)
-    with torch.no_grad():
-        for batch in tqdm(val_loader, desc=f"fold {fold} attention", unit="batch"):
-            batch = _move_batch(batch, device)
-            enc_kwargs = {k: batch.get(k) for k in (
-                "region_pseudobulk", "region_mask", "pseudobulk",
-                "ccc_edge_index", "ccc_edge_type", "ccc_edge_attr",
-                "cell_type_mask", "pathology", "cognition",
-                "cell_data", "cell_offsets",
-            ) if k in batch}
-            enc_kwargs["return_hgt_attention"] = True
-            enc_out = lit_module.encoder(**enc_kwargs)
+    for batch in tqdm(val_loader, desc=f"fold {fold} attention", unit="batch"):
+        batch = _move_batch(batch, device)
+        attn_out = extract_hgt_edge_attention(
+            lit_module.encoder,
+            batch,
+            device=device,
+            n_edge_types=n_edge_types,
+            n_nodes_per_graph=n_nodes_per_graph,
+            return_pair_breakdown=True,
+        )
 
-            attn_list = enc_out.get("hgt_attention")
-            if not attn_list:
-                raise RuntimeError("Encoder didn't return hgt_attention — check model contract")
+        # Per-edge-type accumulation — combine per-batch per-type mean (finite
+        # entries only) with per-batch edge counts into a global edge-weighted
+        # mean across batches. per_layer_attention [n_layers, n_edge_types] has
+        # NaN for absent types; their counts are 0 so they contribute nothing.
+        per_type_mean_batch = attn_out["per_edge_type_attention"]  # [n_edge_types]
+        per_type_counts_batch = attn_out["per_edge_type_counts"]  # [n_edge_types]
+        for k in range(n_edge_types):
+            cnt = int(per_type_counts_batch[k])
+            if cnt == 0:
+                continue
+            per_type_counts[k] += cnt
+            per_type_sums[k] += float(per_type_mean_batch[k]) * cnt
 
-            # Stack → [n_layers, E, H] → average over layers + heads → [E]
-            attn_stack = torch.stack([a.detach().float() for a in attn_list], dim=0)
-            attn_mean = attn_stack.mean(dim=(0, -1))  # [E]
+        pair_df = attn_out["per_pair_attention"]
+        if not pair_df.empty:
+            pair_df = pair_df.copy()
+            pair_df["fold"] = fold
+            # Weight the per-batch means by n_edges so cross-batch averaging
+            # is equivalent to averaging over the full flat edge set.
+            pair_df["weighted_sum"] = pair_df["mean_attention"] * pair_df["n_edges"]
+            pair_frames.append(pair_df)
 
-            et = batch["ccc_edge_type"]
-            if et.numel() > 0:
-                # Per-edge-type sums (for cross-batch mean).
-                et_np = et.detach().cpu().numpy()
-                attn_np = attn_mean.detach().cpu().numpy()
-                for k in range(n_edge_types):
-                    mask = et_np == k
-                    per_type_counts[k] += int(mask.sum())
-                    per_type_sums[k] += float(attn_np[mask].sum())
+        val_subject_ids.extend(list(batch["subject_ids"]))
 
-                # Per (source_ct, target_ct, edge_type) aggregation.
-                pair_df = aggregate_attention_by_celltype_pair(
-                    attention=attn_mean.unsqueeze(-1),  # [E, 1 "head"]
-                    edge_index=batch["ccc_edge_index"],
-                    edge_type=batch["ccc_edge_type"],
-                    n_nodes_per_graph=n_nodes_per_graph,
-                )
-                pair_df["fold"] = fold
-                # Weight the per-batch means by n_edges so cross-batch averaging
-                # is equivalent to averaging over the full flat edge set.
-                pair_df["weighted_sum"] = pair_df["mean_attention"] * pair_df["n_edges"]
-                pair_frames.append(pair_df)
-
-            val_subject_ids.extend(list(batch["subject_ids"]))
-
-    # Cross-batch per-edge-type mean
+    # Cross-batch per-edge-type mean (edge-weighted).
     with np.errstate(invalid="ignore", divide="ignore"):
         per_type_mean = np.where(
             per_type_counts > 0,
@@ -293,6 +295,17 @@ def main(args: argparse.Namespace) -> int:
     logger.info("Device: %s", device)
     logger.info("Edge types: %s", ALL_EDGE_TYPES)
 
+    # Load the fold-agnostic portion of the config once up front so we can
+    # record cfg.data.tabpfn_outer_dir in the provenance block (the TabPFN
+    # cache path is config-driven, not a CLI arg).
+    base_cfg = OmegaConf.merge(
+        OmegaConf.load("configs/default.yaml"),
+        OmegaConf.load(args.config),
+    )
+    tabpfn_outer_dir = str(
+        OmegaConf.select(base_cfg, "data.tabpfn_outer_dir", default=None)
+    )
+
     # ──────────────────────────────────────────────────────────── #
     # Per-fold sweep                                               #
     # ──────────────────────────────────────────────────────────── #
@@ -354,18 +367,24 @@ def main(args: argparse.Namespace) -> int:
 
     # ──────────────────────────────────────────────────────────── #
     # Cross-fold aggregation at (source_ct, target_ct) level        #
-    # (LIANA's reference doesn't split by edge_type; we sum attention
-    #  over edge types to align with LIANA's pair-level score).     #
+    # (LIANA's reference doesn't split by edge_type; we take an     #
+    #  edge-weighted mean of per-edge-type attention, aligning with #
+    #  LIANA's pair-level score. Equivalent to total attention mass #
+    #  over total edge count, across folds × edge types.)           #
     # ──────────────────────────────────────────────────────────── #
     if not all_pairs.empty:
         pair_ct = (
-            all_pairs.groupby(["source_ct", "target_ct"], as_index=False)
+            all_pairs
+            .assign(weighted_mass=lambda d: d["mean_attention"] * d["n_edges"])
+            .groupby(["source_ct", "target_ct"], as_index=False)
             .agg(
-                importance=("mean_attention", "mean"),
+                weighted_mass=("weighted_mass", "sum"),
                 total_edges=("n_edges", "sum"),
                 n_folds_seen=("fold", "nunique"),
             )
         )
+        pair_ct["importance"] = pair_ct["weighted_mass"] / pair_ct["total_edges"]
+        pair_ct = pair_ct.drop(columns=["weighted_mass"])
     else:
         pair_ct = pd.DataFrame(columns=["source_ct", "target_ct", "importance", "total_edges", "n_folds_seen"])
 
@@ -386,13 +405,15 @@ def main(args: argparse.Namespace) -> int:
     )
 
     # Correlation: our per-(source_ct, target_ct) importance ↔ LIANA score.
+    # Sign of the LIANA score depends on the column: magnitude_rank /
+    # specificity_rank are percentile ranks where lower = better (flip sign);
+    # lrscore / lr_means are magnitude-style where higher = better.
+    higher_is_better = args.liana_score_col in HIGHER_IS_BETTER_LIANA_COLS
     liana_corr = liana_correlation(
-        our_ranking=pair_ct.rename(columns={"importance": "importance"})[
-            ["source_ct", "target_ct", "importance"]
-        ],
+        our_ranking=pair_ct[["source_ct", "target_ct", "importance"]],
         liana_df=liana_full,
         score_col=args.liana_score_col,
-        higher_is_better=False,  # magnitude_rank & specificity_rank: lower = better
+        higher_is_better=higher_is_better,
     )
     logger.info(
         "LIANA correlation: Pearson=%.4f, Spearman=%.4f, n_pairs=%d, n_missing=%d",
@@ -419,9 +440,10 @@ def main(args: argparse.Namespace) -> int:
     report = {
         "provenance": {
             "pred_root": str(args.pred_root),
-            "tabpfn_dir": str(args.tabpfn_dir),
+            "tabpfn_outer_dir": tabpfn_outer_dir,
             "liana_dir": str(args.liana_dir),
             "liana_score_col": args.liana_score_col,
+            "liana_higher_is_better": bool(higher_is_better),
             "n_folds": int(args.n_folds),
             "edge_types": list(ALL_EDGE_TYPES),
             "edge_type_display_names": {
@@ -484,7 +506,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="5-fold CCC interpretability sweep")
     p.add_argument("--config", default="configs/redesign/p5_phase2_residual.yaml")
     p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42")
-    p.add_argument("--tabpfn-dir", default="data/redesign")
     p.add_argument("--liana-dir", default="data/liana_cache/rosmap")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--out-dir", default="outputs/redesign/interpretability/ccc")
