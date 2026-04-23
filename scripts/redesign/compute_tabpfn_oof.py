@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from sklearn.model_selection import KFold
+from sklearn.preprocessing import StandardScaler
 from tabpfn import TabPFNRegressor
 from tabpfn.constants import ModelVersion
 
@@ -33,6 +34,23 @@ from src.data.feature_loaders import load_flat_features, load_targets
 from src.data.splits import load_splits
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_zscore(
+    X_train: np.ndarray, X_val: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-feature z-score using TRAIN-ONLY stats.
+
+    Fits a sklearn StandardScaler on X_train (train-fold features only) and
+    transforms BOTH X_train and X_val with the same fitted scaler. Critical:
+    stats come exclusively from the train split — no pooled stats, no
+    val-leakage. Zero-variance features become mean-centered only (sklearn
+    handles the divide-by-zero internally; std is set to 1 in that case).
+    """
+    scaler = StandardScaler()
+    X_train_s = scaler.fit_transform(X_train).astype(np.float32, copy=False)
+    X_val_s = scaler.transform(X_val).astype(np.float32, copy=False)
+    return X_train_s, X_val_s
 
 
 def _predict_with_sigma(
@@ -165,20 +183,27 @@ def main(args):
             n_splits=args.n_inner_folds, shuffle=True, random_state=args.seed
         )
         for inner_fold, (tr_idx, va_idx) in enumerate(inner_kf.split(X_train_full)):
+            X_tr = X_train_full[tr_idx]
+            X_va = X_train_full[va_idx]
+            if args.zscore:
+                # Per-feature z-score fit on INNER-fold train ONLY; transform
+                # both inner-train and inner-val with those train stats. No
+                # pooled stats across inner splits.
+                X_tr, X_va = _apply_zscore(X_tr, X_va)
             reg = _build_regressor(
                 device=device,
                 seed=args.seed,
                 ignore_pretraining_limits=args.ignore_pretraining_limits,
             )
-            reg.fit(X_train_full[tr_idx], y_train[tr_idx])
+            reg.fit(X_tr, y_train[tr_idx])
             try:
-                mean, sigma = _predict_with_sigma(reg, X_train_full[va_idx])
+                mean, sigma = _predict_with_sigma(reg, X_va)
             except Exception as e:
                 logger.warning(
                     "  inner %d: quantile path failed (%s); fallback to mean-only",
                     inner_fold, e,
                 )
-                mean = reg.predict(X_train_full[va_idx])
+                mean = reg.predict(X_va)
                 sigma = np.ones_like(mean, dtype=np.float32)
             oof_mean[va_idx] = mean.astype(np.float32)
             oof_std[va_idx] = sigma.astype(np.float32)
@@ -220,6 +245,16 @@ if __name__ == "__main__":
             "deliberately testing >2000-feature behavior (e.g., Task D.2 "
             "top-k=4000 ablation). Accepts the distributional-extrapolation "
             "risk; TabPFN's prior was trained on ≤2000 features. Default: False."
+        ),
+    )
+    p.add_argument(
+        "--zscore",
+        action="store_true",
+        default=False,
+        help=(
+            "Per-feature z-score the TabPFN input. Stats computed from "
+            "TRAIN-ONLY subjects (inner-fold train for OOF; outer-fold train "
+            "for outer). Critical: no pooled stats. Default: False."
         ),
     )
     main(p.parse_args())

@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.preprocessing import StandardScaler
 from tabpfn import TabPFNRegressor
 from tabpfn.constants import ModelVersion
 
@@ -35,6 +36,22 @@ from src.data.feature_loaders import load_flat_features, load_targets
 from src.data.splits import load_splits
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_zscore(
+    X_train: np.ndarray, X_val: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-feature z-score using TRAIN-ONLY stats.
+
+    Fits a sklearn StandardScaler on X_train (outer-fold train features only)
+    and transforms BOTH X_train and X_val with the same fitted scaler.
+    Critical: stats come exclusively from the train split — no pooled stats,
+    no val-leakage. Zero-variance features become mean-centered only.
+    """
+    scaler = StandardScaler()
+    X_train_s = scaler.fit_transform(X_train).astype(np.float32, copy=False)
+    X_val_s = scaler.transform(X_val).astype(np.float32, copy=False)
+    return X_train_s, X_val_s
 
 
 def _top_k_filename(top_k_dir: Path, top_k: int, fold_idx: int, feature_set: str) -> Path:
@@ -183,6 +200,12 @@ def main(args):
         y_val = np.array([targets[s] for s in val_ids], dtype=np.float32)
         logger.info("  train %s, val %s", X_train.shape, X_val.shape)
 
+        if args.zscore:
+            # Per-feature z-score fit on OUTER-fold train ONLY; transform
+            # both outer-train and outer-val with those train stats. No
+            # pooled stats.
+            X_train, X_val = _apply_zscore(X_train, X_val)
+
         reg = _build_regressor(
             device=device,
             seed=args.seed,
@@ -260,6 +283,16 @@ if __name__ == "__main__":
             "deliberately testing >2000-feature behavior (e.g., Task D.2 "
             "top-k=4000 ablation). Accepts the distributional-extrapolation "
             "risk; TabPFN's prior was trained on ≤2000 features. Default: False."
+        ),
+    )
+    p.add_argument(
+        "--zscore",
+        action="store_true",
+        default=False,
+        help=(
+            "Per-feature z-score the TabPFN input. Stats computed from "
+            "outer-fold TRAIN-ONLY subjects. Critical: no pooled stats. "
+            "Default: False."
         ),
     )
     main(p.parse_args())

@@ -161,6 +161,7 @@ def test_main_oof_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, fl
     a.n_inner_folds = 2
     a.seed = 42
     a.ignore_pretraining_limits = flag_value
+    a.zscore = False  # unrelated to this test; default backward-compat path
 
     # Avoid cuda probe
     monkeypatch.setattr(compute_tabpfn_oof.torch.cuda, "is_available", lambda: False)
@@ -252,6 +253,7 @@ def test_main_outer_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, 
     a.feature_set = "A"
     a.seed = 42
     a.ignore_pretraining_limits = flag_value
+    a.zscore = False  # unrelated to this test; default backward-compat path
 
     monkeypatch.setattr(
         compute_tabpfn_outer.torch.cuda, "is_available", lambda: False

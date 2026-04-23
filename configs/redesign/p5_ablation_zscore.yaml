@@ -1,0 +1,39 @@
+# Phase 5 R²-ablation: per-feature z-score on TabPFN input. Uses the canonical
+# top-k=2000 XGBoost-importance features, but the 2000-dim TabPFN input is
+# per-feature standardized using TRAIN-ONLY stats (inner-fold train stats for
+# OOF; outer-fold train stats for outer). Everything else matches canonical
+# (n_stages=1, vanilla MHA, TabM(k=8), HyperConn, FiLM at zero metadata).
+# Tests whether TabPFN benefits from explicit per-feature scaling vs raw log1p-
+# pseudobulk input.
+experiment:
+  run_name: "p5_ablation_zscore"
+
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+    n_stages: 1
+    aux_lambdas: [1.0]
+    use_diff_attn: false
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
+    monitor: "val/r2"
+    mode: "max"
+
+data:
+  dataloader:
+    batch_size: 24
+  use_cached_embeddings: false
+  # Point at the z-scored TabPFN residual + outer caches produced by D.3
+  # pipeline (top-k=2000, same as canonical, only difference is --zscore).
+  tabpfn_oof_dir: data/redesign/zscore
+  tabpfn_outer_dir: data/redesign/zscore
