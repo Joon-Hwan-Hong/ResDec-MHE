@@ -99,3 +99,73 @@ def test_calibration_coverage_overconfident_sigma():
     sigma_reported = np.full(n, sigma_true * 0.5)  # half the true noise
     out = calibration_coverage(y_true, y_pred, sigma_reported, nominal=[0.95])
     assert out["coverage_at_0.95"] < 0.95 - 0.05  # meaningfully under-covered
+
+
+# ---------------------------------------------------------------------------
+# I-1: fail loud on non-finite inputs to paired_wilcoxon.
+# ---------------------------------------------------------------------------
+
+
+def test_paired_wilcoxon_raises_on_nan_input():
+    ours = np.array([0.4, 0.5, np.nan, 0.6, 0.45])
+    baseline = np.array([0.3, 0.4, 0.3, 0.5, 0.35])
+    with pytest.raises(ValueError, match="Non-finite"):
+        paired_wilcoxon(ours, baseline, alternative="greater")
+
+
+def test_paired_wilcoxon_raises_on_inf_input():
+    ours = np.array([0.4, 0.5, 0.3, 0.6, 0.45])
+    baseline = np.array([0.3, 0.4, np.inf, 0.5, 0.35])
+    with pytest.raises(ValueError, match="Non-finite"):
+        paired_wilcoxon(ours, baseline, alternative="greater")
+
+
+# ---------------------------------------------------------------------------
+# M-12: vectorized bootstrap must match the old Python-loop version.
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_r2_ci_matches_loop_implementation():
+    """Vectorized resampling should match a naive loop at the same seed."""
+    from sklearn.metrics import r2_score
+
+    rng_gold = np.random.default_rng(0)
+    n = 200
+    y = rng_gold.standard_normal(n)
+    y_pred = y + rng_gold.standard_normal(n) * 0.5
+
+    # Gold-standard: reproduce the old loop implementation exactly.
+    n_boot = 500
+    seed = 0
+    rng = np.random.default_rng(seed)
+    loop_r2s = np.empty(n_boot, dtype=np.float64)
+    for b in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        loop_r2s[b] = r2_score(y[idx], y_pred[idx])
+    lo_loop = float(np.percentile(loop_r2s, 2.5))
+    hi_loop = float(np.percentile(loop_r2s, 97.5))
+
+    out = bootstrap_r2_ci(y, y_pred, n_boot=n_boot, conf=0.95, seed=seed)
+    # Vectorized path must match the loop endpoints within float round-off.
+    assert abs(out["ci_lower"] - lo_loop) < 1e-10
+    assert abs(out["ci_upper"] - hi_loop) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# M-13: filter non-finite / non-positive values robustly.
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_r2_ci_filters_nan():
+    y = np.array([1.0, 2.0, np.nan, 4.0, 5.0])
+    yp = np.array([1.1, 1.9, 3.0, 4.1, 4.9])
+    out = bootstrap_r2_ci(y, yp, n_boot=50, seed=0)
+    assert out["n"] == 4
+
+
+def test_calibration_coverage_filters_nonpositive_sigma():
+    y = np.array([1.0, 2.0, 3.0, 4.0])
+    yp = np.array([1.0, 2.0, 3.0, 4.0])
+    s = np.array([0.5, 0.0, -0.1, 0.5])
+    out = calibration_coverage(y, yp, s, nominal=[0.95])
+    assert out["n"] == 2

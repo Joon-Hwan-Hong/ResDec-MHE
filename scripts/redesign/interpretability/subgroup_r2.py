@@ -44,12 +44,10 @@ if not (_WORKTREE_ROOT / "src").is_dir():
     )
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
-# Reuse the per-fold loader from the C.1 variance script so both analyses see
-# the same subject set. Stratification labels come from the shared helper
+# Reuse the per-fold loader from the shared resdec_io module so both analyses
+# see the same subject set. Stratification labels come from the shared helper
 # module so both scripts bucket subjects identically.
-from scripts.redesign.interpretability.variance_decomposition import (  # noqa: E402
-    load_all_folds,
-)
+from src.analysis.resdec_io import load_all_folds  # noqa: E402
 from src.analysis.resdec_subgroup_analysis import stratified_metrics  # noqa: E402
 from src.analysis.subgroup_helpers import (  # noqa: E402
     apoe_e4_count_label,

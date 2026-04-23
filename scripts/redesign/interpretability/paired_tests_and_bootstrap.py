@@ -42,7 +42,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import r2_score
 
 # Make the script standalone-runnable: ensure the worktree root is on sys.path.
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
@@ -53,9 +52,12 @@ if not (_WORKTREE_ROOT / "src").is_dir():
     )
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
-# Reuse the per-fold loader from C.1 so ours composite predictions come
-# from the same subject set every interpretability script sees.
-from scripts.redesign.interpretability.variance_decomposition import (  # noqa: E402
+# Reuse the shared resdec_io loaders so ours composite predictions come from
+# the same subject set every interpretability script sees. compute_per_fold_r2_*
+# helpers also live in the shared module for reuse across E.1 baseline table etc.
+from src.analysis.resdec_io import (  # noqa: E402
+    compute_per_fold_r2_ours,
+    compute_per_fold_r2_tabpfn,
     load_all_folds,
 )
 from src.analysis.resdec_statistical_rigor import (  # noqa: E402
@@ -67,40 +69,27 @@ from src.analysis.resdec_statistical_rigor import (  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
-# Nominal coverage levels to report in the calibration block.
-_NOMINAL_COVERAGE = [0.5, 0.68, 0.8, 0.95]
+# Nominal coverage levels to report in the calibration block. 0.68 here is the
+# rounded "68%" label used by paper tables — NOT the 1-σ convention 0.6827.
+_DEFAULT_NOMINAL_COVERAGE: tuple[float, ...] = (0.5, 0.68, 0.8, 0.95)
+
+# Canonical (snake_case) baseline keys used in the JSON output. The
+# _DISPLAY_NAMES mapping renders them human-readable in the markdown report.
+_TABPFN_STANDALONE_KEY = "tabpfn_2_6_standalone"
+_OURS_KEY = "ours"
+_DISPLAY_NAMES: dict[str, str] = {
+    _OURS_KEY: "ResDec-H3 (ours)",
+    _TABPFN_STANDALONE_KEY: "TabPFN-2.6 standalone",
+    "cloudpred": "CloudPred",
+    "cloudpred_pertype": "CloudPred (per-type)",
+    "gpio": "GPIO",
+    "perceiver_io": "Perceiver-IO",
+}
 
 
-def compute_per_fold_r2_ours(df: pd.DataFrame, n_folds: int) -> np.ndarray:
-    """Per-fold R²(y_true, y_composite) on our concatenated predictions."""
-    r2s = np.empty(n_folds, dtype=np.float64)
-    for f in range(n_folds):
-        sub = df[df["fold"] == f]
-        if len(sub) == 0:
-            raise RuntimeError(f"Ours: fold {f} has 0 subjects in df.")
-        r2s[f] = r2_score(sub["y_true"].to_numpy(), sub["y_composite"].to_numpy())
-    return r2s
-
-
-def compute_per_fold_r2_tabpfn(tabpfn_dir: Path, n_folds: int) -> np.ndarray:
-    """Per-fold R²(y_true, y_tabpfn) from ``tabpfn_outer_fold{f}.npz``.
-
-    Fails loud if any fold's npz is missing — TabPFN-2.6 standalone is the
-    required strongest baseline for this study and cannot be skipped.
-    """
-    r2s = np.empty(n_folds, dtype=np.float64)
-    for f in range(n_folds):
-        path = tabpfn_dir / f"tabpfn_outer_fold{f}.npz"
-        if not path.exists():
-            raise FileNotFoundError(
-                f"TabPFN-2.6 standalone baseline is required; missing {path}"
-            )
-        tab = np.load(path, allow_pickle=True)
-        r2s[f] = r2_score(
-            tab["y_true"].astype(np.float64),
-            tab["y_tabpfn"].astype(np.float64),
-        )
-    return r2s
+def _display_name(key: str) -> str:
+    """Return a human-readable label for a baseline key, falling back to the key."""
+    return _DISPLAY_NAMES.get(key, key)
 
 
 def discover_baseline_r2s(
@@ -152,6 +141,25 @@ def discover_baseline_r2s(
                 subdir.name, csv_path, list(df.columns),
             )
             continue
+
+        # Fold integrity: the fold column must coerce cleanly to numeric and
+        # cover at least n_folds unique values. Non-numeric / sparse folds
+        # would silently sort wrong without this guard.
+        try:
+            df["fold"] = pd.to_numeric(df["fold"], errors="raise")
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "Baseline %s: non-numeric 'fold' column (%s); skipping.",
+                subdir.name, exc,
+            )
+            continue
+        if df["fold"].nunique() < n_folds:
+            logger.warning(
+                "Baseline %s: only %d unique folds (expected %d); skipping.",
+                subdir.name, df["fold"].nunique(), n_folds,
+            )
+            continue
+
         # Per-fold ordering: sort by fold to align with our per-fold R² array.
         # Baseline CSVs may use 1-indexed fold ids; normalise to 0-indexed by
         # sorting and then slicing the first n_folds rows.
@@ -203,12 +211,12 @@ def build_markdown_report(results: dict) -> str:
     lines.append("")
     lines.append("| Baseline | n | median ΔR² | W statistic | p-value |")
     lines.append("|----------|---|-----------|-------------|---------|")
-    for name, stats in results["paired_wilcoxon"].items():
+    for name, entry in results["paired_wilcoxon"].items():
         lines.append(
-            f"| {name} | {stats['n_folds']} | "
-            f"{stats['median_diff']:+.4f} | "
-            f"{stats['statistic']:.1f} | "
-            f"{stats['p_value']:.4f} |"
+            f"| {_display_name(name)} | {entry['n_folds']} | "
+            f"{entry['median_diff']:+.4f} | "
+            f"{entry['statistic']:.1f} | "
+            f"{entry['p_value']:.4f} |"
         )
     lines.append("")
 
@@ -227,12 +235,17 @@ def build_markdown_report(results: dict) -> str:
     c = results["calibration_coverage"]
     lines.append("## Calibration coverage")
     lines.append("")
-    lines.append(f"_Uncertainty proxy: TabPFN-2.6 per-subject `sigma_tabpfn`_")
-    lines.append(f"_(composite head has no independent σ; this is the best-available proxy)_")
+    lines.append(
+        "> Uncertainty proxy: TabPFN-2.6 per-subject `sigma_tabpfn` "
+        "(composite head has no independent σ; this is the best-available proxy)."
+    )
     lines.append("")
     lines.append("| Nominal | Empirical coverage |")
     lines.append("|---------|--------------------|")
-    for p in _NOMINAL_COVERAGE:
+    nominal_levels = results.get("provenance", {}).get(
+        "nominal_coverage", list(_DEFAULT_NOMINAL_COVERAGE),
+    )
+    for p in nominal_levels:
         key = f"coverage_at_{p}"
         if key in c:
             lines.append(f"| {int(p * 100)}% | {c[key]:.3f} |")
@@ -248,37 +261,6 @@ def build_markdown_report(results: dict) -> str:
     return "\n".join(lines)
 
 
-def _print_summary(results: dict) -> None:
-    """Stdout summary: paired-Wilcoxon table, bootstrap CI, coverage."""
-    print("\n=== Paired Wilcoxon (per-fold R², ours vs baseline, alt='greater') ===")
-    print(f"  {'baseline':<28s}  {'n':>2s}  {'med ΔR²':>10s}  {'W':>8s}  {'p':>10s}")
-    for name, stats in results["paired_wilcoxon"].items():
-        print(
-            f"  {name:<28s}  {stats['n_folds']:>2d}  "
-            f"{stats['median_diff']:>+10.4f}  "
-            f"{stats['statistic']:>8.1f}  "
-            f"{stats['p_value']:>10.4f}"
-        )
-
-    b = results["bootstrap_r2_ci"]
-    print(f"\n=== Bootstrap R² CI (N={b['n']}, n_boot={b['n_boot']}) ===")
-    print(f"  point R²:      {b['point_r2']:.4f}")
-    print(
-        f"  {int(b['conf'] * 100)}% CI: "
-        f"[{b['ci_lower']:.4f}, {b['ci_upper']:.4f}]"
-    )
-
-    c = results["calibration_coverage"]
-    print("\n=== Calibration coverage (σ_tabpfn proxy) ===")
-    for p in _NOMINAL_COVERAGE:
-        key = f"coverage_at_{p}"
-        if key in c:
-            print(f"  nominal {int(p * 100):>2d}% → empirical {c[key]:.3f}")
-    print(f"  mean σ_tabpfn:       {c['mean_sigma']:.4f}")
-    print(f"  mean |residual|:     {c['mean_abs_residual']:.4f}")
-    print(f"  n: {c['n']}")
-
-
 def main(args: argparse.Namespace) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -291,12 +273,16 @@ def main(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    nominal_coverage = tuple(float(x) for x in args.nominal_coverage)
+
     logger.info("[paired_tests] pred-root        = %s", pred_root)
     logger.info("[paired_tests] tabpfn-dir       = %s", tabpfn_dir)
     logger.info("[paired_tests] baselines-root   = %s", baselines_root)
     logger.info("[paired_tests] out-dir          = %s", out_dir)
     logger.info("[paired_tests] n-folds          = %d", args.n_folds)
     logger.info("[paired_tests] n-boot           = %d", args.n_boot)
+    logger.info("[paired_tests] conf             = %.4f", args.conf)
+    logger.info("[paired_tests] nominal-coverage = %s", list(nominal_coverage))
     logger.info("[paired_tests] seed             = %d", args.seed)
 
     # 1. Our composite predictions (joined over all folds).
@@ -330,9 +316,11 @@ def main(args: argparse.Namespace) -> int:
     )
 
     # 5. Paired Wilcoxon: ours vs each baseline.
-    paired = {"TabPFN-2.6_standalone": paired_wilcoxon(
-        r2s_ours, r2s_tabpfn, alternative="greater",
-    )}
+    paired: dict[str, dict] = {
+        _TABPFN_STANDALONE_KEY: paired_wilcoxon(
+            r2s_ours, r2s_tabpfn, alternative="greater",
+        ),
+    }
     for name, r2s_bl in sorted(other_baselines.items()):
         paired[name] = paired_wilcoxon(
             r2s_ours, r2s_bl, alternative="greater",
@@ -343,7 +331,7 @@ def main(args: argparse.Namespace) -> int:
         df_ours["y_true"].to_numpy(),
         df_ours["y_composite"].to_numpy(),
         n_boot=args.n_boot,
-        conf=0.95,
+        conf=args.conf,
         seed=args.seed,
     )
 
@@ -363,20 +351,30 @@ def main(args: argparse.Namespace) -> int:
         merged["y_true"].to_numpy(),
         merged["y_composite"].to_numpy(),
         merged["sigma_tabpfn"].to_numpy(),
-        nominal=_NOMINAL_COVERAGE,
+        nominal=nominal_coverage,
     )
 
     # 8. Assemble results + write JSON + MD.
+    per_fold_r2: dict[str, list[float]] = {
+        _OURS_KEY: [float(v) for v in r2s_ours],
+        _TABPFN_STANDALONE_KEY: [float(v) for v in r2s_tabpfn],
+    }
+    for k, r2s in other_baselines.items():
+        per_fold_r2[k] = [float(v) for v in r2s]
+
     results = {
         "paired_wilcoxon": paired,
         "bootstrap_r2_ci": boot,
         "calibration_coverage": calib,
+        "baseline_display_names": {k: _display_name(k) for k in per_fold_r2},
         "provenance": {
             "pred_root": str(pred_root),
             "tabpfn_dir": str(tabpfn_dir),
             "baselines_root": str(baselines_root),
             "n_folds": int(args.n_folds),
             "n_boot": int(args.n_boot),
+            "conf": float(args.conf),
+            "nominal_coverage": list(nominal_coverage),
             "seed": int(args.seed),
             "n_subjects": int(len(df_ours)),
             "sigma_source_note": (
@@ -386,23 +384,22 @@ def main(args: argparse.Namespace) -> int:
                 "composite head has no independent sigma; this is the "
                 "best-available proxy."
             ),
-            "per_fold_r2": {
-                "ours": [float(v) for v in r2s_ours],
-                "TabPFN-2.6_standalone": [float(v) for v in r2s_tabpfn],
-                **{k: [float(v) for v in r2s] for k, r2s in other_baselines.items()},
-            },
+            "per_fold_r2": per_fold_r2,
         },
     }
 
     out_json = out_dir / "statistical_rigor.json"
-    out_json.write_text(json.dumps(results, indent=2, default=float))
+    out_json.write_text(json.dumps(results, indent=2))
     logger.info("[paired_tests] wrote %s", out_json)
 
+    md_report = build_markdown_report(results)
     out_md = out_dir / "statistical_rigor.md"
-    out_md.write_text(build_markdown_report(results))
+    out_md.write_text(md_report)
     logger.info("[paired_tests] wrote %s", out_md)
 
-    _print_summary(results)
+    # Single summary path: the markdown report is what gets persisted to disk
+    # AND echoed to stdout, so terminal output and the on-disk file never drift.
+    print(md_report)
     return 0
 
 
@@ -435,6 +432,15 @@ if __name__ == "__main__":
     p.add_argument(
         "--n-boot", type=int, default=1000,
         help="Bootstrap resamples for global R² CI (default: 1000).",
+    )
+    p.add_argument(
+        "--conf", type=float, default=0.95,
+        help="Bootstrap CI confidence level (default: 0.95).",
+    )
+    p.add_argument(
+        "--nominal-coverage", type=float, nargs="+",
+        default=list(_DEFAULT_NOMINAL_COVERAGE),
+        help="Nominal calibration-coverage levels (default: 0.5 0.68 0.8 0.95).",
     )
     p.add_argument(
         "--seed", type=int, default=42,

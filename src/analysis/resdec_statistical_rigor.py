@@ -22,13 +22,18 @@ lives in ``scripts/redesign/interpretability/paired_tests_and_bootstrap.py``.
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 from scipy import stats
 from sklearn.metrics import r2_score
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level default for nominal coverage levels; kept as an immutable
+# tuple and reused by callers to avoid the mutable-default-argument footgun.
+_DEFAULT_NOMINAL_COVERAGE: tuple[float, ...] = (0.5, 0.68, 0.8, 0.95)
 
 
 def paired_wilcoxon(
@@ -54,6 +59,13 @@ def paired_wilcoxon(
         catch it and return ``statistic=0.0, p_value=1.0`` (no evidence
         of improvement).
 
+    Raises
+    ------
+    ValueError
+        If any input value is non-finite (NaN / ±Inf). With only 5 folds,
+        silently dropping NaN subjects would be misleading; fail loud so
+        the caller fixes the upstream fold data instead.
+
     Notes
     -----
     With ``n_folds=5``, a one-sided Wilcoxon has minimum achievable
@@ -61,21 +73,27 @@ def paired_wilcoxon(
     is under-powered at this sample size; it is included per the spec
     for honest reporting rather than strong inferential power.
     """
-    ours = np.asarray(fold_r2s_ours, dtype=np.float64)
-    base = np.asarray(fold_r2s_baseline, dtype=np.float64)
-    if ours.shape != base.shape:
+    ours_arr = np.asarray(fold_r2s_ours, dtype=np.float64)
+    base_arr = np.asarray(fold_r2s_baseline, dtype=np.float64)
+    if ours_arr.shape != base_arr.shape:
         raise ValueError(
-            f"Shape mismatch: ours={ours.shape}, baseline={base.shape}."
+            f"Shape mismatch: ours={ours_arr.shape}, baseline={base_arr.shape}."
         )
-    if ours.ndim != 1:
-        raise ValueError(f"Inputs must be 1-D; got ndim={ours.ndim}.")
+    if ours_arr.ndim != 1:
+        raise ValueError(f"Inputs must be 1-D; got ndim={ours_arr.ndim}.")
+    if not (np.all(np.isfinite(ours_arr)) and np.all(np.isfinite(base_arr))):
+        raise ValueError(
+            "Non-finite values in per-fold R² inputs for paired Wilcoxon: "
+            f"ours={ours_arr.tolist()}, baseline={base_arr.tolist()}. "
+            "Paired tests over 5 folds cannot tolerate NaN; fix upstream fold data."
+        )
 
-    n = int(ours.shape[0])
-    diffs = ours - base
+    n = int(ours_arr.shape[0])
+    diffs = ours_arr - base_arr
     median_diff = float(np.median(diffs))
 
     try:
-        result = stats.wilcoxon(ours, base, alternative=alternative)
+        result = stats.wilcoxon(ours_arr, base_arr, alternative=alternative)
         statistic = float(result.statistic)
         p_value = float(result.pvalue)
     except ValueError as exc:
@@ -126,8 +144,12 @@ def bootstrap_r2_ci(
     Returns
     -------
     dict
-        ``{point_r2, ci_lower, ci_upper, n_boot, conf, n}`` where ``n``
-        is the post-filter subject count.
+        ``{point_r2, ci_lower, ci_upper, n_boot, conf, n, n_valid_bootstraps}``
+        where ``n`` is the post-filter subject count and
+        ``n_valid_bootstraps`` is the number of resamples with finite R²
+        (a resample whose drawn ``y_true`` is constant has
+        ``Var(y_true)=0`` and produces NaN R²; we drop those before the
+        percentile step).
     """
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
@@ -139,25 +161,40 @@ def bootstrap_r2_ci(
         raise ValueError(f"Inputs must be 1-D; got ndim={y_true.ndim}.")
 
     finite_mask = np.isfinite(y_true) & np.isfinite(y_pred)
-    y_true = y_true[finite_mask]
-    y_pred = y_pred[finite_mask]
-    n = int(y_true.shape[0])
+    y_true_f = y_true[finite_mask]
+    y_pred_f = y_pred[finite_mask]
+    n = int(y_true_f.shape[0])
     if n < 2:
         raise ValueError(
             f"Bootstrap requires at least 2 finite subject pairs; got {n}."
         )
 
-    point_r2 = float(r2_score(y_true, y_pred))
+    point_r2 = float(r2_score(y_true_f, y_pred_f))
     rng = np.random.default_rng(seed)
-    boot_r2s = np.empty(n_boot, dtype=np.float64)
-    for b in range(n_boot):
-        idx = rng.integers(0, n, size=n)
-        boot_r2s[b] = r2_score(y_true[idx], y_pred[idx])
+
+    # Vectorized resampling: draw all [n_boot, n] indices at once and compute
+    # R² per row without materialising n_boot Python-level function calls.
+    idx = rng.integers(0, n, size=(n_boot, n))
+    y_t = y_true_f[idx]  # [n_boot, n]
+    y_p = y_pred_f[idx]
+    ss_res = ((y_t - y_p) ** 2).sum(axis=1)
+    ss_tot = ((y_t - y_t.mean(axis=1, keepdims=True)) ** 2).sum(axis=1)
+    # Guard zero-variance resamples (all-identical y_true in the resample).
+    valid = ss_tot > 0
+    boot_r2s = np.full(n_boot, np.nan, dtype=np.float64)
+    boot_r2s[valid] = 1.0 - ss_res[valid] / ss_tot[valid]
+    finite = boot_r2s[np.isfinite(boot_r2s)]
+    n_valid_bootstraps = int(finite.size)
+    if n_valid_bootstraps == 0:
+        raise ValueError(
+            "All bootstrap resamples had zero variance in y_true; cannot "
+            "compute percentile CI. Input may be degenerate."
+        )
 
     lower_q = (1.0 - conf) / 2.0
     upper_q = 1.0 - lower_q
-    ci_lower = float(np.percentile(boot_r2s, lower_q * 100.0))
-    ci_upper = float(np.percentile(boot_r2s, upper_q * 100.0))
+    ci_lower = float(np.percentile(finite, lower_q * 100.0))
+    ci_upper = float(np.percentile(finite, upper_q * 100.0))
 
     return {
         "point_r2": point_r2,
@@ -166,6 +203,7 @@ def bootstrap_r2_ci(
         "n_boot": int(n_boot),
         "conf": float(conf),
         "n": n,
+        "n_valid_bootstraps": n_valid_bootstraps,
     }
 
 
@@ -173,7 +211,7 @@ def calibration_coverage(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     sigma: np.ndarray,
-    nominal: Iterable[float] = (0.5, 0.68, 0.8, 0.95),
+    nominal: Sequence[float] = _DEFAULT_NOMINAL_COVERAGE,
 ) -> dict:
     """Empirical coverage at each nominal level under a Gaussian assumption.
 
