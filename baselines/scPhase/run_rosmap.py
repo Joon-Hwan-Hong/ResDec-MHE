@@ -71,11 +71,12 @@ def build_config(
     device_encoder: str,
     num_folds: int = 5,
     seed: int = 3407,
+    input_dim: int | None = None,
 ) -> dict:
     """Build scPhase config dict with paper defaults for our ROSMAP data.
 
     Adaptations from paper defaults:
-    - input_dim: 4797 (our gene count, not their default 5000)
+    - input_dim: auto-detected from h5ad `.n_vars` when not supplied
     - n_classes: 1 (regression output)
     - task_type: "regression"
     - use_domain_adaptation: false (single cohort ROSMAP; code also auto-disables
@@ -85,6 +86,12 @@ def build_config(
       back to 0 for all samples, avoiding .astype(int) failure on string "ROSMAP"
     """
     pickle_path = os.path.join(os.path.abspath(results_dir), "scphase_data_cache.pkl")
+
+    if input_dim is None:
+        # Cheap metadata-only read via backed mode; avoids loading the whole h5ad.
+        ad_tmp = sc.read_h5ad(data_h5ad, backed="r")
+        input_dim = int(ad_tmp.n_vars)
+        ad_tmp.file.close()
 
     return {
         "path_params": {
@@ -131,7 +138,7 @@ def build_config(
             "warmup_epochs": 10,
         },
         "model_params": {
-            "input_dim": 4797,
+            "input_dim": input_dim,
             "encoder_dims": [1024, 512],
             "classifier_dims": [128, 64],
             "hidden_dim": 256,
