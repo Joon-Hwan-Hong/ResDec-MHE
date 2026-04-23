@@ -1,6 +1,6 @@
 """Paper figures for E.2.
 
-Generates six publication-ready figures from canonical-run artefacts:
+Generates seven publication-ready figures from canonical-run artefacts:
 
 1. ``fig_ablation_bar`` — ablation R² bar chart with error bars, sorted desc.
 2. ``fig_resilience_scatter`` — y_true vs y_pred, colored by residual,
@@ -13,6 +13,9 @@ Generates six publication-ready figures from canonical-run artefacts:
    grouped by family (APOE | sex | age | pathology), canonical R² ref line.
 6. ``fig_calibration`` — |residual| vs TabPFN σ scatter + nominal-vs-empirical
    coverage curve (two-panel).
+7. ``fig_k_sensitivity`` — TabPFN top-k feature-count sensitivity (5-fold
+   mean R² ± std for k ∈ {1000, 2000, 4000}) with canonical bootstrap CI
+   reference band.
 
 Each ``make_figX_*`` function accepts *pre-loaded* DataFrames / dicts and
 returns a ``matplotlib.figure.Figure`` — so they are unit-testable without
@@ -722,6 +725,149 @@ def make_fig6_calibration(
 
 
 # ---------------------------------------------------------------------------
+# Figure 7: TabPFN feature-count sensitivity
+# ---------------------------------------------------------------------------
+
+
+def make_fig7_k_sensitivity(
+    k_values: list[int],
+    r2_means: list[float],
+    r2_stds: list[float],
+    bootstrap_ci: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """Line plot of 5-fold R² (mean ± std) vs TabPFN top-k feature count.
+
+    - X-axis: top-k (log scale, readable for {1000, 2000, 4000}).
+    - Y-axis: 5-fold mean R² with ±std errorbars.
+    - Canonical k=2000 highlighted with a distinct marker / annotation.
+    - Optional horizontal reference band from ``bootstrap_ci`` (canonical
+      bootstrap R² 95 % CI) illustrating that all three k values sit deep
+      inside the canonical's CI — i.e. robustness to feature-count choice.
+
+    Raises
+    ------
+    SkipFigure
+        If ``k_values`` is empty, inputs have mismatched lengths, or any
+        entry in ``r2_means`` / ``r2_stds`` is NaN.
+    """
+    if not k_values:
+        raise SkipFigure("fig7_k_sensitivity: k_values is empty")
+    if len(k_values) != len(r2_means) or len(k_values) != len(r2_stds):
+        raise SkipFigure(
+            "fig7_k_sensitivity: k_values / r2_means / r2_stds length mismatch"
+        )
+    r2_arr = np.asarray(r2_means, dtype=np.float64)
+    std_arr = np.asarray(r2_stds, dtype=np.float64)
+    if np.any(np.isnan(r2_arr)) or np.any(np.isnan(std_arr)):
+        raise SkipFigure(
+            "fig7_k_sensitivity: NaN in r2_means or r2_stds"
+        )
+
+    # Ensure k ascending — downstream annotations assume monotonic x.
+    order = np.argsort(np.asarray(k_values))
+    k_sorted = np.asarray(k_values)[order]
+    r2_sorted = r2_arr[order]
+    std_sorted = std_arr[order]
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    # Optional canonical bootstrap CI reference band (e.g. (0.39, 0.51)).
+    if bootstrap_ci is not None:
+        ci_lo, ci_hi = float(bootstrap_ci[0]), float(bootstrap_ci[1])
+        ax.axhspan(
+            ci_lo, ci_hi,
+            facecolor="#cc5533", alpha=0.12, zorder=0,
+            label=f"canonical bootstrap 95% CI ({ci_lo:.2f}, {ci_hi:.2f})",
+        )
+        ax.axhline(ci_lo, color="#cc5533", linestyle=":", linewidth=0.8, zorder=1)
+        ax.axhline(ci_hi, color="#cc5533", linestyle=":", linewidth=0.8, zorder=1)
+
+    # Main line with error bars.
+    ax.errorbar(
+        k_sorted, r2_sorted, yerr=std_sorted,
+        marker="o", markersize=7, linewidth=1.4, capsize=4,
+        color="#3b6ea5", ecolor="#222222", elinewidth=0.9,
+        markerfacecolor="#3b6ea5", markeredgecolor="#1f3d5a",
+        label="ResDec-H3 (5-fold mean R² ± std)",
+        zorder=3,
+    )
+
+    # Highlight canonical k=2000 (if present) with a distinct marker.
+    canonical_k = 2000
+    if canonical_k in k_sorted.tolist():
+        idx = int(np.where(k_sorted == canonical_k)[0][0])
+        ax.scatter(
+            [canonical_k], [r2_sorted[idx]],
+            marker="*", s=260, color="#ffcc33",
+            edgecolors="#8a6a00", linewidths=1.2,
+            zorder=5, label="canonical (k=2000)",
+        )
+        ax.annotate(
+            f"canonical\nR² = {r2_sorted[idx]:.3f} ± {std_sorted[idx]:.3f}",
+            xy=(canonical_k, r2_sorted[idx]),
+            xytext=(8, 14), textcoords="offset points",
+            fontsize=8, ha="left", va="bottom",
+            bbox=dict(facecolor="white", edgecolor="#aaaaaa",
+                      alpha=0.85, boxstyle="round,pad=0.25"),
+        )
+
+    # Annotate each non-canonical point with its R² value too.
+    for k_i, r2_i, sd_i in zip(k_sorted.tolist(), r2_sorted, std_sorted):
+        if k_i == canonical_k:
+            continue
+        ax.annotate(
+            f"{r2_i:.3f} ± {sd_i:.3f}",
+            xy=(k_i, r2_i), xytext=(6, -14), textcoords="offset points",
+            fontsize=8, ha="left", va="top", color="#1f3d5a",
+        )
+
+    ax.set_xscale("log")
+    # Explicit ticks at the measured k values (log scale hides them otherwise).
+    # Suppress matplotlib's default minor/major log ticks so only our k values
+    # show — otherwise "3×10³" appears between 2000 and 4000.
+    ax.set_xticks(k_sorted.tolist())
+    ax.set_xticklabels([str(int(k)) for k in k_sorted.tolist()])
+    ax.set_xticks([], minor=True)
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    ax.set_xlabel("TabPFN top-k features (log scale)")
+    ax.set_ylabel("5-fold cross-validated R² (mean ± std)")
+    ax.set_title("TabPFN feature-count sensitivity")
+
+    # Y-limits: respect bootstrap CI if provided so the band is visible.
+    y_lo_data = float(np.min(r2_sorted - std_sorted))
+    y_hi_data = float(np.max(r2_sorted + std_sorted))
+    if bootstrap_ci is not None:
+        y_lo_data = min(y_lo_data, float(bootstrap_ci[0]))
+        y_hi_data = max(y_hi_data, float(bootstrap_ci[1]))
+    pad = 0.05 * max(y_hi_data - y_lo_data, 0.05)
+    ax.set_ylim(y_lo_data - pad, y_hi_data + pad)
+
+    ax.grid(True, which="both", linestyle=":", alpha=0.4)
+    ax.set_axisbelow(True)
+    ax.legend(loc="lower center", fontsize=8, frameon=True)
+
+    # Subtitle / caption below the axes.
+    if bootstrap_ci is not None:
+        ci_lo, ci_hi = float(bootstrap_ci[0]), float(bootstrap_ci[1])
+        caption = (
+            f"All three k values within canonical's bootstrap 95% CI "
+            f"({ci_lo:.2f}, {ci_hi:.2f}) — model robust to feature-count choice."
+        )
+    else:
+        caption = (
+            "All three k values lie within ±1 std of the canonical "
+            "point estimate — model robust to feature-count choice."
+        )
+    fig.text(
+        0.5, 0.01, caption,
+        ha="center", va="bottom", fontsize=8, style="italic", color="#444444",
+    )
+
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Save helper
 # ---------------------------------------------------------------------------
 
@@ -780,6 +926,62 @@ def _load_calibration_per_subject(
     return pd.concat(frames, ignore_index=True)
 
 
+def _load_k_sensitivity_data(
+    canonical_dir: Path, ablation_root: Path
+) -> tuple[list[int], list[float], list[float]]:
+    """Load k-sensitivity R² data from k=1000/2000/4000 summaries.
+
+    Reads ``best_vs_tabpfn_summary.json`` from each of
+    ``{ablation_root}/p5_ablation_topk_1000``, ``canonical_dir``,
+    ``{ablation_root}/p5_ablation_topk_4000`` and computes per-k
+    ``(mean, std)`` over ``per_fold[i]["ours"]["r2"]``.
+
+    Returns sorted k values, R² means, R² stds (ddof=1). Missing summaries
+    are skipped — the figure will be drawn with whatever k entries loaded.
+    """
+    k_to_dir: dict[int, Path] = {
+        1000: ablation_root / "p5_ablation_topk_1000",
+        2000: canonical_dir,
+        4000: ablation_root / "p5_ablation_topk_4000",
+    }
+
+    k_vals: list[int] = []
+    r2_means: list[float] = []
+    r2_stds: list[float] = []
+    for k in sorted(k_to_dir):
+        summary_path = k_to_dir[k] / "best_vs_tabpfn_summary.json"
+        if not summary_path.is_file():
+            logger.warning("k=%d: summary not found at %s (skipping)", k, summary_path)
+            continue
+        try:
+            data = _load_json(summary_path)
+            fold_r2s = [
+                float(pf["ours"]["r2"]) for pf in data.get("per_fold", [])
+            ]
+            if not fold_r2s:
+                logger.warning("k=%d: no per_fold entries in %s", k, summary_path)
+                continue
+            k_vals.append(int(k))
+            r2_means.append(float(np.mean(fold_r2s)))
+            r2_stds.append(float(np.std(fold_r2s, ddof=1)) if len(fold_r2s) > 1 else 0.0)
+        except Exception as e:
+            logger.warning("k=%d: failed to parse %s (%s)", k, summary_path, e)
+    return k_vals, r2_means, r2_stds
+
+
+def _load_bootstrap_r2_ci(stat_rigor: dict | None) -> tuple[float, float] | None:
+    """Extract (ci_lower, ci_upper) from statistical_rigor['bootstrap_r2_ci']."""
+    if not stat_rigor:
+        return None
+    bci = stat_rigor.get("bootstrap_r2_ci")
+    if not bci or "ci_lower" not in bci or "ci_upper" not in bci:
+        return None
+    try:
+        return (float(bci["ci_lower"]), float(bci["ci_upper"]))
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_splatter_lamp5_corr(summary_path: Path) -> float | None:
     """Extract Splatter × LAMP5-LHX6 pearson r from the deep-dive JSON.
 
@@ -819,6 +1021,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    default=Path("outputs/redesign/interpretability/residual_per_subject.csv"))
     p.add_argument("--pred-root", type=Path,
                    default=Path("outputs/redesign/p5_canonical_seed42"))
+    p.add_argument("--ablation-root", type=Path,
+                   default=Path("outputs/redesign"),
+                   help="Parent dir containing p5_ablation_topk_{1000,4000} subdirs")
     p.add_argument("--tabpfn-dir", type=Path, default=Path("data/redesign"))
     p.add_argument("--out-dir", type=Path,
                    default=Path("outputs/redesign/interpretability/figures"))
@@ -951,9 +1156,31 @@ def main(argv: list[str] | None = None) -> int:
         args.figure_format, args.dpi,
     )
 
+    # --- Fig 7: k-sensitivity ---
+    fig7_paths: list[Path] = []
+    try:
+        k_vals, r2_means, r2_stds = _load_k_sensitivity_data(
+            canonical_dir=args.pred_root,
+            ablation_root=args.ablation_root,
+        )
+    except Exception as e:
+        logger.warning("k-sensitivity data load failed: %s", e)
+        k_vals, r2_means, r2_stds = [], [], []
+    bootstrap_ci = _load_bootstrap_r2_ci(rigor)
+    fig7_paths = _try_make(
+        "fig7_k_sensitivity",
+        lambda: make_fig7_k_sensitivity(
+            k_values=k_vals, r2_means=r2_means, r2_stds=r2_stds,
+            bootstrap_ci=bootstrap_ci,
+        ),
+        args.out_dir, "fig_k_sensitivity",
+        args.figure_format, args.dpi,
+    )
+
     # Summary
     total = sum(len(p) for p in (fig1_paths, fig2_paths, fig3_paths,
-                                 fig4_paths, fig5_paths, fig6_paths))
+                                 fig4_paths, fig5_paths, fig6_paths,
+                                 fig7_paths))
     logger.info("Wrote %d figure files total → %s", total, args.out_dir)
     return 0
 

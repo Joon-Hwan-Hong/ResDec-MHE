@@ -500,6 +500,58 @@ def test_fig2_title_says_pooled_r2(mock_resilience_df):
     plt.close(fig)
 
 
+def test_make_fig7_k_sensitivity_returns_figure():
+    """Fig 7: 3-point k-sensitivity line plot with bootstrap CI band."""
+    fig = mod.make_fig7_k_sensitivity(
+        k_values=[1000, 2000, 4000],
+        r2_means=[0.4499, 0.4436, 0.4404],
+        r2_stds=[0.079, 0.100, 0.067],
+        bootstrap_ci=(0.39, 0.51),
+    )
+    assert isinstance(fig, plt.Figure)
+    ax = fig.axes[0]
+    # errorbar draws at least one Line2D (the connecting line); at least
+    # one scatter / Line2D for the highlight marker.
+    assert len(ax.get_lines()) >= 1
+    # Log x-scale per design decision.
+    assert ax.get_xscale() == "log"
+    # X-tick labels are the k values.
+    tick_labels = [t.get_text() for t in ax.get_xticklabels()]
+    assert "1000" in tick_labels
+    assert "2000" in tick_labels
+    assert "4000" in tick_labels
+    # Title matches spec.
+    assert "feature-count sensitivity" in ax.get_title().lower()
+    # Caption mentions the CI bounds.
+    caption = "\n".join(t.get_text() for t in fig.texts)
+    assert "0.39" in caption and "0.51" in caption
+    plt.close(fig)
+
+
+def test_make_fig7_skipfigure_on_nan():
+    """Fig 7: NaN in r2_means or r2_stds raises SkipFigure."""
+    with pytest.raises(mod.SkipFigure):
+        mod.make_fig7_k_sensitivity(
+            k_values=[1000, 2000, 4000],
+            r2_means=[0.45, float("nan"), 0.44],
+            r2_stds=[0.08, 0.10, 0.07],
+        )
+    with pytest.raises(mod.SkipFigure):
+        mod.make_fig7_k_sensitivity(
+            k_values=[1000, 2000, 4000],
+            r2_means=[0.45, 0.44, 0.44],
+            r2_stds=[0.08, float("nan"), 0.07],
+        )
+    # Empty inputs also raise.
+    with pytest.raises(mod.SkipFigure):
+        mod.make_fig7_k_sensitivity(k_values=[], r2_means=[], r2_stds=[])
+    # Length-mismatch also raises.
+    with pytest.raises(mod.SkipFigure):
+        mod.make_fig7_k_sensitivity(
+            k_values=[1000, 2000], r2_means=[0.45], r2_stds=[0.08],
+        )
+
+
 def test_fig1_nan_nfolds_does_not_crash():
     """I3: a NaN n_folds entry must not crash label-building."""
     df = pd.DataFrame([
