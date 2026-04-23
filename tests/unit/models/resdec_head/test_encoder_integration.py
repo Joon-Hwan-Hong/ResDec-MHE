@@ -21,7 +21,7 @@ def encoder():
 
 
 def _make_dummy_batch(batch_size: int, device: torch.device) -> dict:
-    """Mirror bench_p5_full_model.make_dummy_batch: mix of PFC-only and multi-region."""
+    """Build a dummy batch: mix of PFC-only and multi-region subjects."""
     N_CT = 31
     N_GENES = 4785
     N_REGIONS = 6
