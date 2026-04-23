@@ -1,15 +1,14 @@
-"""Pre-compute TabPFN-2.6 OUTER-fold predictions (standalone baseline + Phase-2
+"""Pre-compute TabPFN-2.6 OUTER-fold predictions (standalone baseline + cached
 residual-base at val time).
 
-For each of the 5 CV folds, fits TabPFN on all 412 training subjects' top-2K
-features and predicts on the 104 validation subjects. Writes per-fold .npz.
+For each outer CV fold, fits TabPFN on the training subjects' top-k features and
+predicts on the validation subjects. Writes per-fold .npz.
 
 Complements compute_tabpfn_oof.py (inner-OOF predictions used for stage-1
 training residual targets). The OUTER-fold predictions here are:
   - The apples-to-apples TabPFN-2.6 standalone baseline R² for the paper table
-    (vs XGBoost R²=0.358 on the same outer folds)
-  - The cached `y_tabpfn_val` used by Phase-2 training at validation time
-    (so we don't re-fit TabPFN per validation epoch)
+  - The cached ``y_tabpfn_val`` used by the ResDec Lightning module at
+    validation time (so we don't re-fit TabPFN per validation epoch)
 """
 from __future__ import annotations
 
@@ -80,9 +79,9 @@ def _build_regressor(
 ) -> TabPFNRegressor:
     """Construct a TabPFNRegressor with the ablation safety-override flag.
 
-    ``ignore_pretraining_limits=True`` is a DELIBERATE user-approved override of
-    TabPFN-2.6's 2000-feature safety check. Use ONLY when deliberately testing
-    >2000-feature behavior (e.g., Task D.2 top-k=4000 ablation). Accepts the
+    ``ignore_pretraining_limits=True`` is a DELIBERATE override of TabPFN-2.6's
+    2000-feature safety check. Use ONLY when deliberately testing
+    >2000-feature behavior (e.g., top-k > 2000 ablations). Accepts the
     distributional-extrapolation risk; TabPFN's prior was trained on ≤2000
     features. Default MUST be False everywhere upstream.
 
@@ -266,9 +265,9 @@ if __name__ == "__main__":
         default=False,
         help=(
             "Override TabPFN-2.6's 2000-feature safety check. Use ONLY when "
-            "deliberately testing >2000-feature behavior (e.g., Task D.2 "
-            "top-k=4000 ablation). Accepts the distributional-extrapolation "
-            "risk; TabPFN's prior was trained on ≤2000 features. Default: False."
+            "deliberately testing >2000-feature behavior (e.g., top-k > 2000 "
+            "ablations). Accepts the distributional-extrapolation risk; "
+            "TabPFN's prior was trained on ≤2000 features. Default: False."
         ),
     )
     p.add_argument(

@@ -73,9 +73,9 @@ def _build_regressor(
 ) -> TabPFNRegressor:
     """Construct a TabPFNRegressor with the ablation safety-override flag.
 
-    ``ignore_pretraining_limits=True`` is a DELIBERATE user-approved override of
-    TabPFN-2.6's 2000-feature safety check. Use ONLY when deliberately testing
-    >2000-feature behavior (e.g., Task D.2 top-k=4000 ablation). Accepts the
+    ``ignore_pretraining_limits=True`` is a DELIBERATE override of TabPFN-2.6's
+    2000-feature safety check. Use ONLY when deliberately testing
+    >2000-feature behavior (e.g., top-k > 2000 ablations). Accepts the
     distributional-extrapolation risk; TabPFN's prior was trained on ≤2000
     features. Default MUST be False everywhere upstream.
 
@@ -227,9 +227,9 @@ if __name__ == "__main__":
         default=False,
         help=(
             "Override TabPFN-2.6's 2000-feature safety check. Use ONLY when "
-            "deliberately testing >2000-feature behavior (e.g., Task D.2 "
-            "top-k=4000 ablation). Accepts the distributional-extrapolation "
-            "risk; TabPFN's prior was trained on ≤2000 features. Default: False."
+            "deliberately testing >2000-feature behavior (e.g., top-k > 2000 "
+            "ablations). Accepts the distributional-extrapolation risk; "
+            "TabPFN's prior was trained on ≤2000 features. Default: False."
         ),
     )
     p.add_argument(

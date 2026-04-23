@@ -141,8 +141,9 @@ class _ResDecCompositeWrapper(torch.nn.Module):
         enc_out = self.lit_module.encoder.forward_encoder_only(**kwargs)
         z = enc_out["attended"]  # [B, d_subject]
 
-        # Phase-4 metadata wiring is deferred — fall back to zeros (FiLM is
-        # near-identity init at zero metadata, so prediction is well-defined).
+        # Metadata wiring is not needed for attribution — fall back to zeros
+        # (FiLM is near-identity init at zero metadata, so prediction is
+        # well-defined).
         metadata = torch.zeros(B, self._d_metadata, device=device, dtype=dtype)
 
         head_out = self.lit_module.head(z, metadata)

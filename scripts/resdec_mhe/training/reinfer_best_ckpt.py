@@ -1,9 +1,9 @@
-"""Re-infer best-epoch predictions for a Phase 2 fold.
+"""Re-infer best-epoch predictions for a ResDec fold.
 
 Rationale: the training loop's `val_predictions_final.npz` captures the FINAL
-epoch (epoch 60 on seed-42 runs), which is post-overfit. `ModelCheckpoint` saved
-the best-by-val/r2 checkpoint at an earlier epoch — this script loads that
-checkpoint, runs `trainer.validate()`, and dumps per-subject predictions to
+epoch, which can be post-overfit. `ModelCheckpoint` saves the best-by-val/r2
+checkpoint at an earlier epoch — this script loads that checkpoint, runs
+`trainer.validate()`, and dumps per-subject predictions to
 `val_predictions_best.npz` alongside the existing final-epoch file.
 
 Output layout per fold:

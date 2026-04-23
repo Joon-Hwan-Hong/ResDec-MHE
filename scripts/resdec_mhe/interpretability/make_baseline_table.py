@@ -1,4 +1,4 @@
-"""Paper baseline table for E.1.
+"""Paper baseline table.
 
 Aggregates per-fold R² / MAE / RMSE / Pearson r / Spearman ρ for every
 baseline and every ResDec-MHE ablation into a single CSV + Markdown table.
@@ -16,10 +16,9 @@ Sources
 - Our canonical + ablations: ``outputs/redesign/p5_*/best_vs_tabpfn_summary.json``
   (per-fold ours.{r2, mae, rmse, pearson_r, spearman_rho}).
 
-Missing baselines or missing ablations (e.g. D.2 ``p5_ablation_topk_4000``
-still running, D.3 ``p5_ablation_zscore`` not yet launched) yield a NaN row
-with an explanatory note — never omitted — so the table is idempotent and
-re-runnable once those experiments finish.
+Missing baselines or missing ablations yield a NaN row with an explanatory
+note — never omitted — so the table is idempotent and re-runnable once those
+experiments finish.
 
 Output
 ------
@@ -77,7 +76,7 @@ _METRIC_NAMES: dict[str, str] = {
 
 # CSV column display names: internal dict keys use sklearn-idiomatic
 # ``pearson_r`` / ``spearman_rho``; the paper-facing CSV columns drop the
-# ``_r`` / ``_rho`` suffix per the E.1 spec so the header reads
+# ``_r`` / ``_rho`` suffix so the header reads
 # ``pearson_mean, pearson_std, spearman_mean, spearman_std``.
 _METRIC_DISPLAY_NAMES: dict[str, str] = {
     "r2": "r2",
@@ -88,19 +87,19 @@ _METRIC_DISPLAY_NAMES: dict[str, str] = {
 }
 
 # Reference R² for the encoder-only baseline (no TabPFN residual, no head
-# decomposition). Sourced from the 5-fold beat-baselines investigation
-# (MEMORY.md, 2026-04-20). Per-fold data was not archived — only the mean.
+# decomposition). Sourced from an earlier 5-fold run; per-fold data was not
+# archived — only the mean is reported as a single-number reference row.
 CURRENT_ENCODER_ALONE_R2_REF: float = 0.286
 
-# Note on ablation #6 (no DiffAttn): the new canonical already has
-# use_diff_attn=False, so ablation #6 IS the canonical (no separate row).
+# Note on the no-DiffAttn ablation: the canonical run already has
+# ``use_diff_attn=False``, so that ablation IS the canonical (no separate row).
 # ``p5_phase3_1stage_with_tabm`` below is the INVERSE: canonical *with*
 # DiffAttn, retained for the delta comparison.
 #
 # Non-canonical ablations requested by the paper. Order doesn't matter —
 # rows are sorted by R² descending before rendering. The canonical row is
 # injected separately via ``--canonical-dir`` so it can be overridden from
-# the CLI (e.g. seed43) without editing the table spec.
+# the CLI without editing the table spec.
 _ABLATION_NAMES: list[tuple[str, str]] = [
     ("p5_filmwired_5fold_seed42", "ResDec-MHE + FiLM with metadata (A.3)"),
     ("p5_phase3_1stage_with_tabm", "ResDec-MHE old canonical (with DiffAttn)"),
@@ -399,7 +398,7 @@ def collect_ablation_rows(
                 )
         if metrics is None:
             # Pending / not-yet-complete — emit a placeholder row so the table
-            # is self-documenting even pre-D.2 / pre-D.3.
+            # is self-documenting even while some ablations are still running.
             logger.warning(
                 "Ablation '%s' has no per-fold data at %s — "
                 "emitting NaN row (pending).",
@@ -633,7 +632,7 @@ def rows_to_dataframe(rows: list[dict]) -> pd.DataFrame:
     the sklearn / scipy idioms); the published CSV column names use the
     paper-facing ``pearson`` / ``spearman`` aliases (see
     :data:`_METRIC_DISPLAY_NAMES`). This function renames keys in-place to
-    honour the E.1 spec.
+    match the published column names.
     """
     # Column order: (r2_mean, r2_std, mae_mean, mae_std, ..., pearson_mean,
     # pearson_std, spearman_mean, spearman_std).
@@ -740,7 +739,7 @@ def render_markdown(df: pd.DataFrame) -> str:
     df = _sort_for_md(df)
 
     lines: list[str] = []
-    lines.append("# Paper Baseline Table (E.1)")
+    lines.append("# Paper Baseline Table")
     lines.append("")
     lines.append(
         "Per-fold metrics are reported as mean ± std (ddof=1) across 5 outer "

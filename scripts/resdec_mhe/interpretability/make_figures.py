@@ -1,4 +1,4 @@
-"""Paper figures for E.2.
+"""Paper figures.
 
 Generates seven publication-ready figures from canonical-run artefacts:
 
@@ -63,14 +63,14 @@ logger = logging.getLogger(__name__)
 
 CANONICAL_R2 = 0.4436211705207825  # from paper_baseline_table.csv (p5_canonical_seed42)
 
-# --- Module constants (M5) ---
+# --- Module constants ---
 N_FOLDS = 5
 TOP_N_PAIRS_HEATMAP = 30
 R2_VISUAL_LOWER_CLIP = -1.5
 NOMINAL_COVERAGE_LEVELS = (0.5, 0.68, 0.8, 0.95)
 
 
-# Per-family prefix stripping for subgroup label display (C1).
+# Per-family prefix stripping for subgroup label display.
 # Keyed by the family display name used in _SUBGROUP_FAMILIES.
 _FAMILY_PREFIX_STRIP: dict[str, str] = {
     "APOE": "APOE_",
@@ -81,7 +81,7 @@ _FAMILY_PREFIX_STRIP: dict[str, str] = {
 
 
 def _nf_int(nf) -> int:
-    """NaN-safe conversion of an ``n_folds`` cell to int (I3)."""
+    """NaN-safe conversion of an ``n_folds`` cell to int."""
     return 0 if pd.isna(nf) else int(nf)
 
 
@@ -111,7 +111,7 @@ def _apply_paper_style() -> None:
 
 
 # Apply paper style at import time so both CLI runs and unit tests render
-# with identical rcParams (I4).
+# with identical rcParams.
 _apply_paper_style()
 
 
@@ -385,7 +385,7 @@ def make_fig3_celltype_gene_heatmap(
         val = values[i]
         # Text color threshold at 50% of colormap range — white text on dark-red
         # cells (high |attr|), black text on light-red cells (low |attr|) for
-        # WCAG-adequate contrast. (M10)
+        # WCAG-adequate contrast.
         ax.text(0, i, f"{val:.4f}", ha="center", va="center",
                 color="white" if val > values.max() * 0.5 else "#111111",
                 fontsize=8)
@@ -907,7 +907,7 @@ def _load_calibration_per_subject(
     """Join per-subject |residual| (composite) with sigma_tabpfn across folds.
 
     Delegates the fold-level prediction + TabPFN join to the shared canonical
-    loader ``load_fold_predictions`` (I1); only ``sigma_tabpfn`` is added on
+    loader ``load_fold_predictions``; only ``sigma_tabpfn`` is added on
     top per fold.
     """
     frames: list[pd.DataFrame] = []
@@ -1058,7 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
     )
     # Note: _apply_paper_style() runs at module import so tests also render
-    # with paper-style rcParams (I4). Re-running it here would be a no-op.
+    # with paper-style rcParams. Re-running it here would be a no-op.
 
     # --- Fig 1: ablation bar ---
     fig1_paths: list[Path] = []

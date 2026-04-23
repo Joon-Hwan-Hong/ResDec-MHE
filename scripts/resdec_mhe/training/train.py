@@ -62,9 +62,9 @@ def main(args: argparse.Namespace) -> None:
     if args.seed is not None:
         cfg.experiment.seed = int(args.seed)
 
-    # Propagate fold index into cfg.data so Phase-2 ResDecLightningModule can
-    # load the fold-specific TabPFN residual caches (harmless no-op for other
-    # paths — Lightning module reads it only when tabpfn_oof_dir is set).
+    # Propagate fold index into cfg.data so ResDecLightningModule can load the
+    # fold-specific TabPFN residual caches (harmless no-op for other paths —
+    # Lightning module reads it only when tabpfn_oof_dir is set).
     cfg.data.fold = int(args.fold)
 
     pl.seed_everything(int(cfg.experiment.seed), workers=True)

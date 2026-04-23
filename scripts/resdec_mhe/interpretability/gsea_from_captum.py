@@ -1,4 +1,4 @@
-"""GSEA adapter on Captum-IG top-attributed gene lists (Task C.6).
+"""GSEA adapter on Captum-IG top-attributed gene lists.
 
 Reads the Captum composite-attribution summary produced by
 ``captum_composite_attribution.py`` and runs Enrichr gene-set over-representation
