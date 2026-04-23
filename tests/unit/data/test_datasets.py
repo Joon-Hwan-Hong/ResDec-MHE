@@ -55,22 +55,33 @@ class TestCellCounts:
 
 @pytest.fixture
 def mock_dataset():
-    """Create mock dataset for testing."""
+    """Create mock dataset for testing.
+
+    Uses a subset of CELL_TYPE_ORDER and enough cells per subject to clear
+    ``CellSampler.min_cells_threshold=50`` — otherwise every type is filtered
+    to zero cells and ``save_precomputed_features`` skips every subject as
+    degenerate, which then trips the ``_load_and_validate_all`` missing-subject
+    safety check. With 5 subjects × ~500 cells each across 5 types, each
+    (subject, cell_type) bucket gets ~100 cells in expectation (>> 50).
+    """
     from src.data.datasets import CognitiveResilienceDataset
     from src.data.constants import CELL_TYPE_ORDER
     import anndata
 
-    # Create minimal mock data
-    n_cells = 500
-    n_genes = 100
+    # Create minimal mock data. Use 5 cell types (not all 31) so each subject
+    # has enough cells per type to satisfy CellSampler.min_cells_threshold=50.
     n_subjects = 5
+    cells_per_subject = 500
+    n_cells = cells_per_subject * n_subjects  # 2500
+    n_genes = 100
+    used_cell_types = CELL_TYPE_ORDER[:5]
 
     np.random.seed(42)  # For reproducibility
 
     X = np.random.rand(n_cells, n_genes).astype(np.float32)
     obs = pd.DataFrame({
-        "ROSMAP_IndividualID": np.repeat([f"subj_{i:03d}" for i in range(n_subjects)], n_cells // n_subjects),
-        "supercluster_name": np.random.choice(CELL_TYPE_ORDER, n_cells),
+        "ROSMAP_IndividualID": np.repeat([f"subj_{i:03d}" for i in range(n_subjects)], cells_per_subject),
+        "supercluster_name": np.random.choice(used_cell_types, n_cells),
         # Use region names from REGION_ORDER to enable multi-region pseudobulk processing
         "BrainRegion": np.random.choice(["PFC", "AG", "MTC"], n_cells),
     })
