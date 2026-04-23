@@ -45,6 +45,7 @@ from run_cv import (
     _save_predictions_csv,
     train_and_evaluate_fold,
 )
+from summary_canonical import write_canonical_summary
 from train_utils import (
     calculate_cell_attention,
     calculate_gene_attributions,
@@ -287,22 +288,15 @@ def run_cv_with_our_splits(
     # Save per-sample predictions
     _save_predictions_csv(config)
 
-    # Summary statistics
-    metric_cols = [c for c in results_df.columns if c not in ("model_name", "fold")]
-    summary = {"model_name": config["path_params"]["MODEL_NAME"]}
-    logger.info("\n--- FINAL CV SUMMARY ---")
-    for metric in metric_cols:
-        mean_val = results_df[metric].mean()
-        std_val = results_df[metric].std()
-        summary[f"mean_{metric}"] = mean_val
-        summary[f"std_{metric}"] = std_val
-        logger.info(f"  {metric.upper():>8s}: {mean_val:.4f} (+/- {std_val:.4f})")
-
-    summary_path = os.path.join(
+    # Summary statistics — emit canonical long-format CSV (metric, mean, std)
+    # matching the paper-table aggregator's schema. write_canonical_summary
+    # reads the AllFolds + predictions CSVs just written above, renames the
+    # upstream 'person' typo to 'pearson_r', adds rmse = sqrt(mse), and
+    # computes spearman_rho per fold from the predictions CSV.
+    summary_path = write_canonical_summary(
         config["path_params"]["RESULTS_DIR"],
-        f"Summary_{config['path_params']['MODEL_NAME']}.csv",
+        model_name=config["path_params"]["MODEL_NAME"],
     )
-    pd.DataFrame([summary]).to_csv(summary_path, index=False)
     logger.info(f"Summary saved to: {summary_path}")
 
     return results_df
@@ -474,13 +468,15 @@ def main():
     )
     parser.add_argument(
         "--data-h5ad",
-        required=True,
-        help="Path to scphase_input.h5ad (from prepare_data.py)",
+        default=None,
+        help="Path to scphase_input.h5ad (from prepare_data.py). "
+             "Required unless --regen-summary-only is set.",
     )
     parser.add_argument(
         "--splits",
-        required=True,
-        help="Path to outputs/splits.json with the project's 5-fold assignments",
+        default=None,
+        help="Path to outputs/splits.json with the project's 5-fold assignments. "
+             "Required unless --regen-summary-only is set.",
     )
     parser.add_argument(
         "--results-dir",
@@ -513,10 +509,33 @@ def main():
         action="store_true",
         help="Skip interpretability (only run CV training)",
     )
+    parser.add_argument(
+        "--regen-summary-only",
+        action="store_true",
+        help="Skip training and interpretability; only regenerate the canonical "
+             "Summary CSV from existing AllFolds + predictions CSVs in "
+             "--results-dir. Use after a completed run whose summary was "
+             "written in the legacy wide format.",
+    )
     args = parser.parse_args()
 
     # Create results directory
     os.makedirs(args.results_dir, exist_ok=True)
+
+    # --regen-summary-only short-circuits the whole pipeline: it only needs
+    # --results-dir to exist with AllFolds + predictions/ already written.
+    if args.regen_summary_only:
+        summary_path = write_canonical_summary(
+            args.results_dir, model_name="scPhase_ROSMAP",
+        )
+        print(f"Summary regenerated: {summary_path}")
+        return
+
+    if args.data_h5ad is None or args.splits is None:
+        parser.error(
+            "--data-h5ad and --splits are required unless "
+            "--regen-summary-only is set",
+        )
 
     # Build config
     config = build_config(
