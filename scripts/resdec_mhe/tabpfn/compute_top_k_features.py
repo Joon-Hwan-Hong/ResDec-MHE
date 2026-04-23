@@ -18,7 +18,7 @@ import xgboost as xgb
 # Ensure the worktree root is on sys.path so `src.data.tabpfn_input` resolves
 # from this worktree (uv run adds the main-repo path, which may lack newer
 # modules introduced in this branch).
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.data.enriched_features import (  # noqa: E402
     FEATURE_SETS,

@@ -1,6 +1,6 @@
-"""Captum Integrated Gradients composite attribution for ResDec-H3 canonical model.
+"""Captum Integrated Gradients composite attribution for ResDec-MHE canonical model.
 
-For each fold, loads the max-R² ``best-*.ckpt``, wraps the encoder + ResDec-H3
+For each fold, loads the max-R² ``best-*.ckpt``, wraps the encoder + ResDec-MHE
 head as a single-input module that takes pseudobulk ``[B, n_cell_types, n_genes]``
 as the differentiable input and returns the head's residual scalar ``f̂_1`` (the
 neural correction on top of TabPFN). Runs Integrated Gradients with a zero
@@ -25,7 +25,7 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
-    uv run python scripts/redesign/interpretability/captum_composite_attribution.py \\
+    uv run python scripts/resdec_mhe/interpretability/captum_composite_attribution.py \\
         --pred-root outputs/redesign/p5_canonical_seed42 \\
         --out-dir outputs/redesign/interpretability \\
         --n-steps 50 --internal-batch-size 4
@@ -33,7 +33,7 @@ Usage
 Arguments
 ---------
     --config <path>            Phase YAML merged on top of configs/default.yaml
-                               (default: canonical p5_phase2_residual.yaml).
+                               (default: canonical configs/resdec_mhe/canonical.yaml).
     --pred-root <path>         Per-fold output dir with fold{0..4}/checkpoints/best-*.ckpt.
     --splits-path <path>       Splits JSON (default: outputs/splits.json).
     --out-dir <path>           Output directory (created if missing).
@@ -379,7 +379,7 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Captum IG composite attribution.")
-    p.add_argument("--config", default="configs/redesign/p5_phase2_residual.yaml")
+    p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--out-dir", default="outputs/redesign/interpretability")

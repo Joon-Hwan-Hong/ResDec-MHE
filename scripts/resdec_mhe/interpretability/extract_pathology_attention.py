@@ -1,4 +1,4 @@
-"""Extract per-subject PathologyAttention weights from canonical ResDec-H3 ckpts.
+"""Extract per-subject PathologyAttention weights from canonical ResDec-MHE ckpts.
 
 For each fold, loads the max-R² ``best-*.ckpt``, runs forward over the val
 subjects, and captures ``enc_out["attention_weights"]`` of shape
@@ -14,14 +14,14 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
-    uv run python scripts/redesign/interpretability/extract_pathology_attention.py \\
+    uv run python scripts/resdec_mhe/interpretability/extract_pathology_attention.py \\
         --pred-root outputs/redesign/p5_canonical_seed42 \\
         --out-dir outputs/redesign/interpretability
 
 Arguments
 ---------
     --config <path>            Phase YAML to merge on top of configs/default.yaml
-                               (default: canonical p5_phase2_residual.yaml).
+                               (default: canonical configs/resdec_mhe/canonical.yaml).
     --pred-root <path>         Per-fold output dir holding fold{0..4}/checkpoints/best-*.ckpt.
     --splits-path <path>       Splits JSON (default: outputs/splits.json).
     --out-dir <path>           Output directory (created if missing).
@@ -204,7 +204,7 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Extract PathologyAttention weights.")
-    p.add_argument("--config", default="configs/redesign/p5_phase2_residual.yaml",
+    p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml",
                    help="Phase YAML merged on top of configs/default.yaml.")
     p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42",
                    help="Per-fold output dir with fold{0..4}/checkpoints/best-*.ckpt.")

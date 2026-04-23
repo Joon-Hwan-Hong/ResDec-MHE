@@ -1,6 +1,6 @@
-"""Statistical rigor orchestration for ResDec-H3 composite predictions.
+"""Statistical rigor orchestration for ResDec-MHE composite predictions.
 
-Loads per-fold R² for "ours" (ResDec-H3 composite) and every discovered
+Loads per-fold R² for "ours" (ResDec-MHE composite) and every discovered
 baseline, runs paired one-sided Wilcoxon signed-rank tests (ours vs each
 baseline, ``alternative="greater"``), computes a percentile bootstrap CI
 on the pooled-N composite R² (resample 516 subjects 1000×), and reports
@@ -21,7 +21,7 @@ Baseline discovery
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/interpretability/paired_tests_and_bootstrap.py \\
+    uv run python scripts/resdec_mhe/interpretability/paired_tests_and_bootstrap.py \\
         --pred-root outputs/redesign/p5_canonical_seed42 \\
         --tabpfn-dir data/redesign \\
         --baselines-root outputs/baselines \\
@@ -78,7 +78,7 @@ _DEFAULT_NOMINAL_COVERAGE: tuple[float, ...] = (0.5, 0.68, 0.8, 0.95)
 _TABPFN_STANDALONE_KEY = "tabpfn_2_6_standalone"
 _OURS_KEY = "ours"
 _DISPLAY_NAMES: dict[str, str] = {
-    _OURS_KEY: "ResDec-H3 (ours)",
+    _OURS_KEY: "ResDec-MHE (ours)",
     _TABPFN_STANDALONE_KEY: "TabPFN-2.6 standalone",
     "cloudpred": "CloudPred",
     "cloudpred_pertype": "CloudPred (per-type)",
@@ -405,7 +405,7 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(
-        description="Statistical rigor for ResDec-H3 composite predictions: "
+        description="Statistical rigor for ResDec-MHE composite predictions: "
                     "paired Wilcoxon, bootstrap R² CI, calibration coverage.",
     )
     p.add_argument(

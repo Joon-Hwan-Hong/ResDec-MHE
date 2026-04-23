@@ -1,6 +1,6 @@
-"""ResDec-H3 training entry (Phase 1 baseline: encoder + bare head, no TabPFN residual yet).
+"""ResDec-MHE training entry.
 
-Loads configs/default.yaml + configs/redesign/<phase>.yaml (merged), constructs
+Loads configs/default.yaml + configs/resdec_mhe/<phase>.yaml (merged), constructs
 the existing CognitiveResilienceDataModule + ResDecLightningModule, and runs
 Lightning Trainer on a single fold. Saves a per-fold summary JSON with the
 validate() results.
@@ -8,15 +8,15 @@ validate() results.
 Design note: this is intentionally SIMPLER than scripts/training/train.py —
 no HPO hooks, no TensorBoard logger, no ExperimentManager, no DDP coordination.
 A minimal ModelCheckpoint (save_last + best-by-val/r2) IS enabled so runs can be
-resumed and best weights recovered. The goal is to smoke-test the Phase-1
-ResDec-H3 head end-to-end on a single GPU.
+resumed and best weights recovered. The goal is to smoke-test the
+ResDec-MHE head end-to-end on a single GPU.
 
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
-    uv run python scripts/redesign/train_resdec.py \\
-        --config configs/redesign/p5_phase1_baseline.yaml \\
+    uv run python scripts/resdec_mhe/training/train.py \\
+        --config configs/resdec_mhe/canonical.yaml \\
         --fold 0 \\
         --max-epochs 60
 """
@@ -54,7 +54,7 @@ def main(args: argparse.Namespace) -> None:
     OmegaConf.set_struct(cfg, False)
 
     # Force the deterministic head path so the encoder's Bayesian SVI
-    # machinery is not engaged. ResDec-H3 produces its own scalar readout
+    # machinery is not engaged. ResDec-MHE produces its own scalar readout
     # and ignores the encoder's prediction_head.
     cfg.model.head.type = "deterministic"
     if args.max_epochs is not None:
@@ -87,7 +87,7 @@ def main(args: argparse.Namespace) -> None:
     use_cached = bool(cfg.data.get("use_cached_embeddings", False))
     if use_cached:
         # Frozen-encoder path (option 2 of the D-OOM fix). No encoder forward
-        # at train time — the ResDec-H3 head is trained on cached `attended`
+        # at train time — the ResDec-MHE head is trained on cached `attended`
         # embeddings at full-cohort batch.
         embeddings_npz = Path(
             args.embeddings_npz
@@ -96,7 +96,7 @@ def main(args: argparse.Namespace) -> None:
         if not embeddings_npz.exists():
             raise FileNotFoundError(
                 f"Cached embeddings not found: {embeddings_npz}. Run "
-                f"scripts/redesign/precompute_encoder_embeddings.py first."
+                f"scripts/resdec_mhe/precompute_encoder_embeddings.py first."
             )
         dl_cfg = cfg.data.get("dataloader", {}) or {}
         batch_size = int(dl_cfg.get("batch_size", 500))
@@ -160,7 +160,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # Early stopping: active iff cfg.training.early_stopping is present. The
-    # existing redesign runs showed every fold overfits past epoch ~8 on the
+    # existing resdec_mhe runs showed every fold overfits past epoch ~8 on the
     # residual target (seed 42), so the callback is essential for q2+ runs.
     # MinEpochEarlyStopping guards warmup; min_epochs below ES patience prevents
     # premature stop on fold-2-like early peaks.
@@ -204,7 +204,7 @@ def main(args: argparse.Namespace) -> None:
         enable_model_summary=True,
         # default_root_dir makes trainer.log_dir resolve to the fold's output
         # directory so per-subject predictions dumped by Option B in
-        # ResDecLightningModule land in outputs/redesign/.../fold{N}/
+        # ResDecLightningModule land in outputs/<run_root>/.../fold{N}/
         # rather than being overwritten per-fold in cwd.
         default_root_dir=str(out_dir),
     )
@@ -229,8 +229,8 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    p = argparse.ArgumentParser(description="ResDec-H3 Phase-1 training entry")
-    p.add_argument("--config", default="configs/redesign/p5_phase1_baseline.yaml",
+    p = argparse.ArgumentParser(description="ResDec-MHE training entry")
+    p.add_argument("--config", default="configs/resdec_mhe/p5_phase1_baseline.yaml",
                    help="Phase override YAML (merged on top of configs/default.yaml).")
     p.add_argument("--fold", type=int, default=0, help="CV fold index (0-indexed).")
     p.add_argument("--max-epochs", type=int, default=None,

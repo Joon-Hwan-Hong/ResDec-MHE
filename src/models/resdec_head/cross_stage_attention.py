@@ -1,4 +1,4 @@
-"""Cross-stage attention for ResDec-H3's multi-stage head.
+"""Cross-stage attention for ResDec-MHE's multi-stage head.
 
 (Wired in Phase 3 for multi-stage heads. Unused in Phase 1 but committed for
 Phase 3 use per plan Task 3.1.)

@@ -1,4 +1,4 @@
-"""Resilience residual phenotyping from canonical ResDec-H3 predictions.
+"""Resilience residual phenotyping from canonical ResDec-MHE predictions.
 
 Loads ``val_predictions_best.npz`` across all 5 folds (canonical n_stages=1 +
 TabM run), joins to ROSMAP metadata, and computes per-subject **resilience
@@ -22,7 +22,7 @@ Outputs (default ``outputs/redesign/interpretability/``):
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/interpretability/resilience_residual_phenotype.py \\
+    uv run python scripts/resdec_mhe/interpretability/resilience_residual_phenotype.py \\
         --pred-root outputs/redesign/p5_canonical_seed42 \\
         --out-dir outputs/redesign/interpretability
 
@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 
 # Make the script standalone-runnable: ensure the worktree root is on sys.path.
-# Anchored at parents[3] (i.e. scripts/redesign/interpretability/<this_file> → worktree_root/).
+# Anchored at parents[3] (i.e. scripts/resdec_mhe/interpretability/<this_file> → worktree_root/).
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if not (_WORKTREE_ROOT / "src").is_dir():
     raise RuntimeError(
@@ -63,7 +63,7 @@ def load_all_folds(pred_root: Path) -> pd.DataFrame:
         if not p.exists():
             raise FileNotFoundError(
                 f"Missing per-fold predictions: {p}. Run the canonical 5-fold + "
-                f"reinfer pipeline first (scripts/redesign/run_phase2_5fold_parallel.sh)."
+                f"reinfer pipeline first (scripts/resdec_mhe/training/run_5fold_parallel.sh)."
             )
         d = np.load(p, allow_pickle=True)
         sids = d["subject_ids"].astype(str)
@@ -224,7 +224,7 @@ def main(args: argparse.Namespace) -> int:
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Residual phenotyping for ResDec-H3.")
+    p = argparse.ArgumentParser(description="Residual phenotyping for ResDec-MHE.")
     p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42",
                    help="Directory containing fold{0..4}/val_predictions_best.npz")
     p.add_argument("--metadata-csv", default="data/metadata_ROSMAP/metadata.csv")

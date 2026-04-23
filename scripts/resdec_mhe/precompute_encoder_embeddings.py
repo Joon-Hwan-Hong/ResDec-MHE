@@ -6,7 +6,7 @@ single-subject batch, runs the encoder forward with ``torch.no_grad()`` in
 Writes all subjects to a single ``.npz`` file.
 
 This is option (2) of the full-cohort NPT OOM fix: freeze the encoder and
-precompute per-subject embeddings once, then train the ResDec-H3 head at
+precompute per-subject embeddings once, then train the ResDec-MHE head at
 full-cohort batch (500) without OOM.
 
 Why this is safe:
@@ -19,7 +19,7 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
-    uv run python scripts/redesign/precompute_encoder_embeddings.py
+    uv run python scripts/resdec_mhe/precompute_encoder_embeddings.py
 
 Output
 ------
@@ -123,7 +123,7 @@ def main(args: argparse.Namespace) -> None:
     cfg = OmegaConf.load(args.config)
     OmegaConf.set_struct(cfg.model, False)
     # Force deterministic head so the Bayesian SVI path (which needs a Pyro
-    # guide and real targets) is not engaged. The ResDec-H3 frozen path only
+    # guide and real targets) is not engaged. The ResDec-MHE frozen path only
     # needs the `attended` embedding; the encoder's own prediction_head is
     # ignored.
     cfg.model.head.type = "deterministic"

@@ -1,4 +1,4 @@
-"""CCC (cell-cell communication) interpretability for ResDec-H3.
+"""CCC (cell-cell communication) interpretability for ResDec-MHE.
 
 Three deterministic pieces (plus one ablation driver that hits a real checkpoint):
 
@@ -31,7 +31,7 @@ Three deterministic pieces (plus one ablation driver that hits a real checkpoint
    on the aligned vectors. Reports ``n_pairs`` and ``n_missing`` so downstream
    readers can see the intersection size.
 
-The orchestration in ``scripts/redesign/interpretability/ccc_composite_attribution.py``
+The orchestration in ``scripts/resdec_mhe/interpretability/ccc_composite_attribution.py``
 sweeps all 5 folds: per-fold ckpt load → extract edge attention → run ablation
 sweep → aggregate → correlate against subject-aggregated LIANA scores.
 

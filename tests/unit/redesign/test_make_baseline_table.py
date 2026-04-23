@@ -1,7 +1,7 @@
-"""Unit tests for scripts/redesign/interpretability/make_baseline_table.py.
+"""Unit tests for scripts/resdec_mhe/interpretability/make_baseline_table.py.
 
 Tests cover:
-- Discovery of redesign ablation dirs via glob
+- Discovery of resdec_mhe ablation dirs via glob
 - Parsing of best_vs_tabpfn_summary.json schema (per-fold ours metrics)
 - Parsing of classical baseline CSV (Ridge/ElasticNet/PLS/RF/XGBoost)
 - Parsing of DL baseline CSVs (cloudpred/gpio/perceiver_io; 1-indexed folds)
@@ -26,13 +26,13 @@ from sklearn.metrics import r2_score
 
 
 # Standard-import the script as a module. Requires scripts/__init__.py and
-# scripts/redesign/__init__.py + scripts/redesign/interpretability/__init__.py
+# scripts/resdec_mhe/__init__.py + scripts/resdec_mhe/interpretability/__init__.py
 # to exist in the worktree.
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from scripts.redesign.interpretability import make_baseline_table as mod  # noqa: E402
+from scripts.resdec_mhe.interpretability import make_baseline_table as mod  # noqa: E402
 
 
 def _write_summary_json(path: Path, per_fold_r2s: list[float]) -> None:
@@ -105,7 +105,7 @@ def test_parse_summary_json_malformed_returns_none(tmp_path: Path) -> None:
 
 def test_discover_ablations_picks_up_all_p5_dirs(tmp_path: Path) -> None:
     """Glob should discover all p5_* dirs with a best_vs_tabpfn_summary.json."""
-    # Layout: three redesign dirs, one with summary, one without, one unrelated.
+    # Layout: three resdec_mhe dirs, one with summary, one without, one unrelated.
     (tmp_path / "p5_canonical_seed42").mkdir()
     (tmp_path / "p5_ablation_k1").mkdir()
     (tmp_path / "p5_ablation_no_film").mkdir()
@@ -416,7 +416,7 @@ def test_missing_ablation_produces_nan_row_with_pending_note(tmp_path: Path) -> 
     rows = mod.collect_ablation_rows(
         ablation_root=tmp_path,
         requested=[
-            ("p5_canonical_seed42", "ResDec-H3 (canonical)"),
+            ("p5_canonical_seed42", "ResDec-MHE (canonical)"),
             ("p5_ablation_topk_4000", "top-k=4000 (D.2)"),  # not on disk
         ],
     )

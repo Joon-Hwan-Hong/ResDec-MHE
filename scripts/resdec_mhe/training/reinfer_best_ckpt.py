@@ -19,8 +19,8 @@ Uses a `reinfer_tmp/` sibling directory as `default_root_dir` so the existing
 Usage:
     CUDA_VISIBLE_DEVICES=0 \\
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/reinfer_best_ckpt.py \\
-        --config configs/redesign/p5_phase2_residual.yaml \\
+    uv run python scripts/resdec_mhe/training/reinfer_best_ckpt.py \\
+        --config configs/resdec_mhe/canonical.yaml \\
         --fold 0 \\
         --output-dir outputs/redesign/p5_phase2_residual
 """
@@ -161,7 +161,7 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Re-infer best-epoch predictions.")
-    p.add_argument("--config", default="configs/redesign/p5_phase2_residual.yaml")
+    p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument("--fold", type=int, required=True)
     p.add_argument("--output-dir", default="outputs/redesign/p5_phase2_residual")
     p.add_argument("--splits-path", default="outputs/splits.json")

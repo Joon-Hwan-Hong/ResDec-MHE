@@ -1,7 +1,7 @@
 """Paper baseline table for E.1.
 
 Aggregates per-fold R² / MAE / RMSE / Pearson r / Spearman ρ for every
-baseline and every ResDec-H3 ablation into a single CSV + Markdown table.
+baseline and every ResDec-MHE ablation into a single CSV + Markdown table.
 
 Sources
 -------
@@ -29,7 +29,7 @@ Output
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/interpretability/make_baseline_table.py \\
+    uv run python scripts/resdec_mhe/interpretability/make_baseline_table.py \\
         --canonical-dir outputs/redesign/p5_canonical_seed42 \\
         --ablation-root outputs/redesign \\
         --baselines-root outputs/baselines \\
@@ -102,10 +102,10 @@ CURRENT_ENCODER_ALONE_R2_REF: float = 0.286
 # injected separately via ``--canonical-dir`` so it can be overridden from
 # the CLI (e.g. seed43) without editing the table spec.
 _ABLATION_NAMES: list[tuple[str, str]] = [
-    ("p5_filmwired_5fold_seed42", "ResDec-H3 + FiLM with metadata (A.3)"),
-    ("p5_phase3_1stage_with_tabm", "ResDec-H3 old canonical (with DiffAttn)"),
-    ("p5_phase3_2stage", "ResDec-H3 n_stages=2"),
-    ("p5_phase3_3stage", "ResDec-H3 n_stages=3"),
+    ("p5_filmwired_5fold_seed42", "ResDec-MHE + FiLM with metadata (A.3)"),
+    ("p5_phase3_1stage_with_tabm", "ResDec-MHE old canonical (with DiffAttn)"),
+    ("p5_phase3_2stage", "ResDec-MHE n_stages=2"),
+    ("p5_phase3_3stage", "ResDec-MHE n_stages=3"),
     ("p5_ablation_no_tabpfn", "Ablation #2: no TabPFN residual"),
     ("p5_ablation_k1", "Ablation #5: k_tabm=1"),
     ("p5_ablation_no_hyper_conn", "Ablation #7: no HyperConn"),
@@ -844,7 +844,7 @@ def main(args: argparse.Namespace) -> int:
     canonical_name = args.canonical_dir.name
     canonical_entry = (
         canonical_name,
-        f"ResDec-H3 (canonical, {canonical_name})",
+        f"ResDec-MHE (canonical, {canonical_name})",
     )
     # De-dupe if the CLI default canonical matches a name already in
     # _ABLATION_NAMES (shouldn't, but guard just in case).

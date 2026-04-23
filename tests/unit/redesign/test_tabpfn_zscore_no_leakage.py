@@ -160,7 +160,7 @@ def test_zscore_cli_enabled_when_passed():
 @pytest.mark.parametrize("zscore_on", [True, False])
 def test_main_oof_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     """Verify X passed to regressor.fit is z-scored iff --zscore is set."""
-    from scripts.redesign import compute_tabpfn_oof
+    from scripts.resdec_mhe.tabpfn import compute_oof as compute_tabpfn_oof
 
     n_train = 20
     n_feats_total = 50
@@ -260,7 +260,7 @@ def test_main_oof_zscore_behavior(monkeypatch, tmp_path, zscore_on):
 @pytest.mark.parametrize("zscore_on", [True, False])
 def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     """Verify X passed to outer regressor.fit is z-scored iff --zscore is set."""
-    from scripts.redesign import compute_tabpfn_outer
+    from scripts.resdec_mhe.tabpfn import compute_outer as compute_tabpfn_outer
 
     n_train = 16
     n_val = 4
@@ -387,7 +387,7 @@ def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
 )
 def test_oof_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
     """--zscore and --ignore-pretraining-limits are orthogonal in OOF main()."""
-    from scripts.redesign import compute_tabpfn_oof
+    from scripts.resdec_mhe.tabpfn import compute_oof as compute_tabpfn_oof
 
     n_train = 20
     n_feats_total = 50
@@ -490,7 +490,7 @@ def test_oof_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
 )
 def test_outer_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
     """--zscore and --ignore-pretraining-limits are orthogonal in outer main()."""
-    from scripts.redesign import compute_tabpfn_outer
+    from scripts.resdec_mhe.tabpfn import compute_outer as compute_tabpfn_outer
 
     n_train = 16
     n_val = 4

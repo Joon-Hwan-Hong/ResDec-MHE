@@ -1,4 +1,4 @@
-"""Variance decomposition for the ResDec-H3 composite prediction.
+"""Variance decomposition for the ResDec-MHE composite prediction.
 
 The composite prediction is y_hat = y_tabpfn + f_1, where y_tabpfn is the
 outer-fold TabPFN-2.6 scalar prediction and f_1 is the neural head's
@@ -18,7 +18,7 @@ over TabPFN comes from alignment vs. orthogonal signal.
 
 This module is pure: inputs are NumPy arrays, output is a nested dict,
 no I/O. Orchestration (loading per-fold npz, metadata join, JSON write)
-lives in scripts/redesign/interpretability/variance_decomposition.py.
+lives in scripts/resdec_mhe/interpretability/variance_decomposition.py.
 
 All variances and covariances use the unbiased sample estimator
 (``ddof=1``) so the decomposition reports finite-sample quantities

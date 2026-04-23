@@ -42,7 +42,7 @@ Usage
 -----
 
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/interpretability/gsea_from_captum.py \\
+    uv run python scripts/resdec_mhe/interpretability/gsea_from_captum.py \\
         --captum-npz outputs/redesign/interpretability/captum_ig/composite_attributions.npz \\
         --out-dir outputs/redesign/interpretability/gsea
 

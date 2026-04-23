@@ -1,4 +1,4 @@
-"""Subgroup stratified metrics for ResDec-H3 composite predictions.
+"""Subgroup stratified metrics for ResDec-MHE composite predictions.
 
 Loads per-fold val predictions (composite ``y_hat = y_tabpfn + f_1``), joins
 with ROSMAP metadata, and computes per-subgroup R², RMSE, Pearson r, and
@@ -15,7 +15,7 @@ CSV output for grouping-back downstream):
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/interpretability/subgroup_r2.py \\
+    uv run python scripts/resdec_mhe/interpretability/subgroup_r2.py \\
         --pred-root outputs/redesign/p5_canonical_seed42 \\
         --tabpfn-dir data/redesign \\
         --metadata-csv data/metadata_ROSMAP/metadata.csv \\
@@ -277,7 +277,7 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(
-        description="Subgroup stratified metrics for ResDec-H3 composite predictions.",
+        description="Subgroup stratified metrics for ResDec-MHE composite predictions.",
     )
     p.add_argument(
         "--pred-root", default="outputs/redesign/p5_canonical_seed42",

@@ -1,1 +1,1 @@
-"""Redesign scripts for the ResDec-H3 training and interpretability pipeline."""
+"""ResDec-MHE scripts for the training and interpretability pipeline."""

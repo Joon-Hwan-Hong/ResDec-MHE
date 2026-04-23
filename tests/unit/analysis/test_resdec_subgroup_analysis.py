@@ -123,10 +123,10 @@ def test_orchestration_uses_public_names():
 
     If the quantile helpers are ever re-privatised (renamed back to
     ``_age_quartile_labels`` or similar), the module-load of
-    ``scripts.redesign.interpretability.subgroup_r2`` would fail on the
+    ``scripts.resdec_mhe.interpretability.subgroup_r2`` would fail on the
     import statement and this test would error out rather than pass.
     """
-    import scripts.redesign.interpretability.subgroup_r2 as mod
+    import scripts.resdec_mhe.interpretability.subgroup_r2 as mod
     assert hasattr(mod, "apoe_e4_count_label")
     # M1 consolidated the quartile helpers into the shared `quantile_labels`;
     # either name is acceptable for rename-safety.

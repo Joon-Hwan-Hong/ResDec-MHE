@@ -1,5 +1,5 @@
 """Sanity-check tests for TabPFN OOF output files produced by
-scripts/redesign/compute_tabpfn_oof.py.
+scripts/resdec_mhe/tabpfn/compute_oof.py.
 
 Skipped if the files haven't been generated yet (first-run setup).
 """
@@ -19,7 +19,7 @@ def _have_all_folds() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _have_all_folds(),
-    reason="TabPFN OOF files not yet generated (run scripts/redesign/compute_tabpfn_oof.py)",
+    reason="TabPFN OOF files not yet generated (run scripts/resdec_mhe/tabpfn/compute_oof.py)",
 )
 
 

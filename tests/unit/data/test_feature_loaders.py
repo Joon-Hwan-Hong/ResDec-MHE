@@ -1,4 +1,4 @@
-"""Tests for src/data/feature_loaders.py — shared loaders used by redesign scripts."""
+"""Tests for src/data/feature_loaders.py — shared loaders used by resdec_mhe scripts."""
 
 from pathlib import Path
 

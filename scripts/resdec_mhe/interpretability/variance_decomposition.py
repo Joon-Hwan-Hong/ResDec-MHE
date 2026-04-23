@@ -1,4 +1,4 @@
-"""Variance decomposition of the ResDec-H3 composite prediction.
+"""Variance decomposition of the ResDec-MHE composite prediction.
 
 Loads per-fold val predictions (composite ``y_hat = y_tabpfn + f_1``) and the
 frozen outer-fold TabPFN-2.6 predictions, recovers the neural-head residual
@@ -12,7 +12,7 @@ globally and stratified by APOE-ε4 count, sex, and age-at-death quartile.
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/interpretability/variance_decomposition.py \\
+    uv run python scripts/resdec_mhe/interpretability/variance_decomposition.py \\
         --pred-root outputs/redesign/p5_canonical_seed42 \\
         --tabpfn-dir data/redesign \\
         --metadata-csv data/metadata_ROSMAP/metadata.csv \\
@@ -176,7 +176,7 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(
-        description="Variance decomposition for ResDec-H3 composite predictions.",
+        description="Variance decomposition for ResDec-MHE composite predictions.",
     )
     p.add_argument(
         "--pred-root", default="outputs/redesign/p5_canonical_seed42",

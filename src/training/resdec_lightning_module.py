@@ -1,5 +1,5 @@
 """PyTorch Lightning wrapper composing the existing CognitiveResilienceModel
-encoder with the ResDec-H3 head (N-stage H3 composer, N ∈ {1, 2, 3},
+encoder with the ResDec-MHE head (N-stage H3 composer, N ∈ {1, 2, 3},
 default 1, with aug-U uncertainty-weighted auxiliary losses).
 
 Scope (current)
@@ -70,7 +70,7 @@ DEFAULT_SIGMA_EPS = 1e-6
 # Keys required by the encoder's forward (mirrors
 # CognitiveResilienceLightningModule._batch_to_model_kwargs).
 # Public constant: shared with interpretability modules
-# (src/analysis/resdec_ccc_importance.py, scripts/redesign/interpretability/
+# (src/analysis/resdec_ccc_importance.py, scripts/resdec_mhe/interpretability/
 # ccc_composite_attribution.py). Do not duplicate — import from here.
 ENCODER_KWARG_KEYS = (
     "region_pseudobulk",
@@ -88,7 +88,7 @@ ENCODER_KWARG_KEYS = (
 
 
 class ResDecLightningModule(pl.LightningModule):
-    """Lightning wrapper: encoder (unchanged) → ResDec-H3 head.
+    """Lightning wrapper: encoder (unchanged) → ResDec-MHE head.
 
     Args:
         config: OmegaConf DictConfig with ``model`` and ``training`` sections.
@@ -99,19 +99,19 @@ class ResDecLightningModule(pl.LightningModule):
 
     def __init__(self, config: DictConfig):
         super().__init__()
-        # ResDec-H3 runs with the deterministic head; no guide/config to
+        # ResDec-MHE runs with the deterministic head; no guide/config to
         # persist via Lightning's hparams machinery.
         self.save_hyperparameters(ignore=["config"])
         self.config = config
 
         # Build encoder — existing model, no modifications. The deterministic
         # prediction head is still built (it lives at self.encoder.prediction_head),
-        # but we ignore its scalar output; the ResDec-H3 head reads `attended`
+        # but we ignore its scalar output; the ResDec-MHE head reads `attended`
         # directly.
         model_cfg = config.model
         self.encoder = build_model_from_config(model_cfg)
 
-        # Encoder's own prediction_head is bypassed under ResDec-H3: we consume the
+        # Encoder's own prediction_head is bypassed under ResDec-MHE: we consume the
         # 'attended' subject embedding directly and feed it to self.head. Freeze the
         # prediction_head to avoid wasted optimizer state (verified: grad is always zero).
         if hasattr(self.encoder, "prediction_head"):
@@ -310,7 +310,7 @@ class ResDecLightningModule(pl.LightningModule):
         return md
 
     def forward(self, batch: dict) -> dict:
-        """Run encoder → extract `attended` → run ResDec-H3 head.
+        """Run encoder → extract `attended` → run ResDec-MHE head.
 
         Returns dict with:
             prediction: [B] composer output = sum of present stage scalars

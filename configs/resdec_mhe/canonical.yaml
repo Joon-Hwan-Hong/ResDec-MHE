@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# ResDec-H3 Phase 2 (Task 2.2) — TabPFN-2.6 as inference-time residual base.
+# ResDec-MHE canonical — TabPFN-2.6 as inference-time residual base.
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Training targets become y - y_tabpfn_oof (residuals from the cached

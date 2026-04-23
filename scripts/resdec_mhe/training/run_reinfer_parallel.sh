@@ -4,7 +4,7 @@
 # + best_summary.json into $OUTROOT/fold{N}/.
 #
 # Env overrides (all optional):
-#   CONFIG       phase YAML (default: configs/redesign/p5_phase2_residual.yaml)
+#   CONFIG       phase YAML (default: configs/resdec_mhe/canonical.yaml)
 #   OUTROOT      output dir to read ckpts from + write best.npz to
 #                (default: outputs/redesign/p5_phase2_residual)
 #   TABPFN_DIR   directory holding tabpfn_outer_fold{N}*.npz files for
@@ -13,12 +13,12 @@
 #   GPU_LIST     comma-separated GPU list, e.g. "0,1"
 #
 # Usage:
-#   bash scripts/redesign/run_reinfer_parallel.sh
-#   OUTROOT=outputs/redesign/<your_run> bash scripts/redesign/run_reinfer_parallel.sh
+#   bash scripts/resdec_mhe/training/run_reinfer_parallel.sh
+#   OUTROOT=outputs/redesign/<your_run> bash scripts/resdec_mhe/training/run_reinfer_parallel.sh
 set -euo pipefail
 
 ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
-CONFIG="${CONFIG:-configs/redesign/p5_phase2_residual.yaml}"
+CONFIG="${CONFIG:-configs/resdec_mhe/canonical.yaml}"
 OUTROOT="${OUTROOT:-outputs/redesign/p5_phase2_residual}"
 TABPFN_DIR="${TABPFN_DIR:-data/redesign}"
 FOLDS=(0 1 2 3 4)
@@ -45,7 +45,7 @@ while (( idx < ${#FOLDS[@]} )); do
         gpu=${GPUS[$g]}
         out="$OUTROOT/fold${fold}"
         echo "[$(date '+%H:%M:%S')] fold $fold -> GPU $gpu"
-        CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/redesign/reinfer_best_ckpt.py \
+        CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/resdec_mhe/training/reinfer_best_ckpt.py \
             --config "$CONFIG" \
             --fold "$fold" \
             --output-dir "$OUTROOT" \

@@ -1,6 +1,6 @@
 """LightningDataModule over cached encoder embeddings.
 
-Sibling of ``CognitiveResilienceDataModule`` used only for the ResDec-H3
+Sibling of ``CognitiveResilienceDataModule`` used only for the ResDec-MHE
 frozen-encoder path (option 2 of the full-cohort NPT OOM fix). Loads the
 precomputed ``.npz`` embedding cache, intersects with fold subjects, and
 yields (attended, metadata, cognition) tuples via ``EmbeddingDataset``.
@@ -18,11 +18,11 @@ from src.data.splits import load_splits
 
 
 class EmbeddingDataModule(pl.LightningDataModule):
-    """DataModule for training the ResDec-H3 head on cached embeddings.
+    """DataModule for training the ResDec-MHE head on cached embeddings.
 
     Args:
         embeddings_npz: Path to cache from
-            ``scripts/redesign/precompute_encoder_embeddings.py``.
+            ``scripts/resdec_mhe/precompute_encoder_embeddings.py``.
         splits_path: Path to 5-fold ``splits.json``.
         meta_csv: Path to ``metadata.csv`` (for FiLM metadata + targets).
         fold: CV fold index (0-indexed).
@@ -98,7 +98,7 @@ class EmbeddingDataModule(pl.LightningDataModule):
 
     def val_dataloader(self) -> DataLoader:
         assert self._val_ds is not None, "setup() must be called first"
-        # Use the full val set as a single batch — the ResDec-H3 head is
+        # Use the full val set as a single batch — the ResDec-MHE head is
         # cheap enough that there's no benefit to mini-batching on validation.
         return DataLoader(
             self._val_ds,

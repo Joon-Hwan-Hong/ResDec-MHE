@@ -1,4 +1,4 @@
-"""Minimal loaders for ResDec-H3's TabPFN residual path and FiLM metadata.
+"""Minimal loaders for ResDec-MHE's TabPFN residual path and FiLM metadata.
 
 Under the P5 plan, the heavy origin-tagged flat-tabular builder is NOT needed:
 TabPFN consumes the flat aggregate pseudobulk (via top-2K XGBoost importance

@@ -25,7 +25,7 @@ CLI catches and logs as a WARNING so the overall batch still completes.
 Usage
 -----
     PYTHONPATH=<worktree-root> \\
-    uv run python scripts/redesign/interpretability/make_figures.py \\
+    uv run python scripts/resdec_mhe/interpretability/make_figures.py \\
         --out-dir outputs/redesign/interpretability/figures
 """
 from __future__ import annotations
@@ -223,7 +223,7 @@ def make_fig1_ablation_bar(
 
     # Legend (outside axes so it never overlaps bars — M6)
     handles = [
-        Patch(facecolor="#3b6ea5", edgecolor="#2a4f78", label="ResDec-H3 (ours / ablation)"),
+        Patch(facecolor="#3b6ea5", edgecolor="#2a4f78", label="ResDec-MHE (ours / ablation)"),
         Patch(facecolor="#888888", edgecolor="#555555", label="Baselines"),
         Patch(facecolor="none", edgecolor="#666666", label="† pending (n_folds < 5)"),
         Line2D([0], [0], color="#cc5533", linestyle="--",
@@ -250,7 +250,7 @@ def make_fig2_resilience_scatter(df: pd.DataFrame | None) -> plt.Figure:
     """y_true vs y_pred scatter, colored by residual, with quadrant overlay.
 
     Canonical resilience definition (see
-    ``scripts/redesign/interpretability/resilience_residual_phenotype.py``):
+    ``scripts/resdec_mhe/interpretability/resilience_residual_phenotype.py``):
 
         residual = y_true − y_pred
         residual > 0 → "Resilient" (better cognition than predicted)
@@ -609,7 +609,7 @@ def make_fig5_subgroup_r2(
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=30, ha="right")
     ax.set_ylabel("R² (95 % bootstrap CI)")
-    ax.set_title("Subgroup R² — canonical model (ResDec-H3)")
+    ax.set_title("Subgroup R² — canonical model (ResDec-MHE)")
     ax.set_ylim(lower_clip, 1.0)
 
     # Family legend (uses hoisted Patch / Line2D from module-level imports — M3).
@@ -788,7 +788,7 @@ def make_fig7_k_sensitivity(
         marker="o", markersize=7, linewidth=1.4, capsize=4,
         color="#3b6ea5", ecolor="#222222", elinewidth=0.9,
         markerfacecolor="#3b6ea5", markeredgecolor="#1f3d5a",
-        label="ResDec-H3 (5-fold mean R² ± std)",
+        label="ResDec-MHE (5-fold mean R² ± std)",
         zorder=3,
     )
 

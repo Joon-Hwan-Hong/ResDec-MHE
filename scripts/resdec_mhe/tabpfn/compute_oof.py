@@ -8,7 +8,7 @@ Outputs .npz files per CV fold with:
   sigma_tabpfn_oof: [N] TabPFN per-prediction std (derived from 0.16/0.84 quantiles)
 
 These residuals (y_true - y_tabpfn_oof) become the stage-1 regression target in
-the ResDec-H3 head during training. sigma_tabpfn_oof is used by aug-U to weight
+the ResDec-MHE head during training. sigma_tabpfn_oof is used by aug-U to weight
 the stage-k auxiliary loss by 1/σ².
 
 Model version: TabPFN-2.6 (pinned explicitly via ModelVersion.V2_6).

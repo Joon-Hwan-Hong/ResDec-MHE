@@ -1,4 +1,4 @@
-"""Unit tests for scripts/redesign/interpretability/make_figures.py.
+"""Unit tests for scripts/resdec_mhe/interpretability/make_figures.py.
 
 Each make_figX_* function accepts pre-loaded data (DataFrames / dicts) and
 returns a ``matplotlib.figure.Figure``; missing inputs raise ``SkipFigure``
@@ -24,12 +24,12 @@ import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 
 
-# Make the script importable via scripts.redesign.interpretability.
+# Make the script importable via scripts.resdec_mhe.interpretability.
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from scripts.redesign.interpretability import make_figures as mod  # noqa: E402
+from scripts.resdec_mhe.interpretability import make_figures as mod  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ def mock_baseline_table() -> pd.DataFrame:
         },
         {
             "model": "p5_canonical_seed42",
-            "display_name": "ResDec-H3 (canonical, p5_canonical_seed42)",
+            "display_name": "ResDec-MHE (canonical, p5_canonical_seed42)",
             "n_folds": 5,
             "r2_mean": 0.4436,
             "r2_std": 0.10,
@@ -557,7 +557,7 @@ def test_fig1_nan_nfolds_does_not_crash():
     df = pd.DataFrame([
         {
             "model": "p5_canonical_seed42",
-            "display_name": "ResDec-H3 canonical",
+            "display_name": "ResDec-MHE canonical",
             "n_folds": 5, "r2_mean": 0.44, "r2_std": 0.10,
             "mae_mean": 0.67, "mae_std": 0.05,
             "rmse_mean": 0.86, "rmse_std": 0.06,

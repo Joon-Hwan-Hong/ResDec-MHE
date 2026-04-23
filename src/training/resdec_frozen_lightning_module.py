@@ -1,4 +1,4 @@
-"""ResDec-H3 Lightning module for frozen-encoder training (option 2).
+"""ResDec-MHE Lightning module for frozen-encoder training (option 2).
 
 Consumes cached ``attended`` embeddings directly. No encoder forward at
 train time. Head stack is the same :class:`ResDecH3Head` as the live-encoder
@@ -23,7 +23,7 @@ from src.models.resdec_head.resdec_h3_head import ResDecH3Head
 
 
 class ResDecFrozenLightningModule(pl.LightningModule):
-    """Train the ResDec-H3 head on cached encoder embeddings."""
+    """Train the ResDec-MHE head on cached encoder embeddings."""
 
     def __init__(self, cfg: DictConfig):
         super().__init__()

@@ -96,7 +96,7 @@ def _fit_tabpfn(
 
     Uses the model-version-specific factory so defaults (model_path,
     n_estimators, softmax_temperature) match the V2.6 preset — matches
-    ``scripts/redesign/compute_tabpfn_outer.py`` which intentionally
+    ``scripts/resdec_mhe/tabpfn/compute_outer.py`` which intentionally
     targets V2.6 for the paper's standalone baseline.
     """
     reg = TabPFNRegressor.create_default_for_version(
@@ -121,7 +121,7 @@ def _make_predict_fn(reg: TabPFNRegressor):
     def predict_fn(X: torch.Tensor) -> torch.Tensor:
         X_np = X.detach().cpu().numpy().astype(np.float32)
         # "median" is the calibrated point prediction used in the baseline
-        # (see scripts/redesign/compute_tabpfn_outer.py::_predict_with_sigma).
+        # (see scripts/resdec_mhe/tabpfn/compute_outer.py::_predict_with_sigma).
         y_np = np.asarray(reg.predict(X_np, output_type="median"))
         return torch.as_tensor(y_np, dtype=torch.float32, device=X.device)
 

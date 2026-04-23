@@ -1,4 +1,4 @@
-"""ResDec-H3 head composer.
+"""ResDec-MHE head composer.
 
 Assembles FiLM metadata conditioning + an N-stage H3 boosting stack
 (N ∈ {1, 2, 3}) with cross-stage attention + TabM BatchEnsemble wrapping.

@@ -1,4 +1,4 @@
-"""5-fold CCC interpretability sweep for ResDec-H3 canonical model.
+"""5-fold CCC interpretability sweep for ResDec-MHE canonical model.
 
 For each fold:
 
@@ -37,7 +37,7 @@ Usage
 
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
-    uv run python scripts/redesign/interpretability/ccc_composite_attribution.py \\
+    uv run python scripts/resdec_mhe/interpretability/ccc_composite_attribution.py \\
         --pred-root outputs/redesign/p5_canonical_seed42 \\
         --liana-dir data/liana_cache/rosmap \\
         --out-dir outputs/redesign/interpretability/ccc
@@ -504,7 +504,7 @@ def _jsonify(o):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="5-fold CCC interpretability sweep")
-    p.add_argument("--config", default="configs/redesign/p5_phase2_residual.yaml")
+    p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42")
     p.add_argument("--liana-dir", default="data/liana_cache/rosmap")
     p.add_argument("--splits-path", default="outputs/splits.json")

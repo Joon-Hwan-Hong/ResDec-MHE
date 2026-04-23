@@ -1,4 +1,4 @@
-"""ResDec-H3 N-stage composer tests (n_stages ∈ {1, 2, 3}).
+"""ResDec-MHE N-stage composer tests (n_stages ∈ {1, 2, 3}).
 
 Verifies:
     * forward-pass shapes / dict keys for n_stages=1, 2, 3 (only k <= n_stages

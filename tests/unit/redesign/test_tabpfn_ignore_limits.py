@@ -28,7 +28,7 @@ import pytest
 @pytest.mark.parametrize("flag_value", [True, False])
 def test_build_regressor_threads_ignore_pretraining_limits_oof(flag_value):
     """compute_tabpfn_oof._build_regressor forwards the flag verbatim."""
-    from scripts.redesign import compute_tabpfn_oof
+    from scripts.resdec_mhe.tabpfn import compute_oof as compute_tabpfn_oof
 
     with patch.object(compute_tabpfn_oof, "TabPFNRegressor") as mock_cls:
         compute_tabpfn_oof._build_regressor(
@@ -44,7 +44,7 @@ def test_build_regressor_threads_ignore_pretraining_limits_oof(flag_value):
 @pytest.mark.parametrize("flag_value", [True, False])
 def test_build_regressor_threads_ignore_pretraining_limits_outer(flag_value):
     """compute_tabpfn_outer._build_regressor forwards the flag verbatim."""
-    from scripts.redesign import compute_tabpfn_outer
+    from scripts.resdec_mhe.tabpfn import compute_outer as compute_tabpfn_outer
 
     with patch.object(compute_tabpfn_outer, "TabPFNRegressor") as mock_cls:
         compute_tabpfn_outer._build_regressor(
@@ -97,7 +97,7 @@ def test_cli_flag_enabled_when_passed():
 def test_main_oof_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, flag_value):
     """main(args) must pass ignore_pretraining_limits into EVERY inner-fold
     TabPFNRegressor construction."""
-    from scripts.redesign import compute_tabpfn_oof
+    from scripts.resdec_mhe.tabpfn import compute_oof as compute_tabpfn_oof
 
     # Stub out data loaders so main() doesn't try to read real data
     n_train = 20
@@ -184,7 +184,7 @@ def test_main_oof_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, fl
 def test_main_outer_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, flag_value):
     """main(args) of the outer script must pass ignore_pretraining_limits
     into EVERY outer-fold TabPFNRegressor construction."""
-    from scripts.redesign import compute_tabpfn_outer
+    from scripts.resdec_mhe.tabpfn import compute_outer as compute_tabpfn_outer
 
     # Stub out data loaders
     n_train = 16
