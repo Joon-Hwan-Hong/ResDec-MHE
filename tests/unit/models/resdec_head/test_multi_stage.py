@@ -16,14 +16,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.models.resdec_head.resdec_h3_head import ResDecH3Head
+from src.models.resdec_head.resdec_mhe_head import ResDecMHEHead
 
 
 def _mk_head(d_subject: int = 64, d_metadata: int = 8,
-             k_tabm: int = 2, n_stages: int = 3) -> ResDecH3Head:
+             k_tabm: int = 2, n_stages: int = 3) -> ResDecMHEHead:
     """Smaller k_tabm keeps tests fast — the semantics are identical to k=8."""
     torch.manual_seed(0)
-    head = ResDecH3Head(
+    head = ResDecMHEHead(
         d_subject=d_subject,
         d_metadata=d_metadata,
         n_heads=4,
@@ -89,7 +89,7 @@ def test_invalid_n_stages_rejected():
     """Constructor must reject n_stages outside {1, 2, 3}."""
     for bad in (0, 4, -1):
         with pytest.raises(ValueError, match="n_stages must be one of"):
-            ResDecH3Head(d_subject=32, d_metadata=4, n_stages=bad)
+            ResDecMHEHead(d_subject=32, d_metadata=4, n_stages=bad)
 
 
 # --------------------------------------------------------------------------- #
@@ -162,7 +162,7 @@ def test_cross_stage_attention_wired_h2_to_s3():
 # --------------------------------------------------------------------------- #
 # Gradient detach contracts                                                   #
 # --------------------------------------------------------------------------- #
-def _collect_stage_params(head: ResDecH3Head, which: str) -> list[torch.nn.Parameter]:
+def _collect_stage_params(head: ResDecMHEHead, which: str) -> list[torch.nn.Parameter]:
     """Return the leaf params belonging to ``stage_{which}``'s TabM+readout path.
 
     We exclude the FiLM+cross-stage-attention modules because they are SHARED

@@ -1,7 +1,7 @@
 """ResDec-MHE Lightning module for frozen-encoder training.
 
 Consumes cached ``attended`` embeddings directly. No encoder forward at
-train time. Head stack is the same :class:`ResDecH3Head` as the live-encoder
+train time. Head stack is the same :class:`ResDecMHEHead` as the live-encoder
 module — only the data path differs.
 
 Motivation: full-cohort NPT attention on the live encoder is memory-heavy.
@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 
 from src.data.tabpfn_input import METADATA_FIELDS
-from src.models.resdec_head.resdec_h3_head import ResDecH3Head
+from src.models.resdec_head.resdec_mhe_head import ResDecMHEHead
 
 
 class ResDecFrozenLightningModule(pl.LightningModule):
@@ -38,7 +38,7 @@ class ResDecFrozenLightningModule(pl.LightningModule):
         n_hc_streams = int(resdec_cfg.get("n_hc_streams", 4))
         lambda_init = float(resdec_cfg.get("lambda_init", 0.8))
 
-        self.head = ResDecH3Head(
+        self.head = ResDecMHEHead(
             d_subject=self.d_subject,
             d_metadata=self._d_metadata,
             n_heads=n_heads,

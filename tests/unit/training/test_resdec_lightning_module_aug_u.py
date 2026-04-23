@@ -339,7 +339,7 @@ def test_n_stages_1_skips_sigma_weighting(cfg):
     """At n_stages=1, sigma weighting is irrelevant — there's only stage_1
     whose aux loss is unweighted MSE. Verify no sigma_weight_* logs appear
     and the loss reduces to L_main + λ_1·MSE(stage_1, residual)."""
-    # cfg fixture defaults to n_stages=1 (canonical: ResDecH3Head.DEFAULT_N_STAGES).
+    # cfg fixture defaults to n_stages=1 (canonical: ResDecMHEHead.DEFAULT_N_STAGES).
     # Don't override — this test is specifically about the canonical shape.
     torch.manual_seed(0)
     mod = ResDecLightningModule(cfg).float()

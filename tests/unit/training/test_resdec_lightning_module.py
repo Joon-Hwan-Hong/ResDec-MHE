@@ -1,7 +1,7 @@
 """Tests for ResDecLightningModule (single-stage composer).
 
 Smoke tests that verify:
-- Module builds (encoder + ResDecH3Head) from a config extended with resdec_head.
+- Module builds (encoder + ResDecMHEHead) from a config extended with resdec_head.
 - Forward pass on a dummy batch returns a dict with `prediction` [B] and `latent_1` [B, d_subject].
 - Missing `metadata` key in the batch is handled by a zero-tensor placeholder.
 
@@ -25,7 +25,7 @@ def cfg():
     base.model.n_genes = 4785
     base.model.n_cell_types = 31
     # Deterministic head keeps the smoke test simple: avoids Pyro SVI
-    # machinery that has no bearing on the ResDecH3Head wiring we're verifying.
+    # machinery that has no bearing on the ResDecMHEHead wiring we're verifying.
     base.model.head = OmegaConf.create({"type": "deterministic", "d_hidden": 32})
     # Add required resdec_head section
     base.model.resdec_head = OmegaConf.create({"d_metadata": 8, "n_heads": 4})

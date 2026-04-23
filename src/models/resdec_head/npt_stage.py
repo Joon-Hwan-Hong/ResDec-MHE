@@ -34,7 +34,7 @@ class NPTStage(nn.Module):
             emit_scalar: if True (default), build a ``readout`` Linear(d_subject, 1)
                 and return ``(latent, scalar)``. If False, omit the readout and
                 return ``(latent, None)``. Set False when wrapped in a TabMWrapper
-                that already supplies its own per-stage readout (e.g. ResDecH3Head's
+                that already supplies its own per-stage readout (e.g. ResDecMHEHead's
                 N-stage composer, N ∈ {1, 2, 3}, default 1), so that the unused
                 scalar Linear isn't added to the optimizer / weight-decay.
             use_diff_attn: if True (default), use DifferentialAttention; if False,

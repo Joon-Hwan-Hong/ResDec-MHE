@@ -81,7 +81,7 @@ def _make_npt_tabm(d_subject: int, n_heads: int, n_hc_streams: int,
     return npt, tabm
 
 
-class ResDecH3Head(nn.Module):
+class ResDecMHEHead(nn.Module):
     def __init__(
         self,
         d_subject: int = 64,

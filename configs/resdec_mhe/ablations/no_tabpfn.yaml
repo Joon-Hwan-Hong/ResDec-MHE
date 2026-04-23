@@ -19,7 +19,7 @@ model:
     n_heads: 4
     n_stages: 1
     aux_lambdas: [1.0]
-    # k_tabm inherits canonical default (8) from resdec_h3_head.DEFAULT_K_TABM.
+    # k_tabm inherits canonical default (8) from resdec_mhe_head.DEFAULT_K_TABM.
 
 training:
   lr: 0.0015

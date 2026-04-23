@@ -1,10 +1,10 @@
 import pytest
 import torch
-from src.models.resdec_head.resdec_h3_head import ResDecH3Head
+from src.models.resdec_head.resdec_mhe_head import ResDecMHEHead
 
 
 def test_head_forward_shape_and_keys():
-    head = ResDecH3Head(d_subject=64, d_metadata=8)
+    head = ResDecMHEHead(d_subject=64, d_metadata=8)
     z = torch.randn(4, 64)  # encoder subject embedding
     m = torch.randn(4, 8)   # metadata vector
     out = head(z, m)
@@ -15,7 +15,7 @@ def test_head_forward_shape_and_keys():
 
 
 def test_head_gradient_flow():
-    head = ResDecH3Head(d_subject=32, d_metadata=8)
+    head = ResDecMHEHead(d_subject=32, d_metadata=8)
     z = torch.randn(6, 32, requires_grad=True)
     m = torch.randn(6, 8, requires_grad=True)
     out = head(z, m)
@@ -34,7 +34,7 @@ def test_head_near_identity_film_at_init():
     """With FiLM's near-identity init, the head's behavior depends only on
     NPTStage for the first few steps — sanity check it doesn't short-circuit
     metadata completely when gradients kick in."""
-    head = ResDecH3Head(d_subject=16, d_metadata=4)
+    head = ResDecMHEHead(d_subject=16, d_metadata=4)
     head.eval()
     z = torch.randn(4, 16)
     m_zero = torch.zeros(4, 4)

@@ -1,6 +1,6 @@
 """Cross-stage attention for ResDec-MHE's multi-stage head.
 
-Used by ResDecH3Head when n_stages > 1 to let each later stage attend to the
+Used by ResDecMHEHead when n_stages > 1 to let each later stage attend to the
 detached latents produced by earlier stages.
 
 Query: current stage's conditioned subject embedding z_cond [B, d_subject]

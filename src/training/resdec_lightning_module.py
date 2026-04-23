@@ -7,7 +7,7 @@ Scope
 - Encoder: existing ``CognitiveResilienceModel`` (unchanged), built via
   :func:`build_model_from_config`. Forward returns a dict with ``attended``
   ``[B, d_fused]`` — this is the subject embedding consumed by the head.
-- Head: :class:`ResDecH3Head` (FiLM + N × [NPTStage wrapped in TabM with
+- Head: :class:`ResDecMHEHead` (FiLM + N × [NPTStage wrapped in TabM with
   cross-stage attention for stages k > 1] + per-stage scalar readouts).
 - Loss: composite residual MSE + N detached-residual aux losses
   (``L_main + Σ_k λ_k·L_aux_k``). For N >= 2, ``L_aux_{k>=2}`` uses the
@@ -19,7 +19,7 @@ Scope
 
 Metadata wiring
 ---------------
-ResDecH3Head consumes an 8-dim metadata vector (APOE/sex/age FiLM conditioning)
+ResDecMHEHead consumes an 8-dim metadata vector (APOE/sex/age FiLM conditioning)
 populated by the datamodule via ``src.data.tabpfn_input.load_metadata_vector``.
 Age is z-scored with fold-train-only ``age_mean``/``age_std`` to avoid val
 leakage. A zero-tensor fallback remains for tests / legacy callers that
@@ -40,10 +40,10 @@ from omegaconf import DictConfig
 
 from src.data.tabpfn_input import METADATA_FIELDS
 from src.models.full_model import build_model_from_config
-from src.models.resdec_head.resdec_h3_head import (
+from src.models.resdec_head.resdec_mhe_head import (
     DEFAULT_K_TABM,
     DEFAULT_N_STAGES,
-    ResDecH3Head,
+    ResDecMHEHead,
 )
 from src.training.losses import mse_loss
 
@@ -144,7 +144,7 @@ class ResDecLightningModule(pl.LightningModule):
         # DEFAULT_SIGMA_EPS for rationale.
         self._sigma_eps = float(resdec_cfg.get("sigma_eps", DEFAULT_SIGMA_EPS))
 
-        self.head = ResDecH3Head(
+        self.head = ResDecMHEHead(
             d_subject=d_subject,
             d_metadata=d_metadata,
             n_heads=n_heads,

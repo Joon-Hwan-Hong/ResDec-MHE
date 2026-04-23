@@ -3,7 +3,7 @@
 Applies a shared submodule k times with per-member rank-1 (s_k, r_k) scaling:
     y_k = submodule(x * s_k) * r_k
 Returns (mean, std) across the k members for both prediction and uncertainty.
-Used by ResDecH3Head to wrap each boosting stage.
+Used by ResDecMHEHead to wrap each boosting stage.
 """
 from __future__ import annotations
 import torch
