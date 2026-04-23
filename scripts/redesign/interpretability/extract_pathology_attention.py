@@ -15,7 +15,7 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/redesign/interpretability/extract_pathology_attention.py \\
-        --pred-root outputs/redesign/p5_phase3_1stage_with_tabm \\
+        --pred-root outputs/redesign/p5_canonical_seed42 \\
         --out-dir outputs/redesign/interpretability
 
 Arguments
@@ -206,7 +206,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Extract PathologyAttention weights.")
     p.add_argument("--config", default="configs/redesign/p5_phase2_residual.yaml",
                    help="Phase YAML merged on top of configs/default.yaml.")
-    p.add_argument("--pred-root", default="outputs/redesign/p5_phase3_1stage_with_tabm",
+    p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42",
                    help="Per-fold output dir with fold{0..4}/checkpoints/best-*.ckpt.")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--out-dir", default="outputs/redesign/interpretability")

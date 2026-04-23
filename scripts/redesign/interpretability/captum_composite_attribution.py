@@ -26,7 +26,7 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/redesign/interpretability/captum_composite_attribution.py \\
-        --pred-root outputs/redesign/p5_phase3_1stage_with_tabm \\
+        --pred-root outputs/redesign/p5_canonical_seed42 \\
         --out-dir outputs/redesign/interpretability \\
         --n-steps 50 --internal-batch-size 4
 
@@ -380,7 +380,7 @@ def main(args: argparse.Namespace) -> int:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Captum IG composite attribution.")
     p.add_argument("--config", default="configs/redesign/p5_phase2_residual.yaml")
-    p.add_argument("--pred-root", default="outputs/redesign/p5_phase3_1stage_with_tabm")
+    p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--out-dir", default="outputs/redesign/interpretability")
     p.add_argument("--n-steps", type=int, default=50)

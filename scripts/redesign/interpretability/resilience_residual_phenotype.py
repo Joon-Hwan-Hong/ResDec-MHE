@@ -23,7 +23,7 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/redesign/interpretability/resilience_residual_phenotype.py \\
-        --pred-root outputs/redesign/p5_phase3_1stage_with_tabm \\
+        --pred-root outputs/redesign/p5_canonical_seed42 \\
         --out-dir outputs/redesign/interpretability
 
 Arguments
@@ -225,7 +225,7 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Residual phenotyping for ResDec-H3.")
-    p.add_argument("--pred-root", default="outputs/redesign/p5_phase3_1stage_with_tabm",
+    p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42",
                    help="Directory containing fold{0..4}/val_predictions_best.npz")
     p.add_argument("--metadata-csv", default="data/metadata_ROSMAP/metadata.csv")
     p.add_argument("--out-dir", default="outputs/redesign/interpretability")
