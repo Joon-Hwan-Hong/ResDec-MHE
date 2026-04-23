@@ -1,11 +1,9 @@
 """TabM-style BatchEnsemble wrapper (Gorishniy et al., ICLR 2025, arXiv 2410.24210).
 
-(Wired in Phase 3 H3 extension per plan Task 3.1. Unused in Phase 1/2 but
-committed so ablations and Phase 3 agents can import directly.)
-
 Applies a shared submodule k times with per-member rank-1 (s_k, r_k) scaling:
     y_k = submodule(x * s_k) * r_k
 Returns (mean, std) across the k members for both prediction and uncertainty.
+Used by ResDecH3Head to wrap each boosting stage.
 """
 from __future__ import annotations
 import torch

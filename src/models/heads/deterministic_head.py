@@ -4,7 +4,7 @@ Deterministic prediction head for cognition prediction without uncertainty quant
 This is a simple fallback when Bayesian inference is too slow or uncertainty
 quantification is not needed. Uses a 3-layer MLP with GELU activations.
 
-Design Decision (2026-01-28):
+Design Decision:
 - 3 Linear layers: 2-layer MLP is minimum for universal approximation;
   3 layers adds capacity without being excessive
 - d_hidden bottleneck: Compresses features, acts as regularization

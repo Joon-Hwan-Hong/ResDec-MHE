@@ -1,14 +1,16 @@
 """ResDec-MHE head composer.
 
-Assembles FiLM metadata conditioning + an N-stage H3 boosting stack
+Assembles FiLM metadata conditioning + an N-stage boosting stack
 (N ∈ {1, 2, 3}) with cross-stage attention + TabM BatchEnsemble wrapping.
 Consumes a subject embedding produced by the existing CognitiveResilienceModel
 encoder.
 
-Why configurable n_stages: empirical finding (5-fold, 2026-04-22) is that
-n_stages=3 ties n_stages=1 on mean R² (0.4310 vs 0.4330) but introduces
-fold-dependent stage-3-collapse (r(f1,f3)≈0.95 on fold 3). n_stages=2 is
-the testable middle ground; n_stages=1 reduces to Phase-2 q2b.
+Why configurable n_stages: the multi-stage (N > 1) path supports detached
+residual-decomposition ablations. In the canonical configuration (N=1),
+multi-stage boosting did not earn its parameters in this small-N residual-
+target regime; TabM ensembling alone drove the gain. The N>1 paths are
+retained so ablations can toggle the multi-stage behaviour without
+additional scaffolding.
 
 Contract:
     forward(z_encoder, metadata) -> dict with
@@ -16,7 +18,7 @@ Contract:
         stage_k:    [B]    = f̂_k scalar  (only for k <= n_stages)
         latent_k:   [B, d] = h_k pre-readout latent  (only for k <= n_stages)
 
-Architecture (matches docs/plans/2026-04-21-resdec-h3-architecture.md §Phase 3):
+Architecture:
     z_cond = FiLM(z_encoder, metadata)
     Stage 1:  h_1 = TabM[NPTStage](z_cond);                  f̂_1 = readout_1(h_1)
     Stage 2:  ctx_2 = cross_stage_attention(z_cond, [h_1.detach()])
@@ -45,13 +47,10 @@ from .tabm_wrapper import TabMWrapper
 # matches the value used across HPO configs / ablation sweeps in this project.
 DEFAULT_K_TABM = 8
 
-# Default boosting depth. Phase-3 5-fold ablation (2026-04-22) compared
-# n_stages ∈ {1, 2, 3} with TabM(k=8) ensembling on the same 5 folds (seed 42):
-#   n=1 + TabM: R² = 0.4373 ± 0.085  ← BEST mean (canonical)
-#   n=2:        R² = 0.4305 ± 0.079
-#   n=3:        R² = 0.4310 ± 0.083
-# Multi-stage boosting did not earn its parameters in this small-N residual-
-# target regime; TabM ensembling alone is the win. Locked at n_stages=1.
+# Default boosting depth. Multi-stage boosting did not earn its parameters in
+# this small-N residual-target regime; TabM ensembling alone drove the gain,
+# so the canonical configuration uses a single stage. n_stages > 1 remains
+# available for ablation comparisons.
 DEFAULT_N_STAGES = 1
 
 # Allowed values for n_stages. Keep narrow — anything beyond 3 has no design
@@ -68,8 +67,8 @@ def _make_npt_tabm(d_subject: int, n_heads: int, n_hc_streams: int,
     NPTStage is constructed with emit_scalar=False because TabMWrapper discards
     sub_out[1] — keeping a stage-internal scalar readout would be dead weight.
 
-    use_diff_attn / use_hyper_conn forwarded to NPTStage for Phase-5.3 ablations
-    (#6 vanilla MHA, #7 plain residual).
+    use_diff_attn / use_hyper_conn forwarded to NPTStage so ablation configs can
+    toggle those components (vanilla MHA / plain residual) without rewiring.
     """
     npt = NPTStage(
         d_subject=d_subject, n_heads=n_heads,
@@ -93,7 +92,7 @@ class ResDecH3Head(nn.Module):
         k_tabm: int = DEFAULT_K_TABM,
         n_stages: int = DEFAULT_N_STAGES,
         use_film: bool = True,
-        use_diff_attn: bool = False,   # canonical: vanilla MHA (Phase 5.3 #6)
+        use_diff_attn: bool = False,   # canonical: vanilla MHA
         use_hyper_conn: bool = True,
     ):
         super().__init__()
@@ -109,10 +108,10 @@ class ResDecH3Head(nn.Module):
         if use_film:
             self.film = FiLMMetadata(d_subject=d_subject, d_metadata=d_metadata)
         # When use_film=False, no module is constructed; forward bypasses it
-        # entirely and feeds z_encoder directly to stage_1. Phase-5.3 ablation #8.
+        # entirely and feeds z_encoder directly to stage_1 (no-FiLM ablation).
 
         # NPTStage internals are toggleable via use_diff_attn / use_hyper_conn
-        # (Phase-5.3 ablations #6 / #7) — flags forwarded into _make_npt_tabm.
+        # (ablation flags) — forwarded into _make_npt_tabm.
         npt_kwargs = {
             "d_subject": d_subject, "n_heads": n_heads,
             "n_hc_streams": n_hc_streams, "lambda_init": lambda_init,
@@ -151,8 +150,8 @@ class ResDecH3Head(nn.Module):
         are NOT in the dict — downstream consumers must use `.get()` or
         guard on n_stages.
         """
-        # Bypass FiLM entirely under ablation #8 (use_film=False). When enabled,
-        # FiLM modulates z_encoder by metadata-derived γ/β.
+        # Bypass FiLM entirely when use_film=False (no-FiLM ablation). When
+        # enabled, FiLM modulates z_encoder by metadata-derived γ/β.
         if self.use_film:
             z_cond = self.film(z_encoder, metadata)
         else:
@@ -170,8 +169,8 @@ class ResDecH3Head(nn.Module):
         # ------- Stage 2 -------
         # Prior latents are .detach()'d before cross-stage attention so that
         # aux_k losses (k > 1) cannot back-propagate into earlier stages'
-        # TabM/readout params — matches the H3 detached-residual-boosting
-        # contract (plan §Phase 3, "stage-2 gradient does NOT flow into stage-1").
+        # TabM/readout params — this is the detached-residual-boosting contract
+        # (stage-2 gradient does NOT flow into stage-1).
         # L_main still trains every stage jointly via its own non-detached path.
         if self.n_stages >= 2:
             ctx_2 = self.stage_2_cross_attn(z_cond, [h_1.detach()])  # [B, d]

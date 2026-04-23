@@ -2,7 +2,7 @@
 Region Handler for multi-region data pooling.
 
 Pools per-region cell-type embeddings using learned weighted mean,
-producing interpretable region importance weights for Phase 6 analysis.
+producing interpretable region importance weights for downstream analysis.
 """
 
 from typing import ClassVar

@@ -1,4 +1,4 @@
-"""Captum attribution for TabPFN-2.6 predictions (Phase-4 interpretability, Task 4.3).
+"""Captum attribution for TabPFN-2.6 predictions.
 
 Given the cached TabPFN setup (top-2K features per outer fold), fits TabPFN on
 outer-train, computes per-subject feature attributions on val via Captum's
@@ -33,8 +33,8 @@ FeatureAblation cost scales as O(n_features + 1) predict calls per attribution
 call. For 2000 features and ~10 val subjects batched together, that is 2001
 forward passes over the whole val batch.
 
-Used by Phase-4 interpretability work (Task 4.3) for M3 complementarity analysis
-against head-residual attributions.
+Used for complementarity analysis against head-residual attributions in the
+interpretability pipeline.
 """
 
 from __future__ import annotations

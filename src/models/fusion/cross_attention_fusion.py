@@ -6,8 +6,6 @@ Each branch attends to the other branch (2 ops total),
 then enriched branches are combined via per-cell-type learned weighted sum.
 
 Cross-attention is scale-invariant (softmax normalizes attention scores).
-
-See docs/plans/2026-03-20-cross-attention-fusion-design.md for full design.
 """
 
 import torch

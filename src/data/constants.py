@@ -84,7 +84,7 @@ EDGE_TYPE_DISPLAY_NAMES: dict[str, str] = {
 }
 
 # 6 ROSMAP brain regions
-# Names match design doc (2026-01-27-region-handler-design.md) and RegionHandler.REGIONS
+# Names match RegionHandler.REGIONS (see src/models/components/region_handler.py).
 REGION_ORDER: list[str] = [
     "PFC",  # Prefrontal cortex (Region 0, primary)
     "AG",   # Angular gyrus

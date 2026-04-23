@@ -1,12 +1,13 @@
-"""ResDec-MHE Lightning module for frozen-encoder training (option 2).
+"""ResDec-MHE Lightning module for frozen-encoder training.
 
 Consumes cached ``attended`` embeddings directly. No encoder forward at
 train time. Head stack is the same :class:`ResDecH3Head` as the live-encoder
 module — only the data path differs.
 
-This is the full-cohort NPT OOM fix: by pre-encoding all 516 subjects once
-and caching their 64-dim embeddings, we can train the head at full-cohort
-batch (500) without re-running the ~900M-param encoder per step.
+Motivation: full-cohort NPT attention on the live encoder is memory-heavy.
+Pre-encoding every subject once and caching its 64-dim embedding lets us
+train the head at full-cohort batch size without re-running the large
+encoder per step.
 """
 from __future__ import annotations
 

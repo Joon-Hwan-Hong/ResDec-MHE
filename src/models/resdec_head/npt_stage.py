@@ -38,10 +38,10 @@ class NPTStage(nn.Module):
                 N-stage composer, N ∈ {1, 2, 3}, default 1), so that the unused
                 scalar Linear isn't added to the optimizer / weight-decay.
             use_diff_attn: if True (default), use DifferentialAttention; if False,
-                fall back to vanilla nn.MultiheadAttention. Phase-5.3 ablation #6.
+                fall back to vanilla nn.MultiheadAttention (ablation knob).
             use_hyper_conn: if True (default), wrap FFN in multi-stream
-                HyperConnection; if False, use plain residual (single stream).
-                Phase-5.3 ablation #7.
+                HyperConnection; if False, use plain residual (single stream;
+                ablation knob).
         """
         super().__init__()
         self.use_diff_attn = use_diff_attn
