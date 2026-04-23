@@ -230,7 +230,7 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     p = argparse.ArgumentParser(description="ResDec-MHE training entry")
-    p.add_argument("--config", default="configs/resdec_mhe/p5_phase1_baseline.yaml",
+    p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml",
                    help="Phase override YAML (merged on top of configs/default.yaml).")
     p.add_argument("--fold", type=int, default=0, help="CV fold index (0-indexed).")
     p.add_argument("--max-epochs", type=int, default=None,
