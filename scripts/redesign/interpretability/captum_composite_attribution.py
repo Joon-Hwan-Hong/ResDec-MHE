@@ -280,15 +280,27 @@ def summarize(attr_npz_path: Path, ct_names: list[str], gene_names: list[str],
 
 
 def _load_gene_names(precomputed_dir: Path, n_genes: int) -> list[str]:
-    """Try to load the gene-name list from precomputed feature metadata."""
-    candidates = [precomputed_dir / "gene_names.json",
+    """Try to load the gene-name list from precomputed feature metadata.
+
+    Supports both .npy (written by ``precompute_features`` in datasets.py) and
+    .json sidecars. Falls back to ``gene_<i>`` placeholders if none are found —
+    downstream interpretability output will be unreadable until a real sidecar
+    is added.
+    """
+    candidates = [precomputed_dir / "gene_names.npy",
+                  precomputed_dir / "gene_names.json",
                   precomputed_dir / "feature_names.json",
                   Path("data/redesign/gene_names.json")]
     for p in candidates:
-        if p.exists():
+        if not p.exists():
+            continue
+        if p.suffix == ".npy":
+            names = np.load(p, allow_pickle=True).tolist()
+        else:
             names = json.loads(p.read_text())
-            if isinstance(names, list) and len(names) >= n_genes:
-                return [str(n) for n in names[:n_genes]]
+        if isinstance(names, list) and len(names) >= n_genes:
+            logger.info("Loaded %d gene names from %s", n_genes, p)
+            return [str(n) for n in names[:n_genes]]
     logger.warning(
         "No gene-name file found in expected locations (%s). Using gene_<i> placeholders.",
         ", ".join(str(p) for p in candidates),
