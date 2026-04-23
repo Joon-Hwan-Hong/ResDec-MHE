@@ -498,11 +498,11 @@ def liana_correlation(
     score_col: str = "magnitude_rank",
     higher_is_better: bool = False,
 ) -> dict:
-    """Correlate our (source_ct, target_ct)→importance against LIANA scores.
+    """Correlate model-derived (source_ct, target_ct)→importance against LIANA scores.
 
     Args:
         our_ranking: DataFrame with columns ``["source_ct", "target_ct", "importance"]``
-            (higher = more important in our model).
+            (higher = more important per the model).
         liana_df: DataFrame with at least ``["source", "target", score_col]``.
             May have multiple rows per (source, target) — aggregated by mean first.
         score_col: Score column to use. Default ``"magnitude_rank"`` (LIANA's

@@ -101,18 +101,18 @@ CURRENT_ENCODER_ALONE_R2_REF: float = 0.286
 # injected separately via ``--canonical-dir`` so it can be overridden from
 # the CLI without editing the table spec.
 _ABLATION_NAMES: list[tuple[str, str]] = [
-    ("p5_filmwired_5fold_seed42", "ResDec-MHE + FiLM with metadata (A.3)"),
-    ("p5_phase3_1stage_with_tabm", "ResDec-MHE old canonical (with DiffAttn)"),
+    ("p5_filmwired_5fold_seed42", "ResDec-MHE + FiLM with real metadata"),
+    ("p5_phase3_1stage_with_tabm", "ResDec-MHE with DiffAttn"),
     ("p5_phase3_2stage", "ResDec-MHE n_stages=2"),
     ("p5_phase3_3stage", "ResDec-MHE n_stages=3"),
-    ("p5_ablation_no_tabpfn", "Ablation #2: no TabPFN residual"),
-    ("p5_ablation_k1", "Ablation #5: k_tabm=1"),
-    ("p5_ablation_no_hyper_conn", "Ablation #7: no HyperConn"),
-    ("p5_ablation_no_film", "Ablation #8: no FiLM"),
-    ("p5_ablation_no_aug_u_n2", "Ablation #9: no aug-U n=2"),
-    ("p5_ablation_topk_1000", "Ablation D.1: top-k=1000"),
-    ("p5_ablation_topk_4000", "Ablation D.2: top-k=4000"),
-    ("p5_ablation_zscore", "Ablation D.3: per-feature z-score"),
+    ("p5_ablation_no_tabpfn", "Ablation: no TabPFN residual"),
+    ("p5_ablation_k1", "Ablation: k_tabm=1"),
+    ("p5_ablation_no_hyper_conn", "Ablation: no HyperConn"),
+    ("p5_ablation_no_film", "Ablation: no FiLM"),
+    ("p5_ablation_no_aug_u_n2", "Ablation: no aug-U n=2"),
+    ("p5_ablation_topk_1000", "Ablation: top-k=1000"),
+    ("p5_ablation_topk_4000", "Ablation: top-k=4000"),
+    ("p5_ablation_zscore", "Ablation: per-feature z-score"),
 ]
 
 
@@ -540,9 +540,9 @@ def collect_nonresult_rows(baselines_root: Path) -> list[dict]:
     populated from them; otherwise, a "source only, no output" placeholder row is emitted
     so the table stays idempotent across re-runs.
 
-    "Current encoder alone" (R² = :data:`CURRENT_ENCODER_ALONE_R2_REF`)
-    comes from MEMORY.md's project_ablation findings and is a mean-only
-    reference value — we emit a point-estimate row with NaN std.
+    "Current encoder alone" (R² = :data:`CURRENT_ENCODER_ALONE_R2_REF`) is a
+    mean-only reference from an earlier 5-fold run — we emit a point-estimate
+    row with NaN std.
     """
     rows: list[dict] = []
 
@@ -609,8 +609,7 @@ def collect_nonresult_rows(baselines_root: Path) -> list[dict]:
         "source_path": "(legacy training run; no per-fold CSV archived)",
         "notes": (
             f"reference R² only ({CURRENT_ENCODER_ALONE_R2_REF:.3f}) from "
-            "prior 5-fold beat-baselines investigation (MEMORY.md); "
-            "per-fold data unavailable"
+            "an earlier 5-fold run; per-fold data unavailable"
         ),
     })
     return rows
