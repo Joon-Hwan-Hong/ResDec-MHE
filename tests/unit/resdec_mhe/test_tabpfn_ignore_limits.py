@@ -2,9 +2,9 @@
 TabPFNRegressor(...) in both pre-compute scripts.
 
 This flag deliberately overrides TabPFN-2.6's 2000-feature safety check and is
-used for Task D.2 (top-k=4000 ablation). It MUST default to False and MUST
-reach every TabPFNRegressor construction site when enabled; silently dropping
-it would reintroduce the TabPFNValidationError that blocked D.2.
+used for top-k > 2000 ablations. It MUST default to False and MUST reach every
+TabPFNRegressor construction site when enabled; silently dropping it would
+reintroduce a TabPFNValidationError whenever the feature count exceeds 2000.
 
 Tests mock TabPFNRegressor so no weights are actually loaded.
 """

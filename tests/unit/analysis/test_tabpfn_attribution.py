@@ -1,4 +1,4 @@
-"""Tests for src/analysis/tabpfn_attribution.py (Task 4.3 — Captum IG on TabPFN)."""
+"""Tests for src/analysis/tabpfn_attribution.py (Captum IG on TabPFN)."""
 
 import pytest
 import numpy as np

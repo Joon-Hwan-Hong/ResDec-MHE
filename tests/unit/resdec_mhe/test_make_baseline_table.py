@@ -7,7 +7,7 @@ Tests cover:
 - Parsing of DL baseline CSVs (cloudpred/gpio/perceiver_io; 1-indexed folds)
 - Parsing of TabPFN-2.6 outer-fold npz (per-fold R² computed on the fly)
 - Missing baselines produce NaN rows with a "missing" note (not crash)
-- Missing ablations (e.g. D.2 pending) produce a NaN row with a "pending" note
+- Missing ablations (not-yet-launched runs) produce a NaN row with a "pending" note
 - Aggregation computes mean/std with ddof=1 across available folds
 - Sort places baselines (by r2 desc) first, ours (by r2 desc) second, NaN last
 - ``_fmt_pair`` handles NaN, regular mean±std, and size-1 mean-only cases
@@ -417,7 +417,7 @@ def test_missing_ablation_produces_nan_row_with_pending_note(tmp_path: Path) -> 
         ablation_root=tmp_path,
         requested=[
             ("p5_canonical_seed42", "ResDec-MHE (canonical)"),
-            ("p5_ablation_topk_4000", "top-k=4000 (D.2)"),  # not on disk
+            ("p5_ablation_topk_4000", "top-k=4000 ablation"),  # not on disk
         ],
     )
     by_model = {r["model"]: r for r in rows}

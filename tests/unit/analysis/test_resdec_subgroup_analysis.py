@@ -1,6 +1,6 @@
 """Unit tests for :mod:`src.analysis.resdec_subgroup_analysis`.
 
-Contract (from docs/plans/2026-04-22-resdec-h3-phase5-finish.md Task C.2):
+Contract:
 
     stratified_metrics(y_true, y_pred, subgroup_masks, *, n_bootstrap, seed)
 
@@ -128,7 +128,7 @@ def test_orchestration_uses_public_names():
     """
     import scripts.resdec_mhe.interpretability.subgroup_r2 as mod
     assert hasattr(mod, "apoe_e4_count_label")
-    # M1 consolidated the quartile helpers into the shared `quantile_labels`;
+    # Quartile helpers were consolidated into the shared `quantile_labels`;
     # either name is acceptable for rename-safety.
     assert hasattr(mod, "age_quartile_labels") or hasattr(mod, "quantile_labels")
 

@@ -66,7 +66,7 @@ def mock_baseline_table() -> pd.DataFrame:
         },
         {
             "model": "p5_ablation_topk_4000",
-            "display_name": "Ablation D.2: top-k=4000",
+            "display_name": "Ablation: top-k=4000",
             "n_folds": 0,
             "r2_mean": float("nan"),
             "r2_std": float("nan"),

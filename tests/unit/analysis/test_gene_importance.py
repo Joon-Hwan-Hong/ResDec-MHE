@@ -442,7 +442,7 @@ class TestEdgeCases:
 
 
 # ============================================================================
-# Phase 6 Review Round 8 — L1: Gene gate HDF5 string decode
+# Gene gate HDF5 string decode
 # ============================================================================
 
 

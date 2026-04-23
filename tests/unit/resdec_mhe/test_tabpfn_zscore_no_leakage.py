@@ -1,9 +1,9 @@
 """Verify that --zscore uses TRAIN-ONLY stats, not pooled, for TabPFN input.
 
-Task D.3: per-feature z-score of the TabPFN input. The z-score stats MUST be
-fit on train-fold X only (inner-fold train for OOF; outer-fold train for
-outer) and then applied to both train and val. Pooling stats over train+val
-would leak label-correlated information at val-time.
+Contract: when ``--zscore`` is set, the per-feature z-score stats MUST be fit
+on train-fold X only (inner-fold train for OOF; outer-fold train for outer)
+and then applied to both train and val. Pooling stats over train+val would
+leak label-correlated information at val-time.
 
 Tests:
   1. Direct helper correctness: val-transformed mean diverges from zero when

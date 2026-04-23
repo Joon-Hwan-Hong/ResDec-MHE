@@ -1,4 +1,4 @@
-"""Tests for scripts/resdec_mhe/interpretability/gsea_from_captum.py (Task C.6).
+"""Tests for scripts/resdec_mhe/interpretability/gsea_from_captum.py.
 
 Covers the pure-function helpers used by the GSEA adapter:
 

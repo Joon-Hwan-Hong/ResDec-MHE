@@ -1,12 +1,12 @@
-"""Tests for ResDecLightningModule (Phase 1 single-stage composer).
+"""Tests for ResDecLightningModule (single-stage composer).
 
 Smoke tests that verify:
 - Module builds (encoder + ResDecH3Head) from a config extended with resdec_head.
 - Forward pass on a dummy batch returns a dict with `prediction` [B] and `latent_1` [B, d_subject].
-- Missing `metadata` key in the batch is handled by the Phase-1 zero-tensor placeholder.
+- Missing `metadata` key in the batch is handled by a zero-tensor placeholder.
 
-This task (1.9a) does NOT run .fit() — training is exercised in a separate
-downstream task. These tests only confirm the wiring is correct.
+These tests do NOT run .fit() — training is exercised elsewhere. They only
+confirm the wiring is correct.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def cfg():
     OmegaConf.set_struct(base.model, False)
     base.model.n_genes = 4785
     base.model.n_cell_types = 31
-    # Deterministic head keeps the Phase-1 smoke test simple: avoids Pyro SVI
+    # Deterministic head keeps the smoke test simple: avoids Pyro SVI
     # machinery that has no bearing on the ResDecH3Head wiring we're verifying.
     base.model.head = OmegaConf.create({"type": "deterministic", "d_hidden": 32})
     # Add required resdec_head section
@@ -94,7 +94,7 @@ def test_prediction_head_is_frozen(cfg):
 
 
 def test_module_handles_missing_metadata(cfg):
-    """Phase-1 placeholder: missing `metadata` → zero tensor of shape [B, d_metadata]."""
+    """Fallback placeholder: missing `metadata` → zero tensor of shape [B, d_metadata]."""
     mod = ResDecLightningModule(cfg)
     mod.eval()
 
@@ -120,7 +120,7 @@ def test_module_handles_missing_metadata(cfg):
         "cell_offsets": cell_offsets,
         "pathology": torch.randn(B, 3),
         "cognition": torch.randn(B, 1),
-        # NOTE: no "metadata" key → Phase-1 placeholder kicks in
+        # NOTE: no "metadata" key → zero-tensor placeholder kicks in
     }
 
     with torch.no_grad():

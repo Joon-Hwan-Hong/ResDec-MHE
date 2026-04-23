@@ -1,6 +1,6 @@
 """Unit tests for :mod:`src.analysis.resdec_variance_decomposition`.
 
-Contract (from docs/plans/2026-04-22-resdec-h3-phase5-finish.md Task C.1):
+Contract:
 
     Var(y) = Var(y_tabpfn) + Var(f_1) + 2 * Cov(y_tabpfn, f_1) + Var(resid)
 
@@ -10,15 +10,15 @@ with ``resid = y_true - (y_tabpfn + f_1)``.
 ``y = y_tabpfn + f_1 + resid`` contains *six* covariance terms:
 ``Var(y) = Var(y_tabpfn) + Var(f_1) + Var(resid) + 2 Cov(y_tabpfn, f_1)
           + 2 Cov(y_tabpfn, resid) + 2 Cov(f_1, resid)``.
-The reporting formula in the Task C.1 spec keeps only the
-``2 Cov(y_tabpfn, f_1)`` cross term. The two dropped terms vanish in the
-population limit whenever the composite prediction is OLS-orthogonal to
-``resid``. They do **not** vanish in a finite sample unless the test is
-set up so the residual is constructed orthogonal to the predictors.
+The reporting formula keeps only the ``2 Cov(y_tabpfn, f_1)`` cross term. The
+two dropped terms vanish in the population limit whenever the composite
+prediction is OLS-orthogonal to ``resid``. They do **not** vanish in a finite
+sample unless the test is set up so the residual is constructed orthogonal to
+the predictors.
 
 These tests use orthogonal-by-construction residuals (Gram-Schmidt-style
 residualisation) so the four-component additivity holds to floating-point
-precision, matching the spec's ``abs=1e-6`` tolerance.
+precision, matching the ``abs=1e-6`` tolerance used by the tests.
 """
 from __future__ import annotations
 

@@ -1111,7 +1111,7 @@ class TestNaNHandling:
 
 
 # ============================================================================
-# FDR Threshold Tests (Phase 6 Review Round 5)
+# FDR Threshold Tests
 # ============================================================================
 
 
@@ -1182,7 +1182,7 @@ class TestFDRThreshold:
 
 
 # ============================================================================
-# Phase 6 Review Round 8 — H1 + H4: Region filter + seed determinism
+# Region filter + seed determinism
 # ============================================================================
 
 
@@ -1294,7 +1294,7 @@ def test_ablation_skips_2d_embeddings():
 
 
 # ============================================================================
-# Resilience Grouping Consistency Tests (Phase 6 Review Round 12 — M2)
+# Resilience Grouping Consistency Tests
 # ============================================================================
 
 
