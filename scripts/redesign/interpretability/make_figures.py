@@ -32,7 +32,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import matplotlib
 
@@ -42,6 +42,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
+from sklearn.metrics import r2_score  # noqa: E402
 
 
 # Ensure worktree root on sys.path for standalone invocation.
@@ -49,13 +52,34 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if (_WORKTREE_ROOT / "src").is_dir() and str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.resdec_io import load_all_folds  # noqa: E402
+from src.analysis.resdec_io import load_all_folds, load_fold_predictions  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
 
 
 CANONICAL_R2 = 0.4436211705207825  # from paper_baseline_table.csv (p5_canonical_seed42)
+
+# --- Module constants (M5) ---
+N_FOLDS = 5
+TOP_N_PAIRS_HEATMAP = 30
+R2_VISUAL_LOWER_CLIP = -1.5
+NOMINAL_COVERAGE_LEVELS = (0.5, 0.68, 0.8, 0.95)
+
+
+# Per-family prefix stripping for subgroup label display (C1).
+# Keyed by the family display name used in _SUBGROUP_FAMILIES.
+_FAMILY_PREFIX_STRIP: dict[str, str] = {
+    "APOE": "APOE_",
+    "Sex": "msex_",
+    "Age": "age_quartile_",
+    "Pathology": "pathology_quartile_",
+}
+
+
+def _nf_int(nf) -> int:
+    """NaN-safe conversion of an ``n_folds`` cell to int (I3)."""
+    return 0 if pd.isna(nf) else int(nf)
 
 
 class SkipFigure(RuntimeError):
@@ -81,6 +105,11 @@ def _apply_paper_style() -> None:
         "lines.linewidth": 1.2,
         "savefig.bbox": "tight",
     })
+
+
+# Apply paper style at import time so both CLI runs and unit tests render
+# with identical rcParams (I4).
+_apply_paper_style()
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +144,7 @@ def make_fig1_ablation_bar(
 
     df = table.copy()
 
-    completed_mask = df["n_folds"].fillna(0).astype(int) >= 5
+    completed_mask = df["n_folds"].fillna(0).astype(int) >= N_FOLDS
     completed = df[completed_mask & df["r2_mean"].notna()].copy()
     pending = df[~completed_mask | df["r2_mean"].isna()].copy()
 
@@ -130,13 +159,19 @@ def make_fig1_ablation_bar(
 
     n = len(full)
     x = np.arange(n)
-    # Colour coding
-    colours = []
-    edge_colours = []
-    fill = []
-    for _, row in full.iterrows():
-        is_pending = pd.isna(row["r2_mean"]) or int(row["n_folds"] or 0) < 5
-        if is_pending:
+
+    # Compute pending mask once for reuse (I5 dedup).
+    pending_any = np.array([
+        pd.isna(r) or _nf_int(nf) < N_FOLDS
+        for r, nf in zip(full["r2_mean"], full["n_folds"])
+    ])
+
+    # Colour coding (uses pending_any; I5)
+    colours: list[str] = []
+    edge_colours: list[str] = []
+    fill: list[bool] = []
+    for i, row in full.iterrows():
+        if pending_any[i]:
             colours.append("#dddddd")
             edge_colours.append("#666666")
             fill.append(False)
@@ -155,10 +190,6 @@ def make_fig1_ablation_bar(
     y = full["r2_mean"].fillna(0.0).to_numpy()
     yerr = full["r2_std"].fillna(0.0).to_numpy()
     # No errbars on pending (outline-only) rows
-    pending_any = np.array([
-        pd.isna(r) or int(nf or 0) < 5
-        for r, nf in zip(full["r2_mean"], full["n_folds"])
-    ])
     yerr[pending_any] = 0.0
 
     for i in range(n):
@@ -172,10 +203,9 @@ def make_fig1_ablation_bar(
             error_kw={"linewidth": 0.9, "ecolor": "#333333"},
         )
 
-    # Reference line at canonical R²
+    # Reference line at canonical R² (no label; the legend proxy carries it — M4)
     ax.axhline(
         canonical_r2, color="#cc5533", linestyle="--", linewidth=1.0,
-        label=f"canonical R² = {canonical_r2:.3f}",
     )
     # Zero line
     ax.axhline(0.0, color="#000000", linewidth=0.5)
@@ -188,23 +218,23 @@ def make_fig1_ablation_bar(
     ax.set_ylabel("Cross-validated R²")
     ax.set_title("Model / ablation R² comparison (5-fold)")
 
-    # Legend
-    from matplotlib.patches import Patch
+    # Legend (outside axes so it never overlaps bars — M6)
     handles = [
         Patch(facecolor="#3b6ea5", edgecolor="#2a4f78", label="ResDec-H3 (ours / ablation)"),
         Patch(facecolor="#888888", edgecolor="#555555", label="Baselines"),
         Patch(facecolor="none", edgecolor="#666666", label="† pending (n_folds < 5)"),
+        Line2D([0], [0], color="#cc5533", linestyle="--",
+               label=f"canonical R² = {canonical_r2:.3f}"),
     ]
-    # Add canonical line handle
-    from matplotlib.lines import Line2D
-    handles.append(Line2D([0], [0], color="#cc5533", linestyle="--",
-                          label=f"canonical R² = {canonical_r2:.3f}"))
-    ax.legend(handles=handles, loc="upper right", frameon=True, fontsize=8)
+    ax.legend(
+        handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0),
+        frameon=True, fontsize=8,
+    )
 
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.set_axisbelow(True)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 0.85, 1])
     return fig
 
 
@@ -216,9 +246,15 @@ def make_fig1_ablation_bar(
 def make_fig2_resilience_scatter(df: pd.DataFrame | None) -> plt.Figure:
     """y_true vs y_pred scatter, colored by residual, with quadrant overlay.
 
-    Quadrants are split at (median y_true, median residual) and labelled:
-    - High pathology (low y_true) + positive residual → "Resilient"
-    - High pathology (low y_true) + negative residual → "Vulnerable"
+    Canonical resilience definition (see
+    ``scripts/redesign/interpretability/resilience_residual_phenotype.py``):
+
+        residual = y_true − y_pred
+        residual > 0 → "Resilient" (better cognition than predicted)
+        residual < 0 → "Overestimated" / "Vulnerable" (worse than predicted)
+
+    The definition is **unconditional on pathology**. Quadrant labels describe
+    y_true vs y_pred geometry only; pathology is not inferred from y_true.
     """
     if df is None or len(df) == 0:
         raise SkipFigure("fig2_resilience_scatter: predictions DataFrame is None/empty")
@@ -260,32 +296,42 @@ def make_fig2_resilience_scatter(df: pd.DataFrame | None) -> plt.Figure:
     xs = np.array([lo, hi])
     ax.plot(xs, xs - med_r, color="#888888", linestyle=":", linewidth=0.8)
 
-    # Quadrant labels (placed at corners of the plot in y_true/y_pred space)
+    # Quadrant labels (y_true vs y_pred geometry only — C2).
+    # bottom-right (high y_true, low y_pred): Resilient (y_true > y_pred → residual > 0)
+    # top-left    (low  y_true, high y_pred): Overestimated (y_pred > y_true → residual < 0)
+    # top-right   (high y_true, high y_pred): Accurate high-cognition
+    # bottom-left (low  y_true, low  y_pred): Accurate low-cognition
     pad = 0.05 * (hi - lo)
-    # "Resilient": low pathology score = y_true HIGH (cognition high)
-    # per design-doc note: "Resilient" = high pathology + positive residual
-    # y_true is the target cognition score; low y_true = higher pathology
-    # positive residual = y_true > y_pred
-    ax.text(lo + pad, hi - pad,
-            "Vulnerable\n(pred > actual,\nhigh pathology)",
-            fontsize=8, ha="left", va="top",
+    ax.text(hi - pad, lo + pad,
+            "Resilient\n(y_true > y_pred,\n positive residual)",
+            fontsize=9, ha="right", va="bottom", color="#1f77b4",
             bbox=dict(facecolor="white", edgecolor="#aaaaaa", alpha=0.85,
                       boxstyle="round,pad=0.25"))
-    ax.text(hi - pad, lo + pad,
-            "Resilient\n(actual > pred,\nlow pathology)",
-            fontsize=8, ha="right", va="bottom",
+    ax.text(lo + pad, hi - pad,
+            "Overestimated\n(y_pred > y_true,\n negative residual)",
+            fontsize=9, ha="left", va="top", color="#d62728",
             bbox=dict(facecolor="white", edgecolor="#aaaaaa", alpha=0.85,
+                      boxstyle="round,pad=0.25"))
+    ax.text(hi - pad, hi - pad,
+            "Accurate\n(high cognition)",
+            fontsize=8, ha="right", va="top", color="#444444",
+            bbox=dict(facecolor="white", edgecolor="#cccccc", alpha=0.70,
+                      boxstyle="round,pad=0.25"))
+    ax.text(lo + pad, lo + pad,
+            "Accurate\n(low cognition)",
+            fontsize=8, ha="left", va="bottom", color="#444444",
+            bbox=dict(facecolor="white", edgecolor="#cccccc", alpha=0.70,
                       boxstyle="round,pad=0.25"))
 
     cbar = fig.colorbar(sc, ax=ax, shrink=0.85)
     cbar.set_label("Residual (y_true − y_pred)")
 
-    from sklearn.metrics import r2_score
-    r2_value = r2_score(y_true, y_pred)
+    pooled_r2 = r2_score(y_true, y_pred)
     ax.set_xlabel("y_true (cognition score)")
     ax.set_ylabel("y_pred (composite prediction)")
+    # M9: explicitly "pooled R²" to distinguish from mean-per-fold R².
     ax.set_title(
-        f"Resilience scatter — n={len(df)}, pooled R² = {r2_value:.3f}"
+        f"Resilience scatter (pooled R² = {pooled_r2:.3f}, n={len(df)} subjects)"
     )
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
@@ -302,7 +348,7 @@ def make_fig2_resilience_scatter(df: pd.DataFrame | None) -> plt.Figure:
 
 def make_fig3_celltype_gene_heatmap(
     summary: dict | None,
-    top_n: int = 30,
+    top_n: int = TOP_N_PAIRS_HEATMAP,
 ) -> plt.Figure:
     """Single-column heatmap of the top-30 (cell-type, gene) IG pairs."""
     if summary is None:
@@ -334,9 +380,12 @@ def make_fig3_celltype_gene_heatmap(
     top5_idx = np.argsort(values)[::-1][:5]
     for i in top5_idx:
         val = values[i]
+        # Text color threshold at 50% of colormap range — white text on dark-red
+        # cells (high |attr|), black text on light-red cells (low |attr|) for
+        # WCAG-adequate contrast. (M10)
         ax.text(0, i, f"{val:.4f}", ha="center", va="center",
                 color="white" if val > values.max() * 0.5 else "#111111",
-                fontsize=7)
+                fontsize=8)
 
     cbar = fig.colorbar(im, ax=ax, shrink=0.65)
     cbar.set_label("Mean |attribution|")
@@ -416,14 +465,21 @@ def make_fig4_head_specialization(
     ax.set_xticklabels([f"Head {i}" for i in range(n_heads)])
     ax.set_ylabel("Mean attention")
     ax.set_title("Head specialization — top-3 cell types per head")
-    # Deduplicate legend
+    # Deduplicate legend (M2: explicit loop; preserves first-seen order).
     handles, labels = ax.get_legend_handles_labels()
     seen: set[str] = set()
-    dedup = [(h, l) for h, l in zip(handles, labels) if l not in seen and not seen.add(l)]
+    dedup_handles: list = []
+    dedup_labels: list[str] = []
+    for handle, label in zip(handles, labels):
+        if label in seen:
+            continue
+        seen.add(label)
+        dedup_handles.append(handle)
+        dedup_labels.append(label)
     ax.legend(
-        [h for h, _ in dedup], [l for _, l in dedup],
+        dedup_handles, dedup_labels,
         loc="center left", bbox_to_anchor=(1.02, 0.5),
-        frameon=True, fontsize=7, title="Cell type",
+        frameon=True, fontsize=8, title="Cell type",
     )
 
     # Footnote with Splatter × LAMP5 correlation, if provided
@@ -431,7 +487,7 @@ def make_fig4_head_specialization(
         fig.text(
             0.01, 0.01,
             f"Splatter × LAMP5-LHX6 co-attention r = {splatter_lamp5_corr:.3f}",
-            ha="left", va="bottom", fontsize=7, color="#444444",
+            ha="left", va="bottom", fontsize=8, color="#444444",
         )
 
     ax.grid(axis="y", linestyle=":", alpha=0.4)
@@ -498,7 +554,15 @@ def make_fig5_subgroup_r2(
             ci_lo.append(float(ci[0]))
             ci_hi.append(float(ci[1]))
             x_pos.append(cursor)
-            labels.append(sg.replace(f"{family.lower()}_", "").replace("_", " "))
+
+            # C1: explicit per-family prefix strip, then underscore → space.
+            label = sg
+            prefix = _FAMILY_PREFIX_STRIP.get(family)
+            if prefix and sg.startswith(prefix):
+                label = sg[len(prefix):]
+            label = label.replace("_", " ")
+            labels.append(label)
+
             colours.append(family_palette[family])
             cursor += 1.0
         if f_idx < len(_SUBGROUP_FAMILIES) - 1 and cursor > family_start:
@@ -507,13 +571,22 @@ def make_fig5_subgroup_r2(
 
     x = np.array(x_pos)
     y = np.array(r2_vals)
-    yerr_lo = y - np.array(ci_lo)
+    ci_lo_arr = np.array(ci_lo)
+    yerr_lo = y - ci_lo_arr
     yerr_hi = np.array(ci_hi) - y
 
-    # clamp visually at a sane lower bound so tiny-n wild CIs don't blow up the axis
-    lower_clip = -1.5
+    # clamp visually at a sane lower bound so tiny-n wild CIs don't blow up the axis.
+    lower_clip = R2_VISUAL_LOWER_CLIP
     yerr_lo_clipped = np.minimum(yerr_lo, y - lower_clip)
     yerr_lo_clipped = np.maximum(yerr_lo_clipped, 0.0)
+
+    # I6: any bar whose TRUE CI lower bound falls below the visual clip gets a
+    # '†' suffix so the dagger in the footnote refers to something concrete.
+    truncated = ci_lo_arr < lower_clip
+    any_truncated = bool(np.any(truncated))
+    for i, was_truncated in enumerate(truncated):
+        if was_truncated:
+            labels[i] = labels[i] + "†"
 
     ax.bar(x, y, color=colours, edgecolor="#333333", linewidth=0.7, width=0.85)
     ax.errorbar(
@@ -521,10 +594,9 @@ def make_fig5_subgroup_r2(
         fmt="none", ecolor="#222222", capsize=3, linewidth=0.8,
     )
 
-    # Canonical R² reference line
+    # Canonical R² reference line (no label; legend proxy carries it — M4)
     ax.axhline(
         canonical_r2, color="#cc5533", linestyle="--", linewidth=1.0,
-        label=f"canonical R² = {canonical_r2:.3f}",
     )
     ax.axhline(0.0, color="#000000", linewidth=0.5)
 
@@ -537,18 +609,26 @@ def make_fig5_subgroup_r2(
     ax.set_title("Subgroup R² — canonical model (ResDec-H3)")
     ax.set_ylim(lower_clip, 1.0)
 
-    # Family legend
-    from matplotlib.patches import Patch
+    # Family legend (uses hoisted Patch / Line2D from module-level imports — M3).
     handles = [
         Patch(facecolor=family_palette[f], edgecolor="#333333", label=name)
         for f, name, _ in _SUBGROUP_FAMILIES
     ]
-    from matplotlib.lines import Line2D
     handles.append(Line2D([0], [0], color="#cc5533", linestyle="--",
                           label=f"canonical R² = {canonical_r2:.3f}"))
     ax.legend(handles=handles, loc="upper right", fontsize=8, frameon=True)
     ax.grid(axis="y", linestyle=":", alpha=0.4)
     ax.set_axisbelow(True)
+
+    # I6: footnote explaining the '†' marker when any CI is truncated.
+    if any_truncated:
+        fig.text(
+            0.02, 0.01,
+            "† CI lower bound extends below axis range "
+            "(small-n subgroup; see subgroup_metrics.json)",
+            fontsize=8, style="italic", color="#444444",
+        )
+
     fig.tight_layout()
     return fig
 
@@ -614,7 +694,7 @@ def make_fig6_calibration(
     ax_l.legend(loc="lower right", fontsize=8, frameon=True)
 
     # ------- Right: coverage curve -------
-    nominal_levels = [0.5, 0.68, 0.8, 0.95]
+    nominal_levels = list(NOMINAL_COVERAGE_LEVELS)
     empirical = [float(cov[f"coverage_at_{L}"]) for L in nominal_levels]
     ax_r.plot([0, 1], [0, 1], linestyle="--", linewidth=1.0,
               color="#888888", label="perfect calibration")
@@ -676,38 +756,27 @@ def _load_json(path: Path) -> dict:
 
 
 def _load_calibration_per_subject(
-    pred_root: Path, tabpfn_dir: Path, n_folds: int = 5,
+    pred_root: Path, tabpfn_dir: Path, n_folds: int = N_FOLDS,
 ) -> pd.DataFrame:
     """Join per-subject |residual| (composite) with sigma_tabpfn across folds.
 
-    sigma_tabpfn lives in tabpfn_outer_fold{f}.npz (per-subject), keyed by
-    val_subject_ids. Per-fold composite predictions come from
-    val_predictions_best.npz in pred_root.
+    Delegates the fold-level prediction + TabPFN join to the shared canonical
+    loader ``load_fold_predictions`` (I1); only ``sigma_tabpfn`` is added on
+    top per fold.
     """
     frames: list[pd.DataFrame] = []
     for f in range(n_folds):
-        pred_path = pred_root / f"fold{f}/val_predictions_best.npz"
+        merged = load_fold_predictions(pred_root, tabpfn_dir, f)
         tab_path = tabpfn_dir / f"tabpfn_outer_fold{f}.npz"
-        if not pred_path.exists():
-            raise FileNotFoundError(pred_path)
-        if not tab_path.exists():
-            raise FileNotFoundError(tab_path)
-        pred = np.load(pred_path, allow_pickle=True)
         tab = np.load(tab_path, allow_pickle=True)
-        pdf = pd.DataFrame({
-            "ROSMAP_IndividualID": pred["subject_ids"].astype(str),
-            "y_true": pred["targets"].astype(np.float64),
-            "y_composite": pred["predictions"].astype(np.float64),
-        })
-        tdf = pd.DataFrame({
+        sigma = pd.DataFrame({
             "ROSMAP_IndividualID": tab["val_subject_ids"].astype(str),
             "sigma_tabpfn": tab["sigma_tabpfn"].astype(np.float64),
         })
-        merged = pdf.merge(tdf, on="ROSMAP_IndividualID", how="inner")
-        merged["abs_residual"] = np.abs(merged["y_true"] - merged["y_composite"])
-        merged["fold"] = f
-        frames.append(merged[["ROSMAP_IndividualID", "fold",
-                              "abs_residual", "sigma_tabpfn"]])
+        df = merged.merge(sigma, on="ROSMAP_IndividualID", how="inner")
+        df["abs_residual"] = np.abs(df["y_true"] - df["y_composite"])
+        frames.append(df[["ROSMAP_IndividualID", "fold",
+                          "abs_residual", "sigma_tabpfn"]])
     return pd.concat(frames, ignore_index=True)
 
 
@@ -756,7 +825,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--figure-format", nargs="+", default=["png", "pdf"])
     p.add_argument("--canonical-r2", type=float, default=CANONICAL_R2)
-    p.add_argument("--n-folds", type=int, default=5)
+    p.add_argument("--n-folds", type=int, default=N_FOLDS)
     return p.parse_args(argv)
 
 
@@ -783,7 +852,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    _apply_paper_style()
+    # Note: _apply_paper_style() runs at module import so tests also render
+    # with paper-style rcParams (I4). Re-running it here would be a no-op.
 
     # --- Fig 1: ablation bar ---
     fig1_paths: list[Path] = []

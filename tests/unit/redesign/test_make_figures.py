@@ -406,3 +406,125 @@ def test_skipfigure_has_message():
         assert "table" in str(e).lower() or "baseline" in str(e).lower()
     else:
         pytest.fail("SkipFigure not raised")
+
+
+# ---------------------------------------------------------------------------
+# Label-content regression tests (M8)
+# ---------------------------------------------------------------------------
+
+
+def test_fig5_subgroup_labels_stripped(mock_subgroup_metrics):
+    """After C1 fix the APOE/sex/age/pathology prefixes are stripped and
+    underscores replaced with spaces in the x-tick labels."""
+    fig = mod.make_fig5_subgroup_r2(
+        metrics=mock_subgroup_metrics, canonical_r2=0.4436,
+    )
+    ax = fig.axes[0]
+    # Strip any '†' truncation marker (I6) for label equivalence checks.
+    labels = [t.get_text().rstrip("†") for t in ax.get_xticklabels()]
+    # Positive: expected stripped forms appear.
+    assert "e4 0" in labels
+    assert "e4 1" in labels
+    assert "e4 2" in labels
+    assert "0" in labels and "1" in labels  # msex_0 / msex_1
+    assert "Q1" in labels
+    assert "Q4" in labels
+    # Negative: no raw "APOE_e4_0" / "msex_0" / "age_quartile_Q1" leaked.
+    for bad in ("APOE_e4_0", "msex_0", "age_quartile_Q1",
+                "pathology_quartile_Q1"):
+        assert bad not in labels, (bad, labels)
+    plt.close(fig)
+
+
+def test_fig5_truncated_ci_gets_dagger(mock_subgroup_metrics):
+    """I6: APOE_e4_2 has ci_lo=-8.0 (< -1.5 clip) → label carries '†'
+    and the footnote about axis range is present."""
+    fig = mod.make_fig5_subgroup_r2(
+        metrics=mock_subgroup_metrics, canonical_r2=0.4436,
+    )
+    ax = fig.axes[0]
+    labels = [t.get_text() for t in ax.get_xticklabels()]
+    # APOE_e4_2 → stripped to "e4 2", with '†' appended.
+    assert any(ll.startswith("e4 2") and ll.endswith("†") for ll in labels), labels
+    # Footnote is drawn as a figure-level text; check presence.
+    footnote_texts = [t.get_text() for t in fig.texts]
+    assert any("CI lower bound extends" in t for t in footnote_texts)
+    plt.close(fig)
+
+
+def test_fig1_has_canonical_line(mock_baseline_table):
+    """M8: figure 1 draws a horizontal line at the canonical R² value."""
+    fig = mod.make_fig1_ablation_bar(
+        table=mock_baseline_table, canonical_r2=0.4436,
+    )
+    found = False
+    for ax in fig.axes:
+        for line in ax.get_lines():
+            ydata = line.get_ydata()
+            # axhline lines are horizontal: all y values identical.
+            if len(ydata) >= 2 and abs(ydata[0] - 0.4436) < 1e-6:
+                found = True
+                break
+        if found:
+            break
+    assert found, "No axhline at canonical_r2=0.4436 found in fig1"
+    plt.close(fig)
+
+
+def test_fig2_quadrant_labels_canonical(mock_resilience_df):
+    """C2: after fix, fig2 has canonical-resilience quadrant labels.
+
+    - "Resilient" label uses y_true>y_pred semantics (not pathology).
+    - "Overestimated" label uses y_pred>y_true semantics.
+    - No "high pathology" / "low pathology" phrasing remains.
+    """
+    fig = mod.make_fig2_resilience_scatter(df=mock_resilience_df)
+    ax = fig.axes[0]
+    texts = [t.get_text() for t in ax.texts]
+    joined = "\n".join(texts)
+    assert "Resilient" in joined
+    assert "Overestimated" in joined
+    assert "y_true > y_pred" in joined
+    assert "y_pred > y_true" in joined
+    # Negative: the old pathology phrasing must be gone (C2 deviation).
+    assert "high pathology" not in joined
+    assert "low pathology" not in joined
+    plt.close(fig)
+
+
+def test_fig2_title_says_pooled_r2(mock_resilience_df):
+    """M9: fig2 title identifies the R² as pooled (not mean-per-fold)."""
+    fig = mod.make_fig2_resilience_scatter(df=mock_resilience_df)
+    ax = fig.axes[0]
+    assert "pooled R" in ax.get_title(), ax.get_title()
+    plt.close(fig)
+
+
+def test_fig1_nan_nfolds_does_not_crash():
+    """I3: a NaN n_folds entry must not crash label-building."""
+    df = pd.DataFrame([
+        {
+            "model": "p5_canonical_seed42",
+            "display_name": "ResDec-H3 canonical",
+            "n_folds": 5, "r2_mean": 0.44, "r2_std": 0.10,
+            "mae_mean": 0.67, "mae_std": 0.05,
+            "rmse_mean": 0.86, "rmse_std": 0.06,
+            "pearson_mean": 0.67, "pearson_std": 0.07,
+            "spearman_mean": 0.66, "spearman_std": 0.05,
+            "source_path": "", "notes": "",
+        },
+        {
+            "model": "some_pending_ablation",
+            "display_name": "Pending (NaN n_folds)",
+            "n_folds": float("nan"),
+            "r2_mean": float("nan"), "r2_std": float("nan"),
+            "mae_mean": float("nan"), "mae_std": float("nan"),
+            "rmse_mean": float("nan"), "rmse_std": float("nan"),
+            "pearson_mean": float("nan"), "pearson_std": float("nan"),
+            "spearman_mean": float("nan"), "spearman_std": float("nan"),
+            "source_path": "", "notes": "pending",
+        },
+    ])
+    fig = mod.make_fig1_ablation_bar(table=df, canonical_r2=0.4436)
+    assert isinstance(fig, plt.Figure)
+    plt.close(fig)
