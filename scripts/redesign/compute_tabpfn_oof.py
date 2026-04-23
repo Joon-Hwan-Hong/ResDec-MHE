@@ -68,7 +68,34 @@ def _predict_with_sigma(
     return median, sigma
 
 
+def _build_regressor(
+    device: str, seed: int, ignore_pretraining_limits: bool
+) -> TabPFNRegressor:
+    """Construct a TabPFNRegressor with the ablation safety-override flag.
+
+    ``ignore_pretraining_limits=True`` is a DELIBERATE user-approved override of
+    TabPFN-2.6's 2000-feature safety check. Use ONLY when deliberately testing
+    >2000-feature behavior (e.g., Task D.2 top-k=4000 ablation). Accepts the
+    distributional-extrapolation risk; TabPFN's prior was trained on ≤2000
+    features. Default MUST be False everywhere upstream.
+
+    model_version is NOT a TabPFNRegressor constructor kwarg — it's set via
+    tabpfn.settings (env var TABPFN_MODEL_VERSION or settings default, which is
+    ModelVersion.V2_6 per tabpfn/settings.py:36).
+    """
+    return TabPFNRegressor(
+        device=device,
+        random_state=seed,
+        ignore_pretraining_limits=ignore_pretraining_limits,
+    )
+
+
 def main(args):
+    # --ignore-pretraining-limits: override TabPFN-2.6's 2000-feature safety
+    # check. Use ONLY when deliberately testing >2000-feature behavior. Accepts
+    # the distributional-extrapolation risk; TabPFN's prior was trained on
+    # ≤2000 features. Documented in plan Task D.2 (ablation: top-k=4000
+    # sensitivity test).
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -138,10 +165,11 @@ def main(args):
             n_splits=args.n_inner_folds, shuffle=True, random_state=args.seed
         )
         for inner_fold, (tr_idx, va_idx) in enumerate(inner_kf.split(X_train_full)):
-            # model_version is NOT a TabPFNRegressor constructor kwarg — it's set
-            # via tabpfn.settings (env var TABPFN_MODEL_VERSION or settings default).
-            # Package default is ModelVersion.V2_6 per tabpfn/settings.py:36.
-            reg = TabPFNRegressor(device=device, random_state=args.seed)
+            reg = _build_regressor(
+                device=device,
+                seed=args.seed,
+                ignore_pretraining_limits=args.ignore_pretraining_limits,
+            )
             reg.fit(X_train_full[tr_idx], y_train[tr_idx])
             try:
                 mean, sigma = _predict_with_sigma(reg, X_train_full[va_idx])
@@ -183,4 +211,15 @@ if __name__ == "__main__":
     p.add_argument("--top-k", type=int, default=2000)
     p.add_argument("--n-inner-folds", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--ignore-pretraining-limits",
+        action="store_true",
+        default=False,
+        help=(
+            "Override TabPFN-2.6's 2000-feature safety check. Use ONLY when "
+            "deliberately testing >2000-feature behavior (e.g., Task D.2 "
+            "top-k=4000 ablation). Accepts the distributional-extrapolation "
+            "risk; TabPFN's prior was trained on ≤2000 features. Default: False."
+        ),
+    )
     main(p.parse_args())
