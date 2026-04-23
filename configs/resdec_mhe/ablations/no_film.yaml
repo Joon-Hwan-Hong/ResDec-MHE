@@ -1,12 +1,12 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Phase 5.3 ablation #8: No FiLM metadata conditioning.
+# Ablation: No FiLM metadata conditioning.
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Identical to canonical except use_film=False → ResDecH3Head bypasses FiLM
 # entirely (z_cond = z_encoder, no metadata-derived modulation). Note the
-# canonical run already uses zero metadata (Phase-4 wiring deferred), so
-# FiLM's actual effect is bounded by near-identity init perturbation. This
-# ablation removes even that perturbation by skipping the module entirely.
+# canonical run uses zero metadata, so FiLM's actual effect is bounded by
+# near-identity init perturbation. This ablation removes even that
+# perturbation by skipping the module entirely.
 
 experiment:
   run_name: "p5_ablation_no_film"

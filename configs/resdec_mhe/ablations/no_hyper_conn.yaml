@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Phase 5.3 ablation #7: No Hyper-Connections (plain residual replaces multi-stream).
+# Ablation: No Hyper-Connections (plain residual replaces multi-stream).
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Identical to canonical except use_hyper_conn=False → NPTStage uses

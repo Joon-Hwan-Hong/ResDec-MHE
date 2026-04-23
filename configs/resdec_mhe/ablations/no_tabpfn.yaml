@@ -1,12 +1,12 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Phase 5.3 ablation #2: No TabPFN residual base.
+# Ablation: No TabPFN residual base.
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Trains the encoder + canonical n_stages=1 head on RAW cognition target
-# (not residual y - y_tabpfn). Falls back to Phase-1 plain-MSE behavior in the
+# (not residual y - y_tabpfn). Falls back to plain-MSE behavior in the
 # Lightning module by omitting cfg.data.tabpfn_oof_dir / tabpfn_outer_dir.
 #
-# Compares against canonical (R²=0.4373) to attribute the TabPFN-residual gain.
+# Compares against canonical to attribute the TabPFN-residual gain.
 
 experiment:
   run_name: "p5_ablation_no_tabpfn"
@@ -37,5 +37,5 @@ data:
     batch_size: 24
   use_cached_embeddings: false
   # Intentionally OMITTING tabpfn_oof_dir + tabpfn_outer_dir so the Lightning
-  # module's Phase-1 plain-MSE fallback path activates. This is the "no TabPFN
+  # module's plain-MSE fallback path activates. This is the "no TabPFN
   # residual" ablation.

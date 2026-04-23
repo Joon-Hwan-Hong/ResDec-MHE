@@ -1,10 +1,10 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Phase 5.3 ablation #5: No TabM ensembling (k_tabm=1).
+# Ablation: No TabM ensembling (k_tabm=1).
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Same as canonical except k_tabm=1 → TabMWrapper runs the NPTStage as a single
 # (not ensembled) forward pass. Isolates the TabM-ensembling contribution
-# (canonical R²=0.4373 vs k=1 here).
+# against the canonical run.
 
 experiment:
   run_name: "p5_ablation_k1"

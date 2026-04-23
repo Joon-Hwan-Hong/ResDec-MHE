@@ -1,4 +1,4 @@
-# Phase 5 R²-ablation: per-feature z-score on TabPFN input. Uses the canonical
+# Ablation: per-feature z-score on TabPFN input. Uses the canonical
 # top-k=2000 XGBoost-importance features, but the 2000-dim TabPFN input is
 # per-feature standardized using TRAIN-ONLY stats (inner-fold train stats for
 # OOF; outer-fold train stats for outer). Everything else matches canonical
@@ -33,7 +33,7 @@ data:
   dataloader:
     batch_size: 24
   use_cached_embeddings: false
-  # Point at the z-scored TabPFN residual + outer caches produced by D.3
-  # pipeline (top-k=2000, same as canonical, only difference is --zscore).
+  # Point at the z-scored TabPFN residual + outer caches produced by the
+  # z-score pipeline (top-k=2000, same as canonical, only difference is --zscore).
   tabpfn_oof_dir: data/redesign/zscore
   tabpfn_outer_dir: data/redesign/zscore

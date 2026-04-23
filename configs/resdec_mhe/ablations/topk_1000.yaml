@@ -1,4 +1,4 @@
-# Phase 5 R²-ablation: TabPFN input reduced from top-2000 → top-1000 XGBoost-importance
+# Ablation: TabPFN input reduced from top-2000 → top-1000 XGBoost-importance
 # features. Everything else matches canonical (n_stages=1, vanilla MHA, TabM(k=8),
 # HyperConn, FiLM at zero metadata). Tests whether 2000 is above/below the
 # informative-feature count.
@@ -30,6 +30,6 @@ data:
   dataloader:
     batch_size: 24
   use_cached_embeddings: false
-  # Point at the k=1000 TabPFN residual + outer caches produced by D.1 pipeline.
+  # Point at the k=1000 TabPFN residual + outer caches produced by the top-k=1000 pipeline.
   tabpfn_oof_dir: data/redesign/top_k_variants/k1000
   tabpfn_outer_dir: data/redesign/top_k_variants/k1000

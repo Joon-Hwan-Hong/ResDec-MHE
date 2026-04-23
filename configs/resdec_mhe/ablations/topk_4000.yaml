@@ -1,4 +1,4 @@
-# Phase 5 R²-ablation: TabPFN input increased from top-2000 → top-4000 XGBoost-importance
+# Ablation: TabPFN input increased from top-2000 → top-4000 XGBoost-importance
 # features. Everything else matches canonical. Tests whether 2000 is clipping useful
 # signal (expected: 4000 exceeds TabPFN-2.6's documented safe range more than 2000 does;
 # may trigger pretraining-limit warnings already suppressed in canonical config).

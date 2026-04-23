@@ -1,11 +1,11 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Phase 5.3 ablation #9: No aug-U sigma weighting (only meaningful at n_stages>=2).
+# Ablation: No aug-U sigma weighting (only meaningful at n_stages>=2).
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # At canonical n_stages=1, aug-U is bypassed entirely (only L_main + L_aux1,
 # no aux_2/aux_3 to weight). To meaningfully ablate aug-U we run n_stages=2
-# with use_sigma_weighting=False — direct comparison against the n=2 + TabM
-# canonical comparator (R²=0.4305 ± 0.079).
+# with use_sigma_weighting=False — direct comparison against the n=2 run
+# that has sigma weighting enabled.
 
 experiment:
   run_name: "p5_ablation_no_aug_u_n2"
