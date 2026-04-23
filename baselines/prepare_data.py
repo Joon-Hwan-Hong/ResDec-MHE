@@ -1,10 +1,10 @@
 """Prepare input data for DL baseline methods (scPhase, MixMIL).
 
-Creates method-specific .h5ad files from our preprocessed AnnData,
-using the same 465 subjects and 4797 genes as our model.
+Creates method-specific .h5ad files from the preprocessed AnnData, using the
+same subject set and gene set the main model sees.
 
 Outputs:
-    baselines/shared/scphase_input.h5ad  — cells x 4797 genes, sparse
+    baselines/shared/scphase_input.h5ad  — cells x n_genes, sparse
         .obs: ROSMAP_IndividualID, cogn_global, batch, supercluster_name
     baselines/shared/mixmil_input.h5ad   — cells x 30 scVI latent dims
         .obs: ROSMAP_IndividualID, cogn_global, supercluster_name
@@ -60,7 +60,8 @@ def prepare_scphase_input(
     """Create scPhase-compatible .h5ad.
 
     scPhase requires:
-    - .X: expression matrix (sparse OK, 5000 HVGs recommended; we use our 4797)
+    - .X: expression matrix (sparse OK; scPhase recommends ~5000 HVGs and we
+      feed whatever HVG set the preprocessed h5ad ships with)
     - .obs['sample_id']: subject identifier per cell
     - .obs['phenotype']: continuous target value per cell (same for all cells of a subject)
     - .obs['batch']: batch/cohort label (single cohort → 'ROSMAP' constant)
@@ -187,7 +188,7 @@ def prepare_mixmil_input(
     # scVI expects raw counts, not normalized expression.
     # The preprocessed h5ad stores normalized data in .X and raw counts in .raw.
     if adata_sub.raw is not None:
-        logger.info("Swapping .X with .raw counts for scVI (same 4797 genes, integer counts)")
+        logger.info("Swapping .X with .raw counts for scVI (same gene set, integer counts)")
         adata_sub.X = adata_sub.raw[adata_sub.obs_names, adata_sub.var_names].X.copy()
         adata_sub.raw = None  # avoid confusion
     else:
@@ -307,18 +308,18 @@ def main():
     adata = sc.read_h5ad(args.adata, backed="r") if use_backed else sc.read_h5ad(args.adata)
     logger.info(f"Loaded: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
 
-    # Verify gene identity with our precomputed features
+    # Verify gene identity against the main-model precomputed features
     gene_names_file = Path("data/precomputed/rosmap/gene_names.npy")
     if gene_names_file.exists():
-        our_genes = list(np.load(gene_names_file, allow_pickle=True))
+        model_genes = list(np.load(gene_names_file, allow_pickle=True))
         h5ad_genes = list(adata.var_names)
-        if our_genes != h5ad_genes:
+        if model_genes != h5ad_genes:
             raise ValueError(
-                f"Gene mismatch: h5ad has {len(h5ad_genes)} genes, our model uses {len(our_genes)}. "
-                f"First difference at index {next(i for i, (a, b) in enumerate(zip(our_genes, h5ad_genes)) if a != b)}. "
-                f"Baselines must use the exact same genes as our model for fair comparison."
+                f"Gene mismatch: h5ad has {len(h5ad_genes)} genes, main model uses {len(model_genes)}. "
+                f"First difference at index {next(i for i, (a, b) in enumerate(zip(model_genes, h5ad_genes)) if a != b)}. "
+                f"Baselines must use the exact same genes as the main model for fair comparison."
             )
-        logger.info(f"Gene identity verified: {len(our_genes)} genes match precomputed features")
+        logger.info(f"Gene identity verified: {len(model_genes)} genes match precomputed features")
 
     methods_remaining = set(args.methods)
 

@@ -7,7 +7,7 @@ Instead of treating all cells as one unstructured bag, this variant:
   3. Concatenates per-type density features → polynomial regression
 
 This gives CloudPred awareness of cell type structure, making it a fairer
-comparison to our multi-view model which processes cell types separately.
+comparison to the main multi-view model, which processes cell types separately.
 
 Usage:
     baselines/cloudpred/.venv/bin/python baselines/cloudpred/run_rosmap_pertype.py \\

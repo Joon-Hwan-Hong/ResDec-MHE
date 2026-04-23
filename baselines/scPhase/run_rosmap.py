@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Run scPhase baseline on our ROSMAP cognitive resilience 5-fold splits.
+"""Run scPhase baseline on the ROSMAP cognitive resilience 5-fold splits.
 
-Generates config, loads data via scPhase's load_data(), injects our exact
+Generates config, loads data via scPhase's load_data(), injects the project's
 fold assignments, trains per-fold, aggregates metrics, and runs scPhase's
 built-in Captum interpretability (gene attributions + cell attention).
 
@@ -73,7 +73,7 @@ def build_config(
     seed: int = 3407,
     input_dim: int | None = None,
 ) -> dict:
-    """Build scPhase config dict with paper defaults for our ROSMAP data.
+    """Build scPhase config dict with paper defaults for ROSMAP data.
 
     Adaptations from paper defaults:
     - input_dim: auto-detected from h5ad `.n_vars` when not supplied
@@ -158,17 +158,17 @@ def build_config(
 
 
 # ---------------------------------------------------------------------------
-# Fold mapping — translate our splits.json subject IDs to scPhase indices
+# Fold mapping — translate splits.json subject IDs to scPhase indices
 # ---------------------------------------------------------------------------
 
 def map_splits_to_indices(
     splits: dict,
     sample_ids: list[str],
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Map our splits.json fold assignments to scPhase DataList indices.
+    """Map the project's splits.json fold assignments to scPhase DataList indices.
 
-    Our fold's `val` (93 subjects) = scPhase's `test_idx`.
-    Our fold's `train` (372 subjects) = scPhase's `train_idx`.
+    The project's fold `val` subjects map to scPhase's `test_idx`.
+    The project's fold `train` subjects map to scPhase's `train_idx`.
     scPhase further splits train_idx internally into train/val for early stopping.
 
     Returns list of (train_idx, test_idx) numpy arrays, one per fold.
@@ -210,14 +210,14 @@ def map_splits_to_indices(
 
 
 # ---------------------------------------------------------------------------
-# Cross-validation with our exact splits
+# Cross-validation with the project's exact splits
 # ---------------------------------------------------------------------------
 
 def run_cv_with_our_splits(
     config: dict,
     splits: dict,
 ) -> pd.DataFrame:
-    """Run scPhase 5-fold CV using our exact fold assignments."""
+    """Run scPhase 5-fold CV using the project's exact fold assignments."""
 
     logger.info("--- Starting ROSMAP CV with injected splits ---")
     logger.info(f"Configuration:\n{json.dumps(config, indent=2)}")
@@ -236,7 +236,7 @@ def run_cv_with_our_splits(
     DataList, DataLabel, DataBatch, SampleIDs = load_data(config)
     logger.info(f"Data loaded: {len(DataList)} subjects, {DataList[0].shape[1]} genes")
 
-    # Map our splits to scPhase indices
+    # Map the project's splits to scPhase indices
     fold_indices = map_splits_to_indices(splits, SampleIDs)
     logger.info(f"Mapped {len(fold_indices)} folds from splits.json")
     for i, (tr, te) in enumerate(fold_indices):
@@ -456,7 +456,7 @@ def run_interpretability(config: dict) -> None:
     try:
         plot_ensemble_cell_attention_umaps(config, updated_adata)
     except Exception as e:
-        # May fail if no X_umap in adata (our data may not have UMAP precomputed)
+        # May fail if no X_umap in adata (the input may not have UMAP precomputed)
         logger.warning(
             f"Cell attention UMAP plot failed (likely no X_umap in adata): {e}"
         )
@@ -480,7 +480,7 @@ def main():
     parser.add_argument(
         "--splits",
         required=True,
-        help="Path to outputs/splits.json with our 5-fold assignments",
+        help="Path to outputs/splits.json with the project's 5-fold assignments",
     )
     parser.add_argument(
         "--results-dir",
@@ -539,7 +539,7 @@ def main():
     logger.info(f"Global seed set to: {config['run_params']['seed']}")
     logger.info(f"Config saved to: {config_path}")
 
-    # Load our splits
+    # Load splits
     with open(args.splits) as f:
         splits = json.load(f)
     logger.info(

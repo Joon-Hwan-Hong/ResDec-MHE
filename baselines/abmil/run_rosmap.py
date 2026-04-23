@@ -1,7 +1,7 @@
 """ABMIL baseline for ROSMAP cognitive resilience regression.
 
 Gated Attention-Based MIL (Ilse et al. 2018) with MSE regression head,
-on 30-dim scVI embeddings using our exact 5-fold splits.
+on 30-dim scVI embeddings using the project's 5-fold splits.
 
 Usage:
     uv run python baselines/abmil/run_rosmap.py \
