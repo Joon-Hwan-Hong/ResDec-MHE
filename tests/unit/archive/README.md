@@ -17,6 +17,12 @@ canonical ResDec-MHE pipeline. In some cases the imported classes still exist
 in `src/` (kept for legacy baselines/analysis), but the canonical pipeline
 bypasses them, so the tests no longer provide coverage of the live pipeline.
 
+### Task 3 archive batch
+
+| File | Original path | Reason archived |
+|---|---|---|
+| `test_extract_attention.py` | `tests/unit/inference/test_extract_attention.py` | Tests call `aggregate_hgt_attention(edge_types=...)` but the current `src/inference/extract_attention.py::aggregate_hgt_attention` signature no longer accepts an `edge_types` kwarg, and its return dict no longer has `edge_type_names` / `n_samples_per_edge_type` keys (API drift). 10/10 `TestAggregateHGTAttention` / `TestEdgeTypeOrdering` / `TestEdgeCases` / `TestAbsentEdgeTypeNaN` tests fail. The function itself is still live (used by `src/inference/predict.py:556,661,1115`); writing fresh tests against the current API is left as a follow-up when the inference path is next touched. |
+
 ### Task 2 archive batch
 
 | File | Original path | Reason archived |
