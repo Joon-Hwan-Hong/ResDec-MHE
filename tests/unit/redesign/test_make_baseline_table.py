@@ -5,13 +5,15 @@ Tests cover:
 - Parsing of best_vs_tabpfn_summary.json schema (per-fold ours metrics)
 - Parsing of classical baseline CSV (Ridge/ElasticNet/PLS/RF/XGBoost)
 - Parsing of DL baseline CSVs (cloudpred/gpio/perceiver_io; 1-indexed folds)
+- Parsing of TabPFN-2.6 outer-fold npz (per-fold R² computed on the fly)
 - Missing baselines produce NaN rows with a "missing" note (not crash)
 - Missing ablations (e.g. D.2 pending) produce a NaN row with a "pending" note
 - Aggregation computes mean/std with ddof=1 across available folds
+- Sort places baselines (by r2 desc) first, ours (by r2 desc) second, NaN last
+- ``_fmt_pair`` handles NaN, regular mean±std, and size-1 mean-only cases
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import math
 import sys
@@ -20,27 +22,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.metrics import r2_score
 
 
-# Import the script as a module without having to pip install; matches
-# the approach used by other interpretability scripts' tests.
+# Standard-import the script as a module. Requires scripts/__init__.py and
+# scripts/redesign/__init__.py + scripts/redesign/interpretability/__init__.py
+# to exist in the worktree.
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-_SCRIPT_PATH = (
-    _WORKTREE_ROOT
-    / "scripts" / "redesign" / "interpretability" / "make_baseline_table.py"
-)
+if str(_WORKTREE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKTREE_ROOT))
 
-
-def _import_script_module():
-    """Dynamically load make_baseline_table.py without installing the package."""
-    if str(_WORKTREE_ROOT) not in sys.path:
-        sys.path.insert(0, str(_WORKTREE_ROOT))
-    spec = importlib.util.spec_from_file_location(
-        "make_baseline_table", _SCRIPT_PATH,
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+from scripts.redesign.interpretability import make_baseline_table as mod  # noqa: E402
 
 
 def _write_summary_json(path: Path, per_fold_r2s: list[float]) -> None:
@@ -80,7 +72,6 @@ def _write_summary_json(path: Path, per_fold_r2s: list[float]) -> None:
 
 def test_parse_summary_json_extracts_all_five_metrics(tmp_path: Path) -> None:
     """A well-formed summary JSON → 5 per-fold arrays, one per metric."""
-    mod = _import_script_module()
     path = tmp_path / "summary.json"
     _write_summary_json(path, [0.1, 0.2, 0.3, 0.4, 0.5])
 
@@ -96,14 +87,12 @@ def test_parse_summary_json_extracts_all_five_metrics(tmp_path: Path) -> None:
 
 def test_parse_summary_json_missing_file_returns_none(tmp_path: Path) -> None:
     """A missing summary JSON should return None (not raise)."""
-    mod = _import_script_module()
     out = mod.parse_summary_json(tmp_path / "does_not_exist.json")
     assert out is None
 
 
 def test_parse_summary_json_malformed_returns_none(tmp_path: Path) -> None:
     """A malformed JSON should return None (caller logs WARNING)."""
-    mod = _import_script_module()
     bad = tmp_path / "bad.json"
     bad.write_text("{not valid json]}")
     out = mod.parse_summary_json(bad)
@@ -116,7 +105,6 @@ def test_parse_summary_json_malformed_returns_none(tmp_path: Path) -> None:
 
 def test_discover_ablations_picks_up_all_p5_dirs(tmp_path: Path) -> None:
     """Glob should discover all p5_* dirs with a best_vs_tabpfn_summary.json."""
-    mod = _import_script_module()
     # Layout: three redesign dirs, one with summary, one without, one unrelated.
     (tmp_path / "p5_canonical_seed42").mkdir()
     (tmp_path / "p5_ablation_k1").mkdir()
@@ -171,7 +159,6 @@ def _write_classical_csv(path: Path) -> None:
 
 def test_parse_classical_csv_one_row_per_model_featureset(tmp_path: Path) -> None:
     """Classical CSV parser → one row per (model, feature_set) with all metrics."""
-    mod = _import_script_module()
     csv_path = tmp_path / "classical.csv"
     _write_classical_csv(csv_path)
 
@@ -195,7 +182,6 @@ def test_parse_classical_csv_one_row_per_model_featureset(tmp_path: Path) -> Non
 
 def test_parse_classical_csv_missing_returns_empty(tmp_path: Path) -> None:
     """Missing classical CSV → empty list, not crash."""
-    mod = _import_script_module()
     rows = mod.parse_classical_csv(tmp_path / "does_not_exist.csv")
     assert rows == []
 
@@ -224,7 +210,6 @@ def _write_dl_baseline_csv(path: Path, folds_one_indexed: bool = True) -> None:
 
 def test_parse_dl_baseline_csv_five_folds(tmp_path: Path) -> None:
     """DL baseline → one dict with 5 per-fold metric arrays."""
-    mod = _import_script_module()
     csv_path = tmp_path / "results.csv"
     _write_dl_baseline_csv(csv_path)
 
@@ -235,7 +220,6 @@ def test_parse_dl_baseline_csv_five_folds(tmp_path: Path) -> None:
 
 
 def test_parse_dl_baseline_csv_missing_returns_none(tmp_path: Path) -> None:
-    mod = _import_script_module()
     out = mod.parse_dl_baseline_csv(tmp_path / "missing.csv")
     assert out is None
 
@@ -246,7 +230,6 @@ def test_parse_dl_baseline_csv_missing_returns_none(tmp_path: Path) -> None:
 
 def test_summarise_row_computes_mean_std() -> None:
     """summarise_row → mean + std (ddof=1) for each metric."""
-    mod = _import_script_module()
     metrics = {
         "r2": [0.1, 0.2, 0.3, 0.4, 0.5],
         "mae": [1.0, 1.0, 1.0, 1.0, 1.0],
@@ -265,7 +248,6 @@ def test_summarise_row_computes_mean_std() -> None:
 
 def test_summarise_row_empty_returns_nans() -> None:
     """summarise_row on empty metrics → all NaN, n_folds=0."""
-    mod = _import_script_module()
     metrics = {k: [] for k in ("r2", "mae", "rmse", "pearson_r", "spearman_rho")}
     s = mod.summarise_row(metrics)
     assert s["n_folds"] == 0
@@ -274,12 +256,123 @@ def test_summarise_row_empty_returns_nans() -> None:
 
 
 # ---------------------------------------------------------------------------
+# TabPFN standalone parsing
+# ---------------------------------------------------------------------------
+
+def test_parse_tabpfn_standalone_computes_r2_from_npz(tmp_path: Path) -> None:
+    """Synthetic tabpfn_outer_fold{f}.npz → per-fold R² computed on the fly."""
+    n_folds = 5
+    rng = np.random.default_rng(42)
+    expected_r2s: list[float] = []
+    for f in range(n_folds):
+        n = 30
+        y_true = rng.standard_normal(n)
+        # Known noise level → finite R² bounded < 1.
+        y_tabpfn = y_true + rng.standard_normal(n) * 0.4
+        np.savez(
+            tmp_path / f"tabpfn_outer_fold{f}.npz",
+            val_subject_ids=np.asarray([f"F{f}_S{i}" for i in range(n)], dtype=object),
+            y_true=y_true.astype(np.float64),
+            y_tabpfn=y_tabpfn.astype(np.float64),
+            sigma_tabpfn=np.full(n, 0.5, dtype=np.float64),
+        )
+        expected_r2s.append(float(r2_score(y_true, y_tabpfn)))
+
+    metrics = mod.parse_tabpfn_standalone(tmp_path, n_folds=n_folds)
+
+    assert metrics is not None
+    assert set(metrics) == {"r2", "mae", "rmse", "pearson_r", "spearman_rho"}
+    # 5 R²s, all finite, and agree with sklearn to float precision.
+    assert len(metrics["r2"]) == n_folds
+    assert all(math.isfinite(v) for v in metrics["r2"])
+    np.testing.assert_allclose(
+        metrics["r2"], expected_r2s, rtol=0, atol=1e-12,
+    )
+    # Pearson and Spearman should also be finite on non-degenerate data.
+    assert all(math.isfinite(v) for v in metrics["pearson_r"])
+    assert all(math.isfinite(v) for v in metrics["spearman_rho"])
+
+
+def test_parse_tabpfn_standalone_missing_fold_returns_none(tmp_path: Path) -> None:
+    """Any missing outer-fold npz → None (entire row dropped)."""
+    # Only write 3 of the 5 expected folds.
+    for f in range(3):
+        np.savez(
+            tmp_path / f"tabpfn_outer_fold{f}.npz",
+            val_subject_ids=np.asarray(["S0", "S1", "S2"], dtype=object),
+            y_true=np.array([1.0, 2.0, 3.0]),
+            y_tabpfn=np.array([0.9, 2.1, 2.8]),
+            sigma_tabpfn=np.array([0.5, 0.5, 0.5]),
+        )
+    out = mod.parse_tabpfn_standalone(tmp_path, n_folds=5)
+    assert out is None
+
+
+# ---------------------------------------------------------------------------
+# Sort order for the markdown render
+# ---------------------------------------------------------------------------
+
+def test_sort_for_md_places_ours_at_bottom_and_nan_last() -> None:
+    """_sort_for_md: baselines first (r2 desc), ours second (r2 desc), NaN last."""
+    rows: list[dict] = [
+        {
+            "model": "p5_canonical_seed42",
+            "display_name": "Ours",
+            "r2_mean": 0.44,
+            "_is_ours": True,
+        },
+        {
+            "model": "tabpfn",
+            "display_name": "TabPFN",
+            "r2_mean": 0.40,
+            "_is_ours": False,
+        },
+        {
+            "model": "xgboost",
+            "display_name": "XGBoost",
+            "r2_mean": 0.36,
+            "_is_ours": False,
+        },
+        {
+            "model": "pending",
+            "display_name": "Pending",
+            "r2_mean": float("nan"),
+            "_is_ours": False,
+        },
+    ]
+    sorted_rows = mod._sort_for_md(rows)
+    # Baseline block comes first, highest r2 first, NaN last within block.
+    assert sorted_rows[0]["model"] == "tabpfn"
+    assert sorted_rows[1]["model"] == "xgboost"
+    assert sorted_rows[2]["model"] == "pending"  # NaN last within baseline block
+    # Ours row at the bottom.
+    assert sorted_rows[-1]["model"] == "p5_canonical_seed42"
+
+
+# ---------------------------------------------------------------------------
+# _fmt_pair formatting rules
+# ---------------------------------------------------------------------------
+
+def test_fmt_pair_handles_nan_and_size_one() -> None:
+    """_fmt_pair: NaN mean → '—'; NaN std → mean-only; std == 0 → mean-only."""
+    # Both NaN → em-dash (pending/missing row).
+    assert mod._fmt_pair(float("nan"), float("nan")) == "—"
+    # NaN mean alone → also em-dash.
+    assert mod._fmt_pair(float("nan"), 0.1) == "—"
+    # Regular mean + std → mean ± std.
+    assert mod._fmt_pair(0.4436, 0.0996) == "0.4436 ± 0.0996"
+    # Size-1 / reference row: std == 0.0 → mean-only.
+    assert mod._fmt_pair(0.286, 0.0) == "0.2860"
+    # NaN std only → mean-only (current-encoder-alone reference).
+    assert mod._fmt_pair(0.286, float("nan")) == "0.2860"
+
+
+# ---------------------------------------------------------------------------
 # End-to-end row assembly with missing ablations
 # ---------------------------------------------------------------------------
 
 def test_ablation_row_falls_back_to_per_fold_npz(tmp_path: Path) -> None:
     """When summary.json is absent but per-fold npz files exist, use them."""
-    mod = _import_script_module()
     subdir = tmp_path / "p5_phase3_3stage"
     # No best_vs_tabpfn_summary.json — only per-fold npz files.
     for f in range(5):
@@ -313,7 +406,6 @@ def test_ablation_row_falls_back_to_per_fold_npz(tmp_path: Path) -> None:
 
 def test_missing_ablation_produces_nan_row_with_pending_note(tmp_path: Path) -> None:
     """A requested ablation dir that doesn't exist → NaN row + 'pending' note."""
-    mod = _import_script_module()
     # Only canonical exists; request an ablation that does not exist on disk.
     (tmp_path / "p5_canonical_seed42").mkdir()
     _write_summary_json(

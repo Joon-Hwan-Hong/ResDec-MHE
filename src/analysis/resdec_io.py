@@ -89,6 +89,18 @@ def compute_per_fold_r2_ours(df: pd.DataFrame, n_folds: int) -> np.ndarray:
     return r2s
 
 
+def load_tabpfn_outer_fold(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(y_true, y_tabpfn)`` as float64 arrays from an outer-fold npz.
+
+    Centralises the read-and-cast so every downstream TabPFN analysis pulls
+    the same canonical tensors from the same canonical file layout.
+    """
+    if not path.exists():
+        raise FileNotFoundError(path)
+    d = np.load(path, allow_pickle=True)
+    return d["y_true"].astype(np.float64), d["y_tabpfn"].astype(np.float64)
+
+
 def compute_per_fold_r2_tabpfn(tabpfn_dir: Path, n_folds: int) -> np.ndarray:
     """Per-fold R²(y_true, y_tabpfn) from ``tabpfn_outer_fold{f}.npz``.
 
@@ -98,15 +110,13 @@ def compute_per_fold_r2_tabpfn(tabpfn_dir: Path, n_folds: int) -> np.ndarray:
     r2s = np.empty(n_folds, dtype=np.float64)
     for f in range(n_folds):
         path = tabpfn_dir / f"tabpfn_outer_fold{f}.npz"
-        if not path.exists():
+        try:
+            y_true, y_tabpfn = load_tabpfn_outer_fold(path)
+        except FileNotFoundError:
             raise FileNotFoundError(
                 f"TabPFN-2.6 standalone baseline is required; missing {path}"
             )
-        tab = np.load(path, allow_pickle=True)
-        r2s[f] = r2_score(
-            tab["y_true"].astype(np.float64),
-            tab["y_tabpfn"].astype(np.float64),
-        )
+        r2s[f] = r2_score(y_true, y_tabpfn)
     return r2s
 
 
@@ -115,4 +125,5 @@ __all__ = [
     "compute_per_fold_r2_tabpfn",
     "load_all_folds",
     "load_fold_predictions",
+    "load_tabpfn_outer_fold",
 ]

@@ -43,7 +43,9 @@ import argparse
 import json
 import logging
 import math
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +58,8 @@ from scipy.stats import pearsonr, spearmanr
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if (_WORKTREE_ROOT / "src").is_dir() and str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
+
+from src.analysis.resdec_io import load_tabpfn_outer_fold  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +75,31 @@ _METRIC_NAMES: dict[str, str] = {
     "spearman_rho": "Spearman ρ",
 }
 
+# CSV column display names: internal dict keys use sklearn-idiomatic
+# ``pearson_r`` / ``spearman_rho``; the paper-facing CSV columns drop the
+# ``_r`` / ``_rho`` suffix per the E.1 spec so the header reads
+# ``pearson_mean, pearson_std, spearman_mean, spearman_std``.
+_METRIC_DISPLAY_NAMES: dict[str, str] = {
+    "r2": "r2",
+    "mae": "mae",
+    "rmse": "rmse",
+    "pearson_r": "pearson",
+    "spearman_rho": "spearman",
+}
+
+# Reference R² for the encoder-only baseline (no TabPFN residual, no head
+# decomposition). Sourced from the 5-fold beat-baselines investigation
+# (MEMORY.md, 2026-04-20). Per-fold data was not archived — only the mean.
+CURRENT_ENCODER_ALONE_R2_REF: float = 0.286
+
+# Note on ablation #6 (no DiffAttn): the new canonical already has
+# use_diff_attn=False, so ablation #6 IS the canonical (no separate row).
+# ``p5_phase3_1stage_with_tabm`` below is the INVERSE: canonical *with*
+# DiffAttn, retained for the delta comparison.
+#
 # Non-canonical ablations requested by the paper. Order doesn't matter —
 # rows are sorted by R² descending before rendering. The canonical row is
-# injected separately via `--canonical-dir` so it can be overridden from
+# injected separately via ``--canonical-dir`` so it can be overridden from
 # the CLI (e.g. seed43) without editing the table spec.
 _ABLATION_NAMES: list[tuple[str, str]] = [
     ("p5_filmwired_5fold_seed42", "ResDec-H3 + FiLM with metadata (A.3)"),
@@ -142,17 +168,19 @@ def parse_summary_json(path: Path) -> dict[str, list[float]] | None:
 
 
 def discover_ablation_dirs(ablation_root: Path) -> list[Path]:
-    """Return all ``<ablation-root>/p5_*`` subdirs that contain a summary JSON.
+    """Iterate ``p5_*`` subdirs of ``ablation_root`` with a summary JSON.
 
-    Used by tests; the main script looks up specific ablations by name via
-    :func:`collect_ablation_rows` so it can emit pending/NaN rows even for
-    dirs that don't exist on disk yet.
+    Used by :func:`main` as a lint to flag ``p5_*`` subdirs that exist on
+    disk but are not enumerated in :data:`_ABLATION_NAMES` (so they would
+    silently miss the table). Main row assembly uses :func:`collect_ablation_rows`
+    instead so pending/NaN rows can be emitted even for dirs that don't
+    exist on disk yet.
     """
     if not ablation_root.exists():
         return []
     out: list[Path] = []
-    for subdir in sorted(ablation_root.iterdir()):
-        if not subdir.is_dir() or not subdir.name.startswith("p5_"):
+    for subdir in sorted(ablation_root.glob("p5_*")):
+        if not subdir.is_dir():
             continue
         if (subdir / "best_vs_tabpfn_summary.json").exists():
             out.append(subdir)
@@ -241,22 +269,22 @@ def parse_tabpfn_standalone(
 ) -> dict[str, list[float]] | None:
     """Per-fold metrics for TabPFN-2.6 standalone, computed on the fly.
 
-    Reads ``<tabpfn-dir>/tabpfn_outer_fold{f}.npz``, which contains
-    ``y_true`` and ``y_tabpfn``. For each fold we compute R², MAE, RMSE,
+    Reads ``<tabpfn-dir>/tabpfn_outer_fold{f}.npz`` via
+    :func:`src.analysis.resdec_io.load_tabpfn_outer_fold`, which yields
+    ``(y_true, y_tabpfn)``. For each fold we compute R², MAE, RMSE,
     Pearson r, Spearman ρ. If any fold is missing → ``None``.
     """
     metrics: dict[str, list[float]] = {k: [] for k in _METRIC_KEYS}
     for f in range(n_folds):
         path = tabpfn_dir / f"tabpfn_outer_fold{f}.npz"
-        if not path.exists():
+        try:
+            y_true, y_pred = load_tabpfn_outer_fold(path)
+        except FileNotFoundError:
             logger.warning(
                 "TabPFN-2.6 outer-fold file missing: %s; TabPFN standalone row dropped.",
                 path,
             )
             return None
-        d = np.load(path, allow_pickle=True)
-        y_true = d["y_true"].astype(np.float64)
-        y_pred = d["y_tabpfn"].astype(np.float64)
         metrics["r2"].append(float(r2_score(y_true, y_pred)))
         metrics["mae"].append(float(mean_absolute_error(y_true, y_pred)))
         metrics["rmse"].append(float(np.sqrt(np.mean((y_true - y_pred) ** 2))))
@@ -477,12 +505,11 @@ def collect_nonresult_rows() -> list[dict]:
     directory. These are blocked on preprocessed inputs (see
     ``docs/results/2026-03-30-baseline-benchmarks.md``).
 
-    "Current encoder alone" (R²=0.286) comes from MEMORY.md's project_ablation
-    findings and is a mean-only reference value — we emit a point-estimate
-    row with NaN std.
+    "Current encoder alone" (R² = :data:`CURRENT_ENCODER_ALONE_R2_REF`)
+    comes from MEMORY.md's project_ablation findings and is a mean-only
+    reference value — we emit a point-estimate row with NaN std.
     """
     rows: list[dict] = []
-    empty = {k: float("nan") for k in _METRIC_KEYS}
 
     # MixMIL — source only.
     rows.append({
@@ -513,14 +540,15 @@ def collect_nonresult_rows() -> list[dict]:
         "model": "current_encoder_alone",
         "display_name": "Current encoder alone (mean-only reference)",
         "n_folds": 0,
-        "r2_mean": 0.286,
+        "r2_mean": CURRENT_ENCODER_ALONE_R2_REF,
         "r2_std": float("nan"),
         **{f"{k}_mean": float("nan") for k in _METRIC_KEYS if k != "r2"},
         **{f"{k}_std": float("nan") for k in _METRIC_KEYS if k != "r2"},
         "source_path": "(legacy training run; no per-fold CSV archived)",
         "notes": (
-            "reference R² only (0.286) from prior 5-fold beat-baselines "
-            "investigation (MEMORY.md); per-fold data unavailable"
+            f"reference R² only ({CURRENT_ENCODER_ALONE_R2_REF:.3f}) from "
+            "prior 5-fold beat-baselines investigation (MEMORY.md); "
+            "per-fold data unavailable"
         ),
     })
     return rows
@@ -536,19 +564,39 @@ def _is_ours_row(model: str) -> bool:
 
 
 def rows_to_dataframe(rows: list[dict]) -> pd.DataFrame:
-    """Assemble rows into a DataFrame with a stable column order."""
-    cols = (
-        ["model", "display_name", "n_folds"]
-        + [f"{k}_{stat}" for stat in ("mean", "std") for k in _METRIC_KEYS]
-        + ["source_path", "notes"]
-    )
-    # Reorder metric columns to (r2_mean, r2_std, mae_mean, mae_std, ...).
-    cols = ["model", "display_name", "n_folds"]
+    """Assemble rows into a DataFrame with a stable column order.
+
+    Internal row dicts use ``pearson_r`` / ``spearman_rho`` keys (matching
+    the sklearn / scipy idioms); the published CSV column names use the
+    paper-facing ``pearson`` / ``spearman`` aliases (see
+    :data:`_METRIC_DISPLAY_NAMES`). This function renames keys in-place to
+    honour the E.1 spec.
+    """
+    # Column order: (r2_mean, r2_std, mae_mean, mae_std, ..., pearson_mean,
+    # pearson_std, spearman_mean, spearman_std).
+    cols: list[str] = ["model", "display_name", "n_folds"]
     for k in _METRIC_KEYS:
-        cols.extend([f"{k}_mean", f"{k}_std"])
+        display = _METRIC_DISPLAY_NAMES[k]
+        cols.extend([f"{display}_mean", f"{display}_std"])
     cols.extend(["source_path", "notes"])
 
-    df = pd.DataFrame(rows)
+    # Rebuild rows with renamed keys so the DataFrame column names match the
+    # CSV/MD contract; keep everything else.
+    renamed_rows: list[dict] = []
+    for row in rows:
+        new_row = dict(row)
+        for k in _METRIC_KEYS:
+            display = _METRIC_DISPLAY_NAMES[k]
+            if k == display:
+                continue
+            for stat in ("mean", "std"):
+                old_key = f"{k}_{stat}"
+                new_key = f"{display}_{stat}"
+                if old_key in new_row:
+                    new_row[new_key] = new_row.pop(old_key)
+        renamed_rows.append(new_row)
+
+    df = pd.DataFrame(renamed_rows)
     # Ensure every column exists (in case some rows are short).
     for c in cols:
         if c not in df.columns:
@@ -556,12 +604,65 @@ def rows_to_dataframe(rows: list[dict]) -> pd.DataFrame:
     return df[cols]
 
 
-def _sort_for_md(df: pd.DataFrame) -> pd.DataFrame:
+def _fmt_pair(mean: float, std: float) -> str:
+    """Format a ``mean ± std`` cell for the markdown table.
+
+    Rules:
+    - NaN mean → ``"—"`` (covers pending/missing rows).
+    - NaN std  → mean-only ``"0.xxxx"`` (covers size-1 / reference rows).
+    - std == 0 also falls through to the ``± 0.xxxx`` branch (size-1 rows
+      emitted by :func:`summarise_row` use std == 0, not NaN, when there is
+      exactly one fold).
+    """
+    try:
+        mean_f = float(mean)
+    except (TypeError, ValueError):
+        return "—"
+    if math.isnan(mean_f):
+        return "—"
+    try:
+        std_f = float(std)
+    except (TypeError, ValueError):
+        return f"{mean_f:.4f}"
+    if math.isnan(std_f):
+        return f"{mean_f:.4f}"
+    if std_f == 0.0:
+        return f"{mean_f:.4f}"
+    return f"{mean_f:.4f} ± {std_f:.4f}"
+
+
+def _sort_for_md(df: pd.DataFrame | list[dict]) -> pd.DataFrame | list[dict]:
     """Sort for the MD display: baselines (top) then ours (bottom).
 
     Within each block, sort by r2_mean descending; NaN R² rows go to the
     bottom of their block so pending/missing rows don't hide good ones.
+
+    Accepts either a DataFrame (the main pipeline) or a list of dicts (for
+    tests that want to probe sort semantics without building a full table).
     """
+    if isinstance(df, list):
+        def _r2(row: dict) -> float:
+            v = row.get("r2_mean", float("nan"))
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return float("nan")
+
+        def _is_ours(row: dict) -> bool:
+            return bool(
+                row.get("_is_ours") or _is_ours_row(str(row.get("model", "")))
+            )
+
+        ours = [r for r in df if _is_ours(r)]
+        others = [r for r in df if not _is_ours(r)]
+        # NaN last within each block.
+        _sort_key = lambda r: (  # noqa: E731
+            math.isnan(_r2(r)), -_r2(r) if not math.isnan(_r2(r)) else 0.0,
+        )
+        others_sorted = sorted(others, key=_sort_key)
+        ours_sorted = sorted(ours, key=_sort_key)
+        return others_sorted + ours_sorted
+
     is_ours = df["model"].apply(_is_ours_row)
     ours = df[is_ours].copy()
     others = df[~is_ours].copy()
@@ -574,13 +675,6 @@ def _sort_for_md(df: pd.DataFrame) -> pd.DataFrame:
 def render_markdown(df: pd.DataFrame) -> str:
     """Paper-ready markdown table ordered per the spec."""
     df = _sort_for_md(df)
-
-    def _fmt_pair(mean: float, std: float) -> str:
-        if not isinstance(mean, (int, float)) or math.isnan(float(mean)):
-            return "—"
-        if not isinstance(std, (int, float)) or math.isnan(float(std)):
-            return f"{float(mean):.4f}"
-        return f"{float(mean):.4f} ± {float(std):.4f}"
 
     lines: list[str] = []
     lines.append("# Paper Baseline Table (E.1)")
@@ -611,12 +705,47 @@ def render_markdown(df: pd.DataFrame) -> str:
             str(row["n_folds"]),
         ]
         for k in _METRIC_KEYS:
-            cells.append(_fmt_pair(row[f"{k}_mean"], row[f"{k}_std"]))
+            display = _METRIC_DISPLAY_NAMES[k]
+            cells.append(_fmt_pair(row[f"{display}_mean"], row[f"{display}_std"]))
         cells.append(str(row["source_path"]))
-        cells.append(str(row["notes"] or ""))
+        notes = row["notes"]
+        if pd.isna(notes) or notes is None:
+            notes = ""
+        cells.append(str(notes))
         lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+
+def _compute_provenance(args: argparse.Namespace) -> dict:
+    """Assemble a provenance JSON payload for reproducibility.
+
+    Records the git SHA of the worktree, the CLI-resolved input paths, and
+    the list of ablations requested so a downstream reader can reconstruct
+    which files fed this table.
+    """
+    try:
+        git_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        git_sha = "unknown"
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "git_commit": git_sha,
+        "canonical_dir": str(args.canonical_dir),
+        "ablation_root": str(args.ablation_root),
+        "baselines_root": str(args.baselines_root),
+        "classical_csv": str(args.classical_csv),
+        "tabpfn_dir": str(args.tabpfn_dir),
+        "n_folds": int(args.n_folds),
+        "ablations_requested": [e[0] for e in _ABLATION_NAMES],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +821,16 @@ def main(args: argparse.Namespace) -> int:
     )
 
     # 4. MixMIL / scPhase / current-encoder reference rows.
+    # Verify the MixMIL / scPhase source paths still exist at runtime — warn
+    # loudly if they've been moved/renamed so the provenance note in the MD
+    # table doesn't silently drift.
+    mixmil_src = Path("baselines/mixmil/run_rosmap.py")
+    if not mixmil_src.exists():
+        logger.warning("MixMIL source path %s no longer exists", mixmil_src)
+    scphase_src = Path("baselines/scPhase/run_rosmap.py")
+    if not scphase_src.exists():
+        logger.warning("scPhase source path %s no longer exists", scphase_src)
+
     nonresult_rows = collect_nonresult_rows()
     rows.extend(nonresult_rows)
     logger.info(
@@ -718,6 +857,23 @@ def main(args: argparse.Namespace) -> int:
         "[baseline_table] ours + ablation rows: %d", len(ours_rows),
     )
 
+    # Lint: flag any ``p5_*`` subdirs that exist on disk but are NOT listed
+    # in ``_ABLATION_NAMES``. The canonical dir is expected to be implicit
+    # (injected via ``--canonical-dir``) and is excluded from the warning.
+    found_dirs = discover_ablation_dirs(args.ablation_root)
+    listed_dirs = {e[0] for e in _ABLATION_NAMES}
+    unlisted = (
+        {d.name for d in found_dirs}
+        - listed_dirs
+        - {canonical_name}
+    )
+    if unlisted:
+        logger.warning(
+            "[baseline_table] Found %d p5_* dirs not in _ABLATION_NAMES: %s. "
+            "Add to _ABLATION_NAMES to include in the table.",
+            len(unlisted), sorted(unlisted),
+        )
+
     df = rows_to_dataframe(rows)
 
     # Write CSV in registration order, unsorted — downstream tooling can
@@ -727,12 +883,23 @@ def main(args: argparse.Namespace) -> int:
     df.to_csv(csv_path, index=False)
     logger.info("[baseline_table] wrote %s (%d rows)", csv_path, len(df))
 
+    # Render the markdown ONCE and reuse the string for both the file write
+    # and the stdout echo. Previously this called ``render_markdown(df)``
+    # twice, which re-sorted and re-formatted every row.
+    md = render_markdown(df)
     md_path = out_dir / "paper_baseline_table.md"
-    md_path.write_text(render_markdown(df))
+    md_path.write_text(md)
     logger.info("[baseline_table] wrote %s", md_path)
 
+    # Emit the provenance sidecar so downstream readers can reconstruct
+    # the input tree + git SHA that produced this table.
+    provenance = _compute_provenance(args)
+    provenance_path = out_dir / "paper_baseline_table.provenance.json"
+    provenance_path.write_text(json.dumps(provenance, indent=2))
+    logger.info("[baseline_table] wrote %s", provenance_path)
+
     # Print the MD to stdout for the caller's sanity check.
-    print(render_markdown(df))
+    print(md)
 
     return 0
 
