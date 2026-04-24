@@ -43,11 +43,22 @@ def generate_shuffled_metadata(
     target_col: str,
     out_csv: Path,
 ) -> None:
-    """Write metadata.csv with target_col randomly permuted (subject IDs preserved)."""
+    """Write metadata.csv with target_col randomly permuted (subject IDs preserved).
+
+    NaN values STAY in their original rows; only the finite values are
+    permuted among the non-NaN positions. Preserves the missingness
+    pattern so cohort validation (which rejects NaN target subjects)
+    doesn't fail randomly while still randomizing labels among observed
+    subjects. (Bug fix: perm 4 hit a cohort subject with shuffled-in NaN.)
+    """
     df = pd.read_csv(base_csv)
     rng = np.random.default_rng(perm_seed)
     df = df.copy()
-    df[target_col] = rng.permutation(df[target_col].values)
+    vals = df[target_col].values.astype(np.float64)
+    finite_mask = np.isfinite(vals)
+    permuted = vals.copy()
+    permuted[finite_mask] = rng.permutation(vals[finite_mask])
+    df[target_col] = permuted
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
 
