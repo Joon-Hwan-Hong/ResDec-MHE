@@ -45,7 +45,7 @@ from run_cv import (
     _save_predictions_csv,
     train_and_evaluate_fold,
 )
-from summary_canonical import write_canonical_summary
+from summary_canonical import write_canonical_summary, write_dl_results_csv
 from train_utils import (
     calculate_cell_attention,
     calculate_gene_attributions,
@@ -288,16 +288,22 @@ def run_cv_with_our_splits(
     # Save per-sample predictions
     _save_predictions_csv(config)
 
-    # Summary statistics — emit canonical long-format CSV (metric, mean, std)
-    # matching the paper-table aggregator's schema. write_canonical_summary
-    # reads the AllFolds + predictions CSVs just written above, renames the
-    # upstream 'person' typo to 'pearson_r', adds rmse = sqrt(mse), and
-    # computes spearman_rho per fold from the predictions CSV.
+    # Summary + per-fold results CSVs — emit both shapes the paper-table
+    # aggregator consumes. Long-format Summary (metric/mean/std) for the
+    # ROSMAP-style path; per-fold results.csv (fold/r2/mae/rmse/pearson_r/
+    # spearman_rho) for the DL-baseline path. Both readers normalize the
+    # upstream 'person' typo to 'pearson_r', add rmse = sqrt(mse), and
+    # compute spearman_rho per fold from the predictions CSV.
     summary_path = write_canonical_summary(
         config["path_params"]["RESULTS_DIR"],
         model_name=config["path_params"]["MODEL_NAME"],
     )
     logger.info(f"Summary saved to: {summary_path}")
+    results_path = write_dl_results_csv(
+        config["path_params"]["RESULTS_DIR"],
+        model_name=config["path_params"]["MODEL_NAME"],
+    )
+    logger.info(f"Per-fold results saved to: {results_path}")
 
     return results_df
 
@@ -524,11 +530,17 @@ def main():
 
     # --regen-summary-only short-circuits the whole pipeline: it only needs
     # --results-dir to exist with AllFolds + predictions/ already written.
+    # Emits BOTH the long-format Summary CSV and the per-fold results.csv so
+    # both aggregator paths pick scPhase up.
     if args.regen_summary_only:
         summary_path = write_canonical_summary(
             args.results_dir, model_name="scPhase_ROSMAP",
         )
-        print(f"Summary regenerated: {summary_path}")
+        results_path = write_dl_results_csv(
+            args.results_dir, model_name="scPhase_ROSMAP",
+        )
+        print(f"Summary regenerated:    {summary_path}")
+        print(f"Per-fold results.csv:   {results_path}")
         return
 
     if args.data_h5ad is None or args.splits is None:

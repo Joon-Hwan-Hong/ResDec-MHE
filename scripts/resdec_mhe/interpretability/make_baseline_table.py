@@ -466,6 +466,7 @@ def collect_dl_baseline_rows(baselines_root: Path) -> list[dict]:
         "cloudpred_pertype": "CloudPred (per-type)",
         "gpio": "GPIO",
         "perceiver_io": "Perceiver-IO",
+        "scphase": "scPhase (Berson et al. 2025)",
     }
     rows: list[dict] = []
     if not baselines_root.exists():
@@ -572,20 +573,12 @@ def collect_nonresult_rows(baselines_root: Path) -> list[dict]:
             ),
         })
 
-    # scPhase — auto-detect real results, fall back to source-only placeholder.
+    # scPhase — emits its own per-fold results.csv via summary_canonical, so
+    # the DL-baseline path (collect_dl_baseline_rows) picks it up like any
+    # other DL baseline. Only emit a placeholder here when results.csv is
+    # absent, so the table still has a "pending" row before scPhase has run.
     scphase_dir = baselines_root / "scphase"
-    scphase_result = _try_read_rosmap_baseline_summary(scphase_dir)
-    if scphase_result is not None:
-        metrics, n_folds, summary_path = scphase_result
-        rows.append({
-            "model": "scphase",
-            "display_name": "scPhase (Berson et al. 2025)",
-            "n_folds": n_folds,
-            **metrics,
-            "source_path": str(summary_path),
-            "notes": "",
-        })
-    else:
+    if not (scphase_dir / "results.csv").exists():
         rows.append({
             "model": "scphase",
             "display_name": "scPhase (Berson et al. 2025)",

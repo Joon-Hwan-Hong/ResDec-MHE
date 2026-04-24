@@ -31,7 +31,10 @@ _SCPHASE_DIR = (
 if str(_SCPHASE_DIR) not in sys.path:
     sys.path.insert(0, str(_SCPHASE_DIR))
 
-from summary_canonical import write_canonical_summary  # noqa: E402
+from summary_canonical import (  # noqa: E402
+    write_canonical_summary,
+    write_dl_results_csv,
+)
 
 
 def _make_allfolds_csv(
@@ -168,3 +171,89 @@ class TestWriteCanonicalSummary:
         ])
         with pytest.raises(FileNotFoundError):
             write_canonical_summary(tmp_path)
+
+
+class TestWriteDLResultsCsv:
+    """Per-fold results.csv (DL baseline schema: fold, r2, mae, rmse, pearson_r,
+    spearman_rho) — matches the schema of cloudpred/gpio/perceiver_io baselines
+    so the paper-table aggregator's ``collect_dl_baseline_rows`` picks scPhase
+    up via the same path as the other DL baselines (no warning, no special
+    case)."""
+
+    def _make_two_folds(self, tmp_path: Path) -> None:
+        _make_allfolds_csv(tmp_path, [
+            {"mse": 1.0, "mae": 0.5, "r2": 0.3, "person": 0.6},
+            {"mse": 4.0, "mae": 1.0, "r2": 0.1, "person": 0.4},
+        ])
+        _make_predictions_csv(tmp_path, [
+            (np.array([0.1, 0.5, 0.9, 0.3, 0.7]),
+             np.array([0.2, 0.4, 0.8, 0.5, 0.6])),
+            (np.array([0.9, 0.5, 0.1, 0.7, 0.3]),
+             np.array([0.1, 0.5, 0.9, 0.3, 0.7])),
+        ])
+
+    def test_emits_per_fold_dl_schema(self, tmp_path):
+        self._make_two_folds(tmp_path)
+        out = write_dl_results_csv(tmp_path)
+        assert out == tmp_path / "results.csv"
+        assert out.exists()
+        df = pd.read_csv(out)
+        assert list(df.columns) == [
+            "fold", "r2", "mae", "rmse", "pearson_r", "spearman_rho",
+        ]
+        assert len(df) == 2
+        assert sorted(df["fold"].tolist()) == [1, 2]
+
+    def test_passthrough_r2_mae_per_fold(self, tmp_path):
+        self._make_two_folds(tmp_path)
+        df = pd.read_csv(write_dl_results_csv(tmp_path)).set_index("fold")
+        assert df.loc[1, "r2"] == pytest.approx(0.3)
+        assert df.loc[2, "r2"] == pytest.approx(0.1)
+        assert df.loc[1, "mae"] == pytest.approx(0.5)
+        assert df.loc[2, "mae"] == pytest.approx(1.0)
+
+    def test_rmse_equals_sqrt_mse(self, tmp_path):
+        self._make_two_folds(tmp_path)
+        df = pd.read_csv(write_dl_results_csv(tmp_path)).set_index("fold")
+        assert df.loc[1, "rmse"] == pytest.approx(1.0)
+        assert df.loc[2, "rmse"] == pytest.approx(2.0)
+
+    def test_pearson_renamed_from_person(self, tmp_path):
+        self._make_two_folds(tmp_path)
+        df = pd.read_csv(write_dl_results_csv(tmp_path)).set_index("fold")
+        assert df.loc[1, "pearson_r"] == pytest.approx(0.6)
+        assert df.loc[2, "pearson_r"] == pytest.approx(0.4)
+
+    def test_spearman_computed_per_fold(self, tmp_path):
+        self._make_two_folds(tmp_path)
+        df = pd.read_csv(write_dl_results_csv(tmp_path)).set_index("fold")
+        y1t = np.array([0.1, 0.5, 0.9, 0.3, 0.7])
+        y1p = np.array([0.2, 0.4, 0.8, 0.5, 0.6])
+        y2t = np.array([0.9, 0.5, 0.1, 0.7, 0.3])
+        y2p = np.array([0.1, 0.5, 0.9, 0.3, 0.7])
+        sp1 = float(spearmanr(y1t, y1p).statistic)
+        sp2 = float(spearmanr(y2t, y2p).statistic)
+        assert df.loc[1, "spearman_rho"] == pytest.approx(sp1)
+        assert df.loc[2, "spearman_rho"] == pytest.approx(sp2)
+
+    def test_single_fold_emits_one_row(self, tmp_path):
+        _make_allfolds_csv(tmp_path, [
+            {"mse": 1.0, "mae": 0.5, "r2": 0.3, "person": 0.6},
+        ])
+        _make_predictions_csv(tmp_path, [
+            (np.array([0.1, 0.5, 0.9]), np.array([0.2, 0.4, 0.8])),
+        ])
+        df = pd.read_csv(write_dl_results_csv(tmp_path))
+        assert len(df) == 1
+        assert df["fold"].tolist() == [1]
+
+    def test_raises_if_allfolds_missing(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            write_dl_results_csv(tmp_path)
+
+    def test_raises_if_predictions_missing(self, tmp_path):
+        _make_allfolds_csv(tmp_path, [
+            {"mse": 1.0, "mae": 0.5, "r2": 0.3, "person": 0.6},
+        ])
+        with pytest.raises(FileNotFoundError):
+            write_dl_results_csv(tmp_path)
