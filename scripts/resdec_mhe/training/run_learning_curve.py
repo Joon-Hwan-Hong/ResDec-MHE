@@ -165,8 +165,14 @@ def run_one_N(
     N: int, rng_seed: int, output_base: Path,
     base_metadata_csv: Path, splits_path: Path, precomputed_dir: Path,
     target_col: str, id_col: str, gpus: list[int],
+    per_seed_dirs: bool = False,
 ) -> dict:
-    N_dir = output_base / f"N_{N}"
+    # When per_seed_dirs=True (multi-seed K-seed runs), append _seed{rng_seed}
+    # to the N directory so parallel seeds don't collide.
+    N_dir = (
+        output_base / f"N_{N}_seed{rng_seed}" if per_seed_dirs
+        else output_base / f"N_{N}"
+    )
     N_dir.mkdir(parents=True, exist_ok=True)
     log_path = N_dir / "run.log"
     log = log_path.open("w")
@@ -289,7 +295,16 @@ def main():
     p.add_argument("--precomputed-dir", default="data/precomputed")
     p.add_argument("--target-col", default=DEFAULT_TARGET)
     p.add_argument("--id-col", default=DEFAULT_ID_COL)
-    p.add_argument("--rng-seed", type=int, default=42)
+    p.add_argument("--rng-seed", type=int, default=42,
+                   help="Single-seed default for backward compat.")
+    p.add_argument(
+        "--rng-seeds", type=int, nargs="+", default=None,
+        help=(
+            "Multi-seed K-seed run. When provided, overrides --rng-seed "
+            "and iterates over all seeds × N-values. Each seed gets its "
+            "own per-N subdirectory (N_{N}_seed{seed})."
+        ),
+    )
     p.add_argument("--gpus", type=int, nargs="+", default=[0, 1])
     p.add_argument("--canonical-r2-json",
                    default="outputs/redesign/p5_canonical_seed42/best_vs_tabpfn_summary.json",
@@ -323,38 +338,51 @@ def main():
             if not any(r.get("N") == 516 for r in results):
                 results.append(canon_entry)
 
-    for N in args.N_values:
-        if any(r.get("N") == N and "mean_r2" in r for r in results):
-            print(f"N={N} already done; skipping")
-            continue
-        print(f"\n=== N={N} starting @ {time.strftime('%H:%M:%S')} ===", flush=True)
-        t0 = time.time()
-        try:
-            result = run_one_N(
-                N=N, rng_seed=args.rng_seed,
-                output_base=output_base,
-                base_metadata_csv=Path(args.base_metadata_csv),
-                splits_path=Path(args.splits_path),
-                precomputed_dir=Path(args.precomputed_dir),
-                target_col=args.target_col, id_col=args.id_col,
-                gpus=args.gpus,
-            )
-        except Exception as exc:
-            print(f"  N={N} FAILED: {exc}", flush=True)
-            results.append({
-                "N": N, "error": str(exc),
-                "elapsed_min": (time.time() - t0) / 60,
-            })
-            aggregate_path.write_text(json.dumps(results, indent=2))
-            continue
+    # Resolve seed list: --rng-seeds (multi) overrides --rng-seed (single).
+    multi_seed = args.rng_seeds is not None
+    seeds = args.rng_seeds if multi_seed else [args.rng_seed]
 
-        results.append(result)
-        aggregate_path.write_text(json.dumps(results, indent=2))
-        print(
-            f"  N={N}: mean R² = {result['mean_r2']:+.4f} ± {result['std_r2']:.3f}, "
-            f"took {result['elapsed_min']:.1f} min",
-            flush=True,
-        )
+    for seed in seeds:
+        for N in args.N_values:
+            # In multi-seed mode, a result is (N, rng_seed) pair; key by both.
+            already_done = any(
+                r.get("N") == N and "mean_r2" in r
+                and (not multi_seed or r.get("rng_seed") == seed)
+                for r in results
+            )
+            if already_done:
+                print(f"N={N} seed={seed} already done; skipping")
+                continue
+            print(f"\n=== N={N} seed={seed} starting @ {time.strftime('%H:%M:%S')} ===",
+                  flush=True)
+            t0 = time.time()
+            try:
+                result = run_one_N(
+                    N=N, rng_seed=seed,
+                    output_base=output_base,
+                    base_metadata_csv=Path(args.base_metadata_csv),
+                    splits_path=Path(args.splits_path),
+                    precomputed_dir=Path(args.precomputed_dir),
+                    target_col=args.target_col, id_col=args.id_col,
+                    gpus=args.gpus,
+                    per_seed_dirs=multi_seed,
+                )
+            except Exception as exc:
+                print(f"  N={N} seed={seed} FAILED: {exc}", flush=True)
+                results.append({
+                    "N": N, "rng_seed": seed, "error": str(exc),
+                    "elapsed_min": (time.time() - t0) / 60,
+                })
+                aggregate_path.write_text(json.dumps(results, indent=2))
+                continue
+
+            results.append(result)
+            aggregate_path.write_text(json.dumps(results, indent=2))
+            print(
+                f"  N={N} seed={seed}: mean R² = {result['mean_r2']:+.4f} ± "
+                f"{result['std_r2']:.3f}, took {result['elapsed_min']:.1f} min",
+                flush=True,
+            )
 
     print(f"\nwrote {aggregate_path}")
 
