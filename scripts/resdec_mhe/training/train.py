@@ -67,6 +67,15 @@ def main(args: argparse.Namespace) -> None:
     # Lightning module reads it only when tabpfn_oof_dir is set).
     cfg.data.fold = int(args.fold)
 
+    # Optional CLI overrides for permutation tests that need to swap in
+    # shuffled-labels metadata + caches without editing the config file.
+    if args.metadata_path is not None:
+        cfg.data.metadata_path = args.metadata_path
+    if args.tabpfn_oof_dir is not None:
+        cfg.data.tabpfn_oof_dir = args.tabpfn_oof_dir
+    if args.tabpfn_outer_dir is not None:
+        cfg.data.tabpfn_outer_dir = args.tabpfn_outer_dir
+
     pl.seed_everything(int(cfg.experiment.seed), workers=True)
     torch.set_float32_matmul_precision("high")
 
@@ -248,4 +257,12 @@ if __name__ == "__main__":
     p.add_argument("--csv-log", action="store_true",
                    help="Attach a CSVLogger to capture per-epoch train/val scalars "
                         "(phase-3 task-3.2 diagnostic; default off).")
+    p.add_argument("--metadata-path", default=None,
+                   help="Override cfg.data.metadata_path (the directory holding "
+                        "metadata.csv). Use for permutation tests that need a "
+                        "shuffled-labels metadata copy.")
+    p.add_argument("--tabpfn-oof-dir", default=None,
+                   help="Override cfg.data.tabpfn_oof_dir (per-fold OOF cache).")
+    p.add_argument("--tabpfn-outer-dir", default=None,
+                   help="Override cfg.data.tabpfn_outer_dir (per-fold outer cache).")
     main(p.parse_args())
