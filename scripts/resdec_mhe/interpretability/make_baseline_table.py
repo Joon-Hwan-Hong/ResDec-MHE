@@ -467,6 +467,7 @@ def collect_dl_baseline_rows(baselines_root: Path) -> list[dict]:
         "gpio": "GPIO",
         "perceiver_io": "Perceiver-IO",
         "scphase": "scPhase (Berson et al. 2025)",
+        "mixmil": "MixMIL (Engelmann et al. 2024)",
     }
     rows: list[dict] = []
     if not baselines_root.exists():
@@ -547,20 +548,12 @@ def collect_nonresult_rows(baselines_root: Path) -> list[dict]:
     """
     rows: list[dict] = []
 
-    # MixMIL — auto-detect real results, fall back to source-only placeholder.
+    # MixMIL — emits its own per-fold results.csv via results_canonical, so the
+    # DL-baseline path (collect_dl_baseline_rows) picks it up. Only emit a
+    # placeholder here when results.csv is absent, so the table still has a
+    # "pending" row before MixMIL has run.
     mixmil_dir = baselines_root / "mixmil"
-    mixmil_result = _try_read_rosmap_baseline_summary(mixmil_dir)
-    if mixmil_result is not None:
-        metrics, n_folds, summary_path = mixmil_result
-        rows.append({
-            "model": "mixmil",
-            "display_name": "MixMIL (Engelmann et al. 2024)",
-            "n_folds": n_folds,
-            **metrics,
-            "source_path": str(summary_path),
-            "notes": "",
-        })
-    else:
+    if not (mixmil_dir / "results.csv").exists():
         rows.append({
             "model": "mixmil",
             "display_name": "MixMIL (Engelmann et al. 2024)",

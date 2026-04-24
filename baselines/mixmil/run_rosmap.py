@@ -295,6 +295,12 @@ def main():
     summary_df = pd.DataFrame(summary_rows)
     summary_df.to_csv(results_dir / "Summary_MixMIL_ROSMAP.csv", index=False)
 
+    # Per-fold canonical DL-baseline results.csv (fold, r2, mae, rmse,
+    # pearson_r, spearman_rho) for the paper-table aggregator's DL path.
+    # Reads AllFolds + per-fold predictions just written above.
+    from results_canonical import write_dl_results_csv
+    write_dl_results_csv(results_dir, model_name="MixMIL_ROSMAP")
+
     # Variance components table
     var_df = pd.DataFrame(variance_rows)
     var_df.to_csv(results_dir / "variance_components.csv", index=False)
