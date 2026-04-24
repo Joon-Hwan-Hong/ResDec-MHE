@@ -1,0 +1,126 @@
+"""Orchestrator: render attention figures from canonical artefacts.
+
+Calls two functions appended to ``src.visualization.attention_plots``:
+  - head-attention chord diagram (heads × top-K cell types)
+  - head-fingerprint UMAP (subjects clustered by attention pattern,
+    colored by residual quartile)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
+if str(_WORKTREE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKTREE_ROOT))
+
+from src.visualization.attention_plots import (  # noqa: E402
+    plot_head_attention_chord,
+    plot_head_fingerprint_umap,
+)
+from src.visualization.theme import apply_theme  # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument(
+        "--head-attention-npz",
+        default="outputs/redesign/interpretability/pathology_attention_per_subject.npz",
+    )
+    p.add_argument(
+        "--captum-summary-json",
+        default="outputs/redesign/interpretability/captum_ig/composite_attribution_summary.json",
+    )
+    p.add_argument(
+        "--residual-csv",
+        default="outputs/redesign/interpretability/residual_per_subject.csv",
+    )
+    p.add_argument(
+        "--out-dir",
+        default="outputs/redesign/interpretability/figures/attention",
+    )
+    args = p.parse_args()
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s | %(levelname)s | %(message)s")
+    apply_theme()
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rendered = []
+
+    head_path = Path(args.head_attention_npz)
+    if not head_path.exists():
+        logger.error("head attention npz missing: %s", head_path)
+        return 1
+    d = np.load(head_path, allow_pickle=True)
+    head_attention = None
+    for key in ("attention", "per_subject", "head_attention", "per_head_attention"):
+        if key in d.files:
+            head_attention = np.asarray(d[key], dtype=np.float64)
+            break
+    if head_attention is None:
+        logger.error("could not find head attention array in %s; keys=%s",
+                     head_path, d.files)
+        return 1
+
+    ct_names = None
+    summary_path = Path(args.captum_summary_json)
+    if summary_path.exists():
+        s = json.loads(summary_path.read_text())
+        raw = s.get("cell_types_ranked_by_total_attribution") or s.get("cell_types")
+        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+            ct_names = [d["cell_type"] for d in raw]
+        else:
+            ct_names = raw
+    if ct_names is None:
+        ct_names = [f"CT_{i}" for i in range(head_attention.shape[-1])]
+
+    try:
+        fig = plot_head_attention_chord(
+            head_attention, ct_names,
+            save_path=out_dir / "fig_head_attention_chord",
+        )
+        plt.close(fig)
+        rendered.append("fig_head_attention_chord")
+    except (ValueError, ImportError) as exc:
+        logger.warning("chord: %s", exc)
+
+    res_path = Path(args.residual_csv)
+    if res_path.exists():
+        residual_df = pd.read_csv(res_path)
+        res_map = dict(zip(
+            residual_df["ROSMAP_IndividualID"].astype(str),
+            residual_df["residual"].astype(float),
+        ))
+        # Need per-subject residuals aligned to head_attention's subject axis.
+        # Fallback: assume same order as residual_df. If npz has "subject_ids",
+        # use it.
+        if "subject_ids" in d.files:
+            subj_ids = [str(s) for s in d["subject_ids"]]
+        else:
+            subj_ids = residual_df["ROSMAP_IndividualID"].astype(str).tolist()
+        residuals = np.array([res_map.get(s, np.nan) for s in subj_ids])
+        try:
+            fig = plot_head_fingerprint_umap(
+                head_attention, residuals,
+                save_path=out_dir / "fig_head_fingerprint_umap",
+            )
+            plt.close(fig)
+            rendered.append("fig_head_fingerprint_umap")
+        except (ValueError, ImportError) as exc:
+            logger.warning("UMAP: %s", exc)
+
+    logger.info("rendered %d attention figures: %s", len(rendered), rendered)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

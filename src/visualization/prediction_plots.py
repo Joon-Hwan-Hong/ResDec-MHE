@@ -393,3 +393,74 @@ def plot_uncertainty_correlates(
         save_figure(fig, str(save_path))
 
     return fig
+
+
+# ---------------------------------------------------------------------------
+# ResDec-MHE composite-vs-baseline calibration plots, theme-based.
+# ---------------------------------------------------------------------------
+
+from src.visualization.theme import (  # noqa: E402
+    baseline_color as _baseline_color,
+    fmt_axes as _fmt_axes,
+    save_fig as _theme_save_fig,
+)
+
+
+def plot_calibration_overlay(
+    tabpfn_per_fold: list[tuple[np.ndarray, np.ndarray]],
+    composite_per_fold: list[tuple[np.ndarray, np.ndarray]],
+    *,
+    n_bins: int = 10,
+    figsize: tuple[float, float] = (7.0, 3.5),
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Two-panel reliability diagram: TabPFN-only vs Composite (ResDec-MHE).
+
+    Each panel: predicted-vs-true binned mean per quantile bin, with the
+    diagonal reference. Comparing where the residual head improves vs
+    hurts calibration.
+    """
+    if not tabpfn_per_fold or not composite_per_fold:
+        raise ValueError("no per-fold predictions provided")
+
+    def reliability(y_true_all, y_pred_all, n_bins):
+        bin_edges = np.quantile(y_pred_all, np.linspace(0, 1, n_bins + 1))
+        bin_edges[0] -= 1e-9
+        labels = pd.cut(y_pred_all, bin_edges, labels=False, include_lowest=True)
+        means_pred, means_true = [], []
+        for b in range(n_bins):
+            mask = labels == b
+            if mask.sum() == 0:
+                continue
+            means_pred.append(float(y_pred_all[mask].mean()))
+            means_true.append(float(y_true_all[mask].mean()))
+        return np.array(means_pred), np.array(means_true)
+
+    yt_t = np.concatenate([t for t, _ in tabpfn_per_fold])
+    yp_t = np.concatenate([p for _, p in tabpfn_per_fold])
+    yt_c = np.concatenate([t for t, _ in composite_per_fold])
+    yp_c = np.concatenate([p for _, p in composite_per_fold])
+    mp_t, mt_t = reliability(yt_t, yp_t, n_bins)
+    mp_c, mt_c = reliability(yt_c, yp_c, n_bins)
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True, sharex=True)
+    for ax, (mp, mt, name, color) in zip(
+        axes,
+        [
+            (mp_t, mt_t, "TabPFN-2.6", _baseline_color("TabPFN-2.6")),
+            (mp_c, mt_c, "Composite (ResDec-MHE)", _baseline_color("ResDec-MHE")),
+        ],
+    ):
+        lo = float(min(mp.min(), mt.min()))
+        hi = float(max(mp.max(), mt.max()))
+        ax.plot([lo, hi], [lo, hi], color="#888", linewidth=0.6,
+                linestyle="--", zorder=1)
+        ax.scatter(mp, mt, color=color, s=22, edgecolor="white",
+                   linewidth=0.6, zorder=3)
+        ax.plot(mp, mt, color=color, linewidth=1.2, zorder=2)
+        ax.set_xlabel(f"Mean predicted ({name})")
+        _fmt_axes(ax)
+    axes[0].set_ylabel("Mean true")
+    if save_path is not None:
+        _theme_save_fig(fig, save_path)
+    return fig

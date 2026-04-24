@@ -331,3 +331,132 @@ def plot_resilience_signature_heatmap(
         save_figure(fig, str(save_path))
 
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Below: ResDec-MHE-specific attention plots using src/visualization/theme.
+# These follow the new theme convention (PALETTES + theme.save_fig). The
+# older functions above (plot_cell_type_attention_heatmap etc.) use
+# src/visualization/config; new code should prefer the theme-based functions.
+# ---------------------------------------------------------------------------
+
+from typing import Sequence as _Sequence  # noqa: E402
+
+from src.visualization.theme import (  # noqa: E402
+    PALETTES as _PALETTES,
+    fmt_axes as _fmt_axes,
+    save_fig as _theme_save_fig,
+)
+
+
+def plot_head_attention_chord(
+    head_attention: np.ndarray,
+    cell_type_names: _Sequence[str],
+    *,
+    top_k_cts: int = 12,
+    figsize: tuple[float, float] = (5.5, 5.5),
+    save_path: str | Path | None = None,
+):
+    """Chord diagram: heads × top-K cell types, chord width = mean attention.
+
+    ``head_attention`` shape: ``(n_subjects, n_heads, n_cell_types)``.
+    Uses ``pyCirclize.Circos.chord_diagram``; raises ImportError if missing.
+    """
+    try:
+        from pycirclize import Circos
+    except ImportError as exc:
+        raise ImportError("pyCirclize required for plot_head_attention_chord") from exc
+    n_subj, n_heads, n_ct = head_attention.shape
+    if n_subj == 0:
+        raise ValueError("no subjects in head_attention")
+    mean_attn = head_attention.mean(axis=0)
+    head_labels = [f"H{i}" for i in range(n_heads)]
+    ct_totals = mean_attn.sum(axis=0)
+    top_ct_idx = np.argsort(ct_totals)[::-1][:top_k_cts]
+    ct_labels = [str(cell_type_names[i]) for i in top_ct_idx]
+    matrix = mean_attn[:, top_ct_idx]
+    df = pd.DataFrame(matrix, index=head_labels, columns=ct_labels)
+
+    nodes = head_labels + ct_labels
+    n_nodes = len(nodes)
+    sq = pd.DataFrame(
+        np.zeros((n_nodes, n_nodes)), index=nodes, columns=nodes,
+    )
+    for h in head_labels:
+        for c in ct_labels:
+            v = df.loc[h, c]
+            sq.loc[h, c] = v
+            sq.loc[c, h] = v
+
+    cmap = {}
+    for i, h in enumerate(head_labels):
+        cmap[h] = _PALETTES["categorical_paired"][
+            i % len(_PALETTES["categorical_paired"])
+        ]
+    for j, c in enumerate(ct_labels):
+        cmap[c] = _PALETTES["sequential"](
+            float(j) / max(1, len(ct_labels) - 1),
+        )
+
+    circos = Circos.chord_diagram(
+        sq, space=3, cmap=cmap, label_kws={"size": 7},
+    )
+    fig = circos.plotfig(figsize=figsize)
+    if save_path is not None:
+        _theme_save_fig(fig, save_path)
+    return fig
+
+
+def plot_head_fingerprint_umap(
+    head_fingerprints: np.ndarray,
+    residuals: np.ndarray,
+    *,
+    n_quartiles: int = 4,
+    seed: int = 42,
+    figsize: tuple[float, float] = (5.0, 4.5),
+    save_path: str | Path | None = None,
+):
+    """UMAP of per-subject (n_heads × n_celltypes) head fingerprints.
+
+    Colored by residual quartile (Q1=resilient, Q4=vulnerable).
+    """
+    try:
+        import umap
+    except ImportError as exc:
+        raise ImportError("umap-learn required for plot_head_fingerprint_umap") from exc
+    n_subj = head_fingerprints.shape[0]
+    if n_subj == 0:
+        raise ValueError("no subjects")
+    flat = head_fingerprints.reshape(n_subj, -1)
+    finite = np.isfinite(flat).all(axis=1) & np.isfinite(residuals)
+    if finite.sum() < 30:
+        raise ValueError("too few finite subjects (<30)")
+    flat = flat[finite]
+    res = residuals[finite]
+
+    reducer = umap.UMAP(
+        n_neighbors=min(30, max(5, n_subj // 10)),
+        min_dist=0.3, random_state=seed,
+    )
+    emb = reducer.fit_transform(flat)
+    q_edges = np.quantile(res, np.linspace(0, 1, n_quartiles + 1))
+    q_edges[0] -= 1e-9
+    q_labels = pd.cut(res, q_edges, labels=False, include_lowest=True)
+    cmap = _PALETTES["sequential"]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    for q in range(n_quartiles):
+        mask = q_labels == q
+        ax.scatter(
+            emb[mask, 0], emb[mask, 1],
+            c=[cmap(q / max(1, n_quartiles - 1))], s=14, alpha=0.75,
+            edgecolor="white", linewidth=0.4,
+            label=f"Q{q+1}",
+        )
+    ax.set_xlabel("UMAP-1")
+    ax.set_ylabel("UMAP-2")
+    _fmt_axes(ax)
+    ax.legend(loc="upper right", fontsize=7, title="Residual quartile")
+    if save_path is not None:
+        _theme_save_fig(fig, save_path)
+    return fig
