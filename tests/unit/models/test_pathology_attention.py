@@ -475,7 +475,7 @@ class TestExtraRepr:
 
 
 class TestAMPSoftmaxPromotion:
-    """H1: Manual softmax must promote to float32 under AMP for numerical stability."""
+    """Manual softmax must promote to float32 under AMP for numerical stability."""
 
     def test_softmax_stable_with_large_float16_scores(self):
         """Attention weights should remain valid even with large-magnitude float16 inputs."""

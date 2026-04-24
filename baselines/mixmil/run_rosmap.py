@@ -2,7 +2,7 @@
 MixMIL baseline for ROSMAP cognitive resilience regression.
 
 Runs MixMIL (GLMM + attention MIL) with Gaussian likelihood on 30-dim
-scVI embeddings, using our exact 5-fold cross-validation splits.
+scVI embeddings, using the project's 5-fold cross-validation splits.
 Warm-start from OLS on mean embeddings (author's simulation_normal.ipynb pattern).
 
 Usage:
@@ -186,7 +186,7 @@ def main():
         print(f"{'='*60}")
 
         train_ids = fold["train"]
-        test_ids = fold["val"]  # our fold "val" = test set for MixMIL
+        test_ids = fold["val"]  # fold["val"] is the held-out test set for MixMIL
         train_idxs = [sid_to_idx[s] for s in train_ids]
         test_idxs = [sid_to_idx[s] for s in test_ids]
 

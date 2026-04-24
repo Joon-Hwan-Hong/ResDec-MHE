@@ -164,8 +164,14 @@ class TestTemperatureAnnealingSchedule:
         expected_tau = callback.get_temperature(epoch=5)
         hgt_temp_prop.assert_called_with(expected_tau)
 
-    def test_on_train_epoch_start_raises_no_gates(self):
-        """Callback raises AttributeError when no gene gates exist."""
+    def test_on_train_epoch_start_no_gates_is_noop(self):
+        """Callback is a no-op when no gene gates exist (ablation configs).
+
+        Current source (src/training/callbacks.py::TemperatureAnnealing) treats
+        missing gene gates as a no-op so ablation configs without gates still
+        train. Previously raised AttributeError; behavior intentionally changed
+        in c9f40e0.
+        """
         from src.training.callbacks import TemperatureAnnealing
         callback = TemperatureAnnealing(
             tau_max=2.0, tau_min=0.1, warmup_epochs=0,
@@ -179,8 +185,12 @@ class TestTemperatureAnnealingSchedule:
         pl_module.model.hgt_gene_gate = None
         pl_module.model.cell_transformer.gene_gate = None
 
-        with pytest.raises(AttributeError, match="at least one gene gate"):
-            callback.on_train_epoch_start(trainer, pl_module)
+        # Should not raise — the callback still logs the temperature.
+        callback.on_train_epoch_start(trainer, pl_module)
+        pl_module.log.assert_called_once()
+        logged_name, logged_value = pl_module.log.call_args.args[:2]
+        assert logged_name == "gene_gate_temperature"
+        assert logged_value == pytest.approx(callback.get_temperature(epoch=0))
 
 
 class TestGradientNormLogger:
@@ -416,7 +426,7 @@ class TestEarlyStopping:
     """Tests for early stopping configuration."""
 
     def test_early_stopping_patience(self):
-        """Early stopping configured with correct patience from config."""
+        """Early stopping is instantiated with the patience declared in configs/default.yaml."""
         from omegaconf import OmegaConf
         from lightning.pytorch.callbacks import EarlyStopping
 
@@ -430,7 +440,8 @@ class TestEarlyStopping:
             min_delta=es_cfg.min_delta,
             mode=es_cfg.mode,
         )
-        assert es.patience == 15
+        # Patience round-trips from config (currently 10; see default.yaml).
+        assert es.patience == es_cfg.patience
         # Lightning negates min_delta for mode="min", check absolute value
         assert abs(es.min_delta) == pytest.approx(0.0001)
         assert es.monitor == "val_nll"

@@ -436,7 +436,7 @@ class TestEdgeCases:
 
 
 # ============================================================================
-# CCC Length Validation Tests (Phase 6 Review Round 5)
+# CCC Length Validation Tests
 # ============================================================================
 
 
@@ -477,7 +477,7 @@ class TestCCCLengthValidation:
 
 
 # ============================================================================
-# Phase 6 Review Round 8 — H1: Empty region label filtering
+# Empty region label filtering
 # ============================================================================
 
 

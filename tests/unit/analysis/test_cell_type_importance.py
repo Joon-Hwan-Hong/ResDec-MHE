@@ -699,12 +699,12 @@ class TestEdgeCases:
 
 
 # ============================================================================
-# Phase 6 Review Round 8 — H1 + M1 Fixes
+# Region-label none handling + related fixes
 # ============================================================================
 
 
 class TestRegionLabelNoneHandling:
-    """Tests for empty-string region label filtering (H1 fix)."""
+    """Tests for empty-string region label filtering."""
 
     def test_empty_region_labels_excluded(self):
         """Subjects with empty region labels are excluded from region stratification."""
@@ -729,7 +729,7 @@ class TestRegionLabelNoneHandling:
 
 
 class TestPathologyNaNExclusion:
-    """Tests for NaN pathology exclusion from tertiles (M1 fix)."""
+    """Tests for NaN pathology exclusion from tertiles."""
 
     def test_nan_pathology_excluded_from_tertile_counts(self):
         """NaN pathology subjects should not be counted in any tertile group."""

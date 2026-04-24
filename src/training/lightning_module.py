@@ -16,9 +16,8 @@ Metric logging strategy (Bayesian head):
     (predictive Beta-NLL loss at posterior median). With 1/N KL normalization
     (Graves 2011, Blundell et al. 2015), the KL term is properly scaled but
     remains a regularizer, not a measure of predictive quality. Monitoring
-    val_loss (ELBO) was found to prevent early stopping from firing because KL
-    monotonically decreases, masking prediction quality degradation
-    (FixAttempt2 diagnostic, 2026-03-12).
+    val_loss (ELBO) prevents early stopping from firing because KL
+    monotonically decreases, masking prediction quality degradation.
 
     The full ELBO is still logged as val_loss / val_elbo for posterior health
     diagnostics. If posterior collapse occurs (KL → 0 while NLL increases),

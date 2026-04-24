@@ -80,6 +80,12 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         self._val_ds = None
         self._test_ds = None
 
+        # Train-only age stats for FiLM metadata z-scoring. Populated in
+        # ``setup()`` from the fold's train subjects — val/test use the same
+        # stats to avoid leakage.
+        self._train_age_mean: float | None = None
+        self._train_age_std: float | None = None
+
     @property
     def _effective_num_workers(self) -> int:
         """Return 0 workers when using precomputed (heap-loaded) data.
@@ -106,6 +112,10 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             train_subjects = get_final_train_subjects(self.splits)
             test_subjects = self.splits["holdout_test"]
 
+            # Compute TRAIN-only age stats for FiLM metadata z-scoring.
+            # Val/test datasets reuse these same stats to avoid leakage.
+            self._compute_train_age_stats(train_subjects)
+
             if stage in ("fit", None):
                 self._train_ds = self._make_dataset(train_subjects)
                 if len(self._train_ds) == 0:
@@ -129,6 +139,10 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             val_subjects = get_fold_subjects(
                 self.splits, fold_idx=self.fold_idx, split_type="val"
             )
+
+            # Compute TRAIN-only age stats for FiLM metadata z-scoring.
+            # Val/test datasets reuse these same stats to avoid leakage.
+            self._compute_train_age_stats(train_subjects)
 
             if stage in ("fit", None):
                 self._train_ds = self._make_dataset(train_subjects)
@@ -173,6 +187,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
 
     def _make_dataset(self, subject_ids: list[str]):
         """Create a dataset for the given subject IDs."""
+        meta_csv = self._resolve_meta_csv()
         if self.precomputed_dir is not None:
             return PrecomputedDataset(
                 feature_dir=self.precomputed_dir,
@@ -188,6 +203,9 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                     self._data_cfg.get("pathology_columns", [])
                 ),
                 preloaded_cache=self.preloaded_cache,
+                meta_csv=meta_csv,
+                age_mean=self._train_age_mean,
+                age_std=self._train_age_std,
             )
         else:
             if self.adata is None:
@@ -227,7 +245,65 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 max_missing_subject_fraction=self._data_cfg.get(
                     "max_missing_subject_fraction", 0.1
                 ),
+                meta_csv=meta_csv,
+                age_mean=self._train_age_mean,
+                age_std=self._train_age_std,
             )
+
+    def _resolve_meta_csv(self) -> Path | None:
+        """Return the path to metadata.csv, or None if not configured.
+
+        Reads ``data.metadata_path`` from the config. The value may point at
+        a directory (the legacy convention from configs/default.yaml, in
+        which case ``metadata.csv`` is appended) or directly at a CSV file.
+        Returns None if the resolved path does not exist — the dataset then
+        skips FiLM metadata wiring and the lightning module's None→zeros
+        fallback kicks in. Emits a ``logger.warning`` when ``metadata_path``
+        was configured but resolves to a nonexistent file so misconfiguration
+        (e.g. a typo) doesn't silently degrade FiLM to a no-op.
+        """
+        meta_path_str = self._data_cfg.get("metadata_path", None)
+        if meta_path_str is None:
+            return None
+        meta_path = Path(meta_path_str)
+        meta_csv = meta_path / "metadata.csv" if meta_path.is_dir() else meta_path
+        if not meta_csv.exists():
+            logger.warning(
+                "metadata_path=%r resolves to %s which does not exist — "
+                "FiLM will run with zero metadata (no-op). Check data.metadata_path.",
+                meta_path_str, meta_csv,
+            )
+            return None
+        return meta_csv
+
+    def _compute_train_age_stats(self, train_subjects: list[str]) -> None:
+        """Compute train-only age_mean / age_std for FiLM z-scoring.
+
+        Reads ``age_death`` from ``self.metadata`` restricted to the fold's
+        train subject IDs. Val/test datasets reuse these stats (set via
+        ``self._train_age_mean`` / ``self._train_age_std``) to prevent val
+        leakage through per-fold z-score statistics. Falls back to leaving
+        the stats as None when ``age_death`` is missing — the downstream
+        ``load_metadata_vector`` default (cohort-wide approx) then applies.
+        """
+        if "age_death" not in self.metadata.columns:
+            return
+        subject_column = self._data_cfg.get(
+            "subject_column", "ROSMAP_IndividualID"
+        )
+        if subject_column in self.metadata.columns:
+            mask = self.metadata[subject_column].isin(train_subjects)
+            train_ages = self.metadata.loc[mask, "age_death"].dropna()
+        else:
+            train_ages = self.metadata.loc[
+                self.metadata.index.isin(train_subjects), "age_death"
+            ].dropna()
+        if len(train_ages) == 0:
+            return
+        self._train_age_mean = float(train_ages.mean())
+        # ddof=0 matches the default in load_metadata_vector's reference stats
+        # (population std). Using ddof=1 would subtly shift FiLM inputs.
+        self._train_age_std = float(train_ages.std(ddof=0))
 
     def train_dataloader(self) -> torch.utils.data.DataLoader | ThreadedPrefetcher:
         """Create training DataLoader, optionally wrapped with ThreadedPrefetcher.
@@ -271,11 +347,17 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         use_prefetcher = torch.cuda.is_available() and self.trainer is not None
         pin = False if use_prefetcher else self._dl_cfg.get("pin_memory", True)
 
+        # drop_last is normally True (avoid partial final batches) but when the
+        # train cohort fits inside a single batch (full-cohort NPT mode used
+        # by the ResDec-MHE head), dropping that single partial batch would
+        # empty the loader. Auto-disable drop_last in that regime.
+        drop_last = len(self._train_ds) > self.batch_size
+
         dl = create_dataloader(
             self._train_ds,
             batch_size=self.batch_size,
             shuffle=True,
-            drop_last=True,
+            drop_last=drop_last,
             num_workers=nw,
             pin_memory=pin,
             multiregion=True,

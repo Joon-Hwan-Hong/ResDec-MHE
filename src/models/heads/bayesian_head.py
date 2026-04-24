@@ -5,7 +5,7 @@ Uses Pyro for variational inference with weight uncertainty. The design separate
 epistemic uncertainty (from weight priors on fc1, fc2, fc_mean) from aleatoric
 uncertainty (learned from data via deterministic fc_log_std).
 
-Design Decision (2026-01-27):
+Design Decision:
 - Priors on fc1, fc2, fc_mean layers for epistemic uncertainty
 - fc_log_std is deterministic to maintain clean separation of uncertainties
 """
@@ -75,7 +75,7 @@ class BayesianPredictionHead(PyroModule):
 
     Uses Pyro for variational inference with weight uncertainty.
 
-    Prior placement (2026-01-27 design):
+    Prior placement:
     - fc1, fc2, fc_mean: Have priors for epistemic uncertainty
     - fc_log_std: Deterministic, learns aleatoric uncertainty from data
 

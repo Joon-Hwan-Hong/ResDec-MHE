@@ -723,6 +723,9 @@ class TestCellTypeConditioningConfig:
         """Default config should enable cell type conditioning."""
         from omegaconf import OmegaConf
         cfg = OmegaConf.load("configs/default.yaml")
+        # n_genes is null in default.yaml (auto-detected at runtime from
+        # precomputed .pt files); tests must set a concrete value.
+        cfg.model.n_genes = 50
         model = build_model_from_config(cfg.model)
         assert model.cell_transformer.condition_on_cell_type is True
 
@@ -730,6 +733,7 @@ class TestCellTypeConditioningConfig:
         """Setting condition_on_cell_type=false should disable it."""
         from omegaconf import OmegaConf
         cfg = OmegaConf.load("configs/default.yaml")
+        cfg.model.n_genes = 50
         cfg.model.set_transformer.condition_on_cell_type = False
         model = build_model_from_config(cfg.model)
         assert model.cell_transformer.condition_on_cell_type is False

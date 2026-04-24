@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Run scPhase baseline on our ROSMAP cognitive resilience 5-fold splits.
+"""Run scPhase baseline on the ROSMAP cognitive resilience 5-fold splits.
 
-Generates config, loads data via scPhase's load_data(), injects our exact
+Generates config, loads data via scPhase's load_data(), injects the project's
 fold assignments, trains per-fold, aggregates metrics, and runs scPhase's
 built-in Captum interpretability (gene attributions + cell attention).
 
@@ -45,6 +45,7 @@ from run_cv import (
     _save_predictions_csv,
     train_and_evaluate_fold,
 )
+from summary_canonical import write_canonical_summary, write_dl_results_csv
 from train_utils import (
     calculate_cell_attention,
     calculate_gene_attributions,
@@ -71,11 +72,12 @@ def build_config(
     device_encoder: str,
     num_folds: int = 5,
     seed: int = 3407,
+    input_dim: int | None = None,
 ) -> dict:
-    """Build scPhase config dict with paper defaults for our ROSMAP data.
+    """Build scPhase config dict with paper defaults for ROSMAP data.
 
     Adaptations from paper defaults:
-    - input_dim: 4797 (our gene count, not their default 5000)
+    - input_dim: auto-detected from h5ad `.n_vars` when not supplied
     - n_classes: 1 (regression output)
     - task_type: "regression"
     - use_domain_adaptation: false (single cohort ROSMAP; code also auto-disables
@@ -85,6 +87,12 @@ def build_config(
       back to 0 for all samples, avoiding .astype(int) failure on string "ROSMAP"
     """
     pickle_path = os.path.join(os.path.abspath(results_dir), "scphase_data_cache.pkl")
+
+    if input_dim is None:
+        # Cheap metadata-only read via backed mode; avoids loading the whole h5ad.
+        ad_tmp = sc.read_h5ad(data_h5ad, backed="r")
+        input_dim = int(ad_tmp.n_vars)
+        ad_tmp.file.close()
 
     return {
         "path_params": {
@@ -131,7 +139,7 @@ def build_config(
             "warmup_epochs": 10,
         },
         "model_params": {
-            "input_dim": 4797,
+            "input_dim": input_dim,
             "encoder_dims": [1024, 512],
             "classifier_dims": [128, 64],
             "hidden_dim": 256,
@@ -151,17 +159,17 @@ def build_config(
 
 
 # ---------------------------------------------------------------------------
-# Fold mapping — translate our splits.json subject IDs to scPhase indices
+# Fold mapping — translate splits.json subject IDs to scPhase indices
 # ---------------------------------------------------------------------------
 
 def map_splits_to_indices(
     splits: dict,
     sample_ids: list[str],
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Map our splits.json fold assignments to scPhase DataList indices.
+    """Map the project's splits.json fold assignments to scPhase DataList indices.
 
-    Our fold's `val` (93 subjects) = scPhase's `test_idx`.
-    Our fold's `train` (372 subjects) = scPhase's `train_idx`.
+    The project's fold `val` subjects map to scPhase's `test_idx`.
+    The project's fold `train` subjects map to scPhase's `train_idx`.
     scPhase further splits train_idx internally into train/val for early stopping.
 
     Returns list of (train_idx, test_idx) numpy arrays, one per fold.
@@ -203,14 +211,14 @@ def map_splits_to_indices(
 
 
 # ---------------------------------------------------------------------------
-# Cross-validation with our exact splits
+# Cross-validation with the project's exact splits
 # ---------------------------------------------------------------------------
 
 def run_cv_with_our_splits(
     config: dict,
     splits: dict,
 ) -> pd.DataFrame:
-    """Run scPhase 5-fold CV using our exact fold assignments."""
+    """Run scPhase 5-fold CV using the project's exact fold assignments."""
 
     logger.info("--- Starting ROSMAP CV with injected splits ---")
     logger.info(f"Configuration:\n{json.dumps(config, indent=2)}")
@@ -229,7 +237,7 @@ def run_cv_with_our_splits(
     DataList, DataLabel, DataBatch, SampleIDs = load_data(config)
     logger.info(f"Data loaded: {len(DataList)} subjects, {DataList[0].shape[1]} genes")
 
-    # Map our splits to scPhase indices
+    # Map the project's splits to scPhase indices
     fold_indices = map_splits_to_indices(splits, SampleIDs)
     logger.info(f"Mapped {len(fold_indices)} folds from splits.json")
     for i, (tr, te) in enumerate(fold_indices):
@@ -280,23 +288,22 @@ def run_cv_with_our_splits(
     # Save per-sample predictions
     _save_predictions_csv(config)
 
-    # Summary statistics
-    metric_cols = [c for c in results_df.columns if c not in ("model_name", "fold")]
-    summary = {"model_name": config["path_params"]["MODEL_NAME"]}
-    logger.info("\n--- FINAL CV SUMMARY ---")
-    for metric in metric_cols:
-        mean_val = results_df[metric].mean()
-        std_val = results_df[metric].std()
-        summary[f"mean_{metric}"] = mean_val
-        summary[f"std_{metric}"] = std_val
-        logger.info(f"  {metric.upper():>8s}: {mean_val:.4f} (+/- {std_val:.4f})")
-
-    summary_path = os.path.join(
+    # Summary + per-fold results CSVs — emit both shapes the paper-table
+    # aggregator consumes. Long-format Summary (metric/mean/std) for the
+    # ROSMAP-style path; per-fold results.csv (fold/r2/mae/rmse/pearson_r/
+    # spearman_rho) for the DL-baseline path. Both readers normalize the
+    # upstream 'person' typo to 'pearson_r', add rmse = sqrt(mse), and
+    # compute spearman_rho per fold from the predictions CSV.
+    summary_path = write_canonical_summary(
         config["path_params"]["RESULTS_DIR"],
-        f"Summary_{config['path_params']['MODEL_NAME']}.csv",
+        model_name=config["path_params"]["MODEL_NAME"],
     )
-    pd.DataFrame([summary]).to_csv(summary_path, index=False)
     logger.info(f"Summary saved to: {summary_path}")
+    results_path = write_dl_results_csv(
+        config["path_params"]["RESULTS_DIR"],
+        model_name=config["path_params"]["MODEL_NAME"],
+    )
+    logger.info(f"Per-fold results saved to: {results_path}")
 
     return results_df
 
@@ -449,7 +456,7 @@ def run_interpretability(config: dict) -> None:
     try:
         plot_ensemble_cell_attention_umaps(config, updated_adata)
     except Exception as e:
-        # May fail if no X_umap in adata (our data may not have UMAP precomputed)
+        # May fail if no X_umap in adata (the input may not have UMAP precomputed)
         logger.warning(
             f"Cell attention UMAP plot failed (likely no X_umap in adata): {e}"
         )
@@ -467,13 +474,15 @@ def main():
     )
     parser.add_argument(
         "--data-h5ad",
-        required=True,
-        help="Path to scphase_input.h5ad (from prepare_data.py)",
+        default=None,
+        help="Path to scphase_input.h5ad (from prepare_data.py). "
+             "Required unless --regen-summary-only is set.",
     )
     parser.add_argument(
         "--splits",
-        required=True,
-        help="Path to outputs/splits.json with our 5-fold assignments",
+        default=None,
+        help="Path to outputs/splits.json with the project's 5-fold assignments. "
+             "Required unless --regen-summary-only is set.",
     )
     parser.add_argument(
         "--results-dir",
@@ -506,10 +515,39 @@ def main():
         action="store_true",
         help="Skip interpretability (only run CV training)",
     )
+    parser.add_argument(
+        "--regen-summary-only",
+        action="store_true",
+        help="Skip training and interpretability; only regenerate the canonical "
+             "Summary CSV from existing AllFolds + predictions CSVs in "
+             "--results-dir. Use after a completed run whose summary was "
+             "written in the legacy wide format.",
+    )
     args = parser.parse_args()
 
     # Create results directory
     os.makedirs(args.results_dir, exist_ok=True)
+
+    # --regen-summary-only short-circuits the whole pipeline: it only needs
+    # --results-dir to exist with AllFolds + predictions/ already written.
+    # Emits BOTH the long-format Summary CSV and the per-fold results.csv so
+    # both aggregator paths pick scPhase up.
+    if args.regen_summary_only:
+        summary_path = write_canonical_summary(
+            args.results_dir, model_name="scPhase_ROSMAP",
+        )
+        results_path = write_dl_results_csv(
+            args.results_dir, model_name="scPhase_ROSMAP",
+        )
+        print(f"Summary regenerated:    {summary_path}")
+        print(f"Per-fold results.csv:   {results_path}")
+        return
+
+    if args.data_h5ad is None or args.splits is None:
+        parser.error(
+            "--data-h5ad and --splits are required unless "
+            "--regen-summary-only is set",
+        )
 
     # Build config
     config = build_config(
@@ -532,7 +570,7 @@ def main():
     logger.info(f"Global seed set to: {config['run_params']['seed']}")
     logger.info(f"Config saved to: {config_path}")
 
-    # Load our splits
+    # Load splits
     with open(args.splits) as f:
         splits = json.load(f)
     logger.info(

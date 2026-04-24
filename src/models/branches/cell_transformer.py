@@ -147,8 +147,9 @@ class CellTransformer(nn.Module):
             cell_data = cell_data * scaled_gate[per_cell_type].to(cell_data.dtype)
 
         # Project flat cell data BEFORE padding: [total_cells, n_genes] -> [total_cells, d_model]
-        # This means the padded tensor is [B*n_types, max_cells, d_model] (~0.13 GB)
-        # instead of [B*n_types, max_cells, n_genes] (~9.5 GB with 4797 genes).
+        # Projecting before padding keeps the padded tensor at [B*n_types, max_cells, d_model]
+        # instead of [B*n_types, max_cells, n_genes], which is orders of magnitude smaller
+        # once n_genes is in the thousands.
         if total_cells > 0:
             cell_data = self.input_proj(cell_data)
 
