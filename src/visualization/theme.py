@@ -122,6 +122,10 @@ def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> str:
         "figure.titlesize":   base_size + 2,
 
         # Math via matplotlib's built-in mathtext (LaTeX-style without LaTeX).
+        # text.usetex=False overrides scienceplots' default LaTeX rendering,
+        # which doesn't have unicode (∈, ℝ, etc.) bound to glyphs by default
+        # and is fragile for arbitrary string content.
+        "text.usetex":        False,
         "mathtext.fontset":   "dejavusans",
 
         # Spines: hide top + right by default. Per-axes can re-enable via fmt_axes.
