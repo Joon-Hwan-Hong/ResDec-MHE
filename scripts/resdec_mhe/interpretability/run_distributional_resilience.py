@@ -1,0 +1,285 @@
+"""Distributional resilience analyses on raw per-subject pseudobulk.
+
+Model-free complement to ``run_resilience_analyses.py`` (which operates on
+Captum attributions). Here we treat raw pseudobulk as the signal and
+answer: does resilient vs. vulnerable expression differ distributionally
+(Wasserstein) or is any gene reproducibly selected across subject
+resamples (stability selection)?
+
+Subcommands (each writes a JSON to ``--out-dir``):
+
+    wasserstein  — per cell type, per gene Wasserstein-1 distance between
+                   resilient and vulnerable raw expression distributions.
+
+    stability    — per cell type stability selection (|rank-biserial| ≥
+                   threshold in ≥ pi_threshold of resamples).
+
+Inputs (defaults; CLI-overridable):
+    --residual-csv    outputs/redesign/interpretability/residual_per_subject.csv
+    --precomputed-dir data/precomputed
+    --gene-names-npy  data/precomputed/gene_names.npy
+    --cell-type-names-source outputs/redesign/interpretability/captum_ig/composite_attribution_summary.json
+    --out-dir         outputs/redesign/interpretability/distributional_resilience
+
+Provenance JSON lists input paths, quartile config, n_resilient /
+n_vulnerable, seed, and git SHA.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+
+_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
+if str(_WORKTREE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKTREE_ROOT))
+
+from src.analysis.resilience_distributional import (  # noqa: E402
+    stability_selection,
+    wasserstein_per_celltype,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _load_pseudobulk_matrix(
+    precomputed_dir: Path, subject_ids: list[str],
+) -> np.ndarray:
+    """Load per-subject pseudobulk into shape (n_subjects, n_cell_types, n_genes).
+
+    Subjects with no .pt file are returned as all-NaN rows. Mirrors the
+    helper in ``run_de_resilience.py`` — duplicated here intentionally
+    (small + self-contained; refactor to ``src/analysis/`` if a third
+    caller appears).
+    """
+    n = len(subject_ids)
+    out: np.ndarray | None = None
+    for i, sid in enumerate(subject_ids):
+        p = precomputed_dir / f"{sid}.pt"
+        if not p.exists():
+            logger.warning("missing %s; row will be NaN", p)
+            if out is not None:
+                out[i] = np.nan
+            continue
+        d = torch.load(p, map_location="cpu", weights_only=False)
+        pb = d["pseudobulk"].numpy().astype(np.float64)
+        if out is None:
+            out = np.full((n,) + pb.shape, np.nan, dtype=np.float64)
+        out[i] = pb
+        if (i + 1) % 50 == 0:
+            logger.info("loaded %d/%d subjects", i + 1, n)
+    if out is None:
+        raise FileNotFoundError(f"no .pt files loadable from {precomputed_dir}")
+    return out
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=_WORKTREE_ROOT,
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "unknown"
+
+
+def _load_cell_type_names(src_path: Path, n_ct: int) -> list[str]:
+    if not src_path.exists():
+        return [f"CT_{i}" for i in range(n_ct)]
+    s = json.loads(src_path.read_text())
+    raw = (
+        s.get("cell_types_ranked_by_total_attribution")
+        or s.get("cell_types")
+    )
+    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+        # NOTE: ranked by attribution, not axis-aligned; keep placeholder
+        # CT_0..30 for the per-CT file but report ranked separately.
+        return [f"CT_{i}" for i in range(n_ct)]
+    if isinstance(raw, list):
+        return list(raw)[:n_ct]
+    return [f"CT_{i}" for i in range(n_ct)]
+
+
+def _split_resilient_vs_vulnerable(
+    residual_csv: Path, quartile_fraction: float,
+) -> tuple[list[str], np.ndarray, int, int]:
+    df = pd.read_csv(residual_csv)
+    id_col = (
+        "ROSMAP_IndividualID"
+        if "ROSMAP_IndividualID" in df.columns
+        else df.columns[0]
+    )
+    df = df.rename(columns={id_col: "subject_id"})
+    finite = np.isfinite(df["residual"])
+    q_lo = df.loc[finite, "residual"].quantile(quartile_fraction)
+    q_hi = df.loc[finite, "residual"].quantile(1 - quartile_fraction)
+    df["group"] = "middle"
+    df.loc[df["residual"] >= q_hi, "group"] = "resilient"
+    df.loc[df["residual"] <= q_lo, "group"] = "vulnerable"
+    keep = df[df["group"].isin(("resilient", "vulnerable"))].copy()
+    ids = keep["subject_id"].astype(str).tolist()
+    is_resilient = (keep["group"] == "resilient").to_numpy()
+    return ids, is_resilient, int(is_resilient.sum()), int((~is_resilient).sum())
+
+
+def _run_wasserstein(args: argparse.Namespace) -> dict:
+    ids, is_resilient, n_res, n_vul = _split_resilient_vs_vulnerable(
+        Path(args.residual_csv), args.quartile_fraction,
+    )
+    logger.info(
+        "wasserstein split: %d resilient + %d vulnerable", n_res, n_vul,
+    )
+    pb = _load_pseudobulk_matrix(Path(args.precomputed_dir), ids)
+    n_subj, n_ct, n_gene = pb.shape
+    logger.info("pseudobulk loaded: %s", pb.shape)
+    gene_names = list(np.load(args.gene_names_npy, allow_pickle=True))
+    if len(gene_names) != n_gene:
+        logger.warning(
+            "gene_names length %d != n_gene %d; using placeholders",
+            len(gene_names), n_gene,
+        )
+        gene_names = [f"gene_{j}" for j in range(n_gene)]
+    ct_names = _load_cell_type_names(Path(args.cell_type_names_source), n_ct)
+    t0 = time.time()
+    result = wasserstein_per_celltype(
+        pb, is_resilient,
+        cell_type_names=ct_names, gene_names=gene_names,
+    )
+    result["provenance"] = {
+        "analysis": "wasserstein",
+        "source": "pseudobulk",
+        "quartile_fraction": args.quartile_fraction,
+        "n_resilient": n_res,
+        "n_vulnerable": n_vul,
+        "n_cell_types": int(n_ct),
+        "n_genes": int(n_gene),
+        "precomputed_dir": str(args.precomputed_dir),
+        "elapsed_s": round(time.time() - t0, 1),
+        "git_commit": _git_sha(),
+    }
+    return result
+
+
+def _run_stability(args: argparse.Namespace) -> dict:
+    ids, is_resilient, n_res, n_vul = _split_resilient_vs_vulnerable(
+        Path(args.residual_csv), args.quartile_fraction,
+    )
+    logger.info(
+        "stability split: %d resilient + %d vulnerable", n_res, n_vul,
+    )
+    pb = _load_pseudobulk_matrix(Path(args.precomputed_dir), ids)
+    n_subj, n_ct, n_gene = pb.shape
+    logger.info("pseudobulk loaded: %s", pb.shape)
+    gene_names = list(np.load(args.gene_names_npy, allow_pickle=True))
+    if len(gene_names) != n_gene:
+        logger.warning(
+            "gene_names length %d != n_gene %d; using placeholders",
+            len(gene_names), n_gene,
+        )
+        gene_names = [f"gene_{j}" for j in range(n_gene)]
+    ct_names = _load_cell_type_names(Path(args.cell_type_names_source), n_ct)
+    t0 = time.time()
+    per_ct: list[dict] = []
+    for ct in range(n_ct):
+        expr = pb[:, ct, :]
+        ok = np.isfinite(expr).all(axis=1)
+        if ok.sum() < 8:
+            logger.warning("CT %d: too few finite rows; skipping", ct)
+            continue
+        expr_ok = expr[ok]
+        is_res_ok = is_resilient[ok]
+        if is_res_ok.sum() < 3 or (~is_res_ok).sum() < 3:
+            continue
+        res = stability_selection(
+            expr_ok, is_res_ok,
+            n_bootstrap=args.n_bootstrap,
+            subsample_frac=args.subsample_frac,
+            rb_threshold=args.rb_threshold,
+            pi_threshold=args.pi_threshold,
+            seed=args.seed,
+            gene_names=gene_names,
+        )
+        per_ct.append({
+            "cell_type_index": ct,
+            "cell_type": str(ct_names[ct]),
+            "n_stable": len(res["stable_indices"]),
+            "stable_genes": res["stable_genes"],
+        })
+    return {
+        "per_cell_type": per_ct,
+        "provenance": {
+            "analysis": "stability_selection",
+            "source": "pseudobulk",
+            "quartile_fraction": args.quartile_fraction,
+            "n_resilient": n_res,
+            "n_vulnerable": n_vul,
+            "n_cell_types": int(n_ct),
+            "n_genes": int(n_gene),
+            "n_bootstrap": args.n_bootstrap,
+            "subsample_frac": args.subsample_frac,
+            "rb_threshold": args.rb_threshold,
+            "pi_threshold": args.pi_threshold,
+            "seed": args.seed,
+            "elapsed_s": round(time.time() - t0, 1),
+            "git_commit": _git_sha(),
+        },
+    }
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument(
+        "subcommand", choices=["wasserstein", "stability"],
+        help="Which analysis to run.",
+    )
+    p.add_argument(
+        "--residual-csv",
+        default="outputs/redesign/interpretability/residual_per_subject.csv",
+    )
+    p.add_argument("--precomputed-dir", default="data/precomputed")
+    p.add_argument("--gene-names-npy", default="data/precomputed/gene_names.npy")
+    p.add_argument(
+        "--cell-type-names-source",
+        default="outputs/redesign/interpretability/captum_ig/"
+        "composite_attribution_summary.json",
+    )
+    p.add_argument(
+        "--out-dir",
+        default="outputs/redesign/interpretability/distributional_resilience",
+    )
+    p.add_argument("--quartile-fraction", type=float, default=0.25)
+    # stability-specific:
+    p.add_argument("--n-bootstrap", type=int, default=100)
+    p.add_argument("--subsample-frac", type=float, default=0.5)
+    p.add_argument("--rb-threshold", type=float, default=0.2)
+    p.add_argument("--pi-threshold", type=float, default=0.8)
+    p.add_argument("--seed", type=int, default=42)
+    args = p.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.subcommand == "wasserstein":
+        result = _run_wasserstein(args)
+        out_path = out_dir / "wasserstein_per_celltype_pseudobulk.json"
+    else:
+        result = _run_stability(args)
+        out_path = out_dir / "stability_selection_pseudobulk.json"
+    out_path.write_text(json.dumps(result, indent=2))
+    logger.info("wrote %s", out_path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
