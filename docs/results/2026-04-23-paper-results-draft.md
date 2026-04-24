@@ -66,6 +66,8 @@ Finally, we probed the contribution of cell-cell communication (CCC) edges by ab
 
 Across the 5 seeds, mean of seed-mean R² = **0.4347**, with cross-seed std = **0.0075** and range [0.4254, 0.4290]. The cross-seed std (~0.008) is more than an order of magnitude smaller than the within-seed cross-fold std (~0.10), confirming that seed variation is a small contributor to total uncertainty relative to fold-to-fold variation. The canonical seed (42) sits at the upper end of the seed distribution (within 1 cross-seed σ of the seed-mean), so it is representative rather than cherry-picked.
 
+Within each seed, we performed a paired one-sided Wilcoxon signed-rank test of ResDec-MHE per-fold R² against TabPFN-2.6 standalone per-fold R² (n=5 folds, alternative = "greater"). Four of five seeds reached the n=5 lower-bound significance (W=15, p=0.0312); seed 2000 reached W=14, p=0.0625 (one fold tied at Δ=-0.002 within numerical noise). Combining the five per-seed p-values via Stouffer's method (sum of inverse-normal z-scores divided by √k) gave a combined one-sided p = **2.9 × 10⁻⁵**. An across-seed sign test on the 5 seed-mean R² (all 5 > TabPFN's pooled R²=0.3994) yielded p=0.0312. Full per-seed test statistics are deposited at `outputs/redesign/interpretability/seed_variation_wilcoxon.json`.
+
 **Reproducibility.** Code is at `<repo URL>` commit `<git SHA>` (see `outputs/redesign/interpretability/paper_baseline_table.provenance.json` for the SHA used to produce the headline tables). Conda + uv environments are pinned at `pyproject.toml` + `uv.lock`. All baselines' adapters (`baselines/<name>/run_rosmap.py`) consume the same splits + cohort and emit canonical-schema results CSVs.
 
 ---
