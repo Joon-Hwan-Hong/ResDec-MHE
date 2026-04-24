@@ -1,12 +1,13 @@
-"""ResDec-H3 Lightning module for frozen-encoder training (option 2).
+"""ResDec-MHE Lightning module for frozen-encoder training.
 
 Consumes cached ``attended`` embeddings directly. No encoder forward at
-train time. Head stack is the same :class:`ResDecH3Head` as the live-encoder
+train time. Head stack is the same :class:`ResDecMHEHead` as the live-encoder
 module — only the data path differs.
 
-This is the full-cohort NPT OOM fix: by pre-encoding all 516 subjects once
-and caching their 64-dim embeddings, we can train the head at full-cohort
-batch (500) without re-running the ~900M-param encoder per step.
+Motivation: full-cohort NPT attention on the live encoder is memory-heavy.
+Pre-encoding every subject once and caching its 64-dim embedding lets us
+train the head at full-cohort batch size without re-running the large
+encoder per step.
 """
 from __future__ import annotations
 
@@ -19,11 +20,11 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 
 from src.data.tabpfn_input import METADATA_FIELDS
-from src.models.resdec_head.resdec_h3_head import ResDecH3Head
+from src.models.resdec_head.resdec_mhe_head import ResDecMHEHead
 
 
 class ResDecFrozenLightningModule(pl.LightningModule):
-    """Train the ResDec-H3 head on cached encoder embeddings."""
+    """Train the ResDec-MHE head on cached encoder embeddings."""
 
     def __init__(self, cfg: DictConfig):
         super().__init__()
@@ -37,7 +38,7 @@ class ResDecFrozenLightningModule(pl.LightningModule):
         n_hc_streams = int(resdec_cfg.get("n_hc_streams", 4))
         lambda_init = float(resdec_cfg.get("lambda_init", 0.8))
 
-        self.head = ResDecH3Head(
+        self.head = ResDecMHEHead(
             d_subject=self.d_subject,
             d_metadata=self._d_metadata,
             n_heads=n_heads,

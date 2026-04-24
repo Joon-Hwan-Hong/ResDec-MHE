@@ -1,6 +1,6 @@
 """Unit tests for :mod:`src.analysis.resdec_subgroup_analysis`.
 
-Contract (from docs/plans/2026-04-22-resdec-h3-phase5-finish.md Task C.2):
+Contract:
 
     stratified_metrics(y_true, y_pred, subgroup_masks, *, n_bootstrap, seed)
 
@@ -123,12 +123,12 @@ def test_orchestration_uses_public_names():
 
     If the quantile helpers are ever re-privatised (renamed back to
     ``_age_quartile_labels`` or similar), the module-load of
-    ``scripts.redesign.interpretability.subgroup_r2`` would fail on the
+    ``scripts.resdec_mhe.interpretability.subgroup_r2`` would fail on the
     import statement and this test would error out rather than pass.
     """
-    import scripts.redesign.interpretability.subgroup_r2 as mod
+    import scripts.resdec_mhe.interpretability.subgroup_r2 as mod
     assert hasattr(mod, "apoe_e4_count_label")
-    # M1 consolidated the quartile helpers into the shared `quantile_labels`;
+    # Quartile helpers were consolidated into the shared `quantile_labels`;
     # either name is acceptable for rename-safety.
     assert hasattr(mod, "age_quartile_labels") or hasattr(mod, "quantile_labels")
 

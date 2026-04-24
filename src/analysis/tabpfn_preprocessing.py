@@ -1,7 +1,7 @@
 """Shared TabPFN input preprocessing helpers.
 
 This module centralises preprocessing steps used by the TabPFN pre-compute
-scripts (``scripts/redesign/compute_tabpfn_oof.py`` and ``compute_tabpfn_outer.py``)
+scripts (``scripts/resdec_mhe/tabpfn/compute_oof.py`` and ``compute_outer.py``)
 so that the two call sites stay in lockstep.
 """
 from __future__ import annotations

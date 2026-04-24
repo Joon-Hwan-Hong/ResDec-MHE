@@ -1,13 +1,13 @@
 """PyTorch Lightning wrapper composing the existing CognitiveResilienceModel
-encoder with the ResDec-H3 head (N-stage H3 composer, N ∈ {1, 2, 3},
+encoder with the ResDec-MHE head (N-stage composer, N ∈ {1, 2, 3},
 default 1, with aug-U uncertainty-weighted auxiliary losses).
 
-Scope (current)
----------------
+Scope
+-----
 - Encoder: existing ``CognitiveResilienceModel`` (unchanged), built via
   :func:`build_model_from_config`. Forward returns a dict with ``attended``
   ``[B, d_fused]`` — this is the subject embedding consumed by the head.
-- Head: :class:`ResDecH3Head` (FiLM + N × [NPTStage wrapped in TabM with
+- Head: :class:`ResDecMHEHead` (FiLM + N × [NPTStage wrapped in TabM with
   cross-stage attention for stages k > 1] + per-stage scalar readouts).
 - Loss: composite residual MSE + N detached-residual aux losses
   (``L_main + Σ_k λ_k·L_aux_k``). For N >= 2, ``L_aux_{k>=2}`` uses the
@@ -19,24 +19,12 @@ Scope (current)
 
 Metadata wiring
 ---------------
-ResDecH3Head consumes an 8-dim metadata vector (APOE/sex/age FiLM conditioning)
+ResDecMHEHead consumes an 8-dim metadata vector (APOE/sex/age FiLM conditioning)
 populated by the datamodule via ``src.data.tabpfn_input.load_metadata_vector``.
 Age is z-scored with fold-train-only ``age_mean``/``age_std`` to avoid val
 leakage. A zero-tensor fallback remains for tests / legacy callers that
 construct minimal batches without metadata (FiLM initialises near-identity,
 so zeros → no-op at init).
-
-History
--------
-- Phase 1 (task 1.9a): built the wrapper around a single-stage composer with
-  plain MSE against cognition.
-- Phase 2 (task 2.2): added TabPFN OOF / outer-fold residual caches so the
-  head could learn on ``y − ŷ_tabpfn`` instead of raw y.
-- Phase 3 (task 3.1): extended to N stages (N ∈ {1, 2, 3}), introduced
-  detached residual aux losses and aug-U σ-weighting.
-- Phase 3 lock-in (2026-04-22): 5-fold ablation on n_stages ∈ {1, 2, 3}
-  with TabM(k=8) picked n_stages=1 as canonical (R² = 0.4373 ± 0.085,
-  best of the three). Multi-stage support is preserved for ablations.
 """
 from __future__ import annotations
 
@@ -52,10 +40,10 @@ from omegaconf import DictConfig
 
 from src.data.tabpfn_input import METADATA_FIELDS
 from src.models.full_model import build_model_from_config
-from src.models.resdec_head.resdec_h3_head import (
+from src.models.resdec_head.resdec_mhe_head import (
     DEFAULT_K_TABM,
     DEFAULT_N_STAGES,
-    ResDecH3Head,
+    ResDecMHEHead,
 )
 from src.training.losses import mse_loss
 
@@ -70,7 +58,7 @@ DEFAULT_SIGMA_EPS = 1e-6
 # Keys required by the encoder's forward (mirrors
 # CognitiveResilienceLightningModule._batch_to_model_kwargs).
 # Public constant: shared with interpretability modules
-# (src/analysis/resdec_ccc_importance.py, scripts/redesign/interpretability/
+# (src/analysis/resdec_ccc_importance.py, scripts/resdec_mhe/interpretability/
 # ccc_composite_attribution.py). Do not duplicate — import from here.
 ENCODER_KWARG_KEYS = (
     "region_pseudobulk",
@@ -88,7 +76,7 @@ ENCODER_KWARG_KEYS = (
 
 
 class ResDecLightningModule(pl.LightningModule):
-    """Lightning wrapper: encoder (unchanged) → ResDec-H3 head.
+    """Lightning wrapper: encoder (unchanged) → ResDec-MHE head.
 
     Args:
         config: OmegaConf DictConfig with ``model`` and ``training`` sections.
@@ -99,19 +87,19 @@ class ResDecLightningModule(pl.LightningModule):
 
     def __init__(self, config: DictConfig):
         super().__init__()
-        # ResDec-H3 runs with the deterministic head; no guide/config to
+        # ResDec-MHE runs with the deterministic head; no guide/config to
         # persist via Lightning's hparams machinery.
         self.save_hyperparameters(ignore=["config"])
         self.config = config
 
         # Build encoder — existing model, no modifications. The deterministic
         # prediction head is still built (it lives at self.encoder.prediction_head),
-        # but we ignore its scalar output; the ResDec-H3 head reads `attended`
+        # but we ignore its scalar output; the ResDec-MHE head reads `attended`
         # directly.
         model_cfg = config.model
         self.encoder = build_model_from_config(model_cfg)
 
-        # Encoder's own prediction_head is bypassed under ResDec-H3: we consume the
+        # Encoder's own prediction_head is bypassed under ResDec-MHE: we consume the
         # 'attended' subject embedding directly and feed it to self.head. Freeze the
         # prediction_head to avoid wasted optimizer state (verified: grad is always zero).
         if hasattr(self.encoder, "prediction_head"):
@@ -127,12 +115,12 @@ class ResDecLightningModule(pl.LightningModule):
         n_heads = int(resdec_cfg.get("n_heads", 4))
         n_hc_streams = int(resdec_cfg.get("n_hc_streams", 4))
         lambda_init = float(resdec_cfg.get("lambda_init", 0.8))
-        # Phase-3 H3 extension knobs — ablation-friendly defaults match plan spec.
+        # N-stage composer knobs; defaults match the canonical configuration.
         k_tabm = int(resdec_cfg.get("k_tabm", DEFAULT_K_TABM))
         n_stages = int(resdec_cfg.get("n_stages", DEFAULT_N_STAGES))
-        # Phase-5.3 ablation flags — default True (canonical). False disables
-        # the corresponding component for ablation runs (#6 DiffAttn, #7 HC,
-        # #8 FiLM).
+        # Ablation flags — default True (canonical). False disables the
+        # corresponding component for ablation runs (DiffAttn / HyperConnection /
+        # FiLM).
         use_film = bool(resdec_cfg.get("use_film", True))
         use_diff_attn = bool(resdec_cfg.get("use_diff_attn", True))
         use_hyper_conn = bool(resdec_cfg.get("use_hyper_conn", True))
@@ -148,7 +136,7 @@ class ResDecLightningModule(pl.LightningModule):
             logger.warning(
                 "n_stages=1 with aux_lambdas[0]=%.3f: L_aux_1 is identical to L_main "
                 "(double-weights MSE). Set aux_lambdas=[0.0] to disable, or keep as-is "
-                "for the canonical Phase-3-locked config.",
+                "for the canonical config.",
                 self._aux_lambdas[0],
             )
         self._use_sigma_weighting = bool(resdec_cfg.get("use_sigma_weighting", True))
@@ -156,7 +144,7 @@ class ResDecLightningModule(pl.LightningModule):
         # DEFAULT_SIGMA_EPS for rationale.
         self._sigma_eps = float(resdec_cfg.get("sigma_eps", DEFAULT_SIGMA_EPS))
 
-        self.head = ResDecH3Head(
+        self.head = ResDecMHEHead(
             d_subject=d_subject,
             d_metadata=d_metadata,
             n_heads=n_heads,
@@ -176,13 +164,13 @@ class ResDecLightningModule(pl.LightningModule):
         self._val_subject_ids: list[str] = []
 
         # ------------------------------------------------------------------ #
-        # Phase 2 (Task 2.2): TabPFN residual base                            #
+        # TabPFN residual base                                                #
         # ------------------------------------------------------------------ #
         # If cfg.data.tabpfn_oof_dir / tabpfn_outer_dir are provided, load the
         # fold-specific cached TabPFN predictions and build subject_id -> (y, σ)
         # lookup dicts. The head then trains on residuals y - y_tabpfn_oof and
         # validates on composite prediction ŷ = y_tabpfn_outer + f̂_1.
-        # When the paths are absent we fall back to plain MSE (Phase 1 behaviour).
+        # When the paths are absent we fall back to plain MSE against cognition.
         self.tabpfn_train_map: dict[str, tuple[float, float]] = {}
         self.tabpfn_val_map: dict[str, tuple[float, float]] = {}
         self._tabpfn_enabled = False
@@ -209,7 +197,7 @@ class ResDecLightningModule(pl.LightningModule):
             )
 
     # ------------------------------------------------------------------ #
-    # TabPFN cache loading (Phase 2 Task 2.2)                             #
+    # TabPFN cache loading                                                #
     # ------------------------------------------------------------------ #
     def _load_tabpfn_caches(
         self, oof_dir: Path, outer_dir: Path, fold: int,
@@ -310,7 +298,7 @@ class ResDecLightningModule(pl.LightningModule):
         return md
 
     def forward(self, batch: dict) -> dict:
-        """Run encoder → extract `attended` → run ResDec-H3 head.
+        """Run encoder → extract `attended` → run ResDec-MHE head.
 
         Returns dict with:
             prediction: [B] composer output = sum of present stage scalars
@@ -420,7 +408,7 @@ class ResDecLightningModule(pl.LightningModule):
 
             loss = L_main + sum(lam * Lk for lam, Lk in zip(self._aux_lambdas, aux_losses))
 
-            # Composite MSE (detached, for monitoring parity with Phase 2).
+            # Composite MSE (detached, for monitoring).
             # detach: composite MSE is log-only, no gradient contribution — the
             # gradient path for pred is through L_main/L_aux* above. Do NOT
             # "simplify" by removing .detach(); doing so would add a redundant
@@ -433,7 +421,7 @@ class ResDecLightningModule(pl.LightningModule):
             self.log("train/residual_mse", L_main, prog_bar=False, batch_size=bs, sync_dist=True)
             self.log("train/composite_mse", comp_mse, prog_bar=False, batch_size=bs, sync_dist=True)
         else:
-            # Phase 1 fallback: plain MSE against cognition (no TabPFN cache).
+            # Fallback path: plain MSE against cognition (no TabPFN cache).
             loss = torch.nn.functional.mse_loss(pred, cognition)
             self.log("train/mse", loss, prog_bar=True, batch_size=bs, sync_dist=True)
 
@@ -488,8 +476,8 @@ class ResDecLightningModule(pl.LightningModule):
         # Pearson r (linear correlation) + Spearman ρ (rank correlation)
         # via numpy-on-CPU — simpler than torch-corrcoef broadcasting.
         # .float() cast: numpy doesn't support bf16; under bf16-mixed precision
-        # the no-TabPFN-fallback path (Phase-1 plain MSE) leaves preds as bf16
-        # because there's no float-promotion via TabPFN-residual addition.
+        # the no-TabPFN fallback path (plain MSE) leaves preds as bf16 because
+        # there's no float-promotion via TabPFN-residual addition.
         import numpy as _np
         p_np = preds.detach().float().numpy()
         t_np = targets.detach().float().numpy()
@@ -550,8 +538,8 @@ class ResDecLightningModule(pl.LightningModule):
     def configure_optimizers(self) -> dict[str, Any]:
         train_cfg = self.config.training
 
-        # lr and weight_decay: Phase 1 config sets them at the top-level of
-        # `training`, but the project default lives under `training.optimizer`.
+        # lr and weight_decay: some configs set them at the top-level of
+        # `training`, while the project default lives under `training.optimizer`.
         # Honor both so this module works against either shape.
         lr = train_cfg.get("lr")
         if lr is None:

@@ -1,7 +1,7 @@
-"""Cross-stage attention for ResDec-H3's multi-stage head.
+"""Cross-stage attention for ResDec-MHE's multi-stage head.
 
-(Wired in Phase 3 for multi-stage heads. Unused in Phase 1 but committed for
-Phase 3 use per plan Task 3.1.)
+Used by ResDecMHEHead when n_stages > 1 to let each later stage attend to the
+detached latents produced by earlier stages.
 
 Query: current stage's conditioned subject embedding z_cond [B, d_subject]
 Keys+Values: concatenation of prior stages' latents [B, d_subject] each

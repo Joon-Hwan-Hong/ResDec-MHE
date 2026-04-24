@@ -1,6 +1,6 @@
 """Unit tests for :mod:`src.analysis.resdec_statistical_rigor`.
 
-Contract (from docs/plans/2026-04-22-resdec-h3-phase5-finish.md Task C.3):
+Contract:
 
 1. ``paired_wilcoxon(fold_r2s_ours, fold_r2s_baseline, alternative="greater")``
    wraps :func:`scipy.stats.wilcoxon`. Identical arrays → all differences

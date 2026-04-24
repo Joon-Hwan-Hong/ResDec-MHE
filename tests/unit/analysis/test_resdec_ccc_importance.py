@@ -1,6 +1,6 @@
 """Unit tests for :mod:`src.analysis.resdec_ccc_importance`.
 
-Contract (from docs/plans/2026-04-22-resdec-h3-phase5-finish.md Task C.4):
+Contract:
 
 1. ``extract_hgt_edge_attention`` — drives the encoder with ``return_hgt_attention=True``
    and aggregates per-edge-type attention across HGT layers, returning per-layer and
@@ -426,7 +426,7 @@ def test_liana_correlation_constant_ranking_returns_nan():
 
 
 def test_liana_correlation_result_has_aggregation_level_field():
-    """M5: downstream consumers rely on ``aggregation_level`` for figure captions."""
+    """Downstream consumers rely on ``aggregation_level`` for figure captions."""
     our = _ranking_df(src=["A", "B"], tgt=["C", "D"], imp=[1.0, 2.0])
     liana = _liana_df(src=["A", "B"], tgt=["C", "D"], score=[10.0, 20.0])
     result = liana_correlation(our, liana, score_col="score", higher_is_better=True)
@@ -435,7 +435,7 @@ def test_liana_correlation_result_has_aggregation_level_field():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# load_liana_reference (M2)
+# load_liana_reference
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -471,7 +471,7 @@ def test_load_liana_reference_missing_score_col_raises(tmp_path):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# drop_edges_of_type edge cases (M3)
+# drop_edges_of_type edge cases
 # ─────────────────────────────────────────────────────────────────────────────
 
 

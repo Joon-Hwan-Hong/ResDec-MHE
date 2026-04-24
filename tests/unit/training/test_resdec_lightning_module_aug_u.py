@@ -32,7 +32,7 @@ from src.training.resdec_lightning_module import (
 # ---------------------------------------------------------------------------- #
 @pytest.fixture
 def cfg():
-    """Minimal config — same shape as the Phase-1 smoke-test fixture in
+    """Minimal config — same shape as the smoke-test fixture in
     test_resdec_lightning_module.py (deterministic head, resdec_head section)."""
     base = OmegaConf.load("configs/default.yaml")
     OmegaConf.set_struct(base, False)
@@ -333,13 +333,13 @@ def test_tabpfn_disabled_fallback(cfg):
 
 
 # ---------------------------------------------------------------------------- #
-# M2 / M3: canonical n_stages=1 regression + aux_lambdas length mismatch        #
+# Canonical n_stages=1 regression + aux_lambdas length mismatch                 #
 # ---------------------------------------------------------------------------- #
 def test_n_stages_1_skips_sigma_weighting(cfg):
     """At n_stages=1, sigma weighting is irrelevant — there's only stage_1
     whose aux loss is unweighted MSE. Verify no sigma_weight_* logs appear
     and the loss reduces to L_main + λ_1·MSE(stage_1, residual)."""
-    # cfg fixture defaults to n_stages=1 (canonical: ResDecH3Head.DEFAULT_N_STAGES).
+    # cfg fixture defaults to n_stages=1 (canonical: ResDecMHEHead.DEFAULT_N_STAGES).
     # Don't override — this test is specifically about the canonical shape.
     torch.manual_seed(0)
     mod = ResDecLightningModule(cfg).float()

@@ -1,4 +1,4 @@
-"""Tests for scripts/redesign/interpretability/gsea_from_captum.py (Task C.6).
+"""Tests for scripts/resdec_mhe/interpretability/gsea_from_captum.py.
 
 Covers the pure-function helpers used by the GSEA adapter:
 
@@ -28,7 +28,7 @@ from scipy.stats import hypergeom
 
 # Make the script importable as a module.
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-_SCRIPTS_DIR = _WORKTREE_ROOT / "scripts" / "redesign" / "interpretability"
+_SCRIPTS_DIR = _WORKTREE_ROOT / "scripts" / "resdec_mhe" / "interpretability"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 

@@ -13,9 +13,9 @@ class PathologyEncoder(nn.Module):
     """
     Unified pathology encoder incorporating region context.
 
-    Design decision (2026-01-27): Single encoder replaces duplicate encoders
-    in the original design. Region context informs pathology interpretation
-    since subjects with different region availability may differ.
+    Design decision: A single encoder handles pathology + region context
+    together. Region context informs pathology interpretation since subjects
+    with different region availability may differ.
     """
 
     def __init__(

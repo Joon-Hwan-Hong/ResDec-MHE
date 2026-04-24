@@ -1,10 +1,10 @@
 """Prepare input data for DL baseline methods (scPhase, MixMIL).
 
-Creates method-specific .h5ad files from our preprocessed AnnData,
-using the same 465 subjects and 4797 genes as our model.
+Creates method-specific .h5ad files from the preprocessed AnnData, using the
+same subject set and gene set the main model sees.
 
 Outputs:
-    baselines/shared/scphase_input.h5ad  — cells x 4797 genes, sparse
+    baselines/shared/scphase_input.h5ad  — cells x n_genes, sparse
         .obs: ROSMAP_IndividualID, cogn_global, batch, supercluster_name
     baselines/shared/mixmil_input.h5ad   — cells x 30 scVI latent dims
         .obs: ROSMAP_IndividualID, cogn_global, supercluster_name
@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import logging
 import sys
@@ -35,6 +36,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
+def _materialize_subset(view: sc.AnnData) -> sc.AnnData:
+    """Materialize an AnnData subset-view into memory.
+
+    Dispatches to ``.to_memory()`` for disk-backed parents and ``.copy()`` for
+    in-memory parents.
+    """
+    if getattr(view, "isbacked", False):
+        return view.to_memory()
+    return view.copy()
+
+
 def prepare_scphase_input(
     adata: sc.AnnData,
     metadata: pd.DataFrame,
@@ -42,22 +54,29 @@ def prepare_scphase_input(
     subject_col: str,
     target_col: str,
     output_path: Path,
+    max_cells_per_subject: int | None = None,
+    rng_seed: int = 42,
 ) -> None:
     """Create scPhase-compatible .h5ad.
 
     scPhase requires:
-    - .X: expression matrix (sparse OK, 5000 HVGs recommended; we use our 4797)
+    - .X: expression matrix (sparse OK; scPhase recommends ~5000 HVGs and we
+      feed whatever HVG set the preprocessed h5ad ships with)
     - .obs['sample_id']: subject identifier per cell
     - .obs['phenotype']: continuous target value per cell (same for all cells of a subject)
     - .obs['batch']: batch/cohort label (single cohort → 'ROSMAP' constant)
     - .obs['cell_type']: cell type annotations (for interpretability)
+
+    max_cells_per_subject: if set, deterministically subsample each subject's cells to at most
+        this many (via np.random.default_rng(rng_seed)). Matches the semantics of scPhase's
+        training-time ``max_instances`` cap.
     """
     logger.info("Preparing scPhase input...")
 
-    # Subset to our subjects
     mask = adata.obs[subject_col].isin(subject_ids)
     logger.info(f"Subsetting to {mask.sum():,} cells from {len(subject_ids)} subjects")
-    adata_sub = adata[mask].copy()
+    adata_sub = _materialize_subset(adata[mask])
+    gc.collect()
 
     # Add target column (cogn_global) — map from metadata to each cell
     meta_target = metadata.set_index(subject_col)[target_col].to_dict()
@@ -67,7 +86,33 @@ def prepare_scphase_input(
     valid_mask = adata_sub.obs["phenotype"].notna()
     if (~valid_mask).sum() > 0:
         logger.warning(f"Dropping {(~valid_mask).sum():,} cells with missing target")
-        adata_sub = adata_sub[valid_mask].copy()
+        adata_sub = _materialize_subset(adata_sub[valid_mask])
+        gc.collect()
+
+    if max_cells_per_subject is not None:
+        logger.info(
+            f"Applying per-subject cell cap: max {max_cells_per_subject} cells/subject "
+            f"(rng_seed={rng_seed})"
+        )
+        rng = np.random.default_rng(rng_seed)
+        subj_labels = adata_sub.obs[subject_col].to_numpy()
+        keep_chunks: list[np.ndarray] = []
+        for sid in subject_ids:
+            subj_indices = np.where(subj_labels == sid)[0]
+            if subj_indices.size > max_cells_per_subject:
+                chosen = rng.choice(subj_indices, size=max_cells_per_subject, replace=False)
+                keep_chunks.append(chosen)
+            else:
+                keep_chunks.append(subj_indices)
+        keep_indices = np.sort(np.concatenate(keep_chunks)) if keep_chunks else np.array([], dtype=int)
+        n_before = adata_sub.shape[0]
+        adata_sub = _materialize_subset(adata_sub[keep_indices])
+        gc.collect()
+        n_after = adata_sub.shape[0]
+        logger.info(
+            f"Per-subject cap: {n_before:,} cells → {n_after:,} cells "
+            f"({n_after / max(n_before, 1) * 100:.1f}% retained)"
+        )
 
     # Rename columns for scPhase conventions
     adata_sub.obs["sample_id"] = adata_sub.obs[subject_col]
@@ -82,12 +127,15 @@ def prepare_scphase_input(
     if not issparse(adata_sub.X):
         logger.info("Converting to sparse format...")
         adata_sub.X = csr_matrix(adata_sub.X)
+        gc.collect()
 
     logger.info(f"scPhase input: {adata_sub.shape[0]:,} cells x {adata_sub.shape[1]:,} genes")
     logger.info(f"Subjects: {adata_sub.obs['sample_id'].nunique()}")
     logger.info(f"Writing to {output_path}")
     adata_sub.write_h5ad(output_path)
     logger.info(f"Done. File size: {output_path.stat().st_size / 1e9:.1f} GB")
+    del adata_sub
+    gc.collect()
 
 
 def prepare_mixmil_input(
@@ -113,10 +161,15 @@ def prepare_mixmil_input(
 
     logger.info("Preparing MixMIL input (scVI embeddings)...")
 
-    # Subset to our subjects
+    if getattr(adata, "isbacked", False):
+        raise ValueError(
+            "prepare_mixmil_input requires an in-memory AnnData; scVI training is not "
+            "compatible with backed='r' mode."
+        )
     mask = adata.obs[subject_col].isin(subject_ids)
     logger.info(f"Subsetting to {mask.sum():,} cells from {len(subject_ids)} subjects")
-    adata_sub = adata[mask].copy()
+    adata_sub = _materialize_subset(adata[mask])
+    gc.collect()
 
     # Add metadata
     meta_target = metadata.set_index(subject_col)[target_col].to_dict()
@@ -129,12 +182,13 @@ def prepare_mixmil_input(
     valid_mask = adata_sub.obs["phenotype"].notna()
     if (~valid_mask).sum() > 0:
         logger.warning(f"Dropping {(~valid_mask).sum():,} cells with missing target")
-        adata_sub = adata_sub[valid_mask].copy()
+        adata_sub = _materialize_subset(adata_sub[valid_mask])
+        gc.collect()
 
     # scVI expects raw counts, not normalized expression.
     # The preprocessed h5ad stores normalized data in .X and raw counts in .raw.
     if adata_sub.raw is not None:
-        logger.info("Swapping .X with .raw counts for scVI (same 4797 genes, integer counts)")
+        logger.info("Swapping .X with .raw counts for scVI (same gene set, integer counts)")
         adata_sub.X = adata_sub.raw[adata_sub.obs_names, adata_sub.var_names].X.copy()
         adata_sub.raw = None  # avoid confusion
     else:
@@ -210,6 +264,21 @@ def main():
         choices=["scphase", "mixmil"],
         help="Which methods to prepare data for",
     )
+    parser.add_argument(
+        "--scphase-max-cells-per-subject", type=int, default=10000,
+        help=(
+            "Per-subject cell cap for scPhase (deterministic subsample, seed=42). "
+            "Set to 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--scphase-backed-mode", action="store_true",
+        help=(
+            "Open the source AnnData with backed='r' so only subset cells load into RAM. "
+            "Only honored when --methods is exactly ['scphase'] (backed mode is incompatible "
+            "with scVI training)."
+        ),
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -225,30 +294,54 @@ def main():
     metadata = pd.read_csv(args.metadata)
     logger.info(f"Loaded metadata: {len(metadata)} rows")
 
-    # Load AnnData (this is the expensive step — 66 GB)
-    logger.info(f"Loading AnnData from {args.adata} (this may take a few minutes)...")
-    adata = sc.read_h5ad(args.adata)
+    methods_requested = set(args.methods)
+    use_backed = args.scphase_backed_mode and methods_requested == {"scphase"}
+    if args.scphase_backed_mode and not use_backed:
+        logger.warning(
+            "--scphase-backed-mode requested but --methods is %s; "
+            "ignoring flag (scVI requires in-memory adata).",
+            sorted(methods_requested),
+        )
+    logger.info(
+        f"Loading AnnData from {args.adata} (backed={use_backed})..."
+    )
+    adata = sc.read_h5ad(args.adata, backed="r") if use_backed else sc.read_h5ad(args.adata)
     logger.info(f"Loaded: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
 
-    # Verify gene identity with our precomputed features
+    # Verify gene identity against the main-model precomputed features
     gene_names_file = Path("data/precomputed/rosmap/gene_names.npy")
     if gene_names_file.exists():
-        our_genes = list(np.load(gene_names_file, allow_pickle=True))
+        model_genes = list(np.load(gene_names_file, allow_pickle=True))
         h5ad_genes = list(adata.var_names)
-        if our_genes != h5ad_genes:
+        if model_genes != h5ad_genes:
             raise ValueError(
-                f"Gene mismatch: h5ad has {len(h5ad_genes)} genes, our model uses {len(our_genes)}. "
-                f"First difference at index {next(i for i, (a, b) in enumerate(zip(our_genes, h5ad_genes)) if a != b)}. "
-                f"Baselines must use the exact same genes as our model for fair comparison."
+                f"Gene mismatch: h5ad has {len(h5ad_genes)} genes, main model uses {len(model_genes)}. "
+                f"First difference at index {next(i for i, (a, b) in enumerate(zip(model_genes, h5ad_genes)) if a != b)}. "
+                f"Baselines must use the exact same genes as the main model for fair comparison."
             )
-        logger.info(f"Gene identity verified: {len(our_genes)} genes match precomputed features")
+        logger.info(f"Gene identity verified: {len(model_genes)} genes match precomputed features")
+
+    methods_remaining = set(args.methods)
+
+    def _maybe_release_adata() -> None:
+        nonlocal adata
+        if not methods_remaining:
+            del adata
+            gc.collect()
 
     if "scphase" in args.methods:
         prepare_scphase_input(
             adata, metadata, subject_ids,
             args.subject_col, args.target_col,
             output_dir / "scphase_input.h5ad",
+            max_cells_per_subject=(
+                args.scphase_max_cells_per_subject
+                if args.scphase_max_cells_per_subject > 0
+                else None
+            ),
         )
+        methods_remaining.discard("scphase")
+        _maybe_release_adata()
 
     if "mixmil" in args.methods:
         prepare_mixmil_input(
@@ -260,6 +353,8 @@ def main():
             num_workers=args.scvi_num_workers,
             devices=args.scvi_devices,
         )
+        methods_remaining.discard("mixmil")
+        _maybe_release_adata()
 
     logger.info("All data preparation complete.")
 

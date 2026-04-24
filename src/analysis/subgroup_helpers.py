@@ -1,8 +1,8 @@
-"""Shared subgroup-labeling helpers for ResDec-H3 interpretability scripts.
+"""Shared subgroup-labeling helpers for ResDec-MHE interpretability scripts.
 
 Consolidates the label/quartile helpers previously duplicated across
-``scripts/redesign/interpretability/variance_decomposition.py`` and
-``scripts/redesign/interpretability/subgroup_r2.py``. Keeping one authoritative
+``scripts/resdec_mhe/interpretability/variance_decomposition.py`` and
+``scripts/resdec_mhe/interpretability/subgroup_r2.py``. Keeping one authoritative
 implementation prevents drift: APOE-ε4 count, sex string, and generic
 rank-then-qcut quantile labels must be computed identically across the two
 scripts so the same subjects land in the same buckets.

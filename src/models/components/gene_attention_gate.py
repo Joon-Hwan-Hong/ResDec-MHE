@@ -9,10 +9,10 @@ Gate value interpretation:
     - 0.5: neutral (initialization point, maximum gradient)
     - 1.0: gene is fully passed
 
-Design choice (2026-03-30): Sigmoid replaces the original softmax gate.
+Design choice: Sigmoid replaces the earlier softmax gate.
 Softmax produced uniform weights due to (1) zero init + high temperature
-creating vanishing gradients over 4796 genes, and (2) the downstream linear
-layer absorbing gene selection, removing gradient signal from the gate.
+creating vanishing gradients over thousands of genes, and (2) the downstream
+linear layer absorbing gene selection, removing gradient signal from the gate.
 Sigmoid avoids both issues: zero init places all genes at the steepest
 gradient point (sigmoid'(0) = 0.25), and independent gating avoids the
 competitive dilution of softmax over thousands of genes.

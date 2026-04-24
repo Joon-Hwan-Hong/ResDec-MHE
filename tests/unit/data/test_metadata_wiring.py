@@ -1,4 +1,4 @@
-"""Tests for Task A.1 metadata wiring: datamodule → dataset → lightning module.
+"""Tests for metadata wiring: datamodule → dataset → lightning module.
 
 Three cases:
     (a) ``load_metadata_vector`` for a present subject produces the expected

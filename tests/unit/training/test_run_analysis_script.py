@@ -503,7 +503,7 @@ class TestRunAnalysisEdgeCases:
 
 
 # =============================================================================
-# New Tests for Phase 6 Round 3
+# Subject-alignment helper tests
 # =============================================================================
 
 
@@ -754,7 +754,7 @@ class TestGeneImportanceWithRegionPseudobulk:
 
 
 # =============================================================================
-# Phase 6 Review Round 5 Tests
+# _align_predictions_to_subjects tests
 # =============================================================================
 
 
@@ -794,12 +794,12 @@ class TestAlignPredictionsToSubjects:
 
 
 # =============================================================================
-# Phase 6 Review Round 8 Tests — Batch 3 (M3, M4, M5)
+# Heterogeneity + related analysis tests
 # =============================================================================
 
 
 class TestHeterogeneitySavesH5:
-    """Test M3: cell heterogeneity block saves cell_attention.h5."""
+    """Test that the cell heterogeneity block saves cell_attention.h5."""
 
     def test_heterogeneity_saves_h5(self, tmp_path):
         """run_analysis heterogeneity block creates cell_attention.h5 with expected datasets."""

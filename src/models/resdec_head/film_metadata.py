@@ -1,7 +1,7 @@
 """FiLM metadata conditioning: z_cond = γ(m) ⊙ z + β(m).
 
 Initialized so γ ≈ 1, β ≈ 0 → forward pass is near-identity at start of training.
-Used by ResDec-H3 head to condition the subject embedding on APOE/sex/age.
+Used by ResDec-MHE head to condition the subject embedding on APOE/sex/age.
 """
 from __future__ import annotations
 import torch

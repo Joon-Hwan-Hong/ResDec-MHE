@@ -1,8 +1,8 @@
 """Shared loaders for flat pseudobulk features + cognition targets.
 
-Used by scripts/redesign/compute_* and downstream redesign tooling. Replaces
-duplicated copies previously in each script. All loaders emit rich logging
-(counts of loaded / skipped / total).
+Used by scripts/resdec_mhe/tabpfn/compute_* and downstream resdec_mhe tooling.
+Replaces duplicated copies previously in each script. All loaders emit rich
+logging (counts of loaded / skipped / total).
 """
 from __future__ import annotations
 

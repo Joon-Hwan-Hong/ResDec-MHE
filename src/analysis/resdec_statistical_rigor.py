@@ -1,6 +1,6 @@
-"""Statistical rigor primitives for ResDec-H3 evaluation.
+"""Statistical rigor primitives for ResDec-MHE evaluation.
 
-Three pure, I/O-free functions used by the ResDec-H3 paper-prep pipeline:
+Three pure, I/O-free functions used by the ResDec-MHE paper-prep pipeline:
 
 1. :func:`paired_wilcoxon` — paired Wilcoxon signed-rank over per-fold R²
    values (``n=5`` in the canonical 5-fold CV). Wraps
@@ -17,7 +17,7 @@ Three pure, I/O-free functions used by the ResDec-H3 paper-prep pipeline:
    ``z = scipy.stats.norm.ppf(0.5 + nominal / 2)``.
 
 Orchestration (loading per-fold npz + baseline CSVs, writing JSON/MD)
-lives in ``scripts/redesign/interpretability/paired_tests_and_bootstrap.py``.
+lives in ``scripts/resdec_mhe/interpretability/paired_tests_and_bootstrap.py``.
 """
 from __future__ import annotations
 

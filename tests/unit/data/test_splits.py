@@ -618,32 +618,38 @@ class TestTestFracValidation:
             "cogn_global": np.random.uniform(-2, 2, 50),
         })
 
-    def test_rejects_test_frac_zero(self, simple_metadata):
-        """test_frac=0 should raise ValueError."""
+    def test_accepts_test_frac_zero(self, simple_metadata):
+        """test_frac=0 is intentionally allowed — no holdout, all subjects in train_val_pool.
+
+        Source (src/data/splits.py::create_stratified_splits) validates
+        ``0 <= test_frac < 1`` and explicitly handles test_frac==0 by skipping
+        the holdout step. This test documents that contract.
+        """
         from src.data.splits import create_stratified_splits
 
-        with pytest.raises(ValueError, match="test_frac must be between 0 and 1"):
-            create_stratified_splits(simple_metadata, test_frac=0)
+        splits = create_stratified_splits(simple_metadata, test_frac=0)
+        assert len(splits["holdout_test"]) == 0
+        assert len(splits["train_val_pool"]) == len(simple_metadata)
 
     def test_rejects_test_frac_one(self, simple_metadata):
         """test_frac=1 should raise ValueError."""
         from src.data.splits import create_stratified_splits
 
-        with pytest.raises(ValueError, match="test_frac must be between 0 and 1"):
+        with pytest.raises(ValueError, match=r"test_frac must be in \[0, 1\)"):
             create_stratified_splits(simple_metadata, test_frac=1.0)
 
     def test_rejects_test_frac_negative(self, simple_metadata):
         """Negative test_frac should raise ValueError."""
         from src.data.splits import create_stratified_splits
 
-        with pytest.raises(ValueError, match="test_frac must be between 0 and 1"):
+        with pytest.raises(ValueError, match=r"test_frac must be in \[0, 1\)"):
             create_stratified_splits(simple_metadata, test_frac=-0.1)
 
     def test_rejects_test_frac_greater_than_one(self, simple_metadata):
         """test_frac > 1 should raise ValueError."""
         from src.data.splits import create_stratified_splits
 
-        with pytest.raises(ValueError, match="test_frac must be between 0 and 1"):
+        with pytest.raises(ValueError, match=r"test_frac must be in \[0, 1\)"):
             create_stratified_splits(simple_metadata, test_frac=1.5)
 
 

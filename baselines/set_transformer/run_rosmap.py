@@ -1,7 +1,7 @@
 """Set Transformer baseline for ROSMAP cognitive resilience regression.
 
 Set Transformer (Lee et al. 2019) with ISAB + PMA pooling and MSE regression head,
-on 30-dim scVI embeddings using our exact 5-fold splits.
+on 30-dim scVI embeddings using the project's 5-fold splits.
 
 Usage:
     uv run python baselines/set_transformer/run_rosmap.py \

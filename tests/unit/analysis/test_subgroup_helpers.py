@@ -1,8 +1,8 @@
 """Unit tests for :mod:`src.analysis.subgroup_helpers`.
 
 These helpers are shared between
-``scripts/redesign/interpretability/variance_decomposition.py`` and
-``scripts/redesign/interpretability/subgroup_r2.py``. The tests pin the
+``scripts/resdec_mhe/interpretability/variance_decomposition.py`` and
+``scripts/resdec_mhe/interpretability/subgroup_r2.py``. The tests pin the
 labeling contract (APOE ε4 count, sex string, rank-then-qcut quantiles with
 NaN preserved as None) so future renames/refactors cannot silently change
 subgroup membership.

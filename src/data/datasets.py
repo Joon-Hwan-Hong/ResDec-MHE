@@ -9,7 +9,7 @@ Handles loading and batching of:
 
 Design Decisions:
 
-1. Cell type selection (2026-01-26): Dataset provides cells for ALL 31 cell types.
+1. Cell type selection: Dataset provides cells for ALL 31 cell types.
    CellTypeSelector in the model learns which types are most relevant for
    predicting cognitive resilience. This enables end-to-end learning of cell
    type importance rather than requiring a priori biological assumptions.
@@ -218,8 +218,9 @@ class CognitiveResilienceDataset(Dataset):
 
         Note:
             Cell-level data is provided for ALL cell types. The model's CellTypeSelector
-            learns which types are most relevant for prediction. This is a design decision
-            from 2026-01-26 to enable end-to-end learning of cell type importance.
+            learns which types are most relevant for prediction. This enables
+            end-to-end learning of cell type importance rather than requiring a
+            priori biological assumptions.
         """
         self.adata = adata
         self.metadata = metadata.set_index(subject_column) if subject_column in metadata.columns else metadata

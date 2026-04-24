@@ -1,13 +1,13 @@
-"""Dataset over cached encoder embeddings (ResDec-H3 frozen-encoder path).
+"""Dataset over cached encoder embeddings (ResDec-MHE frozen-encoder path).
 
 Consumes the ``.npz`` written by
-``scripts/redesign/precompute_encoder_embeddings.py`` and yields, per subject:
+``scripts/resdec_mhe/precompute_encoder_embeddings.py`` and yields, per subject:
     - ``attended``:   [d_subject] cached encoder embedding (float32)
     - ``metadata``:   [d_metadata] FiLM-conditioning vector (APOE/sex/age)
     - ``cognition``:  [1] regression target
 
 Used with ``EmbeddingDataModule`` + ``ResDecFrozenLightningModule`` to train
-the ResDec-H3 head only, at full-cohort batch, without re-running the frozen
+the ResDec-MHE head only, at full-cohort batch, without re-running the frozen
 encoder per step.
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ class EmbeddingDataset(Dataset):
     Args:
         subject_ids: Subjects to include (typically a fold train/val list).
         embeddings_npz: Path to the cache produced by
-            ``scripts/redesign/precompute_encoder_embeddings.py``.
+            ``scripts/resdec_mhe/precompute_encoder_embeddings.py``.
         targets: Mapping ``subject_id -> cogn_global`` (already filtered to
             non-NaN).
         meta_csv: Path to ``metadata.csv`` (used for FiLM metadata lookup).

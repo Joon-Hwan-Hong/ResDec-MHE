@@ -1,4 +1,4 @@
-"""Captum attribution for TabPFN-2.6 predictions (Phase-4 interpretability, Task 4.3).
+"""Captum attribution for TabPFN-2.6 predictions.
 
 Given the cached TabPFN setup (top-2K features per outer fold), fits TabPFN on
 outer-train, computes per-subject feature attributions on val via Captum's
@@ -33,8 +33,8 @@ FeatureAblation cost scales as O(n_features + 1) predict calls per attribution
 call. For 2000 features and ~10 val subjects batched together, that is 2001
 forward passes over the whole val batch.
 
-Used by Phase-4 interpretability work (Task 4.3) for M3 complementarity analysis
-against head-residual attributions.
+Used for complementarity analysis against head-residual attributions in the
+interpretability pipeline.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def _fit_tabpfn(
 
     Uses the model-version-specific factory so defaults (model_path,
     n_estimators, softmax_temperature) match the V2.6 preset — matches
-    ``scripts/redesign/compute_tabpfn_outer.py`` which intentionally
+    ``scripts/resdec_mhe/tabpfn/compute_outer.py`` which intentionally
     targets V2.6 for the paper's standalone baseline.
     """
     reg = TabPFNRegressor.create_default_for_version(
@@ -121,7 +121,7 @@ def _make_predict_fn(reg: TabPFNRegressor):
     def predict_fn(X: torch.Tensor) -> torch.Tensor:
         X_np = X.detach().cpu().numpy().astype(np.float32)
         # "median" is the calibrated point prediction used in the baseline
-        # (see scripts/redesign/compute_tabpfn_outer.py::_predict_with_sigma).
+        # (see scripts/resdec_mhe/tabpfn/compute_outer.py::_predict_with_sigma).
         y_np = np.asarray(reg.predict(X_np, output_type="median"))
         return torch.as_tensor(y_np, dtype=torch.float32, device=X.device)
 

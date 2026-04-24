@@ -317,9 +317,9 @@ def collate_for_hgt(batch: list[dict[str, Any]], *, skip_region_mask: bool = Fal
     """
     Collate function returning flat concatenated tensors for HGTEncoderTensor.
 
-    This is the RECOMMENDED collate function for our model because:
-    - We have 31 distinct node types (cell types)
-    - We have 5 distinct edge/relation types (CellChatDB categories)
+    This is the RECOMMENDED collate function for the main model because:
+    - The dataset has 31 distinct node types (cell types)
+    - The dataset has 5 distinct edge/relation types (CellChatDB categories)
     - HGTEncoderTensor expects flat edge tensors (no padding needed)
 
     Returns flat concatenated edge tensors directly compatible with

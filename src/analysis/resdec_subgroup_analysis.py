@@ -1,4 +1,4 @@
-"""Subgroup stratified metrics for ResDec-H3 composite predictions.
+"""Subgroup stratified metrics for ResDec-MHE composite predictions.
 
 For each named subgroup (e.g. ``"APOE_e4_0"``, ``"msex_1"``,
 ``"age_quartile_Q4"``), compute R², RMSE, Pearson r, and Spearman ρ of
@@ -7,7 +7,7 @@ For each named subgroup (e.g. ``"APOE_e4_0"``, ``"msex_1"``,
 This module is pure: inputs are NumPy arrays + a flat boolean-mask dict,
 output is a nested dict, no I/O. Orchestration (loading per-fold npz,
 metadata join, building masks, JSON/CSV write) lives in
-``scripts/redesign/interpretability/subgroup_r2.py``.
+``scripts/resdec_mhe/interpretability/subgroup_r2.py``.
 
 Conventions
 -----------

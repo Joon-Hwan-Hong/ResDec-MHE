@@ -475,10 +475,11 @@ class TestLianaToAdjacencyMatrix:
 
         adj = liana_to_adjacency_matrix(df, cell_types)
 
-        # Should keep the minimum (0.02, not 0.5)
+        # Should keep the minimum (0.02, not 0.5).
+        # Use approx because adj is float32 and 0.02 is not exactly representable.
         astro_idx = cell_types.index("Astrocyte")
         micro_idx = cell_types.index("Microglia")
-        assert adj[astro_idx, micro_idx] == 0.02
+        assert adj[astro_idx, micro_idx] == pytest.approx(0.02)
 
     def test_handles_unknown_cell_types(self, mock_liana_results):
         """Should skip interactions with unknown cell types."""
@@ -513,8 +514,9 @@ class TestLianaToAdjacencyMatrix:
         micro_idx = cell_types.index("Microglia")
         oligo_idx = cell_types.index("Oligodendrocyte")
 
-        # Valid edge: Astrocyte -> Microglia = 0.3
-        assert adj[astro_idx, micro_idx] == 0.3
+        # Valid edge: Astrocyte -> Microglia = 0.3.
+        # Use approx because adj is float32 and 0.3 is not exactly representable.
+        assert adj[astro_idx, micro_idx] == pytest.approx(0.3)
 
         # Invalid edges: should have fill_value
         assert adj[micro_idx, oligo_idx] == fill_value  # NaN
