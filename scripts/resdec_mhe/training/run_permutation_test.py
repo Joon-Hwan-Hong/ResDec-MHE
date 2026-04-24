@@ -181,10 +181,16 @@ def run_one_permutation(
         base_meta = pd.read_csv(base_metadata_csv)
         true_y_map = dict(zip(base_meta[id_col].astype(str), base_meta[target_col].astype(float)))
 
+        # Use val_predictions_final.npz (last epoch's predictions). The
+        # canonical pipeline's val_predictions_best.npz is only produced by
+        # the separate reinfer_best_ckpt step; for the permutation negative
+        # control we expect R²≈0 either way (model trained on shuffled labels
+        # has no meaningful "best" — early-stopping picks the lowest-loss
+        # epoch on shuffled val targets).
         per_fold_r2 = []
         per_fold_n = []
         for f in range(5):
-            npz = np.load(folds_dir / f"fold{f}" / "val_predictions_best.npz", allow_pickle=True)
+            npz = np.load(folds_dir / f"fold{f}" / "val_predictions_final.npz", allow_pickle=True)
             subj_ids = [str(s) for s in npz["subject_ids"]]
             preds = np.asarray(npz["predictions"], dtype=np.float64)
             true_y = np.array([true_y_map[s] for s in subj_ids], dtype=np.float64)
