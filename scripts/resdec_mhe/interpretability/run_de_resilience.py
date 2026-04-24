@@ -30,6 +30,7 @@ if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.de_resilience import deseq2_de, wilcoxon_de  # noqa: E402
+from src.data.constants import CELL_TYPE_ORDER  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -145,20 +146,25 @@ def main():
             len(gene_names), n_gene,
         )
         gene_names = [f"gene_{j}" for j in range(n_gene)]
-    ct_names = [f"CT_{i}" for i in range(n_ct)]
+    # Axis-aligned CT names from the authoritative constant. The captum
+    # summary JSON's "cell_types_ranked_by_total_attribution" is ordered
+    # by attribution magnitude (not CT index) so we don't use it for
+    # labeling — report it separately if needed.
+    if n_ct != len(CELL_TYPE_ORDER):
+        logger.warning(
+            "n_ct=%d != len(CELL_TYPE_ORDER)=%d; truncating/padding",
+            n_ct, len(CELL_TYPE_ORDER),
+        )
+    ct_names = list(CELL_TYPE_ORDER[:n_ct])
     src = Path(args.cell_type_names_source)
     if src.exists():
         s = json.loads(src.read_text())
         raw = s.get("cell_types_ranked_by_total_attribution") or s.get("cell_types")
         if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-            ranked = [d["cell_type"] for d in raw]
-            # NOTE: ranked is by attribution magnitude, NOT by index. We don't
-            # have an axis-aligned mapping — keep CT_0..30 placeholders for
-            # the per-CT files, and report the ranked list separately.
             logger.info(
-                "cell_types_ranked (top 5): %s", ranked[:5],
+                "cell_types_ranked_by_attribution (top 5, NOT axis-aligned): %s",
+                [d["cell_type"] for d in raw[:5]],
             )
-            ct_names_ranked = ranked
 
     # Per-CT DE.
     per_ct_summary = []
@@ -190,11 +196,13 @@ def main():
         ct_label = f"CT_{ct:02d}"
         out_csv = out_dir / f"{ct_label}_de.csv"
         df.to_csv(out_csv, index=False)
+        ct_name = ct_names[ct] if ct < len(ct_names) else ct_label
         # Top-K passing padj<0.05 (often empty at this dimensionality).
         sig = df[df["padj_fdr"] < 0.05].sort_values("padj_fdr").head(args.top_k_export)
         for _, row in sig.iterrows():
             top_sig_rows.append({
                 "cell_type_index": ct,
+                "cell_type": ct_name,
                 "gene": row["gene"],
                 "log2_fold_change": row["log2_fold_change"],
                 "padj_fdr": row["padj_fdr"],
@@ -206,6 +214,7 @@ def main():
         for _, row in top_p.iterrows():
             top_by_pvalue_rows.append({
                 "cell_type_index": ct,
+                "cell_type": ct_name,
                 "gene": row["gene"],
                 "log2_fold_change": row["log2_fold_change"],
                 "p_value": row["p_value"],
@@ -214,6 +223,7 @@ def main():
             })
         per_ct_summary.append({
             "cell_type_index": ct,
+            "cell_type": ct_name,
             "n_genes_tested": int(np.isfinite(df["p_value"]).sum()),
             "n_sig_padj005": int((df["padj_fdr"] < 0.05).sum()),
             "min_padj": float(df["padj_fdr"].min(skipna=True)),

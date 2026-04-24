@@ -87,17 +87,12 @@ def main():
                      head_path, d.files)
         return 1
 
-    ct_names = None
-    summary_path = Path(args.captum_summary_json)
-    if summary_path.exists():
-        s = json.loads(summary_path.read_text())
-        raw = s.get("cell_types_ranked_by_total_attribution") or s.get("cell_types")
-        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-            ct_names = [d["cell_type"] for d in raw]
-        else:
-            ct_names = raw
-    if ct_names is None:
-        ct_names = [f"CT_{i}" for i in range(head_attention.shape[-1])]
+    # Axis-aligned CT names from CELL_TYPE_ORDER (NOT the attribution-ranked
+    # list, which isn't axis-aligned). The attention tensor's last axis is
+    # in CT-index order per the datamodule / encoder conventions.
+    from src.data.constants import CELL_TYPE_ORDER
+    n_ct_attn = head_attention.shape[-1]
+    ct_names = list(CELL_TYPE_ORDER[:n_ct_attn])
 
     try:
         fig = plot_head_attention_chord(

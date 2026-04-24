@@ -134,22 +134,12 @@ def cmd_wasserstein(args):
         int((~keep_mask).sum()),
     )
 
-    # Cell type names from captum_summary if available.
-    summary_path = Path(args.captum_npz).parent / "composite_attribution_summary.json"
-    ct_names = None
+    # Axis-aligned cell-type names from CELL_TYPE_ORDER (NOT the
+    # attribution-ranked list, which isn't index-aligned). This matches the
+    # CT index convention used by the pseudobulk loader and the model.
+    from src.data.constants import CELL_TYPE_ORDER
+    ct_names = list(CELL_TYPE_ORDER[:n_ct])
     gene_names = None
-    if summary_path.exists():
-        s = json.loads(summary_path.read_text())
-        raw = s.get("cell_types_ranked_by_total_attribution") or s.get("cell_types")
-        # cell_types_ranked_by_total_attribution is a list of dicts; extract the
-        # 'cell_type' string from each. NOTE: this list is RANKED by total attr,
-        # NOT in original index order — for per-CT figures that need axis-aligned
-        # CT names, we'd need a separate ordered list. Here we just use it for
-        # display names (and reorder downstream if needed).
-        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-            ct_names = [d["cell_type"] for d in raw]
-        else:
-            ct_names = raw
     gene_names_path = Path("data/precomputed/gene_names.npy")
     if gene_names_path.exists():
         gene_names = list(np.load(gene_names_path, allow_pickle=True))
@@ -252,14 +242,12 @@ def cmd_cmi(args):
     # Cell type names from captum_summary. The list is structured as
     # [{cell_type, total_abs_attribution}, ...]; extract names.
     summary_path = Path(args.captum_npz).parent / "composite_attribution_summary.json"
-    ct_names = None
-    if summary_path.exists():
-        s = json.loads(summary_path.read_text())
-        raw = s.get("cell_types_ranked_by_total_attribution") or s.get("cell_types")
-        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-            ct_names = [d["cell_type"] for d in raw]
-        else:
-            ct_names = raw
+    # Axis-aligned CT names from the authoritative constant. The captum
+    # summary's "cell_types_ranked_by_total_attribution" is NOT axis-aligned
+    # (ranked by attribution magnitude) so we ignore it for labeling.
+    from src.data.constants import CELL_TYPE_ORDER
+    n_ct_target = ct_mean_attr.shape[1] if ct_mean_attr.ndim >= 2 else len(CELL_TYPE_ORDER)
+    ct_names = list(CELL_TYPE_ORDER[:n_ct_target])
 
     out = conditional_mi_per_celltype(
         ct_mean_attr, Y, Z,

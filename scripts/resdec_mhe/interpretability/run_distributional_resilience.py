@@ -46,6 +46,7 @@ from src.analysis.resilience_distributional import (  # noqa: E402
     stability_selection,
     wasserstein_per_celltype,
 )
+from src.data.constants import CELL_TYPE_ORDER  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -91,20 +92,22 @@ def _git_sha() -> str:
 
 
 def _load_cell_type_names(src_path: Path, n_ct: int) -> list[str]:
-    if not src_path.exists():
-        return [f"CT_{i}" for i in range(n_ct)]
-    s = json.loads(src_path.read_text())
-    raw = (
-        s.get("cell_types_ranked_by_total_attribution")
-        or s.get("cell_types")
-    )
-    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-        # NOTE: ranked by attribution, not axis-aligned; keep placeholder
-        # CT_0..30 for the per-CT file but report ranked separately.
-        return [f"CT_{i}" for i in range(n_ct)]
-    if isinstance(raw, list):
-        return list(raw)[:n_ct]
-    return [f"CT_{i}" for i in range(n_ct)]
+    """Return axis-aligned cell-type names.
+
+    Uses the authoritative ``src.data.constants.CELL_TYPE_ORDER`` — this is
+    the same CT index convention used everywhere else in the codebase
+    (pseudobulk loader, model forward, Captum orchestrator). The
+    ``src_path`` argument is accepted for backward compatibility but
+    ignored: captum_summary.json's ``cell_types_ranked_by_total_attribution``
+    is NOT axis-aligned (it's sorted by attribution magnitude).
+    """
+    del src_path  # unused; kept for backward compat.
+    if n_ct != len(CELL_TYPE_ORDER):
+        logger.warning(
+            "n_ct=%d != len(CELL_TYPE_ORDER)=%d; truncating/padding",
+            n_ct, len(CELL_TYPE_ORDER),
+        )
+    return list(CELL_TYPE_ORDER[:n_ct])
 
 
 def _split_resilient_vs_vulnerable(

@@ -223,20 +223,9 @@ def main():
         )
         del model
 
-    # Cell type names (best effort).
-    ct_names: list[str] = [f"CT_{i}" for i in range(args.n_cell_types)]
-    src = Path(args.cell_type_names_source)
-    if src.exists():
-        s = json.loads(src.read_text())
-        raw = (
-            s.get("cell_types_ranked_by_total_attribution")
-            or s.get("cell_types")
-        )
-        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-            # Ranked order — do NOT axis-align; keep placeholders per-index.
-            pass
-        elif isinstance(raw, list):
-            ct_names = list(raw)[:args.n_cell_types]
+    # Axis-aligned CT names from CELL_TYPE_ORDER.
+    from src.data.constants import CELL_TYPE_ORDER
+    ct_names: list[str] = list(CELL_TYPE_ORDER[:args.n_cell_types])
 
     canon_mean = float(np.mean(canonical_per_fold))
     for ct in range(args.n_cell_types):

@@ -73,13 +73,17 @@ def _load_tabpfn_subj_to_pred(tabpfn_dir: Path, n_folds: int = 5) -> dict:
 
 
 def _load_ct_names(captum_summary_path: Path) -> list[str] | None:
-    if not captum_summary_path.exists():
-        return None
-    s = json.loads(captum_summary_path.read_text())
-    raw = s.get("cell_types_ranked_by_total_attribution") or s.get("cell_types")
-    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-        return [d["cell_type"] for d in raw]
-    return raw
+    """Return axis-aligned cell-type names (index-ordered).
+
+    Uses ``src.data.constants.CELL_TYPE_ORDER`` (same convention as the
+    pseudobulk loader, model forward, and all per-CT indexing elsewhere).
+    The captum summary's ``cell_types_ranked_by_total_attribution`` is
+    ranked by attribution magnitude, NOT by index — wrong for axis-
+    aligned labeling of per-CT plots.
+    """
+    del captum_summary_path  # unused; kept for backward compat
+    from src.data.constants import CELL_TYPE_ORDER
+    return list(CELL_TYPE_ORDER)
 
 
 def _load_gene_names(captum_summary_path: Path) -> list[str] | None:
