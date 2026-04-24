@@ -86,8 +86,9 @@ def test_stability_selection_no_signal_returns_few_stable():
         x, is_res, n_bootstrap=50, subsample_frac=0.5,
         rb_threshold=0.3, pi_threshold=0.8, seed=0,
     )
-    # Under the null, very few features should pass pi=0.8.
-    assert len(out["stable_indices"]) < 5
+    # Under the null with rb_threshold=0.3 + pi=0.8, expected false-positive rate
+    # is well under 5% per feature. With 50 features, expect ≤ 2 false positives.
+    assert len(out["stable_indices"]) <= 2
 
 
 def test_stability_selection_config_records_params():

@@ -80,7 +80,7 @@ BASELINE_COLORS: dict[str, str] = {
 }
 
 
-def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> None:
+def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> str:
     """Register matplotlib rcParams for the chosen style.
 
     Parameters
@@ -90,11 +90,20 @@ def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> None:
     use_scienceplots
         If True and ``scienceplots`` is installed, layer the ``science``
         + ``nature`` styles before our overrides.
+
+    Returns
+    -------
+    str
+        Either ``"scienceplots"`` (if scienceplots was loaded) or
+        ``"manual"`` (rcParams only). Useful for logging which path
+        produced a figure.
     """
+    used_scienceplots = False
     if use_scienceplots:
         try:
             import scienceplots  # noqa: F401  (registers styles via import)
             plt.style.use(["science", "nature"])
+            used_scienceplots = True
         except ImportError:
             pass  # Fall through to manual rcParams
 
@@ -151,12 +160,16 @@ def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> None:
         "savefig.pad_inches": 0.05,
         "savefig.transparent": False,
 
-        # Figure: white background, sensible defaults.
+        # Figure: white background, sensible defaults. Note we do NOT enable
+        # constrained_layout here because save_fig() uses bbox_inches="tight"
+        # which conflicts with constrained_layout (matplotlib emits a warning
+        # + the layouts can fight). Callers who want constrained_layout in an
+        # interactive notebook can set it manually.
         "figure.dpi":         150,
         "figure.facecolor":   "white",
         "axes.facecolor":     "white",
         "figure.autolayout":  False,
-        "figure.constrained_layout.use": True,
+        "figure.constrained_layout.use": False,
 
         # Legend: clean frame, no shadow.
         "legend.frameon":     True,
@@ -165,6 +178,7 @@ def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> None:
         "legend.fancybox":    False,
     }
     mpl.rcParams.update(rc)
+    return "scienceplots" if used_scienceplots else "manual"
 
 
 def fmt_axes(
@@ -190,7 +204,7 @@ def fmt_axes(
 
 def save_fig(
     fig,
-    path_stem,
+    path_stem: str | Path,
     *,
     dpi: int = 600,
     formats: Iterable[str] = ("png", "pdf"),

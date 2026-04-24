@@ -3,22 +3,21 @@
 Three independent analyses, each grounded in a different field:
 
 1. ``wasserstein_per_celltype`` — optimal transport (math/stats). Per cell type,
-   compute the 1D Wasserstein-2 distance between the resilient and vulnerable
-   groups' average expression vectors per subject (gene-by-gene). Captures
-   distributional shift, not just mean shift.
+   compute the 1D Wasserstein-1 distance between the resilient and vulnerable
+   groups' per-subject expression for each gene. Captures distributional shift.
 
-2. ``stability_selection`` — stability-selection (machine learning theory).
+2. ``stability_selection`` — stability-selection (Meinshausen & Bühlmann 2010).
    Repeatedly subsample subjects and run a per-gene effect-size statistic
    (Wilcoxon's rank-biserial r); retain genes selected in ≥ pi_thr of
-   resamples. Controls FDR robustly without heavy multiple-test correction.
+   resamples. Optionally sweep over a grid of rb_thresholds and report the
+   selection probability surface.
 
 3. ``latent_class_on_residuals`` — latent class analysis (psychometrics).
    Fit a Gaussian mixture on the per-subject residual ``y - ŷ`` and select
-   the number of components by BIC. Tests whether resilience is better
-   modeled as a continuum or a discrete mixture.
+   the number of components by BIC + AIC (both reported). Tests whether
+   resilience is better modeled as a continuum or discrete mixture.
 
-All functions are pure: they take numpy arrays + small config and return
-plain dicts with results, suitable for JSON serialization.
+All functions are pure: numpy in, plain dicts out (JSON-serializable).
 """
 from __future__ import annotations
 
@@ -40,37 +39,19 @@ def wasserstein_per_celltype(
     Parameters
     ----------
     expression_per_subject
-        Array of shape ``(n_subjects, n_celltypes, n_genes)`` holding
-        per-subject mean expression per (cell type, gene). May contain NaN
-        for missing (subject, cell type) combinations.
+        Array ``(n_subjects, n_celltypes, n_genes)`` of per-subject mean
+        expression per (cell type, gene). May contain NaN.
     is_resilient
-        Boolean array of shape ``(n_subjects,)``; True = resilient,
-        False = vulnerable.
+        Boolean ``(n_subjects,)``.
     cell_type_names
-        Optional names for each cell type axis. Defaults to ``CT_<i>``.
+        Optional names; default ``CT_<i>``.
     gene_names
-        Optional names for each gene axis. Defaults to ``gene_<j>``.
+        Optional names; default ``gene_<j>``.
 
     Returns
     -------
     dict
-        ``{
-            "n_resilient": int,
-            "n_vulnerable": int,
-            "per_cell_type": [
-                {
-                    "cell_type": str,
-                    "wasserstein_per_gene_mean": float,
-                    "wasserstein_per_gene_top10": [(gene, distance), ...],
-                },
-                ...
-            ],
-        }``
-
-        For each cell type, we report (a) the mean per-gene Wasserstein
-        distance averaged across genes (a scalar shift summary) and
-        (b) the top 10 genes by per-gene Wasserstein distance (the genes
-        most distributionally different between groups).
+        Per cell type: mean per-gene W-1 + top 10 by W-1.
     """
     n_subj, n_ct, n_gene = expression_per_subject.shape
     is_res = np.asarray(is_resilient, dtype=bool)
@@ -81,9 +62,7 @@ def wasserstein_per_celltype(
 
     per_ct = []
     for ct in range(n_ct):
-        # Per-gene Wasserstein-1 between resilient and vulnerable distributions
-        # of the (subject, gene) means for THIS cell type.
-        ct_data = expression_per_subject[:, ct, :]  # (n_subj, n_gene)
+        ct_data = expression_per_subject[:, ct, :]
         per_gene_w = np.full(n_gene, np.nan, dtype=np.float64)
         for g in range(n_gene):
             res = ct_data[is_res, g]
@@ -95,7 +74,6 @@ def wasserstein_per_celltype(
             per_gene_w[g] = wasserstein_distance(res, vul)
         finite = per_gene_w[np.isfinite(per_gene_w)]
         mean_w = float(finite.mean()) if finite.size else float("nan")
-        # Top 10 genes by Wasserstein distance.
         order = np.argsort(per_gene_w)[::-1]
         top10 = []
         for idx in order[:10]:
@@ -117,8 +95,11 @@ def wasserstein_per_celltype(
 def _rank_biserial_correlation(x: np.ndarray, y: np.ndarray) -> float:
     """Rank-biserial correlation between two groups (Wilcoxon effect size).
 
-    Equivalent to (2*U / (n_x * n_y)) - 1 where U is the Mann-Whitney U
-    statistic. Bounded in [-1, +1]; sign indicates direction.
+    Equivalent to (2*U / (n_x * n_y)) - 1 where U is Mann-Whitney U.
+    Bounded in [-1, +1].
+
+    Note: kept private here for backward compatibility with existing tests;
+    public alias lives at ``de_resilience.rank_biserial_correlation``.
     """
     x = x[np.isfinite(x)]
     y = y[np.isfinite(y)]
@@ -131,6 +112,24 @@ def _rank_biserial_correlation(x: np.ndarray, y: np.ndarray) -> float:
     return float(2.0 * U / (x.size * y.size) - 1.0)
 
 
+def _vectorized_rank_biserial(
+    x_resampled: np.ndarray, y_resampled: np.ndarray,
+) -> np.ndarray:
+    """Vectorized rank-biserial across all genes for one resample.
+
+    x_resampled: (n_x, n_features); y_resampled: (n_y, n_features).
+    Returns: (n_features,) rank-biserial per feature.
+    """
+    n_x = x_resampled.shape[0]
+    n_y = y_resampled.shape[0]
+    pooled = np.vstack([x_resampled, y_resampled])  # (n_x + n_y, n_features)
+    # Per-column ranks via scipy.
+    ranks = rankdata(pooled, axis=0)
+    rank_x_sum = ranks[:n_x].sum(axis=0)
+    U = rank_x_sum - n_x * (n_x + 1) / 2.0
+    return 2.0 * U / (n_x * n_y) - 1.0
+
+
 def stability_selection(
     expression_matrix: np.ndarray,
     is_resilient: np.ndarray,
@@ -138,43 +137,47 @@ def stability_selection(
     n_bootstrap: int = 100,
     subsample_frac: float = 0.5,
     rb_threshold: float = 0.2,
+    rb_threshold_path: Sequence[float] | None = None,
     pi_threshold: float = 0.8,
     seed: int = 42,
     gene_names: Sequence[str] | None = None,
 ) -> dict:
-    """Stability selection: genes that pass an effect-size cutoff in ≥ pi_thr of resamples.
+    """Stability selection: genes that pass a |rank-biserial| cutoff in ≥ pi_thr resamples.
+
+    The default ``rb_threshold=0.2`` is a heuristic ("moderate effect" per
+    Cohen-style guidance for rank correlations); set ``rb_threshold_path``
+    to sweep the threshold and report the full selection-probability surface.
+
+    Vectorized inner loop: per resample, computes per-gene rank-biserial in a
+    single ``scipy.stats.rankdata`` call across all features (~100x faster
+    than the per-gene Python loop in the original implementation).
 
     Parameters
     ----------
     expression_matrix
-        Shape ``(n_subjects, n_features)`` (e.g., per-subject pseudobulk
-        flattened across cell types or per cell type).
+        Shape ``(n_subjects, n_features)``.
     is_resilient
-        Boolean array ``(n_subjects,)``.
+        Boolean ``(n_subjects,)``.
     n_bootstrap
         Number of resamples (default 100).
     subsample_frac
         Fraction of each group to sample per resample (default 0.5).
     rb_threshold
-        |rank-biserial correlation| threshold to call a gene "selected"
-        within a single resample (default 0.2 — moderate effect).
+        |rank-biserial| threshold. Used when ``rb_threshold_path`` is None.
+    rb_threshold_path
+        If not None, sweep these thresholds and return the full probability
+        matrix in ``selection_probability_path`` (shape n_thresholds x n_features).
     pi_threshold
-        Proportion of resamples in which a gene must be selected to be
-        retained (default 0.8 — Meinshausen & Bühlmann's recommendation).
+        Proportion of resamples at which a gene is "stable" (default 0.8).
     seed
         RNG seed.
     gene_names
-        Optional names for the n_features axis.
+        Optional names.
 
     Returns
     -------
-    dict
-        ``{
-            "selection_probability": [...n_features],
-            "stable_indices": [...indices with prob >= pi_thr],
-            "stable_genes": [...names with prob >= pi_thr],
-            "config": {...}
-        }``
+    dict with ``selection_probability``, ``stable_indices``, ``stable_genes``,
+    optionally ``selection_probability_path``, plus ``config``.
     """
     rng = np.random.default_rng(seed)
     is_res = np.asarray(is_resilient, dtype=bool)
@@ -184,24 +187,32 @@ def stability_selection(
     n_vul_sub = max(2, int(len(vul_idx) * subsample_frac))
     n_features = expression_matrix.shape[1]
 
-    selection_count = np.zeros(n_features, dtype=np.int64)
+    if rb_threshold_path is None:
+        thresholds = (float(rb_threshold),)
+    else:
+        thresholds = tuple(float(t) for t in rb_threshold_path)
+    n_thr = len(thresholds)
+
+    counts = np.zeros((n_thr, n_features), dtype=np.int64)
     for _ in range(n_bootstrap):
         ri = rng.choice(res_idx, size=n_res_sub, replace=False)
         vi = rng.choice(vul_idx, size=n_vul_sub, replace=False)
-        x_res = expression_matrix[ri, :]
-        x_vul = expression_matrix[vi, :]
-        for g in range(n_features):
-            rb = _rank_biserial_correlation(x_res[:, g], x_vul[:, g])
-            if abs(rb) >= rb_threshold:
-                selection_count[g] += 1
+        x_res_b = expression_matrix[ri]
+        x_vul_b = expression_matrix[vi]
+        rb = _vectorized_rank_biserial(x_res_b, x_vul_b)
+        for ti, t in enumerate(thresholds):
+            counts[ti] += (np.abs(rb) >= t).astype(np.int64)
 
-    selection_prob = selection_count / float(n_bootstrap)
-    stable = np.flatnonzero(selection_prob >= pi_threshold)
+    probs = counts / float(n_bootstrap)
     if gene_names is None:
         gene_names = [f"gene_{j}" for j in range(n_features)]
 
-    return {
-        "selection_probability": selection_prob.tolist(),
+    # Use the configured rb_threshold as the canonical "stable" set.
+    canonical_idx = thresholds.index(float(rb_threshold)) if float(rb_threshold) in thresholds else 0
+    stable = np.flatnonzero(probs[canonical_idx] >= pi_threshold)
+
+    result = {
+        "selection_probability": probs[canonical_idx].tolist(),
         "stable_indices": [int(i) for i in stable],
         "stable_genes": [str(gene_names[i]) for i in stable],
         "config": {
@@ -214,6 +225,10 @@ def stability_selection(
             "n_vulnerable": int(len(vul_idx)),
         },
     }
+    if rb_threshold_path is not None:
+        result["selection_probability_path"] = probs.tolist()
+        result["thresholds"] = list(thresholds)
+    return result
 
 
 def latent_class_on_residuals(
@@ -222,32 +237,30 @@ def latent_class_on_residuals(
     k_max: int = 5,
     n_init: int = 10,
     seed: int = 42,
+    covariance_type: str = "full",
 ) -> dict:
-    """Fit Gaussian mixtures on residuals, choose K by BIC.
+    """Fit Gaussian mixtures on residuals; report BIC + AIC, choose K by BIC.
+
+    Returns both BIC and AIC paths so callers can apply alternative criteria.
 
     Parameters
     ----------
     residuals
-        1D array ``(n_subjects,)`` of per-subject ``y - ŷ``.
+        1D ``(n_subjects,)`` of per-subject ``y - ŷ``.
     k_max
-        Maximum number of components to consider (1..k_max).
+        Max number of components (1..k_max).
     n_init
-        Number of EM restarts per K (best by likelihood).
+        EM restarts per K.
     seed
         RNG seed.
+    covariance_type
+        ``"full"`` (default), ``"diag"``, ``"tied"``, ``"spherical"``.
+        For 1D data all are equivalent; ``"full"`` is the conventional choice.
 
     Returns
     -------
-    dict
-        ``{
-            "best_k": int,
-            "bic_per_k": [...k_max],
-            "is_unimodal": bool,           # True if best_k == 1
-            "best_model_means": [...best_k],
-            "best_model_stds": [...best_k],
-            "best_model_weights": [...best_k],
-            "best_model_assignments": [...n_subjects],
-        }``
+    dict with ``best_k``, ``bic_per_k``, ``aic_per_k``, ``is_unimodal``,
+    ``best_model_means/stds/weights/assignments``, ``config``.
     """
     r = np.asarray(residuals, dtype=np.float64).reshape(-1, 1)
     finite_mask = np.isfinite(r.ravel())
@@ -257,29 +270,35 @@ def latent_class_on_residuals(
         )
     r_fit = r[finite_mask]
 
-    bics = []
-    fitted = []
+    bics, aics, fitted = [], [], []
     for k in range(1, k_max + 1):
         gmm = GaussianMixture(
-            n_components=k, n_init=n_init, random_state=seed, covariance_type="diag",
+            n_components=k, n_init=n_init, random_state=seed,
+            covariance_type=covariance_type,
         )
         gmm.fit(r_fit)
         bics.append(float(gmm.bic(r_fit)))
+        aics.append(float(gmm.aic(r_fit)))
         fitted.append(gmm)
     best_k_idx = int(np.argmin(bics))
     best = fitted[best_k_idx]
     best_k = best_k_idx + 1
 
-    # Assign labels (via posterior argmax) for ALL subjects (including NaN as -1).
     assignments = np.full(r.size, -1, dtype=np.int64)
     if finite_mask.any():
         labels = best.predict(r_fit)
         assignments[finite_mask] = labels
 
     means = best.means_.ravel().tolist()
-    stds = np.sqrt(best.covariances_.ravel()).tolist()
+    if covariance_type == "full":
+        stds = np.sqrt(np.array([c[0, 0] for c in best.covariances_])).tolist()
+    elif covariance_type in ("diag", "spherical"):
+        stds = np.sqrt(best.covariances_.ravel()).tolist()
+    elif covariance_type == "tied":
+        stds = [float(np.sqrt(best.covariances_[0, 0]))] * best_k
+    else:
+        stds = np.sqrt(np.atleast_1d(best.covariances_).ravel()).tolist()
     weights = best.weights_.tolist()
-    # Sort components by mean so labels are stable.
     order = np.argsort(means)
     means_sorted = [float(means[i]) for i in order]
     stds_sorted = [float(stds[i]) for i in order]
@@ -292,6 +311,7 @@ def latent_class_on_residuals(
     return {
         "best_k": best_k,
         "bic_per_k": bics,
+        "aic_per_k": aics,
         "is_unimodal": bool(best_k == 1),
         "best_model_means": means_sorted,
         "best_model_stds": stds_sorted,
@@ -301,5 +321,6 @@ def latent_class_on_residuals(
             "k_max": int(k_max),
             "n_init": int(n_init),
             "seed": int(seed),
+            "covariance_type": str(covariance_type),
         },
     }

@@ -87,19 +87,18 @@ def test_cmi_emits_one_entry_per_cell_type():
 
 
 def test_cmi_delta_drops_when_signal_is_in_pathology():
-    """If Y depends only on Z, residualizing Z out of X should kill MI(X, Y)."""
+    """If Y depends only on Z, residualizing Z out of X should largely kill MI(X, Y)."""
     rng = np.random.default_rng(0)
-    n = 200
+    n = 400
     z = rng.normal(size=(n, 1))
-    # X = Z + noise; Y = Z + noise. So I(X; Y) > 0 unconditionally,
-    # but I(X; Y | Z) ≈ 0.
     x = z[:, 0] + 0.3 * rng.normal(size=n)
     y = z[:, 0] + 0.3 * rng.normal(size=n)
     expr = x.reshape(-1, 1)
     out = conditional_mi_per_celltype(expr, y, z, n_neighbors=5)
     entry = out["per_cell_type"][0]
-    # Conditional MI should be substantially smaller than unconditional.
-    assert entry["conditional_mi_given_pathology"] < entry["unconditional_mi"]
+    # Conditional MI should be substantially (≥ 50%) smaller than unconditional
+    # when the only X→Y dependence flows through Z.
+    assert entry["conditional_mi_given_pathology"] < 0.5 * entry["unconditional_mi"]
 
 
 def test_cmi_handles_nan_subjects():
