@@ -19,7 +19,8 @@
 #   RUN_REINFER=0 bash scripts/resdec_mhe/training/run_5fold_parallel.sh
 set -euo pipefail
 
-ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 CONFIG="${CONFIG:-configs/resdec_mhe/canonical.yaml}"
 OUTROOT="${OUTROOT:-outputs/redesign/p5_phase2_residual}"
 MAX_EPOCHS="${MAX_EPOCHS:-}"
