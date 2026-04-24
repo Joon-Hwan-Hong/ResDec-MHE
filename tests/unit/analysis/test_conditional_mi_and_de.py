@@ -101,6 +101,28 @@ def test_cmi_delta_drops_when_signal_is_in_pathology():
     assert entry["conditional_mi_given_pathology"] < 0.5 * entry["unconditional_mi"]
 
 
+def test_cmi_n_jobs_parallel_matches_serial():
+    """Parallel KSG (n_jobs>1) must yield identical per-CT MI to n_jobs=1.
+
+    KSG is deterministic under a fixed seed, so joblib parallelism over
+    cell types must not change values — only wall clock.
+    """
+    rng = np.random.default_rng(0)
+    n = 100
+    n_ct = 4
+    expr = rng.normal(size=(n, n_ct))
+    y = rng.normal(size=n)
+    z = rng.normal(size=(n, 2))
+    out_serial = conditional_mi_per_celltype(expr, y, z, n_jobs=1)
+    out_parallel = conditional_mi_per_celltype(expr, y, z, n_jobs=2)
+    assert len(out_serial["per_cell_type"]) == len(out_parallel["per_cell_type"])
+    for a, b in zip(out_serial["per_cell_type"], out_parallel["per_cell_type"]):
+        assert a["cell_type"] == b["cell_type"]
+        assert a["unconditional_mi"] == pytest.approx(b["unconditional_mi"])
+        assert a["conditional_mi_given_pathology"] == pytest.approx(b["conditional_mi_given_pathology"])
+        assert a["n_used"] == b["n_used"]
+
+
 def test_cmi_handles_nan_subjects():
     rng = np.random.default_rng(0)
     n = 100

@@ -40,6 +40,7 @@ class CounterfactualResult:
     n_steps_used: int
     l2_distance: float
     seed: int
+    lambda_used: float = 0.0  # for Mode-A adaptive: the final λ attempted
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +51,7 @@ class CounterfactualResult:
             "n_steps_used": self.n_steps_used,
             "l2_distance": self.l2_distance,
             "seed": self.seed,
+            "lambda_used": self.lambda_used,
             "perturbation": (self.x_cf - self.x_init).tolist(),
         }
 
@@ -139,6 +141,142 @@ def find_counterfactual(
         n_steps_used=n_steps,
         l2_distance=float(np.linalg.norm(x - x_init)),
         seed=int(seed),
+    )
+
+
+def find_counterfactual_mode_a_adaptive(
+    f: Callable[[np.ndarray], float],
+    grad_f: Callable[[np.ndarray], np.ndarray],
+    x_init: np.ndarray,
+    target_y: float,
+    *,
+    lr: float = 0.05,
+    max_steps: int = 500,
+    tol: float = 1e-3,
+    lambda_start: float = 1e-3,
+    lambda_max: float = 1e3,
+    lambda_mult: float = 2.0,
+    l2_budget: float | None = None,
+    seed: int = 42,
+) -> CounterfactualResult:
+    """Mode-A adaptive-λ counterfactual search (Wachter 2017 preferred variant).
+
+    Loss formulation:
+
+        L(x, λ) = ||x - x_init||_2^2 + λ * (f(x) - target_y)^2
+
+    Note that λ multiplies the *prediction* loss, not the distance. Starting
+    with a small λ emphasizes distance (x stays near x_init); if target is
+    not reached after ``max_steps`` of gradient descent, λ is doubled and
+    the inner loop restarts from ``x_init``. Repeats until target reached or
+    ``lambda_max`` exceeded.
+
+    Gradient (d/dx of the Mode-A loss):
+
+        grad L = 2*(x - x_init) + 2 * λ * (f(x) - target_y) * grad_f(x)
+
+    Parameters
+    ----------
+    f, grad_f
+        Model forward and gradient (numpy).
+    x_init
+        Starting input.
+    target_y
+        Desired model output.
+    lr
+        Gradient-descent step size.
+    max_steps
+        Inner-loop cap per λ value.
+    tol
+        Convergence tolerance: |f(x) - target_y| <= tol counts as success.
+    lambda_start
+        Initial λ (small = distance-dominant).
+    lambda_max
+        Doubling stops once λ exceeds this value.
+    lambda_mult
+        λ doubling factor (default 2.0 per Wachter).
+    l2_budget
+        Optional L2 norm cap on the perturbation; projected back if exceeded.
+    seed
+        Recorded in the result for provenance.
+
+    Returns
+    -------
+    CounterfactualResult
+        Best attempt. ``success=True`` iff target was reached for at least one
+        λ; ``lambda_used`` records the λ of the returned attempt.
+    """
+    x_init_arr = np.asarray(x_init, dtype=np.float64).copy()
+    y_init = float(f(x_init_arr))
+    best_x = x_init_arr.copy()
+    best_y = y_init
+    best_n_steps = 0
+    best_lambda = lambda_start
+
+    lam = lambda_start
+    while True:
+        x = x_init_arr.copy()
+        y_curr = y_init
+        n_steps = 0
+        for step in range(max_steps):
+            n_steps = step + 1
+            residual = y_curr - target_y
+            if abs(residual) <= tol:
+                break
+            g = np.asarray(grad_f(x), dtype=np.float64)
+            grad_L = 2.0 * (x - x_init_arr) + 2.0 * lam * residual * g
+            # L2 gradient clipping: keeps step size bounded at high λ where
+            # raw |grad_L| scales with λ and can cause divergence. Step norm
+            # is capped at 1 unit per iteration (actual step = lr * clipped).
+            g_norm = float(np.linalg.norm(grad_L))
+            if g_norm > 1.0:
+                grad_L = grad_L / g_norm
+            x = x - lr * grad_L
+            if l2_budget is not None:
+                delta = x - x_init_arr
+                d_norm = float(np.linalg.norm(delta))
+                if d_norm > l2_budget:
+                    x = x_init_arr + delta * (l2_budget / d_norm)
+            y_curr = float(f(x))
+
+        # Track best-so-far by proximity to target
+        if abs(y_curr - target_y) < abs(best_y - target_y):
+            best_x = x
+            best_y = y_curr
+            best_n_steps = n_steps
+            best_lambda = lam
+
+        if abs(y_curr - target_y) <= tol:
+            # Success — return current λ attempt
+            return CounterfactualResult(
+                x_init=x_init_arr,
+                x_cf=x,
+                y_init=y_init,
+                y_cf=y_curr,
+                target_y=float(target_y),
+                success=True,
+                n_steps_used=n_steps,
+                l2_distance=float(np.linalg.norm(x - x_init_arr)),
+                seed=int(seed),
+                lambda_used=float(lam),
+            )
+
+        if lam >= lambda_max:
+            break
+        lam = min(lam * lambda_mult, lambda_max)
+
+    # Exhausted λ budget without reaching target
+    return CounterfactualResult(
+        x_init=x_init_arr,
+        x_cf=best_x,
+        y_init=y_init,
+        y_cf=best_y,
+        target_y=float(target_y),
+        success=False,
+        n_steps_used=best_n_steps,
+        l2_distance=float(np.linalg.norm(best_x - x_init_arr)),
+        seed=int(seed),
+        lambda_used=float(best_lambda),
     )
 
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 from typing import Literal, Sequence
 
 import numpy as np
+from joblib import Parallel, delayed
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.linear_model import LinearRegression
@@ -51,6 +52,80 @@ def _residualize(
     raise ValueError(f"Unknown regressor: {regressor!r}")
 
 
+def _cmi_one_ct(
+    ct: int,
+    arr: np.ndarray,
+    Y: np.ndarray,
+    Z: np.ndarray,
+    is_vector_input: bool,
+    rng_state: int,
+    n_neighbors: int,
+    regressor: str,
+    min_samples: int,
+    aggregation: str,
+    cell_type_name: str,
+) -> dict:
+    """Worker: compute (unconditional, conditional) MI for one cell type."""
+    if is_vector_input:
+        x_full = arr[:, ct, :].astype(np.float64)
+        mask = (
+            np.isfinite(x_full).all(axis=1)
+            & np.isfinite(Y)
+            & np.isfinite(Z).all(axis=1)
+        )
+    else:
+        x_full = arr[:, ct].astype(np.float64).reshape(-1, 1)
+        mask = (
+            np.isfinite(x_full).all(axis=1)
+            & np.isfinite(Y)
+            & np.isfinite(Z).all(axis=1)
+        )
+
+    if mask.sum() < min_samples:
+        return {
+            "cell_type": str(cell_type_name),
+            "unconditional_mi": float("nan"),
+            "conditional_mi_given_pathology": float("nan"),
+            "delta": float("nan"),
+            "n_used": int(mask.sum()),
+            "note": f"insufficient finite samples (n<{min_samples})",
+        }
+
+    xs, ys, zs = x_full[mask], Y[mask], Z[mask]
+    mi_unc_per_feat = mutual_info_regression(
+        xs, ys, n_neighbors=n_neighbors, random_state=rng_state,
+    )
+    x_resid = _residualize(xs, zs, regressor, seed=rng_state)
+    if x_resid.ndim == 1:
+        x_resid = x_resid.reshape(-1, 1)
+    mi_cond_per_feat = mutual_info_regression(
+        x_resid, ys, n_neighbors=n_neighbors, random_state=rng_state,
+    )
+    if aggregation == "max":
+        mi_unc = float(np.max(mi_unc_per_feat))
+        mi_cond = float(np.max(mi_cond_per_feat))
+    elif aggregation == "mean":
+        mi_unc = float(np.mean(mi_unc_per_feat))
+        mi_cond = float(np.mean(mi_cond_per_feat))
+    elif aggregation == "vector":
+        mi_unc = float(np.max(mi_unc_per_feat))
+        mi_cond = float(np.max(mi_cond_per_feat))
+    else:
+        raise ValueError(f"Unknown aggregation: {aggregation!r}")
+
+    entry = {
+        "cell_type": str(cell_type_name),
+        "unconditional_mi": mi_unc,
+        "conditional_mi_given_pathology": mi_cond,
+        "delta": mi_unc - mi_cond,
+        "n_used": int(mask.sum()),
+    }
+    if aggregation == "vector":
+        entry["per_gene_unconditional_mi"] = mi_unc_per_feat.tolist()
+        entry["per_gene_conditional_mi"] = mi_cond_per_feat.tolist()
+    return entry
+
+
 def conditional_mi_per_celltype(
     expression_per_subject: np.ndarray,
     resilience_y: np.ndarray,
@@ -62,6 +137,7 @@ def conditional_mi_per_celltype(
     regressor: Literal["linear", "rf"] = "linear",
     min_samples: int = 30,
     aggregation: Literal["mean", "max", "vector"] = "max",
+    n_jobs: int = 1,
 ) -> dict:
     """Per-cell-type conditional MI: I(CT_expression; Y | pathology Z).
 
@@ -127,69 +203,20 @@ def conditional_mi_per_celltype(
         cell_type_names = [f"CT_{i}" for i in range(n_ct)]
 
     rng_state = int(seed)
-    per_ct = []
-    for ct in range(n_ct):
-        if is_vector_input:
-            x_full = arr[:, ct, :].astype(np.float64)
-            mask = (
-                np.isfinite(x_full).all(axis=1)
-                & np.isfinite(Y)
-                & np.isfinite(Z).all(axis=1)
+    if n_jobs == 1:
+        per_ct = [
+            _cmi_one_ct(ct, arr, Y, Z, is_vector_input, rng_state, n_neighbors,
+                        regressor, min_samples, aggregation, cell_type_names[ct])
+            for ct in range(n_ct)
+        ]
+    else:
+        per_ct = Parallel(n_jobs=n_jobs, backend="loky")(
+            delayed(_cmi_one_ct)(
+                ct, arr, Y, Z, is_vector_input, rng_state, n_neighbors,
+                regressor, min_samples, aggregation, cell_type_names[ct],
             )
-        else:
-            x_full = arr[:, ct].astype(np.float64).reshape(-1, 1)
-            mask = (
-                np.isfinite(x_full).all(axis=1)
-                & np.isfinite(Y)
-                & np.isfinite(Z).all(axis=1)
-            )
-
-        if mask.sum() < min_samples:
-            per_ct.append({
-                "cell_type": str(cell_type_names[ct]),
-                "unconditional_mi": float("nan"),
-                "conditional_mi_given_pathology": float("nan"),
-                "delta": float("nan"),
-                "n_used": int(mask.sum()),
-                "note": f"insufficient finite samples (n<{min_samples})",
-            })
-            continue
-
-        xs, ys, zs = x_full[mask], Y[mask], Z[mask]
-        # Unconditional MI per feature → aggregate to scalar.
-        mi_unc_per_feat = mutual_info_regression(
-            xs, ys, n_neighbors=n_neighbors, random_state=rng_state,
+            for ct in range(n_ct)
         )
-        # Conditional MI: residualize each X feature, then MI per feature.
-        x_resid = _residualize(xs, zs, regressor, seed=rng_state)
-        if x_resid.ndim == 1:
-            x_resid = x_resid.reshape(-1, 1)
-        mi_cond_per_feat = mutual_info_regression(
-            x_resid, ys, n_neighbors=n_neighbors, random_state=rng_state,
-        )
-        if aggregation == "max":
-            mi_unc = float(np.max(mi_unc_per_feat))
-            mi_cond = float(np.max(mi_cond_per_feat))
-        elif aggregation == "mean":
-            mi_unc = float(np.mean(mi_unc_per_feat))
-            mi_cond = float(np.mean(mi_cond_per_feat))
-        elif aggregation == "vector":
-            mi_unc = float(np.max(mi_unc_per_feat))
-            mi_cond = float(np.max(mi_cond_per_feat))
-        else:
-            raise ValueError(f"Unknown aggregation: {aggregation!r}")
-
-        entry = {
-            "cell_type": str(cell_type_names[ct]),
-            "unconditional_mi": mi_unc,
-            "conditional_mi_given_pathology": mi_cond,
-            "delta": mi_unc - mi_cond,
-            "n_used": int(mask.sum()),
-        }
-        if aggregation == "vector":
-            entry["per_gene_unconditional_mi"] = mi_unc_per_feat.tolist()
-            entry["per_gene_conditional_mi"] = mi_cond_per_feat.tolist()
-        per_ct.append(entry)
 
     return {
         "per_cell_type": per_ct,
@@ -202,5 +229,6 @@ def conditional_mi_per_celltype(
             "min_samples": int(min_samples),
             "aggregation": str(aggregation),
             "input_was_vector": bool(is_vector_input),
+            "n_jobs": int(n_jobs),
         },
     }

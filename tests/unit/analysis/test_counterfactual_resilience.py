@@ -8,6 +8,7 @@ from src.analysis.counterfactual_resilience import (
     CounterfactualResult,
     batch_counterfactuals,
     find_counterfactual,
+    find_counterfactual_mode_a_adaptive,
 )
 
 
@@ -120,3 +121,59 @@ def test_batch_counterfactuals_rejects_mismatched_seeds():
     X = np.array([[0.0], [1.0]])
     with pytest.raises(ValueError, match="seeds length"):
         batch_counterfactuals(f, grad_f, X, target_y=1.0, seeds=[1, 2, 3])  # 3 vs 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mode-A adaptive doubling (Wachter 2017 literal preferred algorithm)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_mode_a_adaptive_reaches_target_on_linear_model():
+    """With adaptive doubling, target is reached on a simple linear model."""
+    rng = np.random.default_rng(0)
+    n = 5
+    w = rng.normal(size=n)
+    f, grad_f = _linear_model(w, b=0.0)
+    x_init = rng.normal(size=n)
+    target = f(x_init) + 1.0
+    result = find_counterfactual_mode_a_adaptive(
+        f, grad_f, x_init, target,
+        lr=0.05, max_steps=500, tol=1e-2,
+        lambda_start=1e-3, lambda_max=1e3,
+    )
+    assert result.success
+    assert abs(result.y_cf - target) <= 1e-2
+
+
+def test_mode_a_adaptive_returns_best_effort_when_unreachable():
+    """If no λ reaches target within budget, returns best CF with success=False."""
+    # Very small weight → hard to move the output by a large target
+    w = np.array([1e-6])
+    f, grad_f = _linear_model(w, b=0.0)
+    x_init = np.array([0.0])
+    target = 100.0  # far
+    result = find_counterfactual_mode_a_adaptive(
+        f, grad_f, x_init, target,
+        lr=0.01, max_steps=50, tol=1e-3,
+        lambda_start=1e-3, lambda_max=10.0,
+    )
+    # Didn't converge in budget, but we should still get a valid result
+    assert result.success is False
+    assert isinstance(result, CounterfactualResult)
+    # And lambda_used should be the max attempted
+    assert result.lambda_used == pytest.approx(10.0) or result.lambda_used >= 1.0
+
+
+def test_mode_a_records_lambda_used():
+    """The result must report which λ value was the final (successful or max) attempt."""
+    w = np.array([1.0, 1.0])
+    f, grad_f = _linear_model(w, b=0.0)
+    x_init = np.zeros(2)
+    target = 1.0
+    result = find_counterfactual_mode_a_adaptive(
+        f, grad_f, x_init, target,
+        lr=0.05, max_steps=200, tol=1e-3,
+        lambda_start=0.01, lambda_max=100.0,
+    )
+    assert hasattr(result, "lambda_used")
+    assert result.lambda_used >= 0.01

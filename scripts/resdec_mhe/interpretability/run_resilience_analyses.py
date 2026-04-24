@@ -207,8 +207,44 @@ def cmd_stability(args):
     )
 
 
+def _load_raw_pseudobulk(precomputed_dir: Path, subject_ids: list[str]) -> np.ndarray:
+    """Per-subject raw pseudobulk, shape (n_subjects, n_cell_types, n_genes).
+
+    Subjects missing a .pt file get an all-NaN row. Mirrors the helper in
+    ``run_distributional_resilience.py`` (kept duplicated to avoid coupling
+    interpretability scripts).
+    """
+    import torch  # local import — only needed for this path
+    n = len(subject_ids)
+    out: np.ndarray | None = None
+    for i, sid in enumerate(subject_ids):
+        p = precomputed_dir / f"{sid}.pt"
+        if not p.exists():
+            if out is not None:
+                out[i] = np.nan
+            continue
+        d = torch.load(p, map_location="cpu", weights_only=False)
+        pb = d["pseudobulk"].numpy().astype(np.float64)
+        if out is None:
+            out = np.full((n,) + pb.shape, np.nan, dtype=np.float64)
+        out[i] = pb
+        if (i + 1) % 50 == 0:
+            logger.info("loaded %d/%d subjects", i + 1, n)
+    if out is None:
+        raise FileNotFoundError(f"no .pt files loadable from {precomputed_dir}")
+    return out
+
+
 def cmd_cmi(args):
-    """Conditional MI of per-CT mean attribution with composite ŷ given pathology."""
+    """Conditional MI per CT given pathology.
+
+    Two input sources:
+      --source attribution (default): per-CT mean Captum attribution, 2D.
+      --source raw:                    per-CT raw pseudobulk genes, 3D.
+
+    Aggregation controls how the per-gene MI is collapsed to a per-CT scalar
+    (irrelevant for attribution-source since the collapse already happened).
+    """
     captum = _load_captum(Path(args.captum_npz))
     attrs = np.asarray(captum["attributions"], dtype=np.float64)
     subj_ids = [str(s) for s in captum["subject_ids"]]
@@ -236,34 +272,41 @@ def cmd_cmi(args):
         [md_map.get(s, {}).get(c, np.nan) for c in Z_cols] for s in subj_ids
     ], dtype=np.float64)
 
-    # Per-CT mean attribution (collapse genes).
-    ct_mean_attr = attrs.mean(axis=2)  # (n_subj, n_ct)
-
-    # Cell type names from captum_summary. The list is structured as
-    # [{cell_type, total_abs_attribution}, ...]; extract names.
-    summary_path = Path(args.captum_npz).parent / "composite_attribution_summary.json"
-    # Axis-aligned CT names from the authoritative constant. The captum
-    # summary's "cell_types_ranked_by_total_attribution" is NOT axis-aligned
-    # (ranked by attribution magnitude) so we ignore it for labeling.
     from src.data.constants import CELL_TYPE_ORDER
-    n_ct_target = ct_mean_attr.shape[1] if ct_mean_attr.ndim >= 2 else len(CELL_TYPE_ORDER)
+    source = str(args.source)
+
+    if source == "attribution":
+        # Per-CT mean attribution (collapse genes).
+        X = attrs.mean(axis=2)  # (n_subj, n_ct) — 2D
+        aggregation_used = "mean"  # irrelevant for 2D input but recorded
+        suffix = "attribution"
+    elif source == "raw":
+        # 3D raw pseudobulk (n_subj, n_ct, n_gene), aligned to subj_ids.
+        X = _load_raw_pseudobulk(Path(args.precomputed_dir), subj_ids)
+        aggregation_used = str(args.aggregation)
+        suffix = f"raw_{aggregation_used}"
+    else:
+        raise ValueError(f"Unknown source: {source!r}")
+
+    n_ct_target = X.shape[1]
     ct_names = list(CELL_TYPE_ORDER[:n_ct_target])
 
     out = conditional_mi_per_celltype(
-        ct_mean_attr, Y, Z,
+        X, Y, Z,
         cell_type_names=ct_names,
         seed=int(args.seed),
         n_neighbors=int(args.n_neighbors),
         regressor=str(args.regressor),
-        aggregation="mean",
+        aggregation=aggregation_used,
+        n_jobs=int(args.n_jobs),
     )
-    out_path = Path(args.out_dir) / "conditional_mi_per_celltype.json"
+    out_path = Path(args.out_dir) / f"conditional_mi_per_celltype_{suffix}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, indent=2))
     sorted_ct = sorted(
         out["per_cell_type"], key=lambda r: -(r["conditional_mi_given_pathology"] or 0),
     )
-    logger.info("top-5 CT by conditional MI:")
+    logger.info("top-5 CT by conditional MI (%s):", suffix)
     for r in sorted_ct[:5]:
         logger.info(
             "  %s: cond=%.4f, unc=%.4f (delta=%.4f)",
@@ -314,6 +357,22 @@ def main():
     p_c = sub.add_parser("cmi", help="Conditional MI per CT given pathology")
     p_c.add_argument("--n-neighbors", type=int, default=5)
     p_c.add_argument("--regressor", choices=["linear", "rf"], default="linear")
+    p_c.add_argument(
+        "--source", choices=["attribution", "raw"], default="attribution",
+        help="attribution=mean Captum over genes (2D); raw=per-subject pseudobulk (3D)",
+    )
+    p_c.add_argument(
+        "--aggregation", choices=["max", "mean", "vector"], default="max",
+        help="Per-gene MI aggregation when --source raw (ignored for attribution)",
+    )
+    p_c.add_argument(
+        "--n-jobs", type=int, default=1,
+        help="joblib parallelism over cell types (>1 useful for --source raw)",
+    )
+    p_c.add_argument(
+        "--precomputed-dir", default="data/precomputed",
+        help="Per-subject .pt directory; used only when --source raw",
+    )
     p_c.set_defaults(func=cmd_cmi)
 
     args = p.parse_args()
