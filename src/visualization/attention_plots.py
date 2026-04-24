@@ -460,3 +460,112 @@ def plot_head_fingerprint_umap(
     if save_path is not None:
         _theme_save_fig(fig, save_path)
     return fig
+
+
+def plot_head_attention_bootstrap_ci(
+    attention: np.ndarray,
+    cell_type_names: _Sequence[str],
+    *,
+    n_bootstrap: int = 1000,
+    ci_level: float = 0.95,
+    null_reference: float | None = None,
+    figsize: tuple[float, float] | None = None,
+    seed: int = 42,
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Bootstrap confidence intervals on per-(head, cell type) mean attention.
+
+    For each head × cell-type cell, resample subjects with replacement
+    ``n_bootstrap`` times, recompute the mean attention, and derive a
+    two-sided ``ci_level`` confidence interval from the bootstrap
+    distribution.
+
+    Two panels (shared x-axis):
+      - Top: observed mean attention heatmap. Cells whose bootstrap CI
+        excludes ``null_reference`` (if provided) are annotated with ``*``.
+      - Bottom: bootstrap CI width (``hi − lo``) heatmap — highlights
+        (head, CT) cells with the noisiest estimates.
+
+    Parameters
+    ----------
+    attention
+        Shape ``(n_subjects, n_head, n_ct)`` per-subject attention scores.
+    cell_type_names
+        Length ``n_ct`` axis labels.
+    n_bootstrap
+        Number of bootstrap resamples (with replacement over subjects).
+    ci_level
+        Two-sided confidence level (e.g. 0.95 → 2.5 / 97.5 quantiles).
+    null_reference
+        If set, annotate cells where the CI excludes this value (e.g. the
+        uniform-attention null ``1 / n_ct`` for softmax-normalized heads).
+    seed
+        RNG seed for reproducibility.
+    """
+    n_subj, n_head, n_ct = attention.shape
+    if n_subj == 0:
+        raise ValueError("no subjects")
+    if n_ct != len(cell_type_names):
+        raise ValueError(
+            f"n_ct mismatch: attn={n_ct} vs names={len(cell_type_names)}")
+
+    rng = np.random.default_rng(seed)
+    observed = attention.mean(axis=0)
+    boot_means = np.empty((n_bootstrap, n_head, n_ct), dtype=np.float64)
+    for b in range(n_bootstrap):
+        idx = rng.integers(0, n_subj, size=n_subj)
+        boot_means[b] = attention[idx].mean(axis=0)
+    alpha = 1.0 - ci_level
+    lo = np.quantile(boot_means, alpha / 2, axis=0)
+    hi = np.quantile(boot_means, 1 - alpha / 2, axis=0)
+    width = hi - lo
+    if null_reference is not None:
+        excludes_null = (lo > null_reference) | (hi < null_reference)
+    else:
+        excludes_null = np.zeros_like(observed, dtype=bool)
+
+    if figsize is None:
+        figsize = (max(8.5, n_ct * 0.3), 4.2)
+    fig, (ax_mean, ax_width) = plt.subplots(
+        2, 1, figsize=figsize, sharex=True,
+        gridspec_kw={"height_ratios": [1.1, 1.0]},
+    )
+
+    annot_mat = np.where(excludes_null, "*", "")
+    sns.heatmap(
+        observed, ax=ax_mean, cmap=_PALETTES["sequential"],
+        cbar_kws={"label": "mean attention"},
+        yticklabels=[f"head {h}" for h in range(n_head)],
+        xticklabels=cell_type_names,
+        annot=annot_mat, fmt="", annot_kws={"size": 10, "weight": "bold"},
+        linewidths=0.3, linecolor="white",
+    )
+    ax_mean.set_ylabel("")
+    title_suffix = (
+        f" (* CI excludes {null_reference:.4f})"
+        if null_reference is not None else ""
+    )
+    ax_mean.set_title(
+        f"Bootstrap mean ({ci_level * 100:.0f}% CI, B={n_bootstrap})"
+        f"{title_suffix}",
+        fontsize=9,
+    )
+
+    sns.heatmap(
+        width, ax=ax_width, cmap=_PALETTES["sequential"],
+        cbar_kws={"label": "CI width (hi − lo)"},
+        yticklabels=[f"head {h}" for h in range(n_head)],
+        xticklabels=cell_type_names,
+        linewidths=0.3, linecolor="white",
+    )
+    ax_width.set_ylabel("")
+    ax_width.set_xlabel("")
+    ax_width.set_xticklabels(
+        ax_width.get_xticklabels(), rotation=45, ha="right", fontsize=6,
+    )
+    ax_width.set_title("Bootstrap CI width", fontsize=9)
+
+    fig.tight_layout()
+    if save_path is not None:
+        _theme_save_fig(fig, save_path)
+    return fig

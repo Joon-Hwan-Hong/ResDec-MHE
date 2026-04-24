@@ -31,6 +31,7 @@ if str(_WORKTREE_ROOT) not in sys.path:
 
 from src.visualization.attribution_plots import (  # noqa: E402
     plot_attribution_stability_heatmap,
+    plot_captum_de_concordance,
     plot_per_quintile_attribution,
     plot_resilience_signature_radar,
     plot_subject_waterfall,
@@ -105,6 +106,12 @@ def main():
     p.add_argument("--tabpfn-dir", default="data/redesign")
     p.add_argument(
         "--out-dir", default="outputs/redesign/interpretability/figures/attribution",
+    )
+    p.add_argument(
+        "--de-dir",
+        default="outputs/redesign/interpretability/de_resilient_vs_vulnerable",
+        help="Directory with per-CT DE CSVs (CT_00_de.csv … CT_NN_de.csv); "
+             "used for the Captum-vs-DE concordance plot.",
     )
     p.add_argument("--example-subject", default=None)
     p.add_argument("--n-folds", type=int, default=5)
@@ -258,6 +265,36 @@ def main():
             rendered.append("fig_attribution_stability_heatmap")
         except (ValueError, KeyError) as exc:
             logger.warning("stability heatmap: %s", exc)
+
+    # 6. Captum vs DE concordance — cross-validates model attributions
+    #    against classical resilient-vs-vulnerable DE rankings.
+    de_dir = Path(args.de_dir)
+    if (
+        captum_data is not None
+        and "attributions" in captum_data
+        and ct_names is not None
+        and gene_names is not None
+        and de_dir.exists()
+    ):
+        de_per_ct: list[pd.DataFrame | None] = []
+        n_ct_attr = captum_data["attributions"].shape[1]
+        for ct in range(n_ct_attr):
+            de_csv = de_dir / f"CT_{ct:02d}_de.csv"
+            de_per_ct.append(pd.read_csv(de_csv) if de_csv.exists() else None)
+        n_loaded = sum(d is not None for d in de_per_ct)
+        if n_loaded == 0:
+            logger.warning("captum-vs-DE: no DE CSVs found under %s", de_dir)
+        else:
+            try:
+                fig = plot_captum_de_concordance(
+                    captum_data["attributions"],
+                    de_per_ct, ct_names, gene_names,
+                    save_path=out_dir / "fig_captum_de_concordance",
+                )
+                plt.close(fig)
+                rendered.append("fig_captum_de_concordance")
+            except (ValueError, KeyError) as exc:
+                logger.warning("captum-vs-DE: %s", exc)
 
     logger.info("rendered %d attribution figures: %s", len(rendered), rendered)
     return 0

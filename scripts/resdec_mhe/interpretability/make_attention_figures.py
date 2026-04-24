@@ -1,9 +1,12 @@
 """Orchestrator: render attention figures from canonical artefacts.
 
-Calls two functions appended to ``src.visualization.attention_plots``:
+Calls three functions appended to ``src.visualization.attention_plots``:
   - head-attention chord diagram (heads × top-K cell types)
   - head-fingerprint UMAP (subjects clustered by attention pattern,
     colored by residual quartile)
+  - head-attention bootstrap CI heatmap (per-(head, CT) means with CI
+    width panel; annotates cells whose CI excludes the uniform-attention
+    null 1 / n_ct).
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.visualization.attention_plots import (  # noqa: E402
+    plot_head_attention_bootstrap_ci,
     plot_head_attention_chord,
     plot_head_fingerprint_umap,
 )
@@ -47,6 +51,18 @@ def main():
     p.add_argument(
         "--out-dir",
         default="outputs/redesign/interpretability/figures/attention",
+    )
+    p.add_argument(
+        "--bootstrap-n", type=int, default=1000,
+        help="Bootstrap resamples for head-attention CI heatmap.",
+    )
+    p.add_argument(
+        "--bootstrap-ci-level", type=float, default=0.95,
+        help="Two-sided CI level for head-attention bootstrap.",
+    )
+    p.add_argument(
+        "--bootstrap-seed", type=int, default=42,
+        help="RNG seed for head-attention bootstrap resampling.",
     )
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO,
@@ -117,6 +133,24 @@ def main():
             rendered.append("fig_head_fingerprint_umap")
         except (ValueError, ImportError) as exc:
             logger.warning("UMAP: %s", exc)
+
+    # Bootstrap CI heatmap — uses the uniform-attention null 1/n_ct as
+    # the significance reference (softmax-normalized attention over
+    # cell types sums to 1 per subject).
+    try:
+        n_ct = head_attention.shape[-1]
+        fig = plot_head_attention_bootstrap_ci(
+            head_attention, ct_names,
+            n_bootstrap=args.bootstrap_n,
+            ci_level=args.bootstrap_ci_level,
+            null_reference=1.0 / n_ct,
+            seed=args.bootstrap_seed,
+            save_path=out_dir / "fig_head_attention_bootstrap_ci",
+        )
+        plt.close(fig)
+        rendered.append("fig_head_attention_bootstrap_ci")
+    except ValueError as exc:
+        logger.warning("bootstrap CI: %s", exc)
 
     logger.info("rendered %d attention figures: %s", len(rendered), rendered)
     return 0

@@ -15,6 +15,13 @@ Functions:
   - ``plot_per_quintile_attribution`` — heatmap of cell type × prediction-quintile
     mean |attribution|; reveals reasoning shifts across the prediction range.
 
+  - ``plot_attribution_stability_heatmap`` — per-fold rank stability of top
+    (CT, gene) attribution pairs.
+
+  - ``plot_captum_de_concordance`` — per-cell-type Spearman ρ between per-gene
+    mean ``|attribution|`` and classical DE ``-log10(p)``, plus aggregate
+    hexbin density across all (CT, gene) pairs.
+
 All functions take pre-loaded numpy / pandas data + standard args and return
 ``matplotlib.figure.Figure``.
 """
@@ -27,6 +34,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy.stats import spearmanr
 
 from src.visualization.theme import PALETTES, baseline_color, fmt_axes, save_fig
 
@@ -326,6 +334,131 @@ def plot_attribution_stability_heatmap(
     )
     ax.set_xlabel("")
     ax.set_ylabel("")
+    if save_path is not None:
+        save_fig(fig, save_path)
+    return fig
+
+
+def plot_captum_de_concordance(
+    attributions: np.ndarray,
+    de_per_ct: Sequence[pd.DataFrame | None],
+    cell_type_names: Sequence[str],
+    gene_names: Sequence[str],
+    *,
+    figsize: tuple[float, float] = (8.5, 6.5),
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Concordance between Captum attribution rankings and classical DE rankings.
+
+    For each cell type, compute Spearman rank correlation ρ between per-gene
+    mean ``|attribution|`` (over all subjects) and ``-log10(p_value)`` from
+    resilient-vs-vulnerable differential expression.
+
+    Two panels:
+      - (a) per-CT Spearman ρ bar chart, sorted descending; color is PiYG
+        diverging on ρ magnitude.
+      - (b) aggregate hexbin density of mean ``|attribution|`` vs
+        ``-log10(p_value)`` pooled over all (CT, gene) pairs, with the
+        overall Spearman ρ annotated.
+
+    Attribution and DE capture partially orthogonal signal — the deep model
+    picks up non-linear / distributional patterns that classical two-group DE
+    can miss. Low per-CT concordance is an expected, biologically informative
+    finding.
+
+    Parameters
+    ----------
+    attributions
+        Shape ``(n_subjects, n_ct, n_gene)``; per-subject Captum attributions.
+    de_per_ct
+        Length ``n_ct``; each element is a DataFrame with at least columns
+        ``gene`` and ``p_value``, or ``None`` to skip that cell type.
+    cell_type_names, gene_names
+        Axis labels; ``len(gene_names)`` must equal ``n_gene``.
+    """
+    n_subj, n_ct, n_gene = attributions.shape
+    if n_ct != len(cell_type_names):
+        raise ValueError(
+            f"n_ct mismatch: attr={n_ct} vs names={len(cell_type_names)}")
+    if n_gene != len(gene_names):
+        raise ValueError(
+            f"n_gene mismatch: attr={n_gene} vs names={len(gene_names)}")
+    if len(de_per_ct) != n_ct:
+        raise ValueError(f"DE count={len(de_per_ct)} != n_ct={n_ct}")
+
+    gene_names_list = list(gene_names)
+    per_ct_rho = np.full(n_ct, np.nan, dtype=np.float64)
+    all_attr_vals: list[np.ndarray] = []
+    all_neg_logp: list[np.ndarray] = []
+
+    for ct, de_df in enumerate(de_per_ct):
+        if de_df is None or len(de_df) == 0:
+            continue
+        attr_ct = np.abs(attributions[:, ct, :]).mean(axis=0)
+        de_aligned = (
+            de_df.set_index("gene")["p_value"]
+            .reindex(gene_names_list)
+            .astype(np.float64)
+            .to_numpy()
+        )
+        mask = np.isfinite(de_aligned) & np.isfinite(attr_ct) & (de_aligned > 0)
+        if mask.sum() < 10:
+            continue
+        neg_logp = -np.log10(de_aligned[mask])
+        rho, _ = spearmanr(attr_ct[mask], neg_logp)
+        per_ct_rho[ct] = rho
+        all_attr_vals.append(attr_ct[mask])
+        all_neg_logp.append(neg_logp)
+
+    if not all_attr_vals:
+        raise ValueError("no cell types with valid DE/attribution overlap")
+
+    valid_idx = np.where(np.isfinite(per_ct_rho))[0]
+    order = valid_idx[np.argsort(per_ct_rho[valid_idx])[::-1]]
+    rho_sorted = per_ct_rho[order]
+    labels_sorted = [cell_type_names[i] for i in order]
+
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2, 1, figsize=figsize,
+        gridspec_kw={"height_ratios": [1.0, 1.2]},
+    )
+
+    cmap = plt.get_cmap(PALETTES["diverging"])
+    norm_max = max(0.01, float(np.abs(rho_sorted).max()))
+    colors = [cmap(0.5 + 0.5 * r / norm_max) for r in rho_sorted]
+    ax_top.bar(
+        range(len(rho_sorted)), rho_sorted, color=colors,
+        edgecolor="black", linewidth=0.3,
+    )
+    ax_top.axhline(0, color="black", linewidth=0.5)
+    ax_top.set_xticks(range(len(rho_sorted)))
+    ax_top.set_xticklabels(labels_sorted, rotation=45, ha="right", fontsize=6)
+    ax_top.set_ylabel("Spearman ρ\n(|attr| vs −log₁₀ p)")
+    fmt_axes(ax_top)
+    ax_top.text(
+        0.02, 0.95, "(a) Per-cell-type concordance",
+        transform=ax_top.transAxes, fontsize=8, fontweight="bold", va="top",
+    )
+
+    all_attr = np.concatenate(all_attr_vals)
+    all_neg = np.concatenate(all_neg_logp)
+    overall_rho, _ = spearmanr(all_attr, all_neg)
+    hb = ax_bot.hexbin(
+        all_attr, all_neg, gridsize=60,
+        cmap=PALETTES["sequential"], mincnt=1,
+    )
+    fig.colorbar(hb, ax=ax_bot, label="pair count")
+    ax_bot.set_xlabel("Mean |attribution| per (cell type, gene)")
+    ax_bot.set_ylabel("−log₁₀(p_value)")
+    fmt_axes(ax_bot)
+    ax_bot.text(
+        0.02, 0.95,
+        f"(b) Aggregate pairs\nSpearman ρ = {overall_rho:+.3f}",
+        transform=ax_bot.transAxes, fontsize=8, fontweight="bold", va="top",
+        bbox=dict(facecolor="white", alpha=0.9, edgecolor="none"),
+    )
+
+    fig.tight_layout()
     if save_path is not None:
         save_fig(fig, save_path)
     return fig

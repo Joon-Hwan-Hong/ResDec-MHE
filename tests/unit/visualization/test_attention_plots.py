@@ -16,6 +16,7 @@ from src.visualization.attention_plots import (
     plot_cell_type_importance_bar,
     plot_attention_distribution,
     plot_gene_gate_heatmap,
+    plot_head_attention_bootstrap_ci,
     plot_resilience_signature_heatmap,
 )
 
@@ -467,6 +468,77 @@ class TestAttentionPlotsEdgeCases:
 
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
+
+
+# =============================================================================
+# plot_head_attention_bootstrap_ci Tests
+# =============================================================================
+
+
+@pytest.fixture
+def sample_head_attention_array():
+    """Sample per-subject head attention [n_subj, n_head, n_ct]."""
+    rng = np.random.default_rng(0)
+    raw = rng.random((50, 4, 8))
+    return raw / raw.sum(axis=-1, keepdims=True)
+
+
+class TestPlotHeadAttentionBootstrapCi:
+    """Test plot_head_attention_bootstrap_ci function."""
+
+    def test_basic_plot(self, sample_head_attention_array):
+        ct_names = [f"CT_{i}" for i in range(8)]
+        fig = plot_head_attention_bootstrap_ci(
+            sample_head_attention_array, ct_names, n_bootstrap=50,
+        )
+        assert isinstance(fig, plt.Figure)
+        assert len(fig.get_axes()) >= 2
+        plt.close(fig)
+
+    def test_null_reference_annotation(self, sample_head_attention_array):
+        ct_names = [f"CT_{i}" for i in range(8)]
+        fig = plot_head_attention_bootstrap_ci(
+            sample_head_attention_array, ct_names,
+            n_bootstrap=50, null_reference=1.0 / 8,
+        )
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_save_path(self, tmp_path, sample_head_attention_array):
+        ct_names = [f"CT_{i}" for i in range(8)]
+        save_path = tmp_path / "head_bootstrap"
+        fig = plot_head_attention_bootstrap_ci(
+            sample_head_attention_array, ct_names,
+            n_bootstrap=50, save_path=save_path,
+        )
+        assert (save_path.with_suffix(".png")).exists()
+        plt.close(fig)
+
+    def test_empty_raises(self):
+        ct_names = [f"CT_{i}" for i in range(8)]
+        empty = np.zeros((0, 4, 8))
+        with pytest.raises(ValueError, match="no subjects"):
+            plot_head_attention_bootstrap_ci(empty, ct_names, n_bootstrap=10)
+
+    def test_ct_mismatch_raises(self, sample_head_attention_array):
+        wrong_names = [f"CT_{i}" for i in range(5)]
+        with pytest.raises(ValueError, match="mismatch"):
+            plot_head_attention_bootstrap_ci(
+                sample_head_attention_array, wrong_names, n_bootstrap=10,
+            )
+
+    def test_reproducible_with_seed(self, sample_head_attention_array):
+        ct_names = [f"CT_{i}" for i in range(8)]
+        fig1 = plot_head_attention_bootstrap_ci(
+            sample_head_attention_array, ct_names, n_bootstrap=100, seed=7,
+        )
+        fig2 = plot_head_attention_bootstrap_ci(
+            sample_head_attention_array, ct_names, n_bootstrap=100, seed=7,
+        )
+        # Same seed → same CI widths in annotation titles.
+        assert fig1.get_axes()[0].get_title() == fig2.get_axes()[0].get_title()
+        plt.close(fig1)
+        plt.close(fig2)
 
 
 # =============================================================================
