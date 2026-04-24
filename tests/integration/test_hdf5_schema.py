@@ -203,10 +203,10 @@ class TestHGTAttentionStorage:
                 hgt_group.attrs["n_samples"] = result["n_samples"]
                 hgt_group.attrs["n_layers"] = result["n_layers"]
 
-                # Edge type names
+                # Edge type names — converted from tuple-keyed edge_type_ids
                 hgt_group.create_dataset(
                     "edge_type_names",
-                    data=np.array(result["edge_type_names"], dtype=object),
+                    data=np.array(["|".join(et) for et in result["edge_type_ids"]], dtype=object),
                     dtype=vlen_str
                 )
 
@@ -246,7 +246,7 @@ class TestHGTAttentionStorage:
         per_sample = result["per_sample"]
         n_samples = len(synthetic_hgt_attention)
         n_layers = len(synthetic_hgt_attention[0])
-        n_edge_types = len(result["edge_type_names"])
+        n_edge_types = len(result["edge_type_ids"])
 
         assert per_sample.shape == (n_samples, n_edge_types, n_layers, n_heads)
 
@@ -263,7 +263,7 @@ class TestEdgeCases:
         """Test handling of empty HGT attention list."""
         result = aggregate_hgt_attention([])
 
-        assert result["edge_type_names"] == []
+        assert result["edge_type_ids"] == []
         assert result["n_samples"] == 0
         assert result["n_layers"] == 0
 
@@ -293,17 +293,15 @@ class TestEdgeCases:
                 sample_layers.append(layer_dict)
             hgt_attention.append(sample_layers)
 
-        result = aggregate_hgt_attention(
-            hgt_attention, edge_types=[et1, et2], include_per_sample=True
-        )
+        result = aggregate_hgt_attention(hgt_attention, include_per_sample=True)
 
         # Both edge types should be in the result
-        assert len(result["edge_type_names"]) == 2
+        assert len(result["edge_type_ids"]) == 2
 
         # Per-sample should have NaN where edge type was missing (not zero-biased)
         per_sample = result["per_sample"]
         # Odd samples should have NaN for et2
-        et2_idx = result["edge_type_names"].index("C|ECM_Receptor|D")
+        et2_idx = result["edge_type_ids"].index(et2)
         for i in range(1, n_samples, 2):  # Odd samples
             assert np.all(np.isnan(per_sample[i, et2_idx, :, :]))
 
@@ -321,6 +319,8 @@ class TestSaveLoadRoundTrip:
         from src.utils.io import save_attention_weights, load_attention_weights, unpack_hgt_for_ccc
 
         hgt_agg = aggregate_hgt_attention(synthetic_hgt_attention, include_per_sample=True)
+        # Convert tuple-keyed edge_type_ids to pipe-separated names for HDF5 storage layer.
+        hgt_agg["edge_type_names"] = ["|".join(et) for et in hgt_agg["edge_type_ids"]]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "attention_weights.h5"

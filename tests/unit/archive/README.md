@@ -17,6 +17,40 @@ canonical ResDec-MHE pipeline. In some cases the imported classes still exist
 in `src/` (kept for legacy baselines/analysis), but the canonical pipeline
 bypasses them, so the tests no longer provide coverage of the live pipeline.
 
+### Task 4 archive batch (2026-04-24, paper-strengthening)
+
+15 files moved to `pre_redesign/` subdir. Every file in this batch instantiates
+`CognitiveResilienceModel` (the pre-redesign full model) or
+`CognitiveResilienceLightningModule`. These classes still exist: the ResDec-MHE
+canonical pipeline uses `CognitiveResilienceModel` as a frozen encoder (via
+`build_model_from_config` at `src/training/resdec_lightning_module.py:100`), but
+its Bayesian/deterministic-head output is discarded under the canonical loss
+path. Tests below exercise the pre-redesign loss path (Bayesian head, pathology
+encoder output, Pyro SVI, etc.) and do not track canonical ResDec-MHE behaviour.
+
+| File | Original path | Pre-redesign refs |
+|---|---|---|
+| `pre_redesign/test_mixed_precision.py` | `tests/unit/models/test_mixed_precision.py` | 41 |
+| `pre_redesign/test_stress_scale.py` | `tests/unit/models/test_stress_scale.py` | 16 |
+| `pre_redesign/test_full_model.py` | `tests/unit/models/test_full_model.py` | 35 |
+| `pre_redesign/test_edge_cases_coverage.py` | `tests/unit/models/test_edge_cases_coverage.py` | 10 |
+| `pre_redesign/test_serialization.py` | `tests/unit/models/test_serialization.py` | 82 |
+| `pre_redesign/test_gpu_cuda.py` | `tests/unit/models/test_gpu_cuda.py` | 37 |
+| `pre_redesign/test_lightning_module.py` | `tests/unit/training/test_lightning_module.py` | 118 |
+| `pre_redesign/test_collate_training_integration.py` | `tests/integration/test_collate_training_integration.py` | 5 |
+| `pre_redesign/test_data_to_full_model.py` | `tests/integration/test_data_to_full_model.py` | 18 |
+| `pre_redesign/test_full_model_integration.py` | `tests/integration/test_full_model_integration.py` | 35 |
+| `pre_redesign/test_end_to_end.py` | `tests/integration/test_end_to_end.py` | 4 |
+| `pre_redesign/test_gradient_flow.py` | `tests/integration/test_gradient_flow.py` | 9 |
+| `pre_redesign/test_interface_contracts.py` | `tests/integration/test_interface_contracts.py` | 13 |
+| `pre_redesign/test_regression_guards.py` | `tests/regression/test_regression_guards.py` | 10 |
+| `pre_redesign/test_pipeline_smoke.py` | `tests/smoke/test_pipeline_smoke.py` | 3 |
+
+Tests NOT archived in this batch despite testing model components:
+- `tests/integration/test_data_to_model.py` — tests only data→component shapes (CellTransformer, HGTEncoderTensor), no pre-redesign model instantiation
+- `tests/integration/test_region_handler_integration.py` — tests `RegionHandler`, a shared component used by ResDec-MHE
+- `tests/unit/models/test_cell_transformer.py` — tests `CellTransformer`, a shared component
+
 ### Task 3 archive batch
 
 | File | Original path | Reason archived |

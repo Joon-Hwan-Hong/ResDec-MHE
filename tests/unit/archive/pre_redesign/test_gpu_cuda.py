@@ -893,7 +893,7 @@ class TestMixedPrecisionBasic:
 
 
 
-@pytest.mark.gpu
+@pytest.mark.cuda
 class TestHGTEncoderTensorCUDA:
     """Test HGTEncoderTensor on GPU — scatter/gather ops are GPU-sensitive."""
 
