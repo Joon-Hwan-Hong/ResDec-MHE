@@ -30,6 +30,7 @@ if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.visualization.attribution_plots import (  # noqa: E402
+    plot_attribution_stability_heatmap,
     plot_per_quintile_attribution,
     plot_resilience_signature_radar,
     plot_subject_waterfall,
@@ -237,6 +238,26 @@ def main():
             rendered.append("fig_per_quintile_attribution")
         except (ValueError, KeyError) as exc:
             logger.warning("per-quintile: %s", exc)
+
+    # 5. Cross-fold attribution stability heatmap.
+    if (
+        captum_data is not None
+        and "attributions" in captum_data
+        and "fold" in captum_data
+        and ct_names is not None
+        and gene_names is not None
+    ):
+        try:
+            fig = plot_attribution_stability_heatmap(
+                captum_data["attributions"],
+                np.asarray(captum_data["fold"], dtype=int),
+                ct_names, gene_names,
+                save_path=out_dir / "fig_attribution_stability_heatmap",
+            )
+            plt.close(fig)
+            rendered.append("fig_attribution_stability_heatmap")
+        except (ValueError, KeyError) as exc:
+            logger.warning("stability heatmap: %s", exc)
 
     logger.info("rendered %d attribution figures: %s", len(rendered), rendered)
     return 0

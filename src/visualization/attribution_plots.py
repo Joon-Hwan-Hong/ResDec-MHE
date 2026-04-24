@@ -253,3 +253,79 @@ def plot_per_quintile_attribution(
     if save_path is not None:
         save_fig(fig, save_path)
     return fig
+
+
+def plot_attribution_stability_heatmap(
+    captum_attrs: np.ndarray,
+    fold_ids: np.ndarray,
+    cell_type_names: Sequence[str],
+    gene_names: Sequence[str],
+    *,
+    top_n_pairs: int = 30,
+    figsize: tuple[float, float] | None = None,
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Cross-fold attribution rank stability heatmap.
+
+    For the top-N (CT, gene) pairs by GLOBAL mean |attribution| (averaged
+    across folds), show the rank within EACH fold as a heatmap. Stable
+    pairs have low rank in all folds; pairs that pop up only in one fold
+    have high rank-variance — highlighting which attributions reproduce.
+
+    Parameters
+    ----------
+    captum_attrs
+        Shape ``(n_subjects, n_ct, n_gene)`` per-subject attributions.
+    fold_ids
+        Shape ``(n_subjects,)`` integer fold ID per subject (0-indexed).
+    cell_type_names, gene_names
+        Names for axes.
+    top_n_pairs
+        How many top (CT, gene) pairs to display (sorted by global rank).
+    """
+    n_subj, n_ct, n_gene = captum_attrs.shape
+    if n_subj == 0:
+        raise ValueError("no subjects")
+    folds = np.unique(fold_ids)
+    n_folds = len(folds)
+    # Per-fold mean |attribution| (CT, gene).
+    per_fold = np.zeros((n_folds, n_ct, n_gene), dtype=np.float64)
+    for fi, f in enumerate(folds):
+        mask = fold_ids == f
+        per_fold[fi] = np.abs(captum_attrs[mask]).mean(axis=0)
+    # Global ranking by mean across folds.
+    mean_attr = per_fold.mean(axis=0)
+    flat = mean_attr.ravel()
+    top_idx = np.argsort(flat)[::-1][:top_n_pairs]
+    ct_idx = top_idx // n_gene
+    gn_idx = top_idx % n_gene
+    pair_labels = [
+        f"{cell_type_names[c]} × {gene_names[g]}"
+        for c, g in zip(ct_idx, gn_idx)
+    ]
+    # Per-fold rank (1-indexed) of each pair.
+    ranks = np.zeros((top_n_pairs, n_folds), dtype=np.int64)
+    for fi in range(n_folds):
+        flat_fold = per_fold[fi].ravel()
+        order = np.argsort(flat_fold)[::-1]
+        rank_lookup = np.empty_like(order)
+        rank_lookup[order] = np.arange(len(order))
+        for pi, idx in enumerate(top_idx):
+            ranks[pi, fi] = int(rank_lookup[idx]) + 1
+
+    if figsize is None:
+        figsize = (5.5, max(3.5, top_n_pairs * 0.18))
+    fig, ax = plt.subplots(figsize=figsize)
+    sns.heatmap(
+        ranks, ax=ax, cmap=PALETTES["sequential"],
+        cbar_kws={"label": "rank (1=top)"},
+        yticklabels=pair_labels,
+        xticklabels=[f"fold {int(f)}" for f in folds],
+        annot=True, fmt="d", annot_kws={"size": 6},
+        linewidths=0.4, linecolor="white",
+    )
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    if save_path is not None:
+        save_fig(fig, save_path)
+    return fig
