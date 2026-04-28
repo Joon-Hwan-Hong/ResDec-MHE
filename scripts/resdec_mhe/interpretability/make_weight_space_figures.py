@@ -76,12 +76,12 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--canonical-dir",
-        default="outputs/redesign/p5_canonical_seed42",
+        default="outputs/canonical/p5_canonical_seed42",
     )
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/weight_space",
+        default="outputs/canonical/interpretability/figures/weight_space",
     )
     args = p.parse_args()
 

@@ -1,11 +1,11 @@
 """Aggregate the SAE sweep grid into a Pareto frontier + best-config summary.
 
-Reads ``outputs/redesign/sae/{architecture}/{layer}/exp{E}_k{K}_seed{S}/reconstruction_metrics.json``
+Reads ``outputs/canonical/sae/{architecture}/{layer}/exp{E}_k{K}_seed{S}/reconstruction_metrics.json``
 for every completed sweep config; outputs:
 
-* ``outputs/redesign/sae/sweep_summary.json`` — full grid as JSON
-* ``outputs/redesign/sae/sweep_summary.csv``  — flat table for plotting
-* ``outputs/redesign/sae/figures/sae_pareto.{png,pdf}`` — L0 vs FVE Pareto plot per (arch, layer)
+* ``outputs/canonical/sae/sweep_summary.json`` — full grid as JSON
+* ``outputs/canonical/sae/sweep_summary.csv``  — flat table for plotting
+* ``outputs/canonical/sae/figures/sae_pareto.{png,pdf}`` — L0 vs FVE Pareto plot per (arch, layer)
 
 Best config selection: per (architecture, layer), pick the config with the highest FVE
 that satisfies dead_fraction < 0.5 and L0 < 0.5 × dictionary_size. If none, pick the
@@ -167,18 +167,18 @@ def plot_pareto(df: pd.DataFrame, out_path: Path) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--sae-root", default="outputs/redesign/sae")
+    p.add_argument("--sae-root", default="outputs/canonical/sae")
     p.add_argument(
         "--summary-json",
-        default="outputs/redesign/sae/sweep_summary.json",
+        default="outputs/canonical/sae/sweep_summary.json",
     )
     p.add_argument(
         "--summary-csv",
-        default="outputs/redesign/sae/sweep_summary.csv",
+        default="outputs/canonical/sae/sweep_summary.csv",
     )
     p.add_argument(
         "--pareto-png",
-        default="outputs/redesign/sae/figures/sae_pareto.png",
+        default="outputs/canonical/sae/figures/sae_pareto.png",
     )
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO,

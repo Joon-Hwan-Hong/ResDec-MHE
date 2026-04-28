@@ -26,7 +26,7 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/resdec_mhe/interpretability/make_figures.py \\
-        --out-dir outputs/redesign/interpretability/figures
+        --out-dir outputs/canonical/interpretability/figures
 """
 from __future__ import annotations
 
@@ -1076,27 +1076,27 @@ def _safe_splatter_lamp5_corr(summary_path: Path) -> float | None:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline-table", type=Path,
-                   default=Path("outputs/redesign/interpretability/paper_baseline_table.csv"))
+                   default=Path("outputs/canonical/interpretability/paper_baseline_table.csv"))
     p.add_argument("--captum-summary", type=Path,
-                   default=Path("outputs/redesign/interpretability/captum_ig/composite_attribution_summary.json"))
+                   default=Path("outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json"))
     p.add_argument("--head-analysis", type=Path,
-                   default=Path("outputs/redesign/interpretability/head_analysis_summary.json"))
+                   default=Path("outputs/canonical/interpretability/head_analysis_summary.json"))
     p.add_argument("--splatter-deepdive", type=Path,
-                   default=Path("outputs/redesign/interpretability/splatter_deepdive_summary.json"))
+                   default=Path("outputs/canonical/interpretability/splatter_deepdive_summary.json"))
     p.add_argument("--subgroup-metrics", type=Path,
-                   default=Path("outputs/redesign/interpretability/subgroup_metrics.json"))
+                   default=Path("outputs/canonical/interpretability/subgroup_metrics.json"))
     p.add_argument("--statistical-rigor", type=Path,
-                   default=Path("outputs/redesign/interpretability/statistical_rigor.json"))
+                   default=Path("outputs/canonical/interpretability/statistical_rigor.json"))
     p.add_argument("--residual-csv", type=Path,
-                   default=Path("outputs/redesign/interpretability/residual_per_subject.csv"))
+                   default=Path("outputs/canonical/interpretability/residual_per_subject.csv"))
     p.add_argument("--pred-root", type=Path,
-                   default=Path("outputs/redesign/p5_canonical_seed42"))
+                   default=Path("outputs/canonical/p5_canonical_seed42"))
     p.add_argument("--ablation-root", type=Path,
-                   default=Path("outputs/redesign"),
+                   default=Path("outputs/canonical"),
                    help="Parent dir containing p5_ablation_topk_{1000,4000} subdirs")
-    p.add_argument("--tabpfn-dir", type=Path, default=Path("data/redesign"))
+    p.add_argument("--tabpfn-dir", type=Path, default=Path("data/canonical"))
     p.add_argument("--out-dir", type=Path,
-                   default=Path("outputs/redesign/interpretability/figures"))
+                   default=Path("outputs/canonical/interpretability/figures"))
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--figure-format", nargs="+", default=["png", "pdf"])
     p.add_argument("--canonical-r2", type=float, default=CANONICAL_R2)

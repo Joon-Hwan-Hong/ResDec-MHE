@@ -31,5 +31,5 @@ data:
     batch_size: 24
   use_cached_embeddings: false
   # Point at the k=1000 TabPFN residual + outer caches produced by the top-k=1000 pipeline.
-  tabpfn_oof_dir: data/redesign/top_k_variants/k1000
-  tabpfn_outer_dir: data/redesign/top_k_variants/k1000
+  tabpfn_oof_dir: data/canonical/top_k_variants/k1000
+  tabpfn_outer_dir: data/canonical/top_k_variants/k1000

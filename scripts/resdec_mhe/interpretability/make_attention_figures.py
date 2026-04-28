@@ -38,19 +38,19 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--head-attention-npz",
-        default="outputs/redesign/interpretability/pathology_attention_per_subject.npz",
+        default="outputs/canonical/interpretability/pathology_attention_per_subject.npz",
     )
     p.add_argument(
         "--captum-summary-json",
-        default="outputs/redesign/interpretability/captum_ig/composite_attribution_summary.json",
+        default="outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json",
     )
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/attention",
+        default="outputs/canonical/interpretability/figures/attention",
     )
     p.add_argument(
         "--bootstrap-n", type=int, default=1000,

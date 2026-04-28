@@ -10,7 +10,7 @@ import pytest
 from sklearn.metrics import r2_score
 
 
-OOF_DIR = Path("data/redesign")
+OOF_DIR = Path("data/canonical")
 
 
 def _have_all_folds() -> bool:

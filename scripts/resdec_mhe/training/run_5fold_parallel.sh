@@ -6,7 +6,7 @@
 #
 # Env overrides (all optional):
 #   CONFIG        phase YAML (default: configs/resdec_mhe/canonical.yaml)
-#   OUTROOT       output directory (default: outputs/redesign/p5_phase2_residual)
+#   OUTROOT       output directory (default: outputs/canonical/p5_phase2_residual)
 #   MAX_EPOCHS    override cfg.training.max_epochs (default: unset → config wins)
 #   SEED          override cfg.experiment.seed (default: unset → config wins; e.g. 43)
 #   RUN_REINFER   1|0 auto-run reinfer_best_ckpt after training (default: 1)
@@ -22,7 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 CONFIG="${CONFIG:-configs/resdec_mhe/canonical.yaml}"
-OUTROOT="${OUTROOT:-outputs/redesign/p5_phase2_residual}"
+OUTROOT="${OUTROOT:-outputs/canonical/p5_phase2_residual}"
 MAX_EPOCHS="${MAX_EPOCHS:-}"
 SEED="${SEED:-}"
 RUN_REINFER="${RUN_REINFER:-1}"

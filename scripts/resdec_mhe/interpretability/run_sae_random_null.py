@@ -19,9 +19,9 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=1 \\
     uv run python scripts/resdec_mhe/interpretability/run_sae_random_null.py \\
-        --activations outputs/redesign/sae/random_encoder/activations_attended_seed0.npz \\
-        --config-match outputs/redesign/sae/topk/attended/exp8_k16_seed0/reconstruction_metrics.json \\
-        --out-dir outputs/redesign/sae/random_encoder
+        --activations outputs/canonical/sae/random_encoder/activations_attended_seed0.npz \\
+        --config-match outputs/canonical/sae/topk/attended/exp8_k16_seed0/reconstruction_metrics.json \\
+        --out-dir outputs/canonical/sae/random_encoder
 
 Arguments
 ---------
@@ -94,7 +94,7 @@ def main() -> int:
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/sae/random_encoder",
+        default="outputs/canonical/sae/random_encoder",
         help="Random-null SAE output root.",
     )
     p.add_argument(

@@ -105,20 +105,20 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument(
-        "--canonical-dir", default="outputs/redesign/p5_canonical_seed42",
+        "--canonical-dir", default="outputs/canonical/p5_canonical_seed42",
     )
-    p.add_argument("--tabpfn-dir", default="data/redesign")
+    p.add_argument("--tabpfn-dir", default="data/canonical")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument("--n-cell-types", type=int, default=31)
     p.add_argument("--device", default="cuda:0")
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/loco_zero_out",
+        default="outputs/canonical/interpretability/loco_zero_out",
     )
     p.add_argument(
         "--cell-type-names-source",
-        default="outputs/redesign/interpretability/captum_ig/"
+        default="outputs/canonical/interpretability/captum_ig/"
         "composite_attribution_summary.json",
     )
     args = p.parse_args()

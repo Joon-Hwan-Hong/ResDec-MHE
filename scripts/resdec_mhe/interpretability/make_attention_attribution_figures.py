@@ -12,12 +12,12 @@ Produces one composite figure with four panels:
      Shows which methods agree on the per-CT ranking.
 
 Inputs:
-  outputs/redesign/interpretability/attention_attribution/per_subject_attribution.npz
-  outputs/redesign/interpretability/attention_attribution/attention_attribution_summary.json
+  outputs/canonical/interpretability/attention_attribution/per_subject_attribution.npz
+  outputs/canonical/interpretability/attention_attribution/attention_attribution_summary.json
 
 Outputs:
-  outputs/redesign/interpretability/figures/attention_attribution/fig_attention_attribution_4panel.{png,pdf}
-  outputs/redesign/interpretability/figures/attention_attribution/per_method_top10_bars.{png,pdf}
+  outputs/canonical/interpretability/figures/attention_attribution/fig_attention_attribution_4panel.{png,pdf}
+  outputs/canonical/interpretability/figures/attention_attribution/per_method_top10_bars.{png,pdf}
 
 Usage:
     PYTHONPATH=<worktree-root> uv run python \\
@@ -273,15 +273,15 @@ def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--npz-path",
-        default="outputs/redesign/interpretability/attention_attribution/per_subject_attribution.npz",
+        default="outputs/canonical/interpretability/attention_attribution/per_subject_attribution.npz",
     )
     p.add_argument(
         "--summary-path",
-        default="outputs/redesign/interpretability/attention_attribution/attention_attribution_summary.json",
+        default="outputs/canonical/interpretability/attention_attribution/attention_attribution_summary.json",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/attention_attribution",
+        default="outputs/canonical/interpretability/figures/attention_attribution",
     )
     return p
 

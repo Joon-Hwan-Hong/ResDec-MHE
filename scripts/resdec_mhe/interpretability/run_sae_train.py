@@ -18,12 +18,12 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/resdec_mhe/interpretability/run_sae_train.py \\
-        --activations-dir outputs/redesign/sae \\
+        --activations-dir outputs/canonical/sae \\
         --layer attended \\
         --architecture batch_topk \\
         --expansion 16 --k 8 --seed 0 \\
         --n-steps 50000 --batch-size 64 --learning-rate 1e-4 \\
-        --out-root outputs/redesign/sae
+        --out-root outputs/canonical/sae
 
 Arguments
 ---------
@@ -84,7 +84,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--activations-dir",
-        default="outputs/redesign/sae",
+        default="outputs/canonical/sae",
         help="Directory holding activations_{layer}_all_folds.npz.",
     )
     p.add_argument(
@@ -107,7 +107,7 @@ def main() -> int:
     p.add_argument("--learning-rate", type=float, default=1e-4)
     p.add_argument(
         "--out-root",
-        default="outputs/redesign/sae",
+        default="outputs/canonical/sae",
         help="Output root for SAE runs.",
     )
     p.add_argument("--top-k-subjects", type=int, default=20)

@@ -31,8 +31,8 @@
 #   Each shell gets ~30 of the 60 runs (round-robin by global index).
 #
 # Required env vars (defaults shown):
-#   ACTIVATIONS_DIR  outputs/redesign/sae
-#   OUT_ROOT         outputs/redesign/sae
+#   ACTIVATIONS_DIR  outputs/canonical/sae
+#   OUT_ROOT         outputs/canonical/sae
 #   N_STEPS          50000
 #   BATCH_SIZE       64
 #   LEARNING_RATE    1e-4
@@ -56,8 +56,8 @@ set -euo pipefail
 
 WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-ACTIVATIONS_DIR="${ACTIVATIONS_DIR:-outputs/redesign/sae}"
-OUT_ROOT="${OUT_ROOT:-outputs/redesign/sae}"
+ACTIVATIONS_DIR="${ACTIVATIONS_DIR:-outputs/canonical/sae}"
+OUT_ROOT="${OUT_ROOT:-outputs/canonical/sae}"
 N_STEPS="${N_STEPS:-50000}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"

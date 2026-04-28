@@ -47,9 +47,9 @@ Usage
 -----
     PYTHONPATH=<worktree-root> uv run python \\
         scripts/resdec_mhe/interpretability/run_feature_xref_consensus.py \\
-        --trained-report outputs/redesign/sae/batch_topk/fused/exp32_k64_seed0/feature_report.json \\
-        --random-report  outputs/redesign/sae/random_encoder/batch_topk/fused/exp32_k64_seed0/feature_report.json \\
-        --out-path       outputs/redesign/sae/feature_xref_consensus.json
+        --trained-report outputs/canonical/sae/batch_topk/fused/exp32_k64_seed0/feature_report.json \\
+        --random-report  outputs/canonical/sae/random_encoder/batch_topk/fused/exp32_k64_seed0/feature_report.json \\
+        --out-path       outputs/canonical/sae/feature_xref_consensus.json
 """
 from __future__ import annotations
 

@@ -15,7 +15,7 @@ monkey-patch ``forward`` on the loaded *instance* (not the class) so the
 canonical source remains unchanged. The canonical pathology_attention path is
 read-only at attribution time.
 
-Output (default ``outputs/redesign/interpretability/attention_attribution/``):
+Output (default ``outputs/canonical/interpretability/attention_attribution/``):
   - per_subject_attribution.npz       — keys: subject_ids [N], attnlrp [N, C],
                                           gmar [N, C], gaf_af [N, C], gaf_gf [N, C],
                                           gaf_agf [N, C], fold [N]
@@ -28,8 +28,8 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/resdec_mhe/interpretability/run_attention_attribution.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --out-dir outputs/redesign/interpretability/attention_attribution
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
+        --out-dir outputs/canonical/interpretability/attention_attribution
 """
 from __future__ import annotations
 

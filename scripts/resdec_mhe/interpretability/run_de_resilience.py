@@ -5,7 +5,7 @@ splits subjects into resilient (top quartile of residual) vs vulnerable
 (bottom quartile), and runs DE per cell type via either Wilcoxon (default,
 fast) or pydeseq2 (--method deseq2, slower).
 
-Outputs (in --out-dir, default outputs/redesign/interpretability/de_resilient_vs_vulnerable/):
+Outputs (in --out-dir, default outputs/canonical/interpretability/de_resilient_vs_vulnerable/):
   - per-CT CSV: <celltype>_de.csv with columns from src.analysis.de_resilience
   - cross-CT summary: top_genes_per_ct.csv (top-20 sig genes per CT, padj<0.05)
   - provenance.json: run config + inputs + n subjects per group + git SHA
@@ -44,17 +44,17 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
     )
     p.add_argument("--precomputed-dir", default="data/precomputed")
     p.add_argument("--gene-names-npy", default="data/precomputed/gene_names.npy")
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/de_resilient_vs_vulnerable",
+        default="outputs/canonical/interpretability/de_resilient_vs_vulnerable",
     )
     p.add_argument(
         "--cell-type-names-source",
-        default="outputs/redesign/interpretability/captum_ig/composite_attribution_summary.json",
+        default="outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json",
         help="JSON containing cell_types_ranked_by_total_attribution.",
     )
     p.add_argument("--method", choices=["wilcoxon", "deseq2"], default="wilcoxon")

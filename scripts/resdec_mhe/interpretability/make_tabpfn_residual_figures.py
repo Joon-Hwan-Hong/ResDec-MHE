@@ -1,14 +1,14 @@
 """Render TabPFN-residual decomposition figures (4 candidates) for §4d.
 
 Loads canonical 5-fold predictions:
-  - outputs/redesign/p5_canonical_seed42/fold{0..4}/val_predictions_best.npz
+  - outputs/canonical/p5_canonical_seed42/fold{0..4}/val_predictions_best.npz
     (provides predictions = f̂_residual, targets = y_true, subject_ids)
-  - data/redesign/tabpfn_outer_fold{0..4}.npz
+  - data/canonical/tabpfn_outer_fold{0..4}.npz
     (provides y_tabpfn = outer-fold TabPFN baseline)
-  - outputs/redesign/interpretability/variance_decomposition.json (var components)
-  - outputs/redesign/interpretability/residual_per_subject.csv (pathology covariates)
+  - outputs/canonical/interpretability/variance_decomposition.json (var components)
+  - outputs/canonical/interpretability/residual_per_subject.csv (pathology covariates)
 
-Renders 4 candidate figures to outputs/redesign/interpretability/figures/tabpfn_residual/:
+Renders 4 candidate figures to outputs/canonical/interpretability/figures/tabpfn_residual/:
   - fig_additive_3panel.{png,pdf}        — y vs TabPFN + y vs composite + residual hist
   - fig_variance_partition_bar.{png,pdf} — stacked-bar variance decomposition
   - fig_per_subject_delta_scatter.{png,pdf} — residual vs TabPFN colored by pathology
@@ -76,21 +76,21 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--pred-root",
-        default="outputs/redesign/p5_canonical_seed42",
+        default="outputs/canonical/p5_canonical_seed42",
     )
-    p.add_argument("--tabpfn-root", default="data/redesign")
+    p.add_argument("--tabpfn-root", default="data/canonical")
     p.add_argument(
         "--variance-decomposition-json",
-        default="outputs/redesign/interpretability/variance_decomposition.json",
+        default="outputs/canonical/interpretability/variance_decomposition.json",
     )
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
         help="Provides per-subject pathology covariates (gpath, etc.).",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/tabpfn_residual",
+        default="outputs/canonical/interpretability/figures/tabpfn_residual",
     )
     p.add_argument("--n-folds", type=int, default=5)
     args = p.parse_args()

@@ -13,14 +13,14 @@
 # Smoke (1 fold × 1 λ × 1 epoch, ~2 min) for plumbing verification:
 #   SMOKE=1 bash scripts/resdec_mhe/training/run_entropy_reg_sweep.sh
 #
-# Output goes to outputs/redesign/p5_entropy_reg/lambda_<λ>/fold<N>/
+# Output goes to outputs/canonical/p5_entropy_reg/lambda_<λ>/fold<N>/
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../" && pwd)"
 cd "$WORKTREE_ROOT"
 
-OUT_ROOT="${OUT_ROOT:-outputs/redesign/p5_entropy_reg}"
+OUT_ROOT="${OUT_ROOT:-outputs/canonical/p5_entropy_reg}"
 LAMBDAS=(0 0.001 0.01 0.1 1.0)
 FOLDS=(0 1 2 3 4)
 

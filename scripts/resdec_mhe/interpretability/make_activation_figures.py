@@ -90,14 +90,14 @@ def main():
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument("--fold", type=int, default=0)
     p.add_argument(
-        "--canonical-dir", default="outputs/redesign/p5_canonical_seed42",
+        "--canonical-dir", default="outputs/canonical/p5_canonical_seed42",
     )
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--device", default="cpu",
                    help="'cpu' (default) or 'cuda:0' etc.")
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/activation",
+        default="outputs/canonical/interpretability/figures/activation",
     )
     p.add_argument(
         "--max-val-subjects", type=int, default=48,

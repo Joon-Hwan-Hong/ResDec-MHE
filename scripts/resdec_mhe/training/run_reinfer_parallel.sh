@@ -6,21 +6,21 @@
 # Env overrides (all optional):
 #   CONFIG       phase YAML (default: configs/resdec_mhe/canonical.yaml)
 #   OUTROOT      output dir to read ckpts from + write best.npz to
-#                (default: outputs/redesign/p5_phase2_residual)
+#                (default: outputs/canonical/p5_phase2_residual)
 #   TABPFN_DIR   directory holding tabpfn_outer_fold{N}*.npz files for
-#                the comparison summary (default: data/redesign)
+#                the comparison summary (default: data/canonical)
 #   N_GPUS       number of GPUs (default: all visible)
 #   GPU_LIST     comma-separated GPU list, e.g. "0,1"
 #
 # Usage:
 #   bash scripts/resdec_mhe/training/run_reinfer_parallel.sh
-#   OUTROOT=outputs/redesign/<your_run> bash scripts/resdec_mhe/training/run_reinfer_parallel.sh
+#   OUTROOT=outputs/canonical/<your_run> bash scripts/resdec_mhe/training/run_reinfer_parallel.sh
 set -euo pipefail
 
 ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
 CONFIG="${CONFIG:-configs/resdec_mhe/canonical.yaml}"
-OUTROOT="${OUTROOT:-outputs/redesign/p5_phase2_residual}"
-TABPFN_DIR="${TABPFN_DIR:-data/redesign}"
+OUTROOT="${OUTROOT:-outputs/canonical/p5_phase2_residual}"
+TABPFN_DIR="${TABPFN_DIR:-data/canonical}"
 FOLDS=(0 1 2 3 4)
 
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"

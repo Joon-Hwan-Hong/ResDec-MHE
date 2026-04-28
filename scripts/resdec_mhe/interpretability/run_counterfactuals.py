@@ -146,17 +146,17 @@ def main():
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument("--fold", type=int, default=0)
     p.add_argument(
-        "--canonical-dir", default="outputs/redesign/p5_canonical_seed42",
+        "--canonical-dir", default="outputs/canonical/p5_canonical_seed42",
     )
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
     )
     p.add_argument("--device", default="cuda:0")
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/counterfactuals",
+        default="outputs/canonical/interpretability/counterfactuals",
     )
     p.add_argument("--n-resilient", type=int, default=10)
     p.add_argument("--n-vulnerable", type=int, default=10)

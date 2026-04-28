@@ -13,7 +13,7 @@ in our PyTorch graph). IG on f̂_1 isolates **what the encoder + head learned to
 contribute on top of TabPFN** — exactly the biologically interpretable signal
 unique to our architecture.
 
-Output (default ``outputs/redesign/interpretability/``):
+Output (default ``outputs/canonical/interpretability/``):
   - composite_attributions.npz       — keys: subject_ids [N], attributions [N, C, G],
                                         predictions_residual [N], folds [N]
   - composite_attribution_summary.json
@@ -26,8 +26,8 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/resdec_mhe/interpretability/captum_composite_attribution.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --out-dir outputs/redesign/interpretability \\
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
+        --out-dir outputs/canonical/interpretability \\
         --n-steps 50 --internal-batch-size 4
 
 Arguments
@@ -291,7 +291,7 @@ def _load_gene_names(precomputed_dir: Path, n_genes: int) -> list[str]:
     candidates = [precomputed_dir / "gene_names.npy",
                   precomputed_dir / "gene_names.json",
                   precomputed_dir / "feature_names.json",
-                  Path("data/redesign/gene_names.json")]
+                  Path("data/canonical/gene_names.json")]
     for p in candidates:
         if not p.exists():
             continue
@@ -381,9 +381,9 @@ def main(args: argparse.Namespace) -> int:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Captum IG composite attribution.")
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
-    p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42")
+    p.add_argument("--pred-root", default="outputs/canonical/p5_canonical_seed42")
     p.add_argument("--splits-path", default="outputs/splits.json")
-    p.add_argument("--out-dir", default="outputs/redesign/interpretability")
+    p.add_argument("--out-dir", default="outputs/canonical/interpretability")
     p.add_argument("--n-steps", type=int, default=50)
     p.add_argument("--internal-batch-size", type=int, default=4)
     p.add_argument("--top-k", type=int, default=50)

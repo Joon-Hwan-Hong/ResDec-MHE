@@ -5,7 +5,7 @@ baseline and every ResDec-MHE ablation into a single CSV + Markdown table.
 
 Sources
 -------
-- TabPFN-2.6 standalone    : ``data/redesign/tabpfn_outer_fold{0..4}.npz``
+- TabPFN-2.6 standalone    : ``data/canonical/tabpfn_outer_fold{0..4}.npz``
   (per-fold R² computed via ``src.analysis.resdec_io.compute_per_fold_r2_tabpfn``;
   other metrics computed on the fly from y_true / y_tabpfn).
 - Classical baselines      : ``outputs/pipeline/baseline_results_classical.csv``
@@ -13,7 +13,7 @@ Sources
   (model, feature_set) pair).
 - DL baselines             : ``outputs/baselines/<name>/results.csv`` for
   cloudpred, cloudpred_pertype, gpio, perceiver_io (folds 1..5).
-- Our canonical + ablations: ``outputs/redesign/p5_*/best_vs_tabpfn_summary.json``
+- Our canonical + ablations: ``outputs/canonical/p5_*/best_vs_tabpfn_summary.json``
   (per-fold ours.{r2, mae, rmse, pearson_r, spearman_rho}).
 
 Missing baselines or missing ablations yield a NaN row with an explanatory
@@ -29,12 +29,12 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/resdec_mhe/interpretability/make_baseline_table.py \\
-        --canonical-dir outputs/redesign/p5_canonical_seed42 \\
-        --ablation-root outputs/redesign \\
+        --canonical-dir outputs/canonical/p5_canonical_seed42 \\
+        --ablation-root outputs/canonical \\
         --baselines-root outputs/baselines \\
         --classical-csv outputs/pipeline/baseline_results_classical.csv \\
-        --tabpfn-dir data/redesign \\
-        --out-dir outputs/redesign/interpretability
+        --tabpfn-dir data/canonical \\
+        --out-dir outputs/canonical/interpretability
 """
 from __future__ import annotations
 
@@ -815,11 +815,11 @@ def _compute_provenance(args: argparse.Namespace) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--canonical-dir", type=Path,
-                   default=Path("outputs/redesign/p5_canonical_seed42"),
+                   default=Path("outputs/canonical/p5_canonical_seed42"),
                    help="Canonical model output dir (must contain "
                         "best_vs_tabpfn_summary.json).")
     p.add_argument("--ablation-root", type=Path,
-                   default=Path("outputs/redesign"),
+                   default=Path("outputs/canonical"),
                    help="Root holding p5_* ablation dirs.")
     p.add_argument("--baselines-root", type=Path,
                    default=Path("outputs/baselines"),
@@ -827,10 +827,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--classical-csv", type=Path,
                    default=Path("outputs/pipeline/baseline_results_classical.csv"),
                    help="Classical baselines CSV (Ridge/ElasticNet/PLS/RF/XGBoost).")
-    p.add_argument("--tabpfn-dir", type=Path, default=Path("data/redesign"),
+    p.add_argument("--tabpfn-dir", type=Path, default=Path("data/canonical"),
                    help="Directory with tabpfn_outer_fold{0..4}.npz files.")
     p.add_argument("--out-dir", type=Path,
-                   default=Path("outputs/redesign/interpretability"),
+                   default=Path("outputs/canonical/interpretability"),
                    help="Output directory for the CSV + MD files.")
     p.add_argument("--n-folds", type=int, default=5,
                    help="Number of outer CV folds (default 5).")

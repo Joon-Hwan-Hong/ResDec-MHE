@@ -35,19 +35,19 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--cmi-point",
-        default="outputs/redesign/interpretability/conditional_mi_per_celltype_raw_max.json",
+        default="outputs/canonical/interpretability/conditional_mi_per_celltype_raw_max.json",
     )
     p.add_argument(
         "--biased-bootstrap",
-        default="outputs/redesign/interpretability/ct_ranking_nulls/cmi_bootstrap_ci.json",
+        default="outputs/canonical/interpretability/ct_ranking_nulls/cmi_bootstrap_ci.json",
     )
     p.add_argument(
         "--biasfree-bootstrap",
-        default="outputs/redesign/interpretability/ct_ranking_nulls/cmi_subsample_bootstrap_ci.json",
+        default="outputs/canonical/interpretability/ct_ranking_nulls/cmi_subsample_bootstrap_ci.json",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/cmi_bias",
+        default="outputs/canonical/interpretability/figures/cmi_bias",
     )
     p.add_argument("--top-n", type=int, default=10,
                    help="Number of CTs (sorted by observed CMI) to plot.")

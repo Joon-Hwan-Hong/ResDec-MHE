@@ -564,7 +564,7 @@ class ResDecLightningModule(pl.LightningModule):
                 except Exception:
                     log_dir = None
                 if log_dir is None:
-                    log_dir = Path("outputs/redesign/val_predictions")
+                    log_dir = Path("outputs/canonical/val_predictions")
                 log_dir.mkdir(parents=True, exist_ok=True)
                 _np.savez(
                     log_dir / "val_predictions_final.npz",

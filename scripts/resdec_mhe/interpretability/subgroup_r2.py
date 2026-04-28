@@ -16,10 +16,10 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/resdec_mhe/interpretability/subgroup_r2.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --tabpfn-dir data/redesign \\
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
+        --tabpfn-dir data/canonical \\
         --metadata-csv data/metadata_ROSMAP/metadata.csv \\
-        --out-dir outputs/redesign/interpretability
+        --out-dir outputs/canonical/interpretability
 
 Outputs ``<out-dir>/subgroup_metrics.json`` + ``<out-dir>/subgroup_metrics_table.csv``.
 """
@@ -280,11 +280,11 @@ if __name__ == "__main__":
         description="Subgroup stratified metrics for ResDec-MHE composite predictions.",
     )
     p.add_argument(
-        "--pred-root", default="outputs/redesign/p5_canonical_seed42",
+        "--pred-root", default="outputs/canonical/p5_canonical_seed42",
         help="Directory containing fold{0..N-1}/val_predictions_best.npz",
     )
     p.add_argument(
-        "--tabpfn-dir", default="data/redesign",
+        "--tabpfn-dir", default="data/canonical",
         help="Directory containing tabpfn_outer_fold{0..N-1}.npz",
     )
     p.add_argument(
@@ -292,7 +292,7 @@ if __name__ == "__main__":
         help="ROSMAP metadata CSV with apoe_genotype / msex / age_death / gpath columns",
     )
     p.add_argument(
-        "--out-dir", default="outputs/redesign/interpretability",
+        "--out-dir", default="outputs/canonical/interpretability",
         help="Output directory (will be created if missing)",
     )
     p.add_argument(

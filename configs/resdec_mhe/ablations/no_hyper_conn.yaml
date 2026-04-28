@@ -34,5 +34,5 @@ data:
   dataloader:
     batch_size: 24
   use_cached_embeddings: false
-  tabpfn_oof_dir: data/redesign
-  tabpfn_outer_dir: data/redesign
+  tabpfn_oof_dir: data/canonical
+  tabpfn_outer_dir: data/canonical

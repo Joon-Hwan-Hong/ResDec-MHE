@@ -31,11 +31,11 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--ccc-edge-csv",
-        default="outputs/redesign/interpretability/ccc/ccc_edge_attention.csv",
+        default="outputs/canonical/interpretability/ccc/ccc_edge_attention.csv",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/architecture",
+        default="outputs/canonical/interpretability/figures/architecture",
     )
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO,

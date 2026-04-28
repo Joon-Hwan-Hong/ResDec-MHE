@@ -20,7 +20,7 @@ For each fold:
    mass and dividing by total edge count), which aligns with LIANA's pair-level
    score that does not split by edge type.
 
-Outputs (default ``outputs/redesign/interpretability/ccc/``):
+Outputs (default ``outputs/canonical/interpretability/ccc/``):
 
 - ``ccc_importance.json``       — baseline / ablated R² per fold + aggregated
                                   per-edge-type attention + LIANA correlation.
@@ -38,9 +38,9 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/resdec_mhe/interpretability/ccc_composite_attribution.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
         --liana-dir data/liana_cache/rosmap \\
-        --out-dir outputs/redesign/interpretability/ccc
+        --out-dir outputs/canonical/interpretability/ccc
 
 ``--tabpfn-dir`` is no longer a CLI arg — the TabPFN outer cache path is read
 from ``cfg.data.tabpfn_outer_dir`` and recorded in the provenance block.
@@ -505,10 +505,10 @@ def _jsonify(o):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="5-fold CCC interpretability sweep")
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
-    p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42")
+    p.add_argument("--pred-root", default="outputs/canonical/p5_canonical_seed42")
     p.add_argument("--liana-dir", default="data/liana_cache/rosmap")
     p.add_argument("--splits-path", default="outputs/splits.json")
-    p.add_argument("--out-dir", default="outputs/redesign/interpretability/ccc")
+    p.add_argument("--out-dir", default="outputs/canonical/interpretability/ccc")
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument(
         "--liana-score-col",

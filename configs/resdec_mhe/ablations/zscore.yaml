@@ -35,5 +35,5 @@ data:
   use_cached_embeddings: false
   # Point at the z-scored TabPFN residual + outer caches produced by the
   # z-score pipeline (top-k=2000, same as canonical, only difference is --zscore).
-  tabpfn_oof_dir: data/redesign/zscore
-  tabpfn_outer_dir: data/redesign/zscore
+  tabpfn_oof_dir: data/canonical/zscore
+  tabpfn_outer_dir: data/canonical/zscore

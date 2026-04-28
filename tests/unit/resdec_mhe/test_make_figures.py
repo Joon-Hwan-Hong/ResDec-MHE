@@ -50,7 +50,7 @@ def mock_baseline_table() -> pd.DataFrame:
             "mae_mean": 0.7, "mae_std": 0.04, "rmse_mean": 0.9, "rmse_std": 0.06,
             "pearson_mean": 0.64, "pearson_std": 0.07,
             "spearman_mean": 0.61, "spearman_std": 0.04,
-            "source_path": "data/redesign", "notes": "",
+            "source_path": "data/canonical", "notes": "",
         },
         {
             "model": "p5_canonical_seed42",
@@ -61,7 +61,7 @@ def mock_baseline_table() -> pd.DataFrame:
             "mae_mean": 0.67, "mae_std": 0.05, "rmse_mean": 0.86, "rmse_std": 0.06,
             "pearson_mean": 0.67, "pearson_std": 0.07,
             "spearman_mean": 0.66, "spearman_std": 0.05,
-            "source_path": "outputs/redesign/p5_canonical_seed42",
+            "source_path": "outputs/canonical/p5_canonical_seed42",
             "notes": "",
         },
         {
@@ -74,7 +74,7 @@ def mock_baseline_table() -> pd.DataFrame:
             "rmse_mean": float("nan"), "rmse_std": float("nan"),
             "pearson_mean": float("nan"), "pearson_std": float("nan"),
             "spearman_mean": float("nan"), "spearman_std": float("nan"),
-            "source_path": "outputs/redesign/p5_ablation_topk_4000",
+            "source_path": "outputs/canonical/p5_ablation_topk_4000",
             "notes": "pending: ablation not yet complete",
         },
     ])

@@ -1,6 +1,6 @@
 """Orchestrator: run resilient-vs-vulnerable analyses on canonical artefacts.
 
-Subcommands (each writes a JSON to outputs/redesign/interpretability/):
+Subcommands (each writes a JSON to outputs/canonical/interpretability/):
 
     latent_class            — Gaussian mixture on per-subject residuals
                               (BIC + AIC; tests whether resilience is
@@ -21,11 +21,11 @@ Subcommands (each writes a JSON to outputs/redesign/interpretability/):
                               tangles).
 
 Inputs (defaults; overridable via CLI):
-  --canonical-dir   outputs/redesign/p5_canonical_seed42
-  --captum-npz      outputs/redesign/interpretability/captum_ig/composite_attributions.npz
-  --residual-csv    outputs/redesign/interpretability/residual_per_subject.csv
+  --canonical-dir   outputs/canonical/p5_canonical_seed42
+  --captum-npz      outputs/canonical/interpretability/captum_ig/composite_attributions.npz
+  --residual-csv    outputs/canonical/interpretability/residual_per_subject.csv
   --metadata-csv    data/metadata_ROSMAP/metadata.csv
-  --out-dir         outputs/redesign/interpretability/
+  --out-dir         outputs/canonical/interpretability/
 
 Note on attribution-as-proxy: these analyses operate on Captum attributions
 (what the MODEL says is important) rather than on raw pseudobulk. This is
@@ -320,19 +320,19 @@ def cmd_cmi(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
-        "--canonical-dir", default="outputs/redesign/p5_canonical_seed42",
+        "--canonical-dir", default="outputs/canonical/p5_canonical_seed42",
     )
     p.add_argument(
         "--captum-npz",
-        default="outputs/redesign/interpretability/captum_ig/composite_attributions.npz",
+        default="outputs/canonical/interpretability/captum_ig/composite_attributions.npz",
     )
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
     )
     p.add_argument("--metadata-csv", default="data/metadata_ROSMAP/metadata.csv")
     p.add_argument(
-        "--out-dir", default="outputs/redesign/interpretability",
+        "--out-dir", default="outputs/canonical/interpretability",
     )
     p.add_argument("--seed", type=int, default=42)
 

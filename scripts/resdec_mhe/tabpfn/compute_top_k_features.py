@@ -120,7 +120,7 @@ if __name__ == "__main__":
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--precomputed-dir", default="data/precomputed")
     p.add_argument("--metadata-csv", default="data/metadata_ROSMAP/metadata.csv")
-    p.add_argument("--output-dir", default="data/redesign")
+    p.add_argument("--output-dir", default="data/canonical")
     p.add_argument("--top-k", type=int, default=2000)
     p.add_argument(
         "--feature-set",

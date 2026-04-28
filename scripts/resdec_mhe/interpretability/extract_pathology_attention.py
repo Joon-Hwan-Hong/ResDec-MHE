@@ -5,7 +5,7 @@ subjects, and captures ``enc_out["attention_weights"]`` of shape
 ``[B, n_heads, n_cell_types]`` from the encoder's PathologyStratifiedAttention
 module. Stacks across all 5 folds → 516 subjects × n_heads × 31 cell types.
 
-Outputs (default ``outputs/redesign/interpretability/``):
+Outputs (default ``outputs/canonical/interpretability/``):
   - pathology_attention_per_subject.npz  — keys: subject_ids [N], attention [N, H, C], fold [N]
   - pathology_attention_summary.json     — mean / std attention per (head, cell_type),
                                             + top-5 cell-types by mean attention.
@@ -15,8 +15,8 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/resdec_mhe/interpretability/extract_pathology_attention.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --out-dir outputs/redesign/interpretability
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
+        --out-dir outputs/canonical/interpretability
 
 Arguments
 ---------
@@ -206,8 +206,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Extract PathologyAttention weights.")
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml",
                    help="Phase YAML merged on top of configs/default.yaml.")
-    p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42",
+    p.add_argument("--pred-root", default="outputs/canonical/p5_canonical_seed42",
                    help="Per-fold output dir with fold{0..4}/checkpoints/best-*.ckpt.")
     p.add_argument("--splits-path", default="outputs/splits.json")
-    p.add_argument("--out-dir", default="outputs/redesign/interpretability")
+    p.add_argument("--out-dir", default="outputs/canonical/interpretability")
     sys.exit(main(p.parse_args()))

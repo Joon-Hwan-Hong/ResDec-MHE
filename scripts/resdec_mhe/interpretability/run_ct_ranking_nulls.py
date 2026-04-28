@@ -17,7 +17,7 @@ Three sub-analyses run in parallel:
    the rank-of-Splatter claim under sampling variability.
 
 Output:
-   ``outputs/redesign/interpretability/ct_ranking_nulls/{loco_ranking_null.json, wasserstein_perm_pvalues_per_ct_top20.csv, cmi_bootstrap_ci.json, summary.json}``.
+   ``outputs/canonical/interpretability/ct_ranking_nulls/{loco_ranking_null.json, wasserstein_perm_pvalues_per_ct_top20.csv, cmi_bootstrap_ci.json, summary.json}``.
 """
 from __future__ import annotations
 
@@ -257,15 +257,15 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--loco-json",
-        default="outputs/redesign/interpretability/loco_zero_out/loco_per_celltype.json",
+        default="outputs/canonical/interpretability/loco_zero_out/loco_per_celltype.json",
     )
     p.add_argument(
         "--coverage-json",
-        default="outputs/redesign/interpretability/ct_coverage_full_cohort.json",
+        default="outputs/canonical/interpretability/ct_coverage_full_cohort.json",
     )
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
     )
     p.add_argument("--precomputed-dir", default="data/precomputed")
     p.add_argument("--gene-names-npy", default="data/precomputed/gene_names.npy")
@@ -275,17 +275,17 @@ def main() -> int:
     )
     p.add_argument(
         "--pred-root",
-        default="outputs/redesign/p5_canonical_seed42",
+        default="outputs/canonical/p5_canonical_seed42",
         help="Per-fold predictions root used by cmi_bootstrap to load val_predictions_best.npz",
     )
     p.add_argument(
         "--tabpfn-dir",
-        default="data/redesign",
+        default="data/canonical",
         help="Directory containing tabpfn_outer_fold{0..4}.npz (cmi_bootstrap only)",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/ct_ranking_nulls",
+        default="outputs/canonical/interpretability/ct_ranking_nulls",
     )
     p.add_argument("--n-perms", type=int, default=1000)
     p.add_argument("--n-boot", type=int, default=200)

@@ -11,7 +11,7 @@ Calls three functions from ``src.visualization.distributional_plots``:
   - ``plot_stability_selection_bar``
 
 Outputs to ``--out-dir`` (default
-``outputs/redesign/interpretability/figures/distributional``).
+``outputs/canonical/interpretability/figures/distributional``).
 """
 from __future__ import annotations
 
@@ -42,22 +42,22 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--wasserstein-json",
-        default="outputs/redesign/interpretability/distributional_resilience/"
+        default="outputs/canonical/interpretability/distributional_resilience/"
         "wasserstein_per_celltype_pseudobulk.json",
     )
     p.add_argument(
         "--stability-json",
-        default="outputs/redesign/interpretability/distributional_resilience/"
+        default="outputs/canonical/interpretability/distributional_resilience/"
         "stability_selection_pseudobulk.json",
     )
     p.add_argument(
         "--de-concordance-csv",
-        default="outputs/redesign/interpretability/"
+        default="outputs/canonical/interpretability/"
         "de_wilcoxon_vs_deseq2_topK.csv",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/distributional",
+        default="outputs/canonical/interpretability/figures/distributional",
     )
     args = p.parse_args()
 

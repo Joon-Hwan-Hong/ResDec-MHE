@@ -62,7 +62,7 @@ def _write_summary_json(path: Path, per_fold_r2s: list[float]) -> None:
     path.write_text(json.dumps({
         "per_fold": per_fold,
         "outroot": str(path.parent),
-        "tabpfn_dir": "data/redesign",
+        "tabpfn_dir": "data/canonical",
     }))
 
 

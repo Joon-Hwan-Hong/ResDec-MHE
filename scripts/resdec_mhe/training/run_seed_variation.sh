@@ -5,7 +5,7 @@
 #
 # Env overrides (all optional):
 #   SEEDS         space-separated list of seeds (default: "67 21 2000 426")
-#   OUT_BASE      parent dir for per-seed output dirs (default: outputs/redesign)
+#   OUT_BASE      parent dir for per-seed output dirs (default: outputs/canonical)
 #   CONFIG        phase YAML (passed through to run_5fold_parallel.sh)
 #   N_GPUS        number of GPUs to use per seed (passed through)
 #   GPU_LIST      comma-separated GPU list (passed through)
@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 
 SEEDS="${SEEDS:-67 21 2000 426}"
-OUT_BASE="${OUT_BASE:-outputs/redesign}"
+OUT_BASE="${OUT_BASE:-outputs/canonical}"
 LOG_DIR="${OUT_BASE}/seed_variation_logs"
 
 mkdir -p "$LOG_DIR"

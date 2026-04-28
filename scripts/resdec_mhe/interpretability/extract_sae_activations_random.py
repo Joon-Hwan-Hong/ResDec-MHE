@@ -24,7 +24,7 @@ This script is the FIRST half of the null pipeline:
 4. Capture both ``attended`` ``[B, d_fused=64]`` (post-PathologyStratifiedAttention,
    ``full_model.py:547``) and ``fused`` ``[B, 31, d_fused=64]`` (post-FusionLayer,
    ``full_model.py:534``) — same layers as ``extract_sae_activations.py``.
-5. Persist as ``outputs/redesign/sae/random_encoder/activations_{layer}_seed{S}.npz``.
+5. Persist as ``outputs/canonical/sae/random_encoder/activations_{layer}_seed{S}.npz``.
 
 Note: unlike ``extract_sae_activations.py`` (which iterates over 5 fold
 checkpoints and concatenates 5 × 516 ≈ 2580 rows), this script forwards all
@@ -40,7 +40,7 @@ Usage
     CUDA_VISIBLE_DEVICES=1 \\
     uv run python scripts/resdec_mhe/interpretability/extract_sae_activations_random.py \\
         --config configs/resdec_mhe/canonical.yaml \\
-        --out-dir outputs/redesign/sae/random_encoder \\
+        --out-dir outputs/canonical/sae/random_encoder \\
         --layers attended fused \\
         --seed 0
 
@@ -102,7 +102,7 @@ def main() -> int:
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/sae/random_encoder",
+        default="outputs/canonical/sae/random_encoder",
         help="Destination directory for activation .npz files.",
     )
     p.add_argument(

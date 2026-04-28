@@ -2,13 +2,13 @@
 the first step of divergence and the signal that diverged first.
 
 Reads:
-    outputs/redesign/p5_diff_test_mechanism/canonical/trajectory.jsonl
-    outputs/redesign/p5_diff_test_mechanism/canonical/step1_tensors.pt
-    outputs/redesign/p5_diff_test_mechanism/diff_test/trajectory.jsonl
-    outputs/redesign/p5_diff_test_mechanism/diff_test/step1_tensors.pt
+    outputs/canonical/p5_diff_test_mechanism/canonical/trajectory.jsonl
+    outputs/canonical/p5_diff_test_mechanism/canonical/step1_tensors.pt
+    outputs/canonical/p5_diff_test_mechanism/diff_test/trajectory.jsonl
+    outputs/canonical/p5_diff_test_mechanism/diff_test/step1_tensors.pt
 
 Writes:
-    outputs/redesign/p5_diff_test_mechanism/comparison_report.json
+    outputs/canonical/p5_diff_test_mechanism/comparison_report.json
 """
 from __future__ import annotations
 
@@ -383,6 +383,6 @@ if __name__ == "__main__":
     )
     p.add_argument(
         "--output-path",
-        default="outputs/redesign/p5_diff_test_mechanism/comparison_report.json",
+        default="outputs/canonical/p5_diff_test_mechanism/comparison_report.json",
     )
     main(p.parse_args())

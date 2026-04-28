@@ -11,7 +11,7 @@ as a proxy for composite predictive uncertainty (documented in output).
 Baseline discovery
 ------------------
 1. **TabPFN-2.6 standalone (required)**: per-fold R² computed on the fly
-   from ``data/redesign/tabpfn_outer_fold{0..4}.npz`` using
+   from ``data/canonical/tabpfn_outer_fold{0..4}.npz`` using
    ``sklearn.metrics.r2_score(y_true, y_tabpfn)``. If ANY fold's npz is
    missing, fail loud.
 2. **Other baselines (optional)**: glob ``<baselines-root>/*/results.csv``;
@@ -22,10 +22,10 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/resdec_mhe/interpretability/paired_tests_and_bootstrap.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --tabpfn-dir data/redesign \\
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
+        --tabpfn-dir data/canonical \\
         --baselines-root outputs/baselines \\
-        --out-dir outputs/redesign/interpretability \\
+        --out-dir outputs/canonical/interpretability \\
         --n-boot 1000 --seed 42
 
 Outputs:
@@ -409,11 +409,11 @@ if __name__ == "__main__":
                     "paired Wilcoxon, bootstrap R² CI, calibration coverage.",
     )
     p.add_argument(
-        "--pred-root", default="outputs/redesign/p5_canonical_seed42",
+        "--pred-root", default="outputs/canonical/p5_canonical_seed42",
         help="Directory containing fold{0..N-1}/val_predictions_best.npz",
     )
     p.add_argument(
-        "--tabpfn-dir", default="data/redesign",
+        "--tabpfn-dir", default="data/canonical",
         help="Directory containing tabpfn_outer_fold{0..N-1}.npz",
     )
     p.add_argument(
@@ -422,7 +422,7 @@ if __name__ == "__main__":
              "(columns: r2, fold).",
     )
     p.add_argument(
-        "--out-dir", default="outputs/redesign/interpretability",
+        "--out-dir", default="outputs/canonical/interpretability",
         help="Output directory (will be created if missing).",
     )
     p.add_argument(

@@ -31,11 +31,11 @@ What this script does instead
 
 Reads
 -----
-``outputs/redesign/interpretability/ct_ranking_nulls/cmi_bootstrap_ci.json``
+``outputs/canonical/interpretability/ct_ranking_nulls/cmi_bootstrap_ci.json``
 
 Writes
 ------
-``outputs/redesign/interpretability/ct_ranking_nulls/cmi_bootstrap_ci_se.json``
+``outputs/canonical/interpretability/ct_ranking_nulls/cmi_bootstrap_ci_se.json``
 """
 from __future__ import annotations
 
@@ -55,11 +55,11 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--in-path",
-        default="outputs/redesign/interpretability/ct_ranking_nulls/cmi_bootstrap_ci.json",
+        default="outputs/canonical/interpretability/ct_ranking_nulls/cmi_bootstrap_ci.json",
     )
     p.add_argument(
         "--out-path",
-        default="outputs/redesign/interpretability/ct_ranking_nulls/cmi_bootstrap_ci_se.json",
+        default="outputs/canonical/interpretability/ct_ranking_nulls/cmi_bootstrap_ci_se.json",
     )
     args = p.parse_args()
 

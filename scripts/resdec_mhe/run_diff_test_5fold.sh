@@ -8,7 +8,7 @@ WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../" && pwd)"
 cd "$WORKTREE_ROOT"
 PYTHONPATH=. export PYTHONPATH
 
-OUT_DIR="${OUT_DIR:-outputs/redesign/p5_diff_test}"
+OUT_DIR="${OUT_DIR:-outputs/canonical/p5_diff_test}"
 mkdir -p "$OUT_DIR"
 
 for f in 0 1 2 3 4; do

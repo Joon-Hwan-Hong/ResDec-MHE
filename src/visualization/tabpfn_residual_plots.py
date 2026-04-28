@@ -4,7 +4,7 @@ Composite prediction: ŷ_composite = ŷ_TabPFN + f̂_residual
 
 These figures expose the additive structure that ResDec-MHE relies on:
 the TabPFN base accounts for ~42.5% of Var(y) and the residual head adds
-~4.6% (per outputs/redesign/interpretability/variance_decomposition.json).
+~4.6% (per outputs/canonical/interpretability/variance_decomposition.json).
 
 Four candidate figures (user picks visually after rendering):
 

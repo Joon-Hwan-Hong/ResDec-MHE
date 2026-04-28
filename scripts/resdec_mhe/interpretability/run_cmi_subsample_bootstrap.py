@@ -50,7 +50,7 @@ metadata-csv, pred-root, tabpfn-dir).
 
 Writes
 ------
-``outputs/redesign/interpretability/ct_ranking_nulls/cmi_subsample_bootstrap_ci.json``
+``outputs/canonical/interpretability/ct_ranking_nulls/cmi_subsample_bootstrap_ci.json``
 """
 from __future__ import annotations
 
@@ -257,17 +257,17 @@ def main() -> int:
     )
     p.add_argument(
         "--pred-root",
-        default="outputs/redesign/p5_canonical_seed42",
+        default="outputs/canonical/p5_canonical_seed42",
         help="Per-fold predictions root for val_predictions_best.npz.",
     )
     p.add_argument(
         "--tabpfn-dir",
-        default="data/redesign",
+        default="data/canonical",
         help="Directory containing tabpfn_outer_fold{0..4}.npz.",
     )
     p.add_argument(
         "--out-path",
-        default="outputs/redesign/interpretability/ct_ranking_nulls/cmi_subsample_bootstrap_ci.json",
+        default="outputs/canonical/interpretability/ct_ranking_nulls/cmi_subsample_bootstrap_ci.json",
     )
     p.add_argument("--n-subsample", type=int, default=400)
     p.add_argument("--n-boot", type=int, default=200)

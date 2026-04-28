@@ -15,7 +15,7 @@ Two analyses on the same data:
 
 Both run in parallel across CTs via joblib.
 
-Output: ``outputs/redesign/interpretability/de_storey_and_permutation/{storey_qvalues_per_ct.csv, perm_pvalues_per_ct.csv, summary.json}``.
+Output: ``outputs/canonical/interpretability/de_storey_and_permutation/{storey_qvalues_per_ct.csv, perm_pvalues_per_ct.csv, summary.json}``.
 """
 from __future__ import annotations
 
@@ -168,18 +168,18 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
     )
     p.add_argument("--precomputed-dir", default="data/precomputed")
     p.add_argument("--gene-names-npy", default="data/precomputed/gene_names.npy")
     p.add_argument(
         "--de-input-dir",
-        default="outputs/redesign/interpretability/de_resilient_vs_vulnerable",
+        default="outputs/canonical/interpretability/de_resilient_vs_vulnerable",
         help="Existing per-CT Wilcoxon DE outputs (reads CT_*_de.csv for p-values).",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/de_storey_and_permutation",
+        default="outputs/canonical/interpretability/de_storey_and_permutation",
     )
     p.add_argument("--quartile-fraction", type=float, default=0.25)
     p.add_argument("--n-perms", type=int, default=1000)

@@ -43,10 +43,10 @@ Usage
 
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/resdec_mhe/interpretability/gsea_from_captum.py \\
-        --captum-npz outputs/redesign/interpretability/captum_ig/composite_attributions.npz \\
-        --out-dir outputs/redesign/interpretability/gsea
+        --captum-npz outputs/canonical/interpretability/captum_ig/composite_attributions.npz \\
+        --out-dir outputs/canonical/interpretability/gsea
 
-Outputs (default ``outputs/redesign/interpretability/gsea/``):
+Outputs (default ``outputs/canonical/interpretability/gsea/``):
 
 - ``gsea_<database>_<list_name>.csv`` — per (list, database) top-10 terms.
 - ``gsea_summary.json`` — all (list, database) top-10 terms in one file.
@@ -483,7 +483,7 @@ def _parse_args() -> argparse.Namespace:
         "--captum-npz",
         type=Path,
         default=Path(
-            "outputs/redesign/interpretability/captum_ig/"
+            "outputs/canonical/interpretability/captum_ig/"
             "composite_attributions.npz"
         ),
         help=(
@@ -495,7 +495,7 @@ def _parse_args() -> argparse.Namespace:
         "--captum-summary",
         type=Path,
         default=Path(
-            "outputs/redesign/interpretability/captum_ig/"
+            "outputs/canonical/interpretability/captum_ig/"
             "composite_attribution_summary.json"
         ),
         help="Path to composite_attribution_summary.json.",
@@ -509,7 +509,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("outputs/redesign/interpretability/gsea"),
+        default=Path("outputs/canonical/interpretability/gsea"),
         help="Output directory.",
     )
     p.add_argument(

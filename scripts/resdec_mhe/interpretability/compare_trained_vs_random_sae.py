@@ -43,9 +43,9 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/resdec_mhe/interpretability/compare_trained_vs_random_sae.py \\
-        --trained-dir outputs/redesign/sae/batch_topk/fused/exp32_k64_seed0 \\
-        --random-dir outputs/redesign/sae/random_encoder/batch_topk/fused/exp32_k64_seed0 \\
-        --out outputs/redesign/sae/random_encoder_null_comparison.json
+        --trained-dir outputs/canonical/sae/batch_topk/fused/exp32_k64_seed0 \\
+        --random-dir outputs/canonical/sae/random_encoder/batch_topk/fused/exp32_k64_seed0 \\
+        --out outputs/canonical/sae/random_encoder_null_comparison.json
 """
 from __future__ import annotations
 
@@ -238,7 +238,7 @@ def main() -> int:
     )
     p.add_argument(
         "--out",
-        default="outputs/redesign/sae/random_encoder_null_comparison.json",
+        default="outputs/canonical/sae/random_encoder_null_comparison.json",
         help="Output JSON path.",
     )
     p.add_argument(
@@ -270,7 +270,7 @@ def main() -> int:
     # Sanity: same SAE config? Raise on mismatch — silently comparing
     # across different architectures / expansions / Ks invites apples-to-
     # oranges interpretation. The matched random null at
-    # ``outputs/redesign/sae/random_encoder/batch_topk/fused/exp32_k64_seed0/``
+    # ``outputs/canonical/sae/random_encoder/batch_topk/fused/exp32_k64_seed0/``
     # was built specifically for this comparison.
     cfg_t = trained["metrics"]["config"]
     cfg_r = rand["metrics"]["config"]
@@ -285,7 +285,7 @@ def main() -> int:
             f"Config mismatch between trained and random runs: {cfg_mismatch}. "
             "Run the matching random-encoder SAE at the trained best-config "
             "(architecture / expansion / k) before invoking this comparator. "
-            "See `outputs/redesign/sae/random_encoder/batch_topk/fused/exp32_k64_seed0/` "
+            "See `outputs/canonical/sae/random_encoder/batch_topk/fused/exp32_k64_seed0/` "
             "for the canonical fused null."
         )
 

@@ -233,7 +233,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--num-perms", type=int, default=1)
     p.add_argument("--start-perm", type=int, default=0)
-    p.add_argument("--output-base", default="outputs/redesign/permutation_test")
+    p.add_argument("--output-base", default="outputs/canonical/permutation_test")
     p.add_argument("--base-metadata-csv",
                    default="data/metadata_ROSMAP/metadata.csv")
     p.add_argument("--splits-path", default="outputs/splits.json")

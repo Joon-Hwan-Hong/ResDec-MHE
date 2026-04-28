@@ -28,8 +28,8 @@ Strategy (chosen to be faithful — no silent simplification):
   count < min_cells_threshold = 50).
 
 Outputs:
-- `outputs/redesign/interpretability/splatter_per_subject_heterogeneity.json`
-- `outputs/redesign/interpretability/splatter_per_subject_features.csv`
+- `outputs/canonical/interpretability/splatter_per_subject_heterogeneity.json`
+- `outputs/canonical/interpretability/splatter_per_subject_features.csv`
 """
 
 from __future__ import annotations

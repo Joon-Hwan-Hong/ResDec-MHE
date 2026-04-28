@@ -17,7 +17,7 @@ For each fold, loads the same max-R² ``best-*.ckpt`` and reuses the
 Goal: confirm that the Splatter-dominant + LAMP5-LHX6 / Chandelier secondary
 findings from IG are **robust to attribution-method choice**.
 
-Output (default ``outputs/redesign/interpretability/captum_robustness/``):
+Output (default ``outputs/canonical/interpretability/captum_robustness/``):
   - gradientshap_attributions.npz       — keys: subject_ids [N], attributions
                                           [N, C, G] (float32),
                                           predictions_residual [N], fold [N]
@@ -34,8 +34,8 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/resdec_mhe/interpretability/gradient_shap_smoothgrad_attribution.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --out-dir outputs/redesign/interpretability/captum_robustness \\
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
+        --out-dir outputs/canonical/interpretability/captum_robustness \\
         --n-steps 50 --internal-batch-size 4
 
 Smoke-test mode (single fold, tiny budget)::
@@ -582,10 +582,10 @@ if __name__ == "__main__":
     )
     # Same canonical flags as captum_composite_attribution.py:
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
-    p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42")
+    p.add_argument("--pred-root", default="outputs/canonical/p5_canonical_seed42")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--out-dir",
-                   default="outputs/redesign/interpretability/captum_robustness")
+                   default="outputs/canonical/interpretability/captum_robustness")
     p.add_argument("--n-steps", type=int, default=50,
                    help="IG interpolation steps (used by SmoothGrad's wrapped IG).")
     p.add_argument("--internal-batch-size", type=int, default=4)
@@ -610,7 +610,7 @@ if __name__ == "__main__":
     # Cross-method comparison:
     p.add_argument(
         "--ig-npz-path",
-        default="outputs/redesign/interpretability/captum_ig/composite_attributions.npz",
+        default="outputs/canonical/interpretability/captum_ig/composite_attributions.npz",
         help=("Path to existing IG composite_attributions.npz for 3-way "
               "Spearman comparison. Pass empty string to skip."),
     )

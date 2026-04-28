@@ -278,35 +278,35 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--captum-ig",
-        default="outputs/redesign/interpretability/captum_ig/composite_attribution_summary.json",
+        default="outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json",
     )
     p.add_argument(
         "--gradientshap",
-        default="outputs/redesign/interpretability/captum_robustness/gradientshap_attribution_summary.json",
+        default="outputs/canonical/interpretability/captum_robustness/gradientshap_attribution_summary.json",
     )
     p.add_argument(
         "--smoothgrad",
-        default="outputs/redesign/interpretability/captum_robustness/smoothgrad_attribution_summary.json",
+        default="outputs/canonical/interpretability/captum_robustness/smoothgrad_attribution_summary.json",
     )
     p.add_argument(
         "--attention",
-        default="outputs/redesign/interpretability/attention_attribution/attention_attribution_summary.json",
+        default="outputs/canonical/interpretability/attention_attribution/attention_attribution_summary.json",
     )
     p.add_argument(
         "--wasserstein",
-        default="outputs/redesign/interpretability/wasserstein_per_celltype.json",
+        default="outputs/canonical/interpretability/wasserstein_per_celltype.json",
     )
     p.add_argument(
         "--cmi",
-        default="outputs/redesign/interpretability/conditional_mi_per_celltype_raw_max.json",
+        default="outputs/canonical/interpretability/conditional_mi_per_celltype_raw_max.json",
     )
     p.add_argument(
         "--loco",
-        default="outputs/redesign/interpretability/loco_zero_out/loco_per_celltype.json",
+        default="outputs/canonical/interpretability/loco_zero_out/loco_per_celltype.json",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/consensus_heatmap",
+        default="outputs/canonical/interpretability/figures/consensus_heatmap",
     )
     p.add_argument("--top-n-rows", type=int, default=10,
                    help="Number of rows (CTs) by total top-5 frequency.")

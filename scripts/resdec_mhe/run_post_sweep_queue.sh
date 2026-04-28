@@ -99,7 +99,7 @@ run_job "lambda_0p01_fold3_rerun" \
     "CUDA_VISIBLE_DEVICES=$GATE_GPU uv run python scripts/resdec_mhe/training/train.py \
         --config configs/resdec_mhe/entropy_reg.yaml \
         --fold 3 --reg-weight 0.01 \
-        --output-dir outputs/redesign/p5_entropy_reg/lambda_0p01" \
+        --output-dir outputs/canonical/p5_entropy_reg/lambda_0p01" \
     || log_event "  (continuing despite failure)"
 
 # ─── Job 2: LMO full 5-fold ─────────────────────────────────────────────────
@@ -112,8 +112,8 @@ run_job "lmo_5fold" \
 wait_until_gpu_free "$GATE_GPU" "$MAX_USED_MB"
 run_job "gradshap_smoothgrad_5fold" \
     "CUDA_VISIBLE_DEVICES=$GATE_GPU uv run python scripts/resdec_mhe/interpretability/gradient_shap_smoothgrad_attribution.py \
-        --pred-root outputs/redesign/p5_canonical_seed42 \
-        --out-dir outputs/redesign/interpretability/captum_robustness \
+        --pred-root outputs/canonical/p5_canonical_seed42 \
+        --out-dir outputs/canonical/interpretability/captum_robustness \
         --n-steps 50 --internal-batch-size 4 \
         --gs-n-samples 20 --gs-n-baselines 5 --sg-n-samples 10" \
     || log_event "  (continuing despite failure)"

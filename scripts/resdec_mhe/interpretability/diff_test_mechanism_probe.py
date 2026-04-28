@@ -29,7 +29,7 @@ Usage
     PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 \\
         uv run python scripts/resdec_mhe/interpretability/diff_test_mechanism_probe.py \\
             --config configs/resdec_mhe/canonical.yaml \\
-            --output-dir outputs/redesign/p5_diff_test_mechanism/canonical \\
+            --output-dir outputs/canonical/p5_diff_test_mechanism/canonical \\
             --max-epochs 5
 
 The actual A/B run is two such invocations with different configs (canonical

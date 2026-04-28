@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--canonical-dir", default="outputs/redesign/p5_canonical_seed42")
-    p.add_argument("--tabpfn-dir", default="data/redesign")
+    p.add_argument("--canonical-dir", default="outputs/canonical/p5_canonical_seed42")
+    p.add_argument("--tabpfn-dir", default="data/canonical")
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/prediction",
+        default="outputs/canonical/interpretability/figures/prediction",
     )
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO,

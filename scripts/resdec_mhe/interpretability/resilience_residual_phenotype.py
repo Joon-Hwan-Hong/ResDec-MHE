@@ -13,7 +13,7 @@ Sign convention:
     residual < 0  → subject has WORSE cognition than predicted → "more
                     vulnerable than expected"
 
-Outputs (default ``outputs/redesign/interpretability/``):
+Outputs (default ``outputs/canonical/interpretability/``):
   - residual_per_subject.csv  — full per-subject table (metadata + residual)
   - residual_summary.json     — distribution stats + APOE / sex / age / pathology breakdowns
   - top_resilient.csv         — top-20 largest positive residual (the resilient phenotype)
@@ -23,8 +23,8 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/resdec_mhe/interpretability/resilience_residual_phenotype.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --out-dir outputs/redesign/interpretability
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
+        --out-dir outputs/canonical/interpretability
 
 Arguments
 ---------
@@ -225,8 +225,8 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Residual phenotyping for ResDec-MHE.")
-    p.add_argument("--pred-root", default="outputs/redesign/p5_canonical_seed42",
+    p.add_argument("--pred-root", default="outputs/canonical/p5_canonical_seed42",
                    help="Directory containing fold{0..4}/val_predictions_best.npz")
     p.add_argument("--metadata-csv", default="data/metadata_ROSMAP/metadata.csv")
-    p.add_argument("--out-dir", default="outputs/redesign/interpretability")
+    p.add_argument("--out-dir", default="outputs/canonical/interpretability")
     sys.exit(main(p.parse_args()))

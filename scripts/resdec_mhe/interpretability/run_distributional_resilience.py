@@ -15,11 +15,11 @@ Subcommands (each writes a JSON to ``--out-dir``):
                    threshold in ≥ pi_threshold of resamples).
 
 Inputs (defaults; CLI-overridable):
-    --residual-csv    outputs/redesign/interpretability/residual_per_subject.csv
+    --residual-csv    outputs/canonical/interpretability/residual_per_subject.csv
     --precomputed-dir data/precomputed
     --gene-names-npy  data/precomputed/gene_names.npy
-    --cell-type-names-source outputs/redesign/interpretability/captum_ig/composite_attribution_summary.json
-    --out-dir         outputs/redesign/interpretability/distributional_resilience
+    --cell-type-names-source outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json
+    --out-dir         outputs/canonical/interpretability/distributional_resilience
 
 Provenance JSON lists input paths, quartile config, n_resilient /
 n_vulnerable, seed, and git SHA.
@@ -204,18 +204,18 @@ def main():
     )
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
     )
     p.add_argument("--precomputed-dir", default="data/precomputed")
     p.add_argument("--gene-names-npy", default="data/precomputed/gene_names.npy")
     p.add_argument(
         "--cell-type-names-source",
-        default="outputs/redesign/interpretability/captum_ig/"
+        default="outputs/canonical/interpretability/captum_ig/"
         "composite_attribution_summary.json",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/distributional_resilience",
+        default="outputs/canonical/interpretability/distributional_resilience",
     )
     p.add_argument("--quartile-fraction", type=float, default=0.25)
     # stability-specific:

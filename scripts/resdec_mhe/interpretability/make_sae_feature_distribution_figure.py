@@ -114,16 +114,16 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--feature-report",
-        default="outputs/redesign/sae/batch_topk/fused/exp32_k64_seed0/feature_report.json",
+        default="outputs/canonical/sae/batch_topk/fused/exp32_k64_seed0/feature_report.json",
     )
     p.add_argument(
         "--xref-json",
-        default="outputs/redesign/sae/feature_xref_consensus.json",
+        default="outputs/canonical/sae/feature_xref_consensus.json",
         help="Cross-reference summary; used only to verify N totals.",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/sae_feature_dist",
+        default="outputs/canonical/interpretability/figures/sae_feature_dist",
     )
     args = p.parse_args()
 

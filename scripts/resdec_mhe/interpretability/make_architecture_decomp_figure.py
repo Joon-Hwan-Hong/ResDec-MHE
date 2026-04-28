@@ -113,11 +113,11 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--decomp-json",
-        default="outputs/redesign/interpretability/architecture_vs_regularization_decomposition.json",
+        default="outputs/canonical/interpretability/architecture_vs_regularization_decomposition.json",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/architecture_decomp",
+        default="outputs/canonical/interpretability/figures/architecture_decomp",
     )
     args = p.parse_args()
 

@@ -32,7 +32,7 @@ Design summary (see ``docs/plans/2026-04-28-sparse-autoencoder-design.md``):
   benefit from larger expansion.
 * Sparsity sweep (TopK / Batch-TopK): ``K in {4, 8, 16, 32, 64}``.
 * Training data: 5 canonical-checkpoint encoders × 516 subjects × ``return_embeddings``
-  forward, persisted as ``.npz`` per fold under ``outputs/redesign/sae/``.
+  forward, persisted as ``.npz`` per fold under ``outputs/canonical/sae/``.
 
 DEVIATIONS FROM ORLOV LITERAL EQUATIONS (user-approved):
 
@@ -68,7 +68,7 @@ DEVIATION FROM USER BRIEF (flagged):
 
 * The brief says "load checkpoint via Predictor.from_checkpoint(...)". The
   canonical ResDec-MHE checkpoints under
-  ``outputs/redesign/p5_canonical_seed42/fold{0..4}/checkpoints/`` are saved
+  ``outputs/canonical/p5_canonical_seed42/fold{0..4}/checkpoints/`` are saved
   by ``ResDecLightningModule`` and contain only encoder + head state_dicts —
   no ``full_config`` or ``model_config`` keys, so ``Predictor.from_checkpoint``
   raises ValueError. We use ``ResDecLightningModule.load_from_checkpoint(...)``
@@ -587,7 +587,7 @@ def extract_activations(
     ----------
     checkpoint_paths
         List of (typically 5) paths to ``best-*.ckpt`` files under
-        ``outputs/redesign/p5_canonical_seed42/fold{0..4}/checkpoints/``.
+        ``outputs/canonical/p5_canonical_seed42/fold{0..4}/checkpoints/``.
     layer
         ``"attended"`` (``[B, 64]`` post-PathologyStratifiedAttention,
         ``full_model.py:547``) or ``"fused"`` (``[B, 31, 64]``

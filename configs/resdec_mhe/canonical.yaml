@@ -9,8 +9,8 @@
 # pre-computed .npz files.
 #
 # Cache files are fold-specific:
-#   data/redesign/tabpfn_oof_fold{fold}.npz   — inner-OOF predictions for training
-#   data/redesign/tabpfn_outer_fold{fold}.npz — outer-fold predictions for val
+#   data/canonical/tabpfn_oof_fold{fold}.npz   — inner-OOF predictions for training
+#   data/canonical/tabpfn_outer_fold{fold}.npz — outer-fold predictions for val
 #
 # Design note: this is the LIVE-encoder path (use_cached_embeddings: false) so
 # we train encoder + head end-to-end.
@@ -55,5 +55,5 @@ data:
     batch_size: 24
   use_cached_embeddings: false
   # TabPFN residual cache paths (fold index is filled by train script).
-  tabpfn_oof_dir: data/redesign
-  tabpfn_outer_dir: data/redesign
+  tabpfn_oof_dir: data/canonical
+  tabpfn_outer_dir: data/canonical

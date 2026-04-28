@@ -5,7 +5,7 @@ runs forward over both train + val splits with ``return_embeddings=True``,
 and persists the requested layer activations (``attended`` ``[B, 64]`` and/or
 ``fused`` ``[B, 31, 64]``) per fold + a combined union .npz.
 
-Outputs (default ``outputs/redesign/sae/``):
+Outputs (default ``outputs/canonical/sae/``):
   - activations_attended_fold{f}.npz         per-fold ``attended``
   - activations_attended_all_folds.npz       union (~2580 rows for ``attended``)
   - activations_fused_fold{f}.npz            per-fold ``fused``
@@ -16,8 +16,8 @@ Usage
     PYTHONPATH=<worktree-root> \\
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/resdec_mhe/interpretability/extract_sae_activations.py \\
-        --pred-root outputs/redesign/p5_canonical_seed42 \\
-        --out-dir outputs/redesign/sae \\
+        --pred-root outputs/canonical/p5_canonical_seed42 \\
+        --out-dir outputs/canonical/sae \\
         --layers attended fused
 
 Arguments
@@ -61,7 +61,7 @@ def main() -> int:
     )
     p.add_argument(
         "--pred-root",
-        default="outputs/redesign/p5_canonical_seed42",
+        default="outputs/canonical/p5_canonical_seed42",
         help="Per-fold output dir with fold{0..4}/checkpoints/best-*.ckpt.",
     )
     p.add_argument(
@@ -71,7 +71,7 @@ def main() -> int:
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/sae",
+        default="outputs/canonical/sae",
         help="Destination directory for activation .npz files.",
     )
     p.add_argument(

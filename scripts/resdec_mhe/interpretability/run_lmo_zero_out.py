@@ -291,28 +291,28 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument(
-        "--pred-root", default="outputs/redesign/p5_canonical_seed42",
+        "--pred-root", default="outputs/canonical/p5_canonical_seed42",
         help="Per-fold checkpoint root; expects fold0/checkpoints/ etc.",
     )
-    p.add_argument("--tabpfn-dir", default="data/redesign")
+    p.add_argument("--tabpfn-dir", default="data/canonical")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument("--n-cell-types", type=int, default=31)
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/lmo_zero_out",
+        default="outputs/canonical/interpretability/lmo_zero_out",
     )
     p.add_argument(
         "--coverage-json",
-        default="outputs/redesign/interpretability/ct_coverage_full_cohort.json",
+        default="outputs/canonical/interpretability/ct_coverage_full_cohort.json",
     )
     p.add_argument(
         "--loco-json",
-        default="outputs/redesign/interpretability/loco_zero_out/loco_per_celltype.json",
+        default="outputs/canonical/interpretability/loco_zero_out/loco_per_celltype.json",
     )
     p.add_argument(
         "--captum-summary-json",
-        default="outputs/redesign/interpretability/captum_ig/composite_attribution_summary.json",
+        default="outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json",
     )
     p.add_argument(
         "--ks", default="2,3,5,10",

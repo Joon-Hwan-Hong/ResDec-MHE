@@ -54,15 +54,15 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--cosine-npz",
-        default="outputs/redesign/sae/cross_seed_stability/decoder_cosine_matrices.npz",
+        default="outputs/canonical/sae/cross_seed_stability/decoder_cosine_matrices.npz",
     )
     p.add_argument(
         "--summary-json",
-        default="outputs/redesign/sae/cross_seed_stability/cross_seed_summary.json",
+        default="outputs/canonical/sae/cross_seed_stability/cross_seed_summary.json",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/sae_cross_seed",
+        default="outputs/canonical/interpretability/figures/sae_cross_seed",
     )
     args = p.parse_args()
 

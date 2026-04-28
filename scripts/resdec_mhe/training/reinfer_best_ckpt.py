@@ -22,7 +22,7 @@ Usage:
     uv run python scripts/resdec_mhe/training/reinfer_best_ckpt.py \\
         --config configs/resdec_mhe/canonical.yaml \\
         --fold 0 \\
-        --output-dir outputs/redesign/p5_phase2_residual
+        --output-dir outputs/canonical/p5_phase2_residual
 """
 from __future__ import annotations
 
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Re-infer best-epoch predictions.")
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument("--fold", type=int, required=True)
-    p.add_argument("--output-dir", default="outputs/redesign/p5_phase2_residual")
+    p.add_argument("--output-dir", default="outputs/canonical/p5_phase2_residual")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--precomputed-dir", default=None)
     main(p.parse_args())

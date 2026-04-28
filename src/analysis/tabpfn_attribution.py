@@ -169,7 +169,7 @@ def attribute_tabpfn_fold(
     precomputed_dir: Path = Path("data/precomputed"),
     meta_csv: Path = Path("data/metadata_ROSMAP/metadata.csv"),
     splits_path: Path = Path("outputs/splits.json"),
-    top_k_dir: Path = Path("data/redesign"),
+    top_k_dir: Path = Path("data/canonical"),
     n_val_subjects: int | None = None,
     device: str = "cuda",
     method: str = "feature_ablation",

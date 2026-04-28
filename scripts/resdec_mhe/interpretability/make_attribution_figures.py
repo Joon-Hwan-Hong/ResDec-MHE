@@ -7,11 +7,11 @@ Calls four functions from ``src.visualization.attribution_plots``:
   - per-prediction-quintile attribution heatmap
 
 Inputs (defaults; CLI-overridable):
-  --canonical-dir   outputs/redesign/p5_canonical_seed42
-  --captum-npz      outputs/redesign/interpretability/captum_ig/composite_attributions.npz
-  --residual-csv    outputs/redesign/interpretability/residual_per_subject.csv
-  --tabpfn-dir      data/redesign
-  --out-dir         outputs/redesign/interpretability/figures/attribution
+  --canonical-dir   outputs/canonical/p5_canonical_seed42
+  --captum-npz      outputs/canonical/interpretability/captum_ig/composite_attributions.npz
+  --residual-csv    outputs/canonical/interpretability/residual_per_subject.csv
+  --tabpfn-dir      data/canonical
+  --out-dir         outputs/canonical/interpretability/figures/attribution
 """
 from __future__ import annotations
 
@@ -98,22 +98,22 @@ def _load_gene_names(captum_summary_path: Path) -> list[str] | None:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--canonical-dir", default="outputs/redesign/p5_canonical_seed42")
+    p.add_argument("--canonical-dir", default="outputs/canonical/p5_canonical_seed42")
     p.add_argument(
         "--captum-npz",
-        default="outputs/redesign/interpretability/captum_ig/composite_attributions.npz",
+        default="outputs/canonical/interpretability/captum_ig/composite_attributions.npz",
     )
     p.add_argument(
         "--residual-csv",
-        default="outputs/redesign/interpretability/residual_per_subject.csv",
+        default="outputs/canonical/interpretability/residual_per_subject.csv",
     )
-    p.add_argument("--tabpfn-dir", default="data/redesign")
+    p.add_argument("--tabpfn-dir", default="data/canonical")
     p.add_argument(
-        "--out-dir", default="outputs/redesign/interpretability/figures/attribution",
+        "--out-dir", default="outputs/canonical/interpretability/figures/attribution",
     )
     p.add_argument(
         "--de-dir",
-        default="outputs/redesign/interpretability/de_resilient_vs_vulnerable",
+        default="outputs/canonical/interpretability/de_resilient_vs_vulnerable",
         help="Directory with per-CT DE CSVs (CT_00_de.csv … CT_NN_de.csv); "
              "used for the Captum-vs-DE concordance plot.",
     )

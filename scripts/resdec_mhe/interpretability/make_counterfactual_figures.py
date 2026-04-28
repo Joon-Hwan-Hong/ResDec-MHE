@@ -8,7 +8,7 @@ Loads (default) both ``counterfactuals_relative/`` and
   - ``fig_cf_ct_aggregate_{relative,absolute}`` — per-CT feature-count bar
   - ``fig_cf_top_pairs_{relative,absolute}`` — top-20 (CT, gene) pairs
 
-Output dir: ``outputs/redesign/interpretability/figures/counterfactual/``.
+Output dir: ``outputs/canonical/interpretability/figures/counterfactual/``.
 """
 from __future__ import annotations
 
@@ -105,17 +105,17 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--relative-json",
-        default="outputs/redesign/interpretability/counterfactuals_relative/counterfactuals_fold0.json",
+        default="outputs/canonical/interpretability/counterfactuals_relative/counterfactuals_fold0.json",
         help="Path to the relative-mode CF JSON.",
     )
     p.add_argument(
         "--absolute-json",
-        default="outputs/redesign/interpretability/counterfactuals_absolute/counterfactuals_fold0.json",
+        default="outputs/canonical/interpretability/counterfactuals_absolute/counterfactuals_fold0.json",
         help="Path to the absolute-mode CF JSON.",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/redesign/interpretability/figures/counterfactual",
+        default="outputs/canonical/interpretability/figures/counterfactual",
         help="Output directory for the rendered figures.",
     )
     args = p.parse_args()

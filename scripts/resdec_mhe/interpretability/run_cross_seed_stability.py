@@ -20,10 +20,10 @@ Usage
 -----
     PYTHONPATH=<worktree-root> uv run python \\
         scripts/resdec_mhe/interpretability/run_cross_seed_stability.py \\
-        --run-dirs outputs/redesign/sae/batch_topk/fused/exp32_k64_seed0 \\
-                   outputs/redesign/sae/batch_topk/fused/exp32_k64_seed1 \\
-                   outputs/redesign/sae/batch_topk/fused/exp32_k64_seed2 \\
-        --out-dir outputs/redesign/sae/cross_seed_stability \\
+        --run-dirs outputs/canonical/sae/batch_topk/fused/exp32_k64_seed0 \\
+                   outputs/canonical/sae/batch_topk/fused/exp32_k64_seed1 \\
+                   outputs/canonical/sae/batch_topk/fused/exp32_k64_seed2 \\
+        --out-dir outputs/canonical/sae/cross_seed_stability \\
         --cosine-threshold 0.7
 """
 from __future__ import annotations

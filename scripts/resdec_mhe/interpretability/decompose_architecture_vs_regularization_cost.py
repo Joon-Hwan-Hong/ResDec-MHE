@@ -17,13 +17,13 @@ highest λ tested."
 
 Reads
 -----
-- ``outputs/redesign/p5_canonical_seed42/fold{0..4}/best_summary.json``
-- ``outputs/redesign/p5_entropy_reg/lambda_*/fold{0..4}/summary.json``
-- ``outputs/redesign/p5_diff_test/fold{0..4}/summary.json``
+- ``outputs/canonical/p5_canonical_seed42/fold{0..4}/best_summary.json``
+- ``outputs/canonical/p5_entropy_reg/lambda_*/fold{0..4}/summary.json``
+- ``outputs/canonical/p5_diff_test/fold{0..4}/summary.json``
 
 Writes
 ------
-``outputs/redesign/interpretability/architecture_vs_regularization_decomposition.json``
+``outputs/canonical/interpretability/architecture_vs_regularization_decomposition.json``
 """
 from __future__ import annotations
 
@@ -180,26 +180,26 @@ def main() -> int:
     p.add_argument(
         "--canonical-root",
         type=Path,
-        default=Path("outputs/redesign/p5_canonical_seed42"),
+        default=Path("outputs/canonical/p5_canonical_seed42"),
         help="Canonical run root (contains fold0/...fold4/best_summary.json).",
     )
     p.add_argument(
         "--sweep-root",
         type=Path,
-        default=Path("outputs/redesign/p5_entropy_reg"),
+        default=Path("outputs/canonical/p5_entropy_reg"),
         help="Entropy-reg sweep root (contains lambda_*/fold*/summary.json).",
     )
     p.add_argument(
         "--diff-test-root",
         type=Path,
-        default=Path("outputs/redesign/p5_diff_test"),
+        default=Path("outputs/canonical/p5_diff_test"),
         help="Diff-test run root (contains fold*/summary.json).",
     )
     p.add_argument(
         "--out-path",
         type=Path,
         default=Path(
-            "outputs/redesign/interpretability/"
+            "outputs/canonical/interpretability/"
             "architecture_vs_regularization_decomposition.json"
         ),
     )

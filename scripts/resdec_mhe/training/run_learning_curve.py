@@ -11,7 +11,7 @@ For each N ∈ ``--N-values`` (default 100, 200, 300, 400):
      against the TRUE cogn_global from the unchanged metadata.
 
 N = canonical (516) is NOT re-run here — it already exists at
-``outputs/redesign/p5_canonical_seed42/``. The learning-curve aggregate
+``outputs/canonical/p5_canonical_seed42/``. The learning-curve aggregate
 reads the canonical result for the top data point.
 
 Outputs:
@@ -288,7 +288,7 @@ def main():
                    default=[100, 200, 300, 400],
                    help="Training-set sizes to evaluate (canonical 516 not re-run).")
     p.add_argument("--output-base",
-                   default="outputs/redesign/learning_curve")
+                   default="outputs/canonical/learning_curve")
     p.add_argument("--base-metadata-csv",
                    default="data/metadata_ROSMAP/metadata.csv")
     p.add_argument("--splits-path", default="outputs/splits.json")
@@ -307,7 +307,7 @@ def main():
     )
     p.add_argument("--gpus", type=int, nargs="+", default=[0, 1])
     p.add_argument("--canonical-r2-json",
-                   default="outputs/redesign/p5_canonical_seed42/best_vs_tabpfn_summary.json",
+                   default="outputs/canonical/p5_canonical_seed42/best_vs_tabpfn_summary.json",
                    help="Existing canonical 5-fold summary (N=516 reference point).")
     args = p.parse_args()
 

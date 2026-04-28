@@ -108,7 +108,7 @@ def main(args: argparse.Namespace) -> None:
         # embeddings at full-cohort batch.
         embeddings_npz = Path(
             args.embeddings_npz
-            or cfg.data.get("embeddings_npz", "data/redesign/encoder_embeddings.npz")
+            or cfg.data.get("embeddings_npz", "data/canonical/encoder_embeddings.npz")
         )
         if not embeddings_npz.exists():
             raise FileNotFoundError(
@@ -254,7 +254,7 @@ if __name__ == "__main__":
                    help="Override cfg.training.max_epochs for smoke runs.")
     p.add_argument("--seed", type=int, default=None,
                    help="Override cfg.experiment.seed (e.g. 43 for sanity rerun).")
-    p.add_argument("--output-dir", default="outputs/redesign/p5_phase1",
+    p.add_argument("--output-dir", default="outputs/canonical/p5_phase1",
                    help="Root output directory; a fold<N>/ subdir is created for artifacts.")
     p.add_argument("--splits-path", default="outputs/splits.json",
                    help="Path to 5-fold splits JSON.")

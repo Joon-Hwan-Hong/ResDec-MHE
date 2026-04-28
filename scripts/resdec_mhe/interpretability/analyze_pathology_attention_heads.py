@@ -30,7 +30,7 @@ Loads ``pathology_attention_per_subject.npz`` (produced by
        MGE, CGE) — if positively correlated, the model is consistently weighting
        inhibitory neurons together.
 
-Outputs (default ``outputs/redesign/interpretability/``):
+Outputs (default ``outputs/canonical/interpretability/``):
   - head_analysis_summary.json        — head specialization + redundancy metrics
   - splatter_deepdive_summary.json    — Splatter biology breakdown
   - per_subject_head_fingerprints.csv — N × (n_heads + metadata cols)
@@ -39,9 +39,9 @@ Usage
 -----
     PYTHONPATH=<worktree-root> \\
     uv run python scripts/resdec_mhe/interpretability/analyze_pathology_attention_heads.py \\
-        --attn-npz outputs/redesign/interpretability/pathology_attention_per_subject.npz \\
-        --residual-csv outputs/redesign/interpretability/residual_per_subject.csv \\
-        --out-dir outputs/redesign/interpretability
+        --attn-npz outputs/canonical/interpretability/pathology_attention_per_subject.npz \\
+        --residual-csv outputs/canonical/interpretability/residual_per_subject.csv \\
+        --out-dir outputs/canonical/interpretability
 """
 from __future__ import annotations
 
@@ -380,8 +380,8 @@ def main(args: argparse.Namespace) -> int:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--attn-npz",
-                   default="outputs/redesign/interpretability/pathology_attention_per_subject.npz")
+                   default="outputs/canonical/interpretability/pathology_attention_per_subject.npz")
     p.add_argument("--residual-csv",
-                   default="outputs/redesign/interpretability/residual_per_subject.csv")
-    p.add_argument("--out-dir", default="outputs/redesign/interpretability")
+                   default="outputs/canonical/interpretability/residual_per_subject.csv")
+    p.add_argument("--out-dir", default="outputs/canonical/interpretability")
     sys.exit(main(p.parse_args()))
