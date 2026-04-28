@@ -21,7 +21,10 @@ All functions are pure: numpy in, plain dicts out (JSON-serializable).
 """
 from __future__ import annotations
 
+import logging
 from typing import Sequence
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from scipy.stats import wasserstein_distance, rankdata
@@ -207,8 +210,17 @@ def stability_selection(
     if gene_names is None:
         gene_names = [f"gene_{j}" for j in range(n_features)]
 
-    # Use the configured rb_threshold as the canonical "stable" set.
-    canonical_idx = thresholds.index(float(rb_threshold)) if float(rb_threshold) in thresholds else 0
+    # Use the configured rb_threshold as the canonical "stable" set. Match
+    # by closest floating-point value (np.argmin of |Δ|) instead of exact
+    # equality, so CLI roundtrips of e.g. 0.2 don't silently fall back to
+    # index 0 on rounding error.
+    thresholds_arr = np.asarray(thresholds, dtype=np.float64)
+    canonical_idx = int(np.argmin(np.abs(thresholds_arr - float(rb_threshold))))
+    if not np.isclose(thresholds_arr[canonical_idx], float(rb_threshold), rtol=1e-9, atol=1e-12):
+        raise ValueError(
+            f"rb_threshold={rb_threshold} not in thresholds path {thresholds}; "
+            f"closest is {thresholds_arr[canonical_idx]}"
+        )
     stable = np.flatnonzero(probs[canonical_idx] >= pi_threshold)
 
     result = {
@@ -264,14 +276,23 @@ def latent_class_on_residuals(
     """
     r = np.asarray(residuals, dtype=np.float64).reshape(-1, 1)
     finite_mask = np.isfinite(r.ravel())
-    if finite_mask.sum() < k_max:
+    n_finite = int(finite_mask.sum())
+    if n_finite < 2:
         raise ValueError(
-            f"Need at least k_max={k_max} finite residuals; got {int(finite_mask.sum())}"
+            f"Need at least 2 finite residuals to fit any GMM; got {n_finite}"
         )
     r_fit = r[finite_mask]
+    # If fewer subjects than requested k_max, cap k at n_finite-1 (every
+    # GMM component needs at least 2 samples to estimate variance).
+    k_eff = min(int(k_max), max(1, n_finite - 1))
+    if k_eff < int(k_max):
+        logger.warning(
+            "k_max=%d exceeds n_finite-1=%d; capping K to %d for stability.",
+            k_max, n_finite - 1, k_eff,
+        )
 
     bics, aics, fitted = [], [], []
-    for k in range(1, k_max + 1):
+    for k in range(1, k_eff + 1):
         gmm = GaussianMixture(
             n_components=k, n_init=n_init, random_state=seed,
             covariance_type=covariance_type,

@@ -55,12 +55,12 @@ sys.path.insert(0, str(_WORKTREE_ROOT))
 # Reuse the shared resdec_io loaders so ours composite predictions come from
 # the same subject set every interpretability script sees. compute_per_fold_r2_*
 # helpers also live in the shared module for reuse across the baseline table etc.
-from src.analysis.resdec_io import (  # noqa: E402
+from src.analysis.resdec_io import (
     compute_per_fold_r2_ours,
     compute_per_fold_r2_tabpfn,
     load_all_folds,
 )
-from src.analysis.resdec_statistical_rigor import (  # noqa: E402
+from src.analysis.resdec_statistical_rigor import (
     bootstrap_r2_ci,
     calibration_coverage,
     paired_wilcoxon,

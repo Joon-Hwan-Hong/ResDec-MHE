@@ -35,7 +35,7 @@ from omegaconf import OmegaConf
 
 # Make scripts.training importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.training.hpo import (  # noqa: E402
+from scripts.training.hpo import (
     WARM_START_BASELINE_D_EMBED,
     build_config_from_ray,
 )

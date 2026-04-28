@@ -47,9 +47,9 @@ sys.path.insert(0, str(_WORKTREE_ROOT))
 # Reuse the per-fold loader from the shared resdec_io module so both analyses
 # see the same subject set. Stratification labels come from the shared helper
 # module so both scripts bucket subjects identically.
-from src.analysis.resdec_io import load_all_folds  # noqa: E402
-from src.analysis.resdec_subgroup_analysis import stratified_metrics  # noqa: E402
-from src.analysis.subgroup_helpers import (  # noqa: E402
+from src.analysis.resdec_io import load_all_folds
+from src.analysis.resdec_subgroup_analysis import stratified_metrics
+from src.analysis.subgroup_helpers import (
     apoe_e4_count_label,
     msex_label,
     quantile_labels,

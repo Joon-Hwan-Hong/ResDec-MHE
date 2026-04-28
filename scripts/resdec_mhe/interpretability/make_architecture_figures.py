@@ -18,11 +18,11 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.visualization.architecture_plots import (  # noqa: E402
+from src.visualization.architecture_plots import (
     plot_architecture_diagram,
     plot_hgt_celltype_network,
 )
-from src.visualization.theme import apply_theme  # noqa: E402
+from src.visualization.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 

@@ -40,9 +40,9 @@ if not (_WORKTREE_ROOT / "src").is_dir():
     )
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.resdec_io import load_all_folds  # noqa: E402
-from src.analysis.resdec_variance_decomposition import decompose_variance  # noqa: E402
-from src.analysis.subgroup_helpers import (  # noqa: E402
+from src.analysis.resdec_io import load_all_folds
+from src.analysis.resdec_variance_decomposition import decompose_variance
+from src.analysis.subgroup_helpers import (
     apoe_e4_count_label,
     msex_label,
     quantile_labels,

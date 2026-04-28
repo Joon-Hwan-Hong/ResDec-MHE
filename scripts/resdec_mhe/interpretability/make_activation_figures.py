@@ -30,13 +30,13 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.data.datamodule import CognitiveResilienceDataModule  # noqa: E402
-from src.data.splits import load_splits  # noqa: E402
-from src.training.resdec_lightning_module import ResDecLightningModule  # noqa: E402
-from src.visualization.activation_plots import (  # noqa: E402
+from src.data.datamodule import CognitiveResilienceDataModule
+from src.data.splits import load_splits
+from src.training.resdec_lightning_module import ResDecLightningModule
+from src.visualization.activation_plots import (
     plot_per_stage_activation_cascade,
 )
-from src.visualization.theme import apply_theme  # noqa: E402
+from src.visualization.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 _BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")

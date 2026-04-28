@@ -32,7 +32,7 @@ _SCRIPTS_DIR = _WORKTREE_ROOT / "scripts" / "resdec_mhe" / "interpretability"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from gsea_from_captum import (  # noqa: E402
+from gsea_from_captum import (
     AD_GWAS_GENES,
     build_gene_list_from_npz,
     build_gene_list_from_summary,

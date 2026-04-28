@@ -48,8 +48,8 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.conditional_mi import conditional_mi_per_celltype  # noqa: E402
-from src.analysis.resilience_distributional import (  # noqa: E402
+from src.analysis.conditional_mi import conditional_mi_per_celltype
+from src.analysis.resilience_distributional import (
     latent_class_on_residuals,
     stability_selection,
     wasserstein_per_celltype,
@@ -120,6 +120,7 @@ def cmd_wasserstein(args):
     """Per-CT, per-gene Wasserstein distance between resilient/vulnerable Captum attrs."""
     captum = _load_captum(Path(args.captum_npz))
     attrs = np.asarray(captum["attributions"], dtype=np.float64)  # (n_subj, n_ct, n_gene)
+    n_subj, n_ct, n_gene = attrs.shape
     subj_ids = [str(s) for s in captum["subject_ids"]]
     res_df = _load_residuals(Path(args.residual_csv))
     res_map = dict(zip(res_df["subject_id"].astype(str), res_df["residual"].astype(float)))

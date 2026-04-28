@@ -31,7 +31,7 @@ _SCPHASE_DIR = (
 if str(_SCPHASE_DIR) not in sys.path:
     sys.path.insert(0, str(_SCPHASE_DIR))
 
-from summary_canonical import (  # noqa: E402
+from summary_canonical import (
     write_canonical_summary,
     write_dl_results_csv,
 )

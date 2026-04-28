@@ -26,13 +26,13 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.data.constants import CELL_TYPE_ORDER  # noqa: E402
-from src.visualization.counterfactual_plots import (  # noqa: E402
+from src.data.constants import CELL_TYPE_ORDER
+from src.visualization.counterfactual_plots import (
     plot_counterfactual_ct_aggregate,
     plot_counterfactual_movement,
     plot_counterfactual_top_pairs,
 )
-from src.visualization.theme import apply_theme  # noqa: E402
+from src.visualization.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 

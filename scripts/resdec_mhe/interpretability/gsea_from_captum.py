@@ -605,7 +605,7 @@ def main() -> int:
     # Load the attributions tensor — enables arbitrary top-K beyond what the
     # summary pre-computes. Cell-type order matches ``CELL_TYPE_ORDER`` in
     # the canonical model (verified against the summary JSON).
-    from src.data.constants import CELL_TYPE_ORDER  # noqa: E402
+    from src.data.constants import CELL_TYPE_ORDER
 
     logger.info("Loading attributions npz: %s", args.captum_npz)
     npz = np.load(args.captum_npz, allow_pickle=True)

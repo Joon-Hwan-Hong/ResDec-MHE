@@ -40,11 +40,11 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.counterfactual_resilience import find_counterfactual  # noqa: E402
-from src.data.constants import PFC_REGION_IDX  # noqa: E402
-from src.data.datamodule import CognitiveResilienceDataModule  # noqa: E402
-from src.data.splits import load_splits  # noqa: E402
-from src.training.resdec_lightning_module import ResDecLightningModule  # noqa: E402
+from src.analysis.counterfactual_resilience import find_counterfactual
+from src.data.constants import PFC_REGION_IDX
+from src.data.datamodule import CognitiveResilienceDataModule
+from src.data.splits import load_splits
+from src.training.resdec_lightning_module import ResDecLightningModule
 
 logger = logging.getLogger(__name__)
 _BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")

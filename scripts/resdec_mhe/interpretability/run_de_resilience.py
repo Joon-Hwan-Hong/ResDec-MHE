@@ -29,8 +29,8 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.de_resilience import deseq2_de, wilcoxon_de  # noqa: E402
-from src.data.constants import CELL_TYPE_ORDER  # noqa: E402
+from src.analysis.de_resilience import deseq2_de, wilcoxon_de
+from src.data.constants import CELL_TYPE_ORDER
 
 logger = logging.getLogger(__name__)
 

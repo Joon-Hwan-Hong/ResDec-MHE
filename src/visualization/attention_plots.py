@@ -340,9 +340,9 @@ def plot_resilience_signature_heatmap(
 # src/visualization/config; new code should prefer the theme-based functions.
 # ---------------------------------------------------------------------------
 
-from typing import Sequence as _Sequence  # noqa: E402
+from typing import Sequence as _Sequence
 
-from src.visualization.theme import (  # noqa: E402
+from src.visualization.theme import (
     PALETTES as _PALETTES,
     fmt_axes as _fmt_axes,
     save_fig as _theme_save_fig,

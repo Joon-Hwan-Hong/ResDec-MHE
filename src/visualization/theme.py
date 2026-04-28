@@ -101,7 +101,7 @@ def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> str:
     used_scienceplots = False
     if use_scienceplots:
         try:
-            import scienceplots  # noqa: F401  (registers styles via import)
+            import scienceplots
             plt.style.use(["science", "nature"])
             used_scienceplots = True
         except ImportError:

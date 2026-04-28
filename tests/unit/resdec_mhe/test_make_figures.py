@@ -16,12 +16,12 @@ from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")  # noqa: E402  # must be set before pyplot import
+matplotlib.use("Agg")  # must be set before pyplot import
 
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import pytest  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pytest
 
 
 # Make the script importable via scripts.resdec_mhe.interpretability.
@@ -29,7 +29,7 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from scripts.resdec_mhe.interpretability import make_figures as mod  # noqa: E402
+from scripts.resdec_mhe.interpretability import make_figures as mod
 
 
 # ---------------------------------------------------------------------------

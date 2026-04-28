@@ -24,12 +24,12 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.visualization.attention_plots import (  # noqa: E402
+from src.visualization.attention_plots import (
     plot_head_attention_bootstrap_ci,
     plot_head_attention_chord,
     plot_head_fingerprint_umap,
 )
-from src.visualization.theme import apply_theme  # noqa: E402
+from src.visualization.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 

@@ -20,14 +20,14 @@ import xgboost as xgb
 # modules introduced in this branch).
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from src.data.enriched_features import (  # noqa: E402
+from src.data.enriched_features import (
     FEATURE_SETS,
     FEATURE_SET_SIZES,
     load_enriched_features,
     load_pathology,
 )
-from src.data.feature_loaders import load_flat_features, load_targets  # noqa: E402
-from src.data.splits import load_splits  # noqa: E402
+from src.data.feature_loaders import load_flat_features, load_targets
+from src.data.splits import load_splits
 
 logger = logging.getLogger(__name__)
 

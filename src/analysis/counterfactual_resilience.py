@@ -72,15 +72,12 @@ def find_counterfactual(
     """Find x_cf near x_init driving f(x_cf) to target_y, per Wachter et al. 2017.
 
     Loss: ``L(x) = (f(x) - target_y)^2 + lambda_dist * ||x - x_init||_2^2``,
-    minimized via gradient descent. ``grad L = 2*(f(x)-target)*grad_f -
-    2*lambda*(x - x_init)``... wait this is wrong sign. Actually we minimize
-    L so descent step is ``x -= lr * grad L``:
+    minimized via gradient descent:
 
-        grad L = 2*(f(x)-target_y)*grad_f(x) + 2*lambda_dist*(x - x_init)
+        grad L = 2*(f(x) - target_y) * grad_f(x) + 2*lambda_dist*(x - x_init)
         x_new = x - lr * grad L
 
-    Stopping: |f(x) - target_y| <= tol AND no further distance reduction in
-    last patience steps. Or max_steps exhausted.
+    Stopping: |f(x) - target_y| <= tol, or max_steps exhausted.
 
     Parameters
     ----------
@@ -158,6 +155,7 @@ def find_counterfactual_mode_a_adaptive(
     lambda_mult: float = 2.0,
     l2_budget: float | None = None,
     seed: int = 42,
+    f_and_grad: Callable[[np.ndarray], tuple[float, np.ndarray]] | None = None,
 ) -> CounterfactualResult:
     """Mode-A adaptive-λ counterfactual search (Wachter 2017 preferred variant).
 
@@ -207,7 +205,13 @@ def find_counterfactual_mode_a_adaptive(
         λ; ``lambda_used`` records the λ of the returned attempt.
     """
     x_init_arr = np.asarray(x_init, dtype=np.float64).copy()
-    y_init = float(f(x_init_arr))
+    # Use f_and_grad if provided (1 forward per step instead of 2);
+    # the standalone f and grad_f remain authoritative for x_init's y.
+    if f_and_grad is not None:
+        y_init, _g_init = f_and_grad(x_init_arr)
+        y_init = float(y_init)
+    else:
+        y_init = float(f(x_init_arr))
     best_x = x_init_arr.copy()
     best_y = y_init
     best_n_steps = 0
@@ -218,12 +222,20 @@ def find_counterfactual_mode_a_adaptive(
         x = x_init_arr.copy()
         y_curr = y_init
         n_steps = 0
+        # If f_and_grad is provided we need (y, g) at the CURRENT x, then
+        # step; the new (y, g) at new x is computed at the next iteration.
+        # Initialize g_at_x for the first iteration if combined-call mode.
+        if f_and_grad is not None:
+            _, g_at_x = f_and_grad(x)
         for step in range(max_steps):
             n_steps = step + 1
             residual = y_curr - target_y
             if abs(residual) <= tol:
                 break
-            g = np.asarray(grad_f(x), dtype=np.float64)
+            if f_and_grad is None:
+                g = np.asarray(grad_f(x), dtype=np.float64)
+            else:
+                g = g_at_x  # already computed at current x
             grad_L = 2.0 * (x - x_init_arr) + 2.0 * lam * residual * g
             # L2 gradient clipping: keeps step size bounded at high λ where
             # raw |grad_L| scales with λ and can cause divergence. Step norm
@@ -237,7 +249,13 @@ def find_counterfactual_mode_a_adaptive(
                 d_norm = float(np.linalg.norm(delta))
                 if d_norm > l2_budget:
                     x = x_init_arr + delta * (l2_budget / d_norm)
-            y_curr = float(f(x))
+            if f_and_grad is None:
+                y_curr = float(f(x))
+            else:
+                # ONE forward+backward, get both new y and grad for next iter.
+                y_new, g_new = f_and_grad(x)
+                y_curr = float(y_new)
+                g_at_x = np.asarray(g_new, dtype=np.float64)
 
         # Track best-so-far by proximity to target
         if abs(y_curr - target_y) < abs(best_y - target_y):

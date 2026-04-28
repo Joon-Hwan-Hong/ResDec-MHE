@@ -32,7 +32,7 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from scripts.resdec_mhe.interpretability import make_baseline_table as mod  # noqa: E402
+from scripts.resdec_mhe.interpretability import make_baseline_table as mod
 
 
 def _write_summary_json(path: Path, per_fold_r2s: list[float]) -> None:

@@ -399,7 +399,7 @@ def plot_uncertainty_correlates(
 # ResDec-MHE composite-vs-baseline calibration plots, theme-based.
 # ---------------------------------------------------------------------------
 
-from src.visualization.theme import (  # noqa: E402
+from src.visualization.theme import (
     baseline_color as _baseline_color,
     fmt_axes as _fmt_axes,
     save_fig as _theme_save_fig,

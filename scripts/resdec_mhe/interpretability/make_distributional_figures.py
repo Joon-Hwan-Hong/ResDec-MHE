@@ -28,12 +28,12 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.visualization.distributional_plots import (  # noqa: E402
+from src.visualization.distributional_plots import (
     plot_de_method_concordance_bar,
     plot_stability_selection_bar,
     plot_wasserstein_per_celltype_bar,
 )
-from src.visualization.theme import apply_theme  # noqa: E402
+from src.visualization.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 

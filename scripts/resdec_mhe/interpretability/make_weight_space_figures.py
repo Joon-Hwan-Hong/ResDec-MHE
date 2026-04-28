@@ -26,8 +26,8 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.visualization.theme import apply_theme  # noqa: E402
-from src.visualization.weight_space_plots import (  # noqa: E402
+from src.visualization.theme import apply_theme
+from src.visualization.weight_space_plots import (
     plot_checkpoint_weight_pca,
 )
 

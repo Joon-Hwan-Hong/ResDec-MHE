@@ -58,7 +58,7 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if (_WORKTREE_ROOT / "src").is_dir() and str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.resdec_io import load_tabpfn_outer_fold  # noqa: E402
+from src.analysis.resdec_io import load_tabpfn_outer_fold
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ def parse_summary_json(path: Path) -> dict[str, list[float]] | None:
         return None
     try:
         data = json.loads(path.read_text())
-    except Exception as exc:  # noqa: BLE001 — log + skip silently
+    except Exception as exc:
         logger.warning("Failed to parse %s (%s); treating as missing.", path, exc)
         return None
     per_fold = data.get("per_fold")
@@ -202,7 +202,7 @@ def parse_classical_csv(path: Path) -> list[dict]:
         return []
     try:
         df = pd.read_csv(path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Failed to read %s (%s); skipping.", path, exc)
         return []
 
@@ -243,7 +243,7 @@ def parse_dl_baseline_csv(path: Path) -> dict[str, list[float]] | None:
         return None
     try:
         df = pd.read_csv(path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Failed to read %s (%s); skipping.", path, exc)
         return None
     required = {"fold", *_METRIC_KEYS}
@@ -290,13 +290,13 @@ def parse_tabpfn_standalone(
         # Pearson/Spearman return nan if input is degenerate; catch via try/except.
         try:
             metrics["pearson_r"].append(float(pearsonr(y_true, y_pred).statistic))
-        except Exception:  # noqa: BLE001
+        except Exception:
             metrics["pearson_r"].append(float("nan"))
         try:
             metrics["spearman_rho"].append(
                 float(spearmanr(y_true, y_pred).statistic),
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             metrics["spearman_rho"].append(float("nan"))
     return metrics
 
@@ -346,7 +346,7 @@ def _parse_per_fold_npz(
             return None
         try:
             d = np.load(npz_path, allow_pickle=True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Failed to read %s (%s); fallback skipped.", npz_path, exc)
             return None
         # npz keys mirror _METRIC_KEYS exactly in our training script.
@@ -703,7 +703,7 @@ def _sort_for_md(df: pd.DataFrame | list[dict]) -> pd.DataFrame | list[dict]:
         ours = [r for r in df if _is_ours(r)]
         others = [r for r in df if not _is_ours(r)]
         # NaN last within each block.
-        _sort_key = lambda r: (  # noqa: E731
+        _sort_key = lambda r: (
             math.isnan(_r2(r)), -_r2(r) if not math.isnan(_r2(r)) else 0.0,
         )
         others_sorted = sorted(others, key=_sort_key)

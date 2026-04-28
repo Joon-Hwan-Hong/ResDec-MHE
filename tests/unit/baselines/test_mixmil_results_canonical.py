@@ -28,7 +28,7 @@ _MIXMIL_DIR = (
 if str(_MIXMIL_DIR) not in sys.path:
     sys.path.insert(0, str(_MIXMIL_DIR))
 
-from results_canonical import write_dl_results_csv  # noqa: E402
+from results_canonical import write_dl_results_csv
 
 
 def _make_allfolds_csv(

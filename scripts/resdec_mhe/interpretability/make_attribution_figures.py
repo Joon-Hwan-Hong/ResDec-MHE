@@ -29,7 +29,7 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.visualization.attribution_plots import (  # noqa: E402
+from src.visualization.attribution_plots import (
     plot_attribution_stability_heatmap,
     plot_captum_de_concordance,
     plot_per_quintile_attribution,
@@ -37,7 +37,7 @@ from src.visualization.attribution_plots import (  # noqa: E402
     plot_subject_waterfall,
     plot_tabpfn_vs_residual_stack,
 )
-from src.visualization.theme import apply_theme  # noqa: E402
+from src.visualization.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 

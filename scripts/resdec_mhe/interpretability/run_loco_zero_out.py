@@ -35,9 +35,9 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.data.datamodule import CognitiveResilienceDataModule  # noqa: E402
-from src.data.splits import load_splits  # noqa: E402
-from src.training.resdec_lightning_module import ResDecLightningModule  # noqa: E402
+from src.data.datamodule import CognitiveResilienceDataModule
+from src.data.splits import load_splits
+from src.training.resdec_lightning_module import ResDecLightningModule
 
 logger = logging.getLogger(__name__)
 _BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
@@ -232,6 +232,12 @@ def main():
         r2s = loco_per_ct_fold[ct]
         mean_r2 = float(np.mean(r2s))
         std_r2 = float(np.std(r2s, ddof=1))
+        # Per-fold ΔR²: r2_ct[f] - r2_canon[f] for each fold f. Stored
+        # alongside the cross-fold-averaged delta so callers can compute
+        # variance / paired statistics across folds.
+        delta_per_fold = [
+            float(r2s[f] - canonical_per_fold[f]) for f in range(len(r2s))
+        ]
         per_ct_rows.append({
             "cell_type_index": ct,
             "cell_type": ct_names[ct],
@@ -239,6 +245,8 @@ def main():
             "loco_std_r2": std_r2,
             "per_fold_r2": r2s,
             "delta_r2_vs_canonical": mean_r2 - canon_mean,
+            "delta_r2_per_fold": delta_per_fold,
+            "delta_r2_std": float(np.std(delta_per_fold, ddof=1)),
         })
 
     df = pd.DataFrame(per_ct_rows)

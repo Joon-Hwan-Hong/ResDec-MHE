@@ -29,66 +29,26 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import torch
 
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.resilience_distributional import (  # noqa: E402
+from src.analysis.pseudobulk_io import load_pseudobulk_matrix
+from src.analysis.resilience_distributional import (
     stability_selection,
     wasserstein_per_celltype,
 )
-from src.data.constants import CELL_TYPE_ORDER  # noqa: E402
+from src.data.constants import CELL_TYPE_ORDER
+from src.utils.provenance import git_sha
 
 logger = logging.getLogger(__name__)
-
-
-def _load_pseudobulk_matrix(
-    precomputed_dir: Path, subject_ids: list[str],
-) -> np.ndarray:
-    """Load per-subject pseudobulk into shape (n_subjects, n_cell_types, n_genes).
-
-    Subjects with no .pt file are returned as all-NaN rows. Mirrors the
-    helper in ``run_de_resilience.py`` — duplicated here intentionally
-    (small + self-contained; refactor to ``src/analysis/`` if a third
-    caller appears).
-    """
-    n = len(subject_ids)
-    out: np.ndarray | None = None
-    for i, sid in enumerate(subject_ids):
-        p = precomputed_dir / f"{sid}.pt"
-        if not p.exists():
-            logger.warning("missing %s; row will be NaN", p)
-            if out is not None:
-                out[i] = np.nan
-            continue
-        d = torch.load(p, map_location="cpu", weights_only=False)
-        pb = d["pseudobulk"].numpy().astype(np.float64)
-        if out is None:
-            out = np.full((n,) + pb.shape, np.nan, dtype=np.float64)
-        out[i] = pb
-        if (i + 1) % 50 == 0:
-            logger.info("loaded %d/%d subjects", i + 1, n)
-    if out is None:
-        raise FileNotFoundError(f"no .pt files loadable from {precomputed_dir}")
-    return out
-
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=_WORKTREE_ROOT,
-        ).decode().strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unknown"
 
 
 def _load_cell_type_names(src_path: Path, n_ct: int) -> list[str]:
@@ -139,8 +99,8 @@ def _run_wasserstein(args: argparse.Namespace) -> dict:
     logger.info(
         "wasserstein split: %d resilient + %d vulnerable", n_res, n_vul,
     )
-    pb = _load_pseudobulk_matrix(Path(args.precomputed_dir), ids)
-    n_subj, n_ct, n_gene = pb.shape
+    pb = load_pseudobulk_matrix(Path(args.precomputed_dir), ids)
+    _, n_ct, n_gene = pb.shape
     logger.info("pseudobulk loaded: %s", pb.shape)
     gene_names = list(np.load(args.gene_names_npy, allow_pickle=True))
     if len(gene_names) != n_gene:
@@ -165,7 +125,7 @@ def _run_wasserstein(args: argparse.Namespace) -> dict:
         "n_genes": int(n_gene),
         "precomputed_dir": str(args.precomputed_dir),
         "elapsed_s": round(time.time() - t0, 1),
-        "git_commit": _git_sha(),
+        "git_commit": git_sha(_WORKTREE_ROOT),
     }
     return result
 
@@ -177,8 +137,8 @@ def _run_stability(args: argparse.Namespace) -> dict:
     logger.info(
         "stability split: %d resilient + %d vulnerable", n_res, n_vul,
     )
-    pb = _load_pseudobulk_matrix(Path(args.precomputed_dir), ids)
-    n_subj, n_ct, n_gene = pb.shape
+    pb = load_pseudobulk_matrix(Path(args.precomputed_dir), ids)
+    _, n_ct, n_gene = pb.shape
     logger.info("pseudobulk loaded: %s", pb.shape)
     gene_names = list(np.load(args.gene_names_npy, allow_pickle=True))
     if len(gene_names) != n_gene:
@@ -231,7 +191,7 @@ def _run_stability(args: argparse.Namespace) -> dict:
             "pi_threshold": args.pi_threshold,
             "seed": args.seed,
             "elapsed_s": round(time.time() - t0, 1),
-            "git_commit": _git_sha(),
+            "git_commit": git_sha(_WORKTREE_ROOT),
         },
     }
 

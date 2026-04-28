@@ -484,7 +484,7 @@ class ResDecLightningModule(pl.LightningModule):
         if p_np.std() > 0 and t_np.std() > 0:
             pearson_r = float(_np.corrcoef(p_np, t_np)[0, 1])
             # Spearman via rank-corr on np.argsort orderings
-            from scipy.stats import spearmanr as _spearmanr  # noqa: PLC0415
+            from scipy.stats import spearmanr as _spearmanr
             spearman_rho = float(_spearmanr(p_np, t_np).correlation)
         else:
             pearson_r = float("nan")

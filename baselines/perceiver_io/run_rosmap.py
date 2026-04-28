@@ -34,7 +34,7 @@ _SHARED_DIR = str(Path(__file__).resolve().parent.parent / "shared")
 if _SHARED_DIR not in sys.path:
     sys.path.insert(0, _SHARED_DIR)
 
-from pt_data_utils import (  # noqa: E402
+from pt_data_utils import (
     compute_metrics,
     extract_ccc_summary,
     load_metadata,

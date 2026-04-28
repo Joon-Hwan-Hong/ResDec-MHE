@@ -42,12 +42,12 @@ import matplotlib
 # Must set backend before pyplot import for headless runs.
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from matplotlib.lines import Line2D  # noqa: E402
-from matplotlib.patches import Patch  # noqa: E402
-from sklearn.metrics import r2_score  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+from sklearn.metrics import r2_score
 
 
 # Ensure worktree root on sys.path for standalone invocation.
@@ -55,7 +55,7 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if (_WORKTREE_ROOT / "src").is_dir() and str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.resdec_io import load_all_folds, load_fold_predictions  # noqa: E402
+from src.analysis.resdec_io import load_all_folds, load_fold_predictions
 
 
 logger = logging.getLogger(__name__)

@@ -16,11 +16,14 @@ plotting (volcano) can consume either schema interchangeably.
 """
 from __future__ import annotations
 
+import logging
 from typing import Literal, Sequence
 
 import numpy as np
 import pandas as pd
 from scipy.stats import mannwhitneyu
+
+logger = logging.getLogger(__name__)
 
 
 def rank_biserial_correlation(x: np.ndarray, y: np.ndarray) -> float:
@@ -83,13 +86,23 @@ def _compute_lfc(
         but no zero-inflation expected (e.g., normalized expression).
     """
     if scale == "counts":
-        return float(np.log2(max(x.mean(), 0.0) + 1.0) - np.log2(max(y.mean(), 0.0) + 1.0))
+        mx, my = float(x.mean()), float(y.mean())
+        if mx < 0.0 or my < 0.0:
+            raise ValueError(
+                f"counts scale requires non-negative input means; "
+                f"got mean(x)={mx}, mean(y)={my}. Did you pass log1p data?"
+            )
+        return float(np.log2(mx + 1.0) - np.log2(my + 1.0))
     if scale == "log1p":
         return float(x.mean() - y.mean())
     if scale == "raw":
-        eps = 1e-9
-        mx = max(x.mean(), eps)
-        my = max(y.mean(), eps)
+        mx, my = float(x.mean()), float(y.mean())
+        if mx <= 0.0 or my <= 0.0:
+            raise ValueError(
+                f"raw scale requires strictly-positive input means; "
+                f"got mean(x)={mx}, mean(y)={my}. Use --input-scale counts "
+                f"or log1p for non-positive data."
+            )
         return float(np.log2(mx) - np.log2(my))
     raise ValueError(f"Unknown scale: {scale!r}; expected counts/log1p/raw")
 
@@ -166,11 +179,15 @@ def wilcoxon_de(
     rbs = np.full(n_gene, 0.0, dtype=np.float64)
     ci_lo = np.full(n_gene, np.nan, dtype=np.float64)
     ci_hi = np.full(n_gene, np.nan, dtype=np.float64)
+    n_res_finite = np.zeros(n_gene, dtype=np.int32)
+    n_vul_finite = np.zeros(n_gene, dtype=np.int32)
     for g in range(n_gene):
         x = expression[is_res, g]
         y = expression[~is_res, g]
         x = x[np.isfinite(x)]
         y = y[np.isfinite(y)]
+        n_res_finite[g] = x.size
+        n_vul_finite[g] = y.size
         if x.size < 2 or y.size < 2:
             continue
         log2fcs[g] = _compute_lfc(x, y, input_scale)
@@ -197,6 +214,8 @@ def wilcoxon_de(
         "rank_biserial": rbs,
         "n_resilient": n_res,
         "n_vulnerable": n_vul,
+        "n_resilient_finite": n_res_finite,
+        "n_vulnerable_finite": n_vul_finite,
         "method": "wilcoxon",
     })
 
@@ -289,15 +308,23 @@ def deseq2_de(
         stats_kwargs["cooks_cutoff_value"] = float(cooks_cutoff)
     stats = DeseqStats(dds, **stats_kwargs)
     stats.summary()
+    shrink_succeeded = False
     if lfc_shrink:
         try:
             stats.lfc_shrink(coeff="condition_resilient_vs_vulnerable")
-        except (KeyError, ValueError):
+            shrink_succeeded = True
+        except (KeyError, ValueError) as exc:
             # Fall back to no-shrink if the contrast/coeff name doesn't match
-            # the installed pydeseq2 version's API.
-            pass
+            # the installed pydeseq2 version's API. Log so callers know.
+            logger.warning(
+                "lfc_shrink failed (%s); returning MLE LFCs instead. "
+                "Method label will reflect this.", exc,
+            )
     df = stats.results_df.copy()
 
+    method_label = (
+        "deseq2_lfc_shrink" if (lfc_shrink and shrink_succeeded) else "deseq2_mle"
+    )
     return pd.DataFrame({
         "gene": df.index.astype(str).tolist(),
         "log2_fold_change": df["log2FoldChange"].astype(float).tolist(),
@@ -308,5 +335,5 @@ def deseq2_de(
         "rank_biserial": [float("nan")] * len(df),
         "n_resilient": int(is_res.sum()),
         "n_vulnerable": int((~is_res).sum()),
-        "method": "deseq2_lfc_shrink" if lfc_shrink else "deseq2_mle",
+        "method": method_label,
     })

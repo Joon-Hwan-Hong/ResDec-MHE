@@ -69,21 +69,21 @@ if not (_WORKTREE_ROOT / "src").is_dir():
     )
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.resdec_ccc_importance import (  # noqa: E402
+from src.analysis.resdec_ccc_importance import (
     extract_hgt_edge_attention,
     liana_correlation,
     load_liana_reference,
     per_edge_type_ablation,
 )
-from src.data.constants import (  # noqa: E402
+from src.data.constants import (
     ALL_EDGE_TYPES,
     CELL_TYPE_ORDER,
     EDGE_TYPE_DISPLAY_NAMES,
     N_EDGE_TYPES,
 )
-from src.data.datamodule import CognitiveResilienceDataModule  # noqa: E402
-from src.data.splits import load_splits  # noqa: E402
-from src.training.resdec_lightning_module import ResDecLightningModule  # noqa: E402
+from src.data.datamodule import CognitiveResilienceDataModule
+from src.data.splits import load_splits
+from src.training.resdec_lightning_module import ResDecLightningModule
 
 # LIANA columns where "higher = more important" (no sign flip needed for
 # correlation). Rank-percentile columns (magnitude_rank / specificity_rank) are
