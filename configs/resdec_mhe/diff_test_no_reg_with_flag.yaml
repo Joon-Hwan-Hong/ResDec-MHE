@@ -1,0 +1,45 @@
+# Diff-test: return_attention_in_training=true (encoder builds the einsum path
+# capable PathologyStratifiedAttention) BUT attention_regularization.enabled=false
+# (so the lightning module forces compute_attention_with_grad=False, restoring
+# the canonical SDPA fast path).
+#
+# Used to isolate which of the two flags caused the lambda=0 R²=0.384 vs
+# canonical R²=0.444 gap (delta -0.060). If THIS config trains to ~0.484
+# (canonical fold 0 R²), the einsum path is the cause; if it trains to
+# ~0.465 (sweep lambda=0 fold 0), the issue is elsewhere.
+
+experiment:
+  run_name: "p5_diff_test"
+
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  return_attention_in_training: true
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+    n_stages: 1
+    aux_lambdas: [1.0]
+    use_diff_attn: false
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
+    monitor: "val/r2"
+    mode: "max"
+  attention_regularization:
+    enabled: false           # ← KEY: reg disabled → SDPA fast path restored
+    scheme: entropy_bonus
+    weight: 0.0
+
+data:
+  dataloader:
+    batch_size: 24
+  use_cached_embeddings: false
+  tabpfn_oof_dir: data/redesign
+  tabpfn_outer_dir: data/redesign
