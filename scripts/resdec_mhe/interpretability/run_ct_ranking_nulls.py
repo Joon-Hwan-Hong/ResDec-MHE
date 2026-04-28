@@ -38,6 +38,7 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
+from src.analysis.composite_y import load_composite_y_with_sanity_check
 from src.analysis.conditional_mi import conditional_mi_per_celltype
 from src.analysis.pseudobulk_io import load_pseudobulk_matrix
 from src.data.constants import CELL_TYPE_ORDER
@@ -396,18 +397,14 @@ def main() -> int:
         all_ids = [f.stem for f in files]
         pb_full = load_pseudobulk_matrix(Path(args.precomputed_dir), all_ids)
 
-        # Load composite Y: from val_predictions_best.npz across all 5 folds.
-        # pred_root + tabpfn_dir are env-driven via argparse to avoid hardcoded
-        # paths (memory rule feedback_no_hardcoded_paths.md).
-        pred_root = Path(args.pred_root)
-        tabpfn_dir = Path(args.tabpfn_dir)
-        composite_y = {}
-        for fold in range(5):
-            v = np.load(pred_root / f"fold{fold}/val_predictions_best.npz", allow_pickle=True)
-            t = np.load(tabpfn_dir / f"tabpfn_outer_fold{fold}.npz", allow_pickle=True)
-            for sid, p, tp in zip(v["subject_ids"], v["predictions"], t["y_tabpfn"]):
-                composite_y[str(sid)] = float(p + tp)
-        y = np.array([composite_y.get(sid, np.nan) for sid in all_ids], dtype=np.float64)
+        # Load composite Y via shared helper (runs heuristic mean/std guard
+        # AND the stronger Pearson-correlation guard against the metadata
+        # target column).
+        y = load_composite_y_with_sanity_check(
+            pred_root=Path(args.pred_root),
+            all_ids=all_ids,
+            metadata_path=Path(args.metadata_csv),
+        )
 
         # Pathology Z from metadata
         meta = pd.read_csv(args.metadata_csv)

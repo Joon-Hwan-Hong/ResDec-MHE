@@ -1,0 +1,404 @@
+"""Compare trained-encoder SAE vs random-encoder SAE (Heap et al. 2026 null).
+
+Per the SAE design doc §8.3 (``docs/plans/2026-04-28-sparse-autoencoder-design.md``)
++ Orlov §4.2: for each matched config (architecture / layer / expansion / k),
+report side-by-side:
+
+* ``interpretable_candidate_fraction`` — fraction of features flagged as
+  ``interpretable_candidate`` by ``interpret_features`` (Mann-Whitney
+  cognition p<0.05 + non-dead + non-ubiquitous + (for fused only) one-CT
+  dominant).
+* ``mw_p_cognition_lt_0.05_count`` — count of features whose
+  ``mw_p_cognition < 0.05`` (the cognition-only proxy, *before* the
+  "interpretable" composite gate). Useful as a coarser secondary metric.
+* ``dead_fraction`` — fraction of features with the ``"dead"`` flag.
+* ``decoder_cos_sim_top10_pairs`` — between the two SAEs (trained vs random),
+  for the top-10 features ranked by ``fraction_active`` in EACH, compute the
+  pairwise cosine similarity matrix of decoder columns
+  (``W_dec[:, j_trained]`` vs ``W_dec[:, j_random]``). We report:
+
+    1. ``mean_abs_cosine_off_diag`` — the mean of |cosine| over the
+       off-diagonal entries of the 10×10 matrix. Coarse "have the SAEs
+       found similar concepts in arbitrary order" stat.
+    2. ``hungarian_mean_diagonal_cosine`` — the canonical metric. We
+       align trained-feature j to its single best random match via the
+       Hungarian algorithm (``scipy.optimize.linear_sum_assignment``),
+       then average the post-alignment diagonal cosine. This is the
+       expected similarity AFTER permutation invariance is removed, and
+       is what the Orlov §8.3 / Heap 2026 prescription calls for.
+
+  Interpretation: LOW Hungarian-aligned mean diagonal cosine → trained and
+  random SAEs find different decoder directions → trained encoder is
+  contributing concept structure beyond data statistics. GOOD.
+
+Acceptance criterion (design doc §9.2 derived from Orlov §8.3):
+
+    trained_interpretable_fraction > 1.5 × random_interpretable_fraction
+
+If the criterion FAILS, we must conclude (per Heap et al. 2026 / Orlov §4.2)
+that the SAE is just learning data statistics, not the trained encoder's
+concepts. The `pass_1.5x_criterion` field of the output JSON encodes this.
+
+Usage
+-----
+    PYTHONPATH=<worktree-root> \\
+    uv run python scripts/resdec_mhe/interpretability/compare_trained_vs_random_sae.py \\
+        --trained-dir outputs/redesign/sae/batch_topk/fused/exp32_k64_seed0 \\
+        --random-dir outputs/redesign/sae/random_encoder/batch_topk/fused/exp32_k64_seed0 \\
+        --out outputs/redesign/sae/random_encoder_null_comparison.json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+import numpy as np
+
+_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
+if not (_WORKTREE_ROOT / "src").is_dir():
+    raise RuntimeError(
+        f"sys.path bootstrap failed: {_WORKTREE_ROOT}/src not found; "
+        "set PYTHONPATH=<worktree-root>."
+    )
+sys.path.insert(0, str(_WORKTREE_ROOT))
+
+logger = logging.getLogger(__name__)
+
+
+def _load_run(run_dir: Path) -> dict:
+    """Load reconstruction_metrics.json + feature_report.json + sae_model.npz from a run dir."""
+    metrics_path = run_dir / "reconstruction_metrics.json"
+    report_path = run_dir / "feature_report.json"
+    model_path = run_dir / "sae_model.npz"
+    for f in (metrics_path, report_path, model_path):
+        if not f.exists():
+            raise FileNotFoundError(f"Missing {f}")
+
+    metrics = json.loads(metrics_path.read_text())
+    reports = json.loads(report_path.read_text())
+    npz = np.load(model_path, allow_pickle=True)
+    W_dec = np.asarray(npz["W_dec"])
+    fraction_active = np.asarray(npz["stat_fraction_active"])
+    return {
+        "metrics": metrics,
+        "reports": reports,
+        "W_dec": W_dec,
+        "fraction_active": fraction_active,
+    }
+
+
+def _interpretable_fraction(reports: list[dict]) -> float:
+    if not reports:
+        return float("nan")
+    n = len(reports)
+    n_interp = sum(1 for r in reports if "interpretable_candidate" in r.get("flags", []))
+    return n_interp / n if n > 0 else float("nan")
+
+
+def _mw_p_cog_lt_05_count(reports: list[dict]) -> int:
+    return sum(
+        1
+        for r in reports
+        if r.get("mw_p_cognition") is not None
+        and float(r["mw_p_cognition"]) < 0.05
+    )
+
+
+def _dead_fraction(reports: list[dict]) -> float:
+    if not reports:
+        return float("nan")
+    n = len(reports)
+    n_dead = sum(1 for r in reports if "dead" in r.get("flags", []))
+    return n_dead / n if n > 0 else float("nan")
+
+
+def _top10_decoder_cos_sim(
+    W_dec_a: np.ndarray, fa_a: np.ndarray,
+    W_dec_b: np.ndarray, fa_b: np.ndarray,
+) -> dict:
+    """Top-10 fraction-active features in each SAE; pairwise cos-sim matrix.
+
+    The original ``pearson_to_identity_pattern`` metric was meaningless: the
+    top-K features in trained vs random SAEs are sorted independently by
+    ``fraction_active``, so the K×K cosine matrix has no expected diagonal
+    structure to begin with — Pearson correlation against the identity
+    pattern measures nothing of interest. The canonical Orlov §8.3 / Heap
+    2026 procedure pairs each trained feature with its single best random
+    match via the Hungarian algorithm, then averages the post-alignment
+    diagonal cosine.
+
+    Returns
+    -------
+    dict with
+        ``cosine_matrix``                       — [K, K] cosine sim between
+                                                  top-K columns (rows = trained,
+                                                  cols = random).
+        ``mean_abs_cosine_off_diag``            — mean of |cosine| off-diagonal
+                                                  (coarse stat, kept for
+                                                  reference; sees randomly-
+                                                  permuted feature pairs).
+        ``hungarian_mean_diagonal_cosine``      — canonical metric: average
+                                                  diagonal cosine after
+                                                  ``scipy.optimize.linear_sum_assignment(-cos)``
+                                                  pairs each trained feature
+                                                  with its best random match
+                                                  (one-to-one). This is the
+                                                  expected similarity *after*
+                                                  permutation invariance is
+                                                  removed.
+        ``hungarian_assignment``                — list of (trained_rank,
+                                                  random_rank) tuples produced
+                                                  by linear_sum_assignment.
+        ``cos_to_identity_pattern_DEPRECATED``  — the old Pearson statistic,
+                                                  kept under a DEPRECATED key
+                                                  so old consumers don't
+                                                  silently miss the change.
+                                                  Do NOT rely on this value;
+                                                  prefer
+                                                  ``hungarian_mean_diagonal_cosine``.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    if W_dec_a.shape[0] != W_dec_b.shape[0]:
+        raise ValueError(
+            f"Decoder row dims differ: {W_dec_a.shape[0]} vs {W_dec_b.shape[0]}; "
+            "the two SAEs must share input dim n."
+        )
+    K = min(10, fa_a.size, fa_b.size)
+    top_a = np.argsort(-fa_a)[:K]
+    top_b = np.argsort(-fa_b)[:K]
+    cols_a = W_dec_a[:, top_a]  # [n, K]
+    cols_b = W_dec_b[:, top_b]  # [n, K]
+
+    norm_a = np.linalg.norm(cols_a, axis=0, keepdims=True) + 1e-12
+    norm_b = np.linalg.norm(cols_b, axis=0, keepdims=True) + 1e-12
+    cos = (cols_a / norm_a).T @ (cols_b / norm_b)  # [K, K]
+
+    # Off-diagonal mean absolute cosine — kept for reference.
+    mask_off = ~np.eye(K, dtype=bool)
+    mean_abs = float(np.abs(cos[mask_off]).mean()) if K > 1 else float("nan")
+
+    # ── Hungarian-aligned mean diagonal cosine (canonical). ──────────────
+    # linear_sum_assignment minimises a cost matrix; we maximise cosine by
+    # passing the negative. row_ind == arange(K) since cos is square.
+    if K >= 1:
+        row_ind, col_ind = linear_sum_assignment(-cos)
+        hungarian_assignment = [
+            [int(r), int(c)] for r, c in zip(row_ind, col_ind)
+        ]
+        hungarian_mean = float(cos[row_ind, col_ind].mean())
+    else:
+        hungarian_assignment = []
+        hungarian_mean = float("nan")
+
+    # ── DEPRECATED: Pearson-to-identity-pattern. ─────────────────────────
+    # Computed only so JSON consumers that look up the old key see an
+    # explicit "DEPRECATED" suffix and can migrate. The metric itself is
+    # meaningless because the K×K matrix has no expected diagonal
+    # structure prior to alignment.
+    cos_flat = cos.flatten()
+    ref = np.eye(K).flatten()
+    if cos_flat.std() < 1e-12 or ref.std() < 1e-12:
+        pearson = float("nan")
+    else:
+        pearson = float(np.corrcoef(cos_flat, ref)[0, 1])
+
+    return {
+        "cosine_matrix": cos.tolist(),
+        "mean_abs_cosine_off_diag": mean_abs,
+        "hungarian_mean_diagonal_cosine": hungarian_mean,
+        "hungarian_assignment": hungarian_assignment,
+        "cos_to_identity_pattern_DEPRECATED": pearson,
+        "K": int(K),
+        "top_features_trained": [int(i) for i in top_a.tolist()],
+        "top_features_random": [int(i) for i in top_b.tolist()],
+    }
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument(
+        "--trained-dir",
+        required=True,
+        help=(
+            "Path to a trained-encoder SAE run directory containing "
+            "reconstruction_metrics.json, feature_report.json, sae_model.npz."
+        ),
+    )
+    p.add_argument(
+        "--random-dir",
+        required=True,
+        help=(
+            "Path to the matching random-encoder SAE run directory (same "
+            "architecture / layer / expansion / k / seed)."
+        ),
+    )
+    p.add_argument(
+        "--out",
+        default="outputs/redesign/sae/random_encoder_null_comparison.json",
+        help="Output JSON path.",
+    )
+    p.add_argument(
+        "--criterion-multiplier",
+        type=float,
+        default=1.5,
+        help="Acceptance multiplier (default 1.5x per Orlov §8.3).",
+    )
+    args = p.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
+
+    trained_dir = Path(args.trained_dir)
+    if not trained_dir.is_absolute():
+        trained_dir = _WORKTREE_ROOT / trained_dir
+    random_dir = Path(args.random_dir)
+    if not random_dir.is_absolute():
+        random_dir = _WORKTREE_ROOT / random_dir
+    out_path = Path(args.out)
+    if not out_path.is_absolute():
+        out_path = _WORKTREE_ROOT / out_path
+
+    trained = _load_run(trained_dir)
+    rand = _load_run(random_dir)
+
+    # Sanity: same SAE config? Raise on mismatch — silently comparing
+    # across different architectures / expansions / Ks invites apples-to-
+    # oranges interpretation. The matched random null at
+    # ``outputs/redesign/sae/random_encoder/batch_topk/fused/exp32_k64_seed0/``
+    # was built specifically for this comparison.
+    cfg_t = trained["metrics"]["config"]
+    cfg_r = rand["metrics"]["config"]
+    cfg_match_keys = ("architecture", "expansion", "k")
+    cfg_mismatch = {
+        k: (cfg_t.get(k), cfg_r.get(k))
+        for k in cfg_match_keys
+        if cfg_t.get(k) != cfg_r.get(k)
+    }
+    if cfg_mismatch:
+        raise ValueError(
+            f"Config mismatch between trained and random runs: {cfg_mismatch}. "
+            "Run the matching random-encoder SAE at the trained best-config "
+            "(architecture / expansion / k) before invoking this comparator. "
+            "See `outputs/redesign/sae/random_encoder/batch_topk/fused/exp32_k64_seed0/` "
+            "for the canonical fused null."
+        )
+
+    # Per-config metrics.
+    interp_trained = _interpretable_fraction(trained["reports"])
+    interp_random = _interpretable_fraction(rand["reports"])
+    mw_count_trained = _mw_p_cog_lt_05_count(trained["reports"])
+    mw_count_random = _mw_p_cog_lt_05_count(rand["reports"])
+    dead_trained = _dead_fraction(trained["reports"])
+    dead_random = _dead_fraction(rand["reports"])
+
+    # Decoder-direction comparison.
+    cos_pack = _top10_decoder_cos_sim(
+        trained["W_dec"], trained["fraction_active"],
+        rand["W_dec"], rand["fraction_active"],
+    )
+
+    # Acceptance criterion.
+    if interp_random > 0:
+        ratio = interp_trained / interp_random
+        passed = bool(ratio > args.criterion_multiplier)
+    elif interp_trained > 0:
+        # Random produced zero interpretable features → ratio is +inf, criterion passes.
+        ratio = float("inf")
+        passed = True
+    else:
+        ratio = float("nan")
+        passed = False
+
+    payload = {
+        "trained_run": str(trained_dir),
+        "random_run": str(random_dir),
+        "trained_config": cfg_t,
+        "random_config": cfg_r,
+        "config_mismatch": cfg_mismatch,
+        "metrics": {
+            "trained": {
+                "interpretable_candidate_fraction": interp_trained,
+                "mw_p_cognition_lt_0.05_count": mw_count_trained,
+                "dead_fraction": dead_trained,
+                "n_features": len(trained["reports"]),
+                "fve_full": trained["metrics"]["full"]["fve"],
+                "l0_mean_full": trained["metrics"]["full"]["l0_mean"],
+            },
+            "random": {
+                "interpretable_candidate_fraction": interp_random,
+                "mw_p_cognition_lt_0.05_count": mw_count_random,
+                "dead_fraction": dead_random,
+                "n_features": len(rand["reports"]),
+                "fve_full": rand["metrics"]["full"]["fve"],
+                "l0_mean_full": rand["metrics"]["full"]["l0_mean"],
+            },
+        },
+        "decoder_cos_sim_top10_pairs": cos_pack,
+        "acceptance": {
+            "criterion_multiplier": float(args.criterion_multiplier),
+            "trained_over_random_interpretable_ratio": ratio if ratio != float("inf") else "inf",
+            "pass_criterion": passed,
+            "rule": (
+                f"trained_interpretable_fraction > {args.criterion_multiplier}x "
+                "random_interpretable_fraction"
+            ),
+        },
+    }
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2, default=str))
+    logger.info("Wrote %s", out_path)
+
+    # Brief stdout summary.
+    print("\n=== Trained vs Random Encoder SAE comparison ===")
+    print(f"  Trained run : {trained_dir}")
+    print(f"  Random run  : {random_dir}")
+    print(f"  Config match: {cfg_match_keys}, mismatches: {cfg_mismatch or 'none'}")
+    print()
+    print("  Metric                                  Trained    Random")
+    print(
+        f"  interpretable_candidate_fraction        {interp_trained:>7.4f}    {interp_random:>7.4f}"
+    )
+    print(
+        f"  mw_p_cognition<0.05 count               {mw_count_trained:>7d}    {mw_count_random:>7d}"
+    )
+    print(
+        f"  dead_fraction                           {dead_trained:>7.4f}    {dead_random:>7.4f}"
+    )
+    print(
+        f"  fve_full                                {trained['metrics']['full']['fve']:>7.4f}    {rand['metrics']['full']['fve']:>7.4f}"
+    )
+    print(
+        f"  l0_mean_full                            {trained['metrics']['full']['l0_mean']:>7.2f}    {rand['metrics']['full']['l0_mean']:>7.2f}"
+    )
+    print()
+    print(
+        f"  decoder top-10 mean |cos| off-diag:        {cos_pack['mean_abs_cosine_off_diag']:.4f}"
+    )
+    print(
+        f"  decoder top-10 Hungarian mean diag cos:    {cos_pack['hungarian_mean_diagonal_cosine']:.4f}"
+    )
+    print(
+        f"  (deprecated) Pearson(cos, identity):       {cos_pack['cos_to_identity_pattern_DEPRECATED']:.4f}"
+    )
+    print()
+    ratio_str = (
+        "inf" if ratio == float("inf")
+        else (f"{ratio:.3f}" if not (isinstance(ratio, float) and np.isnan(ratio)) else "nan")
+    )
+    print(
+        f"  trained / random interpretable ratio:   {ratio_str}"
+    )
+    print(f"  >{args.criterion_multiplier}x criterion (Orlov §8.3): "
+          f"{'PASS' if passed else 'FAIL'}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
