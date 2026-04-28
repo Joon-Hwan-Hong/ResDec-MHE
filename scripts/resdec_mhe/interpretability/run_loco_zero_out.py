@@ -18,8 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -38,32 +36,9 @@ if str(_WORKTREE_ROOT) not in sys.path:
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits
 from src.training.resdec_lightning_module import ResDecLightningModule
+from src.utils.provenance import git_sha, pick_max_r2_ckpt
 
 logger = logging.getLogger(__name__)
-_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
-
-
-def _pick_max_r2_ckpt(ckpt_dir: Path) -> Path:
-    best: tuple[Path, float] | None = None
-    for p in ckpt_dir.glob("best-*.ckpt"):
-        m = _BEST_CKPT_RE.match(p.name)
-        if not m:
-            continue
-        r2 = float(m.group(2))
-        if best is None or r2 > best[1]:
-            best = (p, r2)
-    if best is None:
-        raise FileNotFoundError(f"No best-*.ckpt in {ckpt_dir}")
-    return best[0]
-
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=_WORKTREE_ROOT,
-        ).decode().strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unknown"
 
 
 def _zero_out_and_predict(
@@ -175,7 +150,7 @@ def main():
         fold_cfg.data.fold = fold
 
         fold_dir = Path(args.canonical_dir) / f"fold{fold}"
-        ckpt_path = _pick_max_r2_ckpt(fold_dir / "checkpoints")
+        ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
         logger.info("fold %d: loading %s", fold, ckpt_path.name)
 
         splits = load_splits(str(args.splits_path))
@@ -260,7 +235,7 @@ def main():
         "n_cell_types": args.n_cell_types,
         "device": str(device),
         "elapsed_min": round((time.time() - t_start) / 60, 2),
-        "git_commit": _git_sha(),
+        "git_commit": git_sha(_WORKTREE_ROOT),
     }
     (out_dir / "loco_per_celltype.json").write_text(
         json.dumps({"per_cell_type": per_ct_rows, "provenance": provenance}, indent=2)

@@ -16,21 +16,21 @@ import argparse
 import json
 import logging
 import re
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import torch
 
 _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.de_resilience import deseq2_de, wilcoxon_de
+from src.analysis.pseudobulk_io import load_pseudobulk_matrix
 from src.data.constants import CELL_TYPE_ORDER
+from src.utils.provenance import git_sha
 
 logger = logging.getLogger(__name__)
 
@@ -38,43 +38,6 @@ logger = logging.getLogger(__name__)
 def _safe_filename(name: str) -> str:
     """Replace characters that are awkward in filenames (spaces, /, parens)."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
-
-
-def _load_pseudobulk_matrix(
-    precomputed_dir: Path, subject_ids: list[str],
-) -> np.ndarray:
-    """Load per-subject pseudobulk into shape (n_subjects, n_cell_types, n_genes).
-
-    Subjects with no .pt file are returned as all-NaN rows.
-    """
-    n = len(subject_ids)
-    out = None
-    for i, sid in enumerate(subject_ids):
-        p = precomputed_dir / f"{sid}.pt"
-        if not p.exists():
-            logger.warning("missing %s; row will be NaN", p)
-            if out is not None:
-                out[i] = np.nan
-            continue
-        d = torch.load(p, map_location="cpu", weights_only=False)
-        pb = d["pseudobulk"].numpy().astype(np.float64)
-        if out is None:
-            out = np.full((n,) + pb.shape, np.nan, dtype=np.float64)
-        out[i] = pb
-        if (i + 1) % 50 == 0:
-            logger.info("loaded %d/%d subjects", i + 1, n)
-    if out is None:
-        raise FileNotFoundError(f"no .pt files loadable from {precomputed_dir}")
-    return out
-
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=_WORKTREE_ROOT,
-        ).decode().strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unknown"
 
 
 def main():
@@ -134,7 +97,7 @@ def main():
     # Load pseudobulk for kept subjects only.
     keep_ids = keep_df["subject_id"].astype(str).tolist()
     is_resilient = (keep_df["group"] == "resilient").to_numpy()
-    pb = _load_pseudobulk_matrix(Path(args.precomputed_dir), keep_ids)
+    pb = load_pseudobulk_matrix(Path(args.precomputed_dir), keep_ids)
     n_subj, n_ct, n_gene = pb.shape
     logger.info("pseudobulk loaded: shape=%s", pb.shape)
 
@@ -247,7 +210,7 @@ def main():
         "n_cell_types": int(n_ct),
         "n_genes": int(n_gene),
         "seed": args.seed,
-        "git_commit": _git_sha(),
+        "git_commit": git_sha(_WORKTREE_ROOT),
         "elapsed_min": round((time.time() - t_start) / 60, 2),
     }
     (out_dir / "provenance.json").write_text(json.dumps(provenance, indent=2))

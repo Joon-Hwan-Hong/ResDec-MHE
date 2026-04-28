@@ -26,6 +26,12 @@ from src.visualization.config import (
 )
 from src.data.constants import CELL_TYPE_ORDER
 
+# Minimum finite-subject count for UMAP to produce a stable 2D embedding;
+# below this the perplexity (set as min(30, max(5, n_subj//10))) collapses to
+# its lower bound and the resulting layout is dominated by neighbor-graph
+# noise rather than fingerprint-similarity structure.
+_UMAP_MIN_SUBJECTS = 30
+
 
 def plot_cell_type_attention_heatmap(
     attention_df: pd.DataFrame,
@@ -429,8 +435,10 @@ def plot_head_fingerprint_umap(
         raise ValueError("no subjects")
     flat = head_fingerprints.reshape(n_subj, -1)
     finite = np.isfinite(flat).all(axis=1) & np.isfinite(residuals)
-    if finite.sum() < 30:
-        raise ValueError("too few finite subjects (<30)")
+    if finite.sum() < _UMAP_MIN_SUBJECTS:
+        raise ValueError(
+            f"too few finite subjects ({int(finite.sum())} < {_UMAP_MIN_SUBJECTS})"
+        )
     flat = flat[finite]
     res = residuals[finite]
 

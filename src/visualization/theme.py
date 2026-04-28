@@ -101,8 +101,12 @@ def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> str:
     used_scienceplots = False
     if use_scienceplots:
         try:
+            # The `scienceplots` package registers its matplotlib styles as
+            # an import side-effect; the import itself must happen before
+            # `plt.style.use([...])` even though the module name isn't used.
             import scienceplots
             plt.style.use(["science", "nature"])
+            del scienceplots  # silence unused-import linter, keep the side-effect
             used_scienceplots = True
         except ImportError:
             pass  # Fall through to manual rcParams
