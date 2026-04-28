@@ -126,3 +126,104 @@ def test_module_handles_missing_metadata(cfg):
     with torch.no_grad():
         out = mod(batch)
     assert out["prediction"].shape == (B,)
+
+
+# ---------------------------------------------------------------------------
+# §31.7 fix: training-time attention path
+# ---------------------------------------------------------------------------
+# After the 2026-04-28 refactor, the no_grad einsum+softmax block in
+# pathology_attention.py is eval-only. Training-time differentiable attention
+# weights are available ONLY via the in-graph einsum path
+# (compute_attention_with_grad=True), which is wired by
+# ResDecLightningModule.__init__ when attention_regularization.enabled=True.
+# When regularization is disabled, no attention_weights are emitted during
+# training (no_grad block skipped + einsum path off).
+
+
+def _build_dummy_train_batch(B: int = 2):
+    """Construct a minimal train batch (cell_data path, no metadata)."""
+    N_CT, N_GENES, N_REGIONS = 31, 4785, 6
+    cells_per_ct = 2  # tiny for fast tests
+    cells_per_subject = cells_per_ct * N_CT
+
+    region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
+    region_mask[:, 0] = True
+
+    offsets_per_subj = torch.arange(0, cells_per_subject + 1, cells_per_ct, dtype=torch.long)
+    subj_offsets = torch.arange(B, dtype=torch.long) * cells_per_subject
+    cell_offsets = subj_offsets.unsqueeze(1) + offsets_per_subj.unsqueeze(0)
+
+    return {
+        "region_pseudobulk": torch.randn(B, N_REGIONS, N_CT, N_GENES),
+        "region_mask": region_mask,
+        "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
+        "ccc_edge_type": torch.zeros(0, dtype=torch.long),
+        "ccc_edge_attr": torch.zeros(0, 1),
+        "cell_type_mask": torch.ones(B, N_CT, dtype=torch.bool),
+        "cell_data": torch.randn(B * cells_per_subject, N_GENES),
+        "cell_offsets": cell_offsets,
+        "pathology": torch.randn(B, 3),
+        "cognition": torch.randn(B, 1),
+    }
+
+
+def test_training_attention_weights_none_when_reg_disabled(cfg):
+    """§31.7 fix: with attention_regularization.enabled=False (default), the
+    encoder runs the canonical SDPA path during training and returns None for
+    attention_weights — the no_grad einsum re-compute block is bypassed."""
+    OmegaConf.set_struct(cfg, False)
+    OmegaConf.set_struct(cfg.model, False)
+    # Even if the user constructed with return_attention_in_training=True,
+    # ResDecLightningModule.__init__ flips compute_attention_with_grad=False
+    # when regularization is disabled.
+    cfg.model.return_attention_in_training = True
+    cfg.training.attention_regularization = OmegaConf.create({"enabled": False})
+
+    mod = ResDecLightningModule(cfg)
+    mod.train()
+
+    # SDPA fast path retained even with the encoder flag set
+    assert mod.encoder.pathology_attention.compute_attention_with_grad is False
+
+    batch = _build_dummy_train_batch(B=2)
+    out = mod(batch)
+
+    # Training-mode forward: attention_weights must NOT be present (no_grad
+    # block was the only producer in the SDPA path, and it is now eval-only).
+    assert "attention_weights" not in out, (
+        "attention_weights must be absent during training when "
+        "attention_regularization is disabled (§31.7 fix)."
+    )
+
+
+def test_training_attention_weights_present_when_reg_enabled(cfg):
+    """When attention_regularization.enabled=True, the lightning module wires
+    compute_attention_with_grad=True so the encoder's in-graph einsum path
+    emits differentiable attention weights during training."""
+    OmegaConf.set_struct(cfg, False)
+    OmegaConf.set_struct(cfg.model, False)
+    cfg.model.return_attention_in_training = True
+    cfg.training.attention_regularization = OmegaConf.create(
+        {"enabled": True, "scheme": "entropy_bonus", "weight": 1e-3},
+    )
+
+    mod = ResDecLightningModule(cfg)
+    mod.train()
+
+    # In-graph einsum path is active so the regularizer's gradient flows
+    assert mod.encoder.pathology_attention.compute_attention_with_grad is True
+
+    batch = _build_dummy_train_batch(B=2)
+    out = mod(batch)
+
+    assert "attention_weights" in out, (
+        "attention_weights must be returned during training when "
+        "attention_regularization is enabled."
+    )
+    assert out["attention_weights"] is not None
+    # Shape: [B, n_heads, n_cell_types]; n_heads from cfg.model.n_attention_heads
+    assert out["attention_weights"].dim() == 3
+    assert out["attention_weights"].shape[0] == 2
+    assert out["attention_weights"].shape[2] == cfg.model.n_cell_types
+    # Differentiable (in-graph einsum path)
+    assert out["attention_weights"].requires_grad is True

@@ -691,3 +691,65 @@ class TestComputeAttentionWithGrad:
         with torch.no_grad():
             grad_att, _ = attn(cell_embs, path_emb)
         torch.testing.assert_close(canonical_att, grad_att, atol=1e-4, rtol=1e-4)
+
+
+class TestNoGradBlockSkippedDuringTraining:
+    """§31.7 fix: when `return_attention_weights=False` and
+    `compute_attention_with_grad=False`, the SDPA fast path runs WITHOUT the
+    no_grad einsum+softmax re-compute block. This prevents the cudaMallocAsync
+    pool perturbation that shifts SDPA's non-deterministic backward atomic-add
+    reduction order (~0.07 R² regression). The full_model.py refactor at lines
+    549/676 ensures `return_attention_weights=False` is passed during training,
+    so this contract is what the fix relies on."""
+
+    def test_no_grad_block_skipped_when_weights_not_requested(self):
+        """SDPA path with return_attention_weights=False returns None for
+        attention_weights, i.e. the no_grad einsum block at lines 224-234 of
+        pathology_attention.py is bypassed."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=8,
+        )
+        attn.train()  # simulate training mode (the regression scenario)
+        attn.compute_attention_with_grad = False  # SDPA fast path
+        cell_embs = torch.randn(2, 8, 64)
+        path_emb = torch.randn(2, 32)
+        attended, weights = attn(
+            cell_embs, path_emb, return_attention_weights=False,
+        )
+        assert weights is None, (
+            "Expected attention_weights=None when return_attention_weights=False; "
+            "the no_grad einsum re-compute block must NOT fire during training."
+        )
+        # attended must still be a valid SDPA forward output
+        assert attended.shape == (2, 64)
+        assert torch.isfinite(attended).all()
+
+    def test_sdpa_attended_output_independent_of_flag(self):
+        """The SDPA path's attended output is identical whether or not the
+        no_grad re-compute block runs. This guarantees the forward pass is
+        bit-equivalent — only the backward atomic-add order is affected by
+        the eliminated allocations."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        torch.manual_seed(0)
+        attn = PathologyStratifiedAttention(
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=8,
+        )
+        attn.eval()
+        attn.compute_attention_with_grad = False  # SDPA path
+        cell_embs = torch.randn(2, 8, 64)
+        path_emb = torch.randn(2, 32)
+        with torch.no_grad():
+            attended_with_block, weights_with = attn(
+                cell_embs, path_emb, return_attention_weights=True,
+            )
+            attended_no_block, weights_no = attn(
+                cell_embs, path_emb, return_attention_weights=False,
+            )
+        torch.testing.assert_close(
+            attended_with_block, attended_no_block, atol=1e-6, rtol=1e-6,
+        )
+        assert weights_with is not None
+        assert weights_no is None
