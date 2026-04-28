@@ -290,29 +290,44 @@ class _SAETorch(nn.Module):
         h.scatter_(1, topk_idx, topk_vals)
         return h
 
-    def encode_batch_topk(self, x: torch.Tensor, k: int) -> tuple[torch.Tensor, float]:
+    def encode_batch_topk(
+        self, x: torch.Tensor, k: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Batch-TopK: keep the n_batch * k largest pre-activations across batch.
 
         Returns the sparse code AND the K-th-largest pre-activation value for
         the batch (used to maintain a running threshold for inference).
+
+        F4: the threshold is returned as a 0-d torch tensor to avoid the
+        per-step GPU→CPU sync that ``.item()`` would force. The training
+        loop only realises ``.item()`` once at the end of the run for
+        ``activation_stats["threshold"]``.
         """
         h_pre = self.encode_pre(x)  # [B, m]
         n_batch = h_pre.shape[0]
         budget = n_batch * k
         flat = h_pre.reshape(-1)
         if budget >= flat.numel():
-            return h_pre, 0.0
+            return h_pre, torch.zeros((), device=h_pre.device, dtype=h_pre.dtype)
         topk_vals, topk_idx = flat.topk(budget)
         h = torch.zeros_like(flat)
         h.scatter_(0, topk_idx, topk_vals)
         h = h.reshape(h_pre.shape)
         # Threshold: smallest of the kept values (the K-th largest in the
-        # batch). This is the running threshold used at inference.
-        threshold_val = float(topk_vals[-1].detach().item())
+        # batch). 0-d tensor; .detach() so it doesn't track the autograd
+        # graph (we only use it for the inference-time EMA, not for the loss).
+        threshold_val = topk_vals[-1].detach()
         return h, threshold_val
 
-    def encode_threshold(self, x: torch.Tensor, threshold: float) -> torch.Tensor:
-        """Inference-time encode for Batch-TopK: zero out values <= threshold."""
+    def encode_threshold(
+        self, x: torch.Tensor, threshold: float | torch.Tensor,
+    ) -> torch.Tensor:
+        """Inference-time encode for Batch-TopK: zero out values <= threshold.
+
+        ``threshold`` may be a Python float OR a 0-d tensor (the F4 path keeps
+        the EMA on-GPU through training; the final ``activation_stats``
+        materialises a Python float).
+        """
         h_pre = self.encode_pre(x)
         return torch.where(h_pre > threshold, h_pre, torch.zeros_like(h_pre))
 
@@ -332,10 +347,17 @@ class _SAETorch(nn.Module):
 
     @torch.no_grad()
     def project_decoder_unit_norm(self) -> None:
-        """Renormalize each decoder column to unit L2 norm."""
-        norms = self.W_dec.norm(dim=0, keepdim=True)
-        # Avoid division by zero (degenerate column → leave as is)
-        self.W_dec.div_(norms.clamp(min=1e-8))
+        """Renormalize each decoder column to unit L2 norm.
+
+        F5: in-place norm + clamp + div to avoid the temporary tensors that
+        the ``.norm(...).clamp(...)`` chain would otherwise produce. Numerics
+        are bit-equivalent to the prior expression because ``vector_norm`` is
+        the same reduction as ``.norm`` and the clamp + div are element-wise
+        operations on identical inputs.
+        """
+        norms = torch.linalg.vector_norm(self.W_dec, dim=0, keepdim=True)
+        norms.clamp_(min=1e-8)
+        self.W_dec.div_(norms)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -393,8 +415,16 @@ def _train_sae_torch(
     # heavy weight on the recent values; the threshold only matters for
     # inference, so we want it to track the converged distribution rather
     # than the early-training one.
-    running_threshold: float = 0.0
+    #
+    # F4: keep the EMA on-device as a 0-d float32 tensor to avoid a per-step
+    # GPU→CPU sync. ``activation_stats["threshold"]`` is materialised once at
+    # the end of training. EMA arithmetic is mathematically identical (same
+    # alpha, same operands); only the precision changes from Python fp64 to
+    # GPU fp32. Verified within fp32 epsilon (1e-6) by the unit test
+    # ``test_train_sae_batch_topk_threshold_within_epsilon``.
+    running_threshold = torch.zeros((), device=device, dtype=torch.float32)
     running_threshold_alpha: float = 0.95
+    one_minus_alpha: float = 1.0 - running_threshold_alpha
     # Warm-up: start the EMA only after this many steps so it represents the
     # converged regime rather than untrained-encoder noise.
     threshold_warmup_steps: int = max(1, config.n_steps // 5)
@@ -411,7 +441,7 @@ def _train_sae_torch(
         h_pre = sae.encode_pre(x)
         if config.architecture == "topk":
             h = sae.encode_topk(x, config.k)
-            batch_threshold = 0.0
+            batch_threshold: torch.Tensor | None = None
         else:  # "batch_topk" (Literal in SAEConfig restricts to {topk, batch_topk}).
             h, batch_threshold = sae.encode_batch_topk(x, config.k)
 
@@ -468,30 +498,37 @@ def _train_sae_torch(
         # this batch are "live".
         with torch.no_grad():
             active_mask = (h.abs().sum(dim=0) > 0)
-            last_active_step = torch.where(
-                active_mask,
-                torch.full_like(last_active_step, step),
-                last_active_step,
-            )
+            # F8: in-place ``masked_fill_`` instead of
+            # ``where(active_mask, full_like(...), last_active_step)`` —
+            # avoids the per-step ``full_like`` allocation. Numerically
+            # identical: both paths set positions where ``active_mask``
+            # is true to the integer ``step`` and leave the rest unchanged.
+            last_active_step.masked_fill_(active_mask, step)
             # Update running threshold for Batch-TopK inference. Skip the
             # warm-up phase so the threshold reflects the converged regime,
             # then EMA-track during the rest of training.
+            #
+            # F4: arithmetic stays on-GPU as a 0-d fp32 tensor; we never call
+            # ``.item()`` here. The result is materialised to a Python float
+            # exactly once after training finishes (see below).
             if config.architecture == "batch_topk" and step >= threshold_warmup_steps:
                 if step == threshold_warmup_steps:
-                    running_threshold = batch_threshold
+                    running_threshold.copy_(batch_threshold)  # type: ignore[arg-type]
                 else:
-                    running_threshold = (
-                        running_threshold_alpha * running_threshold
-                        + (1.0 - running_threshold_alpha) * batch_threshold
+                    running_threshold.mul_(running_threshold_alpha).add_(
+                        batch_threshold, alpha=one_minus_alpha,  # type: ignore[arg-type]
                     )
 
     # Final stats over the full dataset.
+    # F4: materialise the running EMA exactly once here (single GPU→CPU sync
+    # at end-of-training) instead of per-step.
+    running_threshold_value = float(running_threshold.detach().item())
     sae.eval()
     with torch.no_grad():
         if config.architecture == "topk":
             h_full = sae.encode_topk(x_full, config.k)
         else:  # "batch_topk" — at inference, use the running threshold (Bussmann 2024).
-            h_full = sae.encode_threshold(x_full, running_threshold)
+            h_full = sae.encode_threshold(x_full, running_threshold_value)
 
         feature_active = (h_full.abs() > 0).float()
         fraction_active = feature_active.mean(dim=0).cpu().numpy()
@@ -506,7 +543,9 @@ def _train_sae_torch(
         "is_dead": is_dead_final.astype(np.bool_),
     }
     if config.architecture == "batch_topk":
-        activation_stats["threshold"] = np.array([float(running_threshold)], dtype=np.float32)
+        activation_stats["threshold"] = np.array(
+            [running_threshold_value], dtype=np.float32,
+        )
 
     return SAEModel(
         W_enc=sae.W_enc.detach().cpu().numpy().astype(np.float32),
@@ -613,6 +652,19 @@ def extract_activations(
     ``ResDecLightningModule.load_from_checkpoint`` (NOT
     ``Predictor.from_checkpoint`` — see DEVIATION FROM USER BRIEF in module
     docstring). Forward is wrapped in ``torch.no_grad()`` and ``model.eval()``.
+
+    Implementation note (F6 deferred — design constraint):
+        The per-fold ``CognitiveResilienceDataModule`` rebuild on lines below
+        cannot be hoisted out of the loop. ``CognitiveResilienceDataModule``
+        is constructed with ``fold_idx`` as a required parameter (see
+        ``src/data/datamodule.py:56-67``) and ``setup`` partitions the cohort
+        into train / val / test using ``get_fold_subjects(splits, fold_idx,
+        ...)``; there is no cohort-wide enumeration mode in the data layer.
+        Adding one would require a parallel "sequencer" path that bypasses
+        the train / val split entirely — outside the scope of this
+        optimisation pass. ``extract_activations`` is one-shot per project
+        (5-fold extract is run once at the start of the SAE pipeline), so
+        the cost is bounded.
     """
     if layer not in ("attended", "fused"):
         raise ValueError(f"layer must be 'attended' or 'fused'; got {layer!r}")
@@ -907,7 +959,26 @@ def evaluate_reconstruction(
         )
     h = _encode_numpy(sae, activations)
     x_hat = _decode_numpy(sae, h)
+    return _reconstruction_metrics_from_codes(
+        activations, h, x_hat, dead_fraction_threshold=dead_fraction_threshold,
+    )
 
+
+def _reconstruction_metrics_from_codes(
+    activations: np.ndarray,
+    h: np.ndarray,
+    x_hat: np.ndarray,
+    *,
+    dead_fraction_threshold: float = DEAD_FRACTION_THRESHOLD,
+) -> dict[str, float]:
+    """F10 helper: compute the same scalar metrics as
+    :func:`evaluate_reconstruction` from precomputed sparse codes ``h`` and
+    reconstruction ``x_hat``.
+
+    Use this from per-fold evaluators that already encoded the full union to
+    avoid the redundant per-fold encode/decode passes. Numerically identical
+    to :func:`evaluate_reconstruction` when given the same slice indexing.
+    """
     mse = float(np.mean((activations - x_hat) ** 2))
     var = float(np.var(activations))
     fve = 1.0 - mse / var if var > 0 else float("nan")
@@ -928,6 +999,62 @@ def evaluate_reconstruction(
         "l0_std": l0_std,
         "dead_fraction": dead_fraction,
     }
+
+
+def evaluate_reconstruction_with_cached_codes(
+    sae: SAEModel,
+    activations: np.ndarray,
+    *,
+    dead_fraction_threshold: float = DEAD_FRACTION_THRESHOLD,
+) -> tuple[dict[str, float], np.ndarray, np.ndarray]:
+    """Encode + decode once; return metrics and the cached ``h``, ``x_hat``.
+
+    F10: drop-in replacement for :func:`evaluate_reconstruction` that
+    additionally returns the sparse codes and the reconstruction so callers
+    can slice them per-fold without re-encoding. Used by
+    ``run_sae_train.py`` and ``run_sae_random_null.py`` to compute full +
+    per-fold metrics with a single encode pass over the union.
+
+    Numerically identical to calling :func:`evaluate_reconstruction` on
+    ``activations``, plus the same per-fold slice yields bit-equivalent
+    metrics to calling :func:`evaluate_reconstruction` on
+    ``activations[mask]`` (verified at fp32 epsilon by the unit test
+    ``test_evaluate_reconstruction_with_cached_codes_matches_per_fold``).
+    """
+    if activations.ndim != 2:
+        raise ValueError(
+            f"activations must be [N, n] 2D; got shape {activations.shape}"
+        )
+    h = _encode_numpy(sae, activations)
+    x_hat = _decode_numpy(sae, h)
+    metrics = _reconstruction_metrics_from_codes(
+        activations, h, x_hat, dead_fraction_threshold=dead_fraction_threshold,
+    )
+    return metrics, h, x_hat
+
+
+def reconstruction_metrics_from_slice(
+    activations: np.ndarray,
+    h: np.ndarray,
+    x_hat: np.ndarray,
+    mask: np.ndarray,
+    *,
+    dead_fraction_threshold: float = DEAD_FRACTION_THRESHOLD,
+) -> dict[str, float]:
+    """F10 helper: compute reconstruction metrics on a per-fold slice of
+    cached union-level codes / reconstruction.
+
+    ``activations``, ``h``, ``x_hat`` should be the union arrays from
+    :func:`evaluate_reconstruction_with_cached_codes`. ``mask`` selects the
+    rows belonging to one fold. Numerically identical to
+    ``evaluate_reconstruction(sae, activations[mask])`` because the encoder
+    is row-wise (so ``_encode_numpy(sae, activations[mask]) == h[mask]``)
+    and the metrics are simple reductions over the slice.
+    """
+    return _reconstruction_metrics_from_codes(
+        activations[mask], h[mask], x_hat[mask],
+        dead_fraction_threshold=dead_fraction_threshold,
+    )
 
 
 def interpret_features(
@@ -1067,38 +1194,44 @@ def interpret_features(
             top_k_subjects, n_subjects, top_k_eff,
         )
 
-    reports: list[dict] = []
-    for j in range(m):
-        # Sort subjects by h_j descending.
+    # F14: parallelise the per-feature MW + CT-decomposition loop with joblib
+    # threading. The inner work is mostly numpy + scipy.stats.mannwhitneyu —
+    # both release the GIL — so threads avoid the loky pickle of ``sae`` and
+    # the activation arrays. Numerics are deterministic per-feature and do
+    # not depend on iteration order, so the threaded results are bit-equal
+    # to the serial path.
+    from joblib import Parallel, delayed
+
+    def _mw(values_top: np.ndarray, values_bot: np.ndarray) -> float:
+        v_top = values_top[~np.isnan(values_top)]
+        v_bot = values_bot[~np.isnan(values_bot)]
+        if len(v_top) < 2 or len(v_bot) < 2:
+            return float("nan")
+        try:
+            _stat, p = mannwhitneyu(v_top, v_bot, alternative="two-sided")
+            return float(p)
+        except ValueError:
+            # mannwhitneyu raises if all values are identical (no rank var).
+            return float("nan")
+
+    def _per_feature_report(j: int) -> dict:
         scores = h_subject[:, j]
         order = np.argsort(-scores)
         top_idx = order[:top_k_eff]
-        bottom_idx = order[-top_k_eff:] if top_k_eff > 0 else np.empty(0, dtype=order.dtype)
-
+        bottom_idx = (
+            order[-top_k_eff:] if top_k_eff > 0
+            else np.empty(0, dtype=order.dtype)
+        )
         top_subjects = [str(s) for s in subject_sids[top_idx]]
-
-        # Mann-Whitney U: top vs bottom group (cognition).
-        def _mw(values_top: np.ndarray, values_bot: np.ndarray) -> float:
-            v_top = values_top[~np.isnan(values_top)]
-            v_bot = values_bot[~np.isnan(values_bot)]
-            if len(v_top) < 2 or len(v_bot) < 2:
-                return float("nan")
-            try:
-                _stat, p = mannwhitneyu(v_top, v_bot, alternative="two-sided")
-                return float(p)
-            except ValueError:
-                # mannwhitneyu raises if all values are identical (no rank var).
-                return float("nan")
 
         mw_p_cog = _mw(cog_per_subject[top_idx], cog_per_subject[bottom_idx])
         mw_p_path = _mw(path_per_subject[top_idx], path_per_subject[bottom_idx])
 
-        # Decoder-direction CT decomposition (fused only).
         top_cell_types: list[dict] = []
-        ct_dominance = 0.0  # fraction of squared projection mass in top-3 CTs
+        ct_dominance = 0.0
         if layer == "fused" and per_ct_means is not None and cell_types is not None:
-            decoder_col = sae.W_dec[:, j]                # [n]
-            proj = per_ct_means @ decoder_col            # [C]
+            decoder_col = sae.W_dec[:, j]
+            proj = per_ct_means @ decoder_col
             sq = proj ** 2
             total = float(sq.sum())
             top3 = np.argsort(-sq)[:3]
@@ -1112,13 +1245,11 @@ def interpret_features(
             ]
             ct_dominance = float(sq[top3].sum() / total) if total > 0 else 0.0
 
-        # Quality flags.
         flags: set[str] = set()
         if fraction_active[j] < DEAD_FRACTION_THRESHOLD:
             flags.add("dead")
         if fraction_active[j] > 0.5:
             flags.add("ubiquitous")
-
         is_interpretable = (
             (not math.isnan(mw_p_cog) and mw_p_cog < 0.05)
             and (DEAD_FRACTION_THRESHOLD <= fraction_active[j] <= 0.5)
@@ -1128,7 +1259,7 @@ def interpret_features(
         if is_interpretable:
             flags.add("interpretable_candidate")
 
-        reports.append({
+        return {
             "feature_idx": int(j),
             "top_subjects": top_subjects,
             "top_cell_types": top_cell_types,
@@ -1137,9 +1268,18 @@ def interpret_features(
             "fraction_active": float(fraction_active[j]),
             "ct_dominance": float(ct_dominance),
             "flags": flags,
-        })
+        }
 
-    return reports
+    # Heuristic: only spawn threads when m > 64 (the loop is fast enough that
+    # thread setup overhead dominates for tiny dictionaries used in tests).
+    if m > 64:
+        reports = Parallel(n_jobs=8, prefer="threads")(
+            delayed(_per_feature_report)(j) for j in range(m)
+        )
+    else:
+        reports = [_per_feature_report(j) for j in range(m)]
+
+    return list(reports)
 
 
 def cross_seed_stability(
@@ -1204,19 +1344,31 @@ def cross_seed_stability(
                 f"sae_models[0].W_dec shape={(n, m)}"
             )
 
-    # Compute decoder column-cosine matrices for all S × S pairs.
+    # F3: compute upper-triangular off-diagonal pairs only and fill the rest
+    # via cheap transposes / self-pair shortcuts. The original cube allocates
+    # ``S*S*m*m`` entries (≈150 MB at S=3, m=2048) and runs ``S*S = 9``
+    # matmuls; the new path runs ``S*(S-1)/2 = 3`` upper-triangular matmuls
+    # plus ``S`` self-pair matmuls, with bit-equivalent results for the
+    # off-diagonal panels (``cm[sp, s] = (A_s.T @ A_{sp}).T`` exactly under
+    # fp32 since transpose is a memory layout op).
     cosine_matrices = np.zeros((S, S, m, m), dtype=np.float32)
-    norms = []
+    A_unit: list[np.ndarray] = []
     for sae in sae_models:
-        # Each W_dec is [n, m]; columns are features.
         col_norms = np.linalg.norm(sae.W_dec, axis=0, keepdims=True) + 1e-12  # [1, m]
-        norms.append(col_norms)
+        A_unit.append(sae.W_dec / col_norms)
 
+    # Self-pairs (s == sp): A_s.T @ A_s. Diagonal is exactly 1.0 by unit-norm.
     for s in range(S):
-        for sp in range(S):
-            A = sae_models[s].W_dec / norms[s]   # [n, m]
-            B = sae_models[sp].W_dec / norms[sp] # [n, m]
-            cosine_matrices[s, sp] = (A.T @ B).astype(np.float32)  # [m, m]
+        cosine_matrices[s, s] = (A_unit[s].T @ A_unit[s]).astype(np.float32)
+
+    # Upper-triangular off-diagonal pairs; mirror to the lower triangle via
+    # transpose (cosine is bilinear: (A.T @ B).T == B.T @ A bit-exactly in
+    # fp32 since both are the same product after transpose layout).
+    for s in range(S):
+        for sp in range(s + 1, S):
+            block = (A_unit[s].T @ A_unit[sp]).astype(np.float32)  # [m, m]
+            cosine_matrices[s, sp] = block
+            cosine_matrices[sp, s] = block.T
 
     # ── Canonical: bipartite (Hungarian) matching, seed 0 → seed sp ──────
     # Hungarian solves min over -cosine, equivalent to max over cosine.

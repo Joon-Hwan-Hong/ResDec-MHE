@@ -70,8 +70,9 @@ from src.analysis.sae_io import (  # noqa: E402
 from src.analysis.sparse_autoencoder import (  # noqa: E402
     ActivationBundle,
     SAEConfig,
-    evaluate_reconstruction,
+    evaluate_reconstruction_with_cached_codes,
     interpret_features,
+    reconstruction_metrics_from_slice,
     train_sae_batch_topk,
     train_sae_topk,
 )
@@ -206,7 +207,11 @@ def main() -> int:
     logger.info("Wrote %s", run_dir / "sae_model.npz")
 
     # Reconstruction metrics: full + per-fold (cross-fold-stability sanity).
-    full_metrics = evaluate_reconstruction(sae, flat)
+    # F10: encode + decode the union exactly once and slice per-fold from the
+    # cached ``h_full`` / ``x_hat_full`` instead of re-encoding 5 times.
+    full_metrics, h_full, x_hat_full = evaluate_reconstruction_with_cached_codes(
+        sae, flat,
+    )
     per_fold_metrics: dict[str, dict[str, float]] = {}
     fold_idx_flat = expand_fold_idx_to_rows(
         fold_indices, layer,
@@ -214,7 +219,9 @@ def main() -> int:
     )
     for f in sorted(set(fold_idx_flat.tolist())):
         mask = (fold_idx_flat == f)
-        per_fold_metrics[f"fold{f}"] = evaluate_reconstruction(sae, flat[mask])
+        per_fold_metrics[f"fold{f}"] = reconstruction_metrics_from_slice(
+            flat, h_full, x_hat_full, mask,
+        )
 
     metrics_payload = {
         "config": asdict(config),

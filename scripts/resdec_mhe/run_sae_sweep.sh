@@ -7,6 +7,11 @@
 #        × 5 K values (4, 8, 16, 32, 64)
 #        = 60 runs (when GPU_INDEX is unset / NUM_GPUS=1; otherwise sharded).
 #
+# F12 alternative: ``run_sae_sweep_inline.py`` runs the same grid in-process
+# (single ``import torch``, single OmegaConf merge, single bundle ``np.load``)
+# instead of spawning ``uv run python`` 60 times. Use the .py for fastest
+# wall time; this .sh remains the canonical CI-friendly idempotent driver.
+#
 # This driver is meant to be launched inside tmux (long-runs-need-tmux memory
 # rule — anything >30 min wall must NOT be in a Bash run_in_background, since
 # SSH disconnect / session refresh sends SIGHUP and kills the run).
@@ -64,6 +69,12 @@ LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 AUX_LAMBDA="${AUX_LAMBDA:-0.03125}"
 AUX_K="${AUX_K:-256}"
 SEED="${SEED:-0}"
+# F11: resolve metadata.csv ONCE in the driver (env var, falling back to the
+# canonical-config default) and pass it through ``--metadata-path`` so that
+# every per-config child skips its OmegaConf.merge of default + canonical
+# yaml. No fidelity change — the resolved path matches what the child would
+# pick by walking the same configs.
+METADATA_PATH="${METADATA_PATH:-${WORKTREE_ROOT}/data/metadata_ROSMAP/metadata.csv}"
 CUDA_DEVICE="${CUDA_VISIBLE_DEVICES:-0}"
 GPU_INDEX="${GPU_INDEX:-0}"
 NUM_GPUS="${NUM_GPUS:-1}"
@@ -126,6 +137,7 @@ for arch in "${ARCHITECTURES[@]}"; do
                 PYTHONPATH="${WORKTREE_ROOT}" \
                 uv run python scripts/resdec_mhe/interpretability/run_sae_train.py \
                     --activations-dir "${ACTIVATIONS_DIR}" \
+                    --metadata-path "${METADATA_PATH}" \
                     --layer "${layer}" \
                     --architecture "${arch}" \
                     --expansion "${exp}" \

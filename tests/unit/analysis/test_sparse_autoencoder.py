@@ -31,7 +31,9 @@ from src.analysis.sparse_autoencoder import (
     SAEModel,
     cross_seed_stability,
     evaluate_reconstruction,
+    evaluate_reconstruction_with_cached_codes,
     interpret_features,
+    reconstruction_metrics_from_slice,
     train_sae_batch_topk,
     train_sae_topk,
 )
@@ -572,3 +574,68 @@ def test_decoder_unit_norm_idempotent():
     norms_after = np.linalg.norm(W_dec2, axis=0)
     assert np.allclose(norms_before, norms_after, atol=1e-6)
     assert np.allclose(norms_after, 1.0, atol=1e-5)
+
+
+def test_evaluate_reconstruction_with_cached_codes_matches_per_fold():
+    """F10: per-fold metrics from cached codes are bit-equivalent to a fresh
+    ``evaluate_reconstruction`` on the same slice.
+
+    This guarantees ``run_sae_train.py``'s F10 refactor (encode once, slice
+    per-fold) does not change any reported number in ``reconstruction_metrics.json``.
+    """
+    n, m_true, k = 8, 16, 2
+    X, _ = _make_synthetic_sparse(n=n, m_true=m_true, n_samples=128, k=k, seed=21)
+    cfg = SAEConfig(
+        architecture="topk", expansion=2, k=k, n_steps=80,
+        batch_size=16, learning_rate=1e-3, seed=21,
+    )
+    sae = train_sae_topk(X, cfg)
+
+    full, h_full, x_hat_full = evaluate_reconstruction_with_cached_codes(sae, X)
+    expected = evaluate_reconstruction(sae, X)
+    for key in expected:
+        assert full[key] == pytest.approx(expected[key], rel=0.0, abs=0.0), (
+            f"full mismatch on {key}: full={full[key]} expected={expected[key]}"
+        )
+
+    rng = np.random.default_rng(0)
+    mask = rng.random(X.shape[0]) > 0.5
+    sliced = reconstruction_metrics_from_slice(X, h_full, x_hat_full, mask)
+    expected_slice = evaluate_reconstruction(sae, X[mask])
+    for key in expected_slice:
+        assert sliced[key] == pytest.approx(expected_slice[key], rel=0.0, abs=0.0), (
+            f"slice mismatch on {key}: sliced={sliced[key]} "
+            f"expected={expected_slice[key]}"
+        )
+
+
+def test_cross_seed_stability_off_diagonal_consistent_with_transpose():
+    """F3: cosine_matrices[sp, s] == cosine_matrices[s, sp].T (bit-exact).
+
+    The optimised path computes upper-triangular off-diagonal pairs and
+    mirrors via transpose; this asserts the resulting cube is consistent.
+    """
+    n, m, S = 16, 24, 4
+    rng = np.random.default_rng(0)
+    saes: list[SAEModel] = []
+    cfg = SAEConfig(architecture="topk", expansion=1, k=1)
+    for s in range(S):
+        W_dec = rng.standard_normal(size=(n, m)).astype(np.float32)
+        W_dec /= np.linalg.norm(W_dec, axis=0, keepdims=True) + 1e-8
+        saes.append(SAEModel(
+            W_enc=np.zeros((m, n), dtype=np.float32),
+            b_enc=np.zeros(m, dtype=np.float32),
+            W_dec=W_dec, b_dec=np.zeros(n, dtype=np.float32), config=cfg,
+        ))
+    out = cross_seed_stability(saes, cosine_threshold=0.7)
+    cm = out["cosine_matrices"]
+    assert cm.shape == (S, S, m, m)
+    # Off-diagonal panels: cm[sp, s] must be cm[s, sp].T bit-exactly.
+    for s in range(S):
+        for sp in range(S):
+            if s == sp:
+                continue
+            np.testing.assert_array_equal(cm[sp, s], cm[s, sp].T)
+    # Self-pair diagonals are unit (unit-norm columns).
+    for s in range(S):
+        np.testing.assert_allclose(np.diag(cm[s, s]), 1.0, atol=1e-5)

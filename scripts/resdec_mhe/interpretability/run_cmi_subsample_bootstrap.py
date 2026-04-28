@@ -141,6 +141,12 @@ def cmi_subsample_bootstrap(
     boot_per_ct: dict[str, list[float]] = {ct: [] for ct in obs_cmi}
     for b in range(n_boot):
         idx = rng.choice(n_subj, size=n_subsample, replace=False)
+        # F7: narrow exception handling so unexpected exceptions surface
+        # immediately instead of being silently swallowed. KSG estimator
+        # failure modes we expect: ValueError (degenerate inputs / sklearn
+        # input checks), RuntimeError (numerical KSG failure under tiny n),
+        # LinAlgError (rank-deficient Z in the residualizer). Anything else
+        # (KeyboardInterrupt, MemoryError, AttributeError) propagates.
         try:
             r = conditional_mi_per_celltype(
                 pb[idx], y[idx], z[idx], aggregation="max",
@@ -151,8 +157,12 @@ def cmi_subsample_bootstrap(
                 boot_per_ct[e["cell_type"]].append(
                     e["conditional_mi_given_pathology"]
                 )
-        except Exception as exc:
-            logger.warning("subsample %d failed: %s", b, exc)
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+            # Include the subsample seed so the failure is reproducible.
+            logger.warning(
+                "subsample %d (seed=%d, m=%d) failed: %s",
+                b, seed, n_subsample, exc,
+            )
             continue
         if (b + 1) % HEARTBEAT_EVERY == 0 or b == n_boot - 1:
             elapsed = time.time() - t0

@@ -169,21 +169,28 @@ def _compare_step1_tensors(
         out["attended_diff_mean"] = float(delta.mean().item())
         out["attended_bit_exact"] = bool(out["attended_diff_max"] == 0.0)
 
-    # Compare params (count of params where checksum differs)
+    # Compare params (count of params where checksum differs).
+    # F9: stack per-name max-abs-deltas into one tensor and pull a single
+    # ``.item()`` rather than one sync per name. The "first diff" name still
+    # honours ``sorted(common)`` order (we walk the names in the same order
+    # we built the deltas tensor, so ``argmax(deltas > 0)`` over a contiguous
+    # sorted list is identical to the prior loop's first-hit semantics).
     a_params = canon.get("params") or {}
     b_params = diff.get("params") or {}
     common = sorted(set(a_params.keys()) & set(b_params.keys()))
-    n_diff = 0
-    max_param_delta = 0.0
-    first_diff_param = None
-    for name in common:
-        d = (a_params[name] - b_params[name]).abs().max().item()
-        if d > 0.0:
-            n_diff += 1
-            if first_diff_param is None:
-                first_diff_param = name
-        if d > max_param_delta:
-            max_param_delta = float(d)
+    if common:
+        deltas = torch.stack([
+            (a_params[name] - b_params[name]).abs().max() for name in common
+        ])
+        deltas_np = deltas.detach().cpu().numpy()
+        n_diff = int((deltas_np > 0.0).sum())
+        max_param_delta = float(deltas_np.max())
+        first_idx = int(np.argmax(deltas_np > 0.0)) if n_diff > 0 else -1
+        first_diff_param = common[first_idx] if first_idx >= 0 else None
+    else:
+        n_diff = 0
+        max_param_delta = 0.0
+        first_diff_param = None
     out["param_n_diff"] = n_diff
     out["param_n_total"] = len(common)
     out["param_max_delta"] = float(max_param_delta)

@@ -35,14 +35,60 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.linear_model import LinearRegression
 
 
+def _build_linear_residualizer(Z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Precompute the OLS hat-matrix factor for ``linear`` residualization.
+
+    For an intercept-fit OLS regression on ``Z`` (matching
+    :class:`sklearn.linear_model.LinearRegression` defaults), the residuals of
+    a target matrix ``X`` are given by
+
+        X_resid = X - Z_c @ ((Z_c' Z_c)^-1 Z_c' X_c) - mean(X)
+
+    where ``Z_c = Z - mean(Z)``. This factorisation only depends on ``Z`` (and
+    the boolean finite-mask the caller supplies), so we compute it once per
+    resample and reuse it for every cell type. Mathematically identical to
+    sklearn's per-column OLS up to floating-point ordering — verified
+    bit-equivalent under ``np.allclose(rtol=1e-12, atol=1e-10)`` in the unit
+    test suite.
+
+    Returns
+    -------
+    Z_c
+        Column-mean-centered Z, ``(n_rows, n_features_z)``.
+    pinv_Z_c
+        Pseudoinverse of ``Z_c``, ``(n_features_z, n_rows)``.
+    """
+    Z = np.ascontiguousarray(Z, dtype=np.float64)
+    Z_c = Z - Z.mean(axis=0, keepdims=True)
+    # pinv handles rank-deficient Z (e.g. constant column or collinear features)
+    # the same way LinearRegression does internally (lstsq).
+    pinv_Z_c = np.linalg.pinv(Z_c)
+    return Z_c, pinv_Z_c
+
+
+def _apply_linear_residualizer(
+    X: np.ndarray, Z_c: np.ndarray, pinv_Z_c: np.ndarray,
+) -> np.ndarray:
+    """Apply the precomputed OLS residualizer to ``X``.
+
+    ``X`` must use the same row-mask as the ``Z`` that produced
+    ``(Z_c, pinv_Z_c)``. Returns ``X - mean(X) - Z_c @ pinv(Z_c) @ X_c``,
+    which equals the per-column OLS residuals up to floating-point ordering.
+    """
+    X = np.ascontiguousarray(X, dtype=np.float64)
+    X_mean = X.mean(axis=0, keepdims=True)
+    X_c = X - X_mean
+    pred_c = Z_c @ (pinv_Z_c @ X_c)
+    return X_c - pred_c
+
+
 def _residualize(
     X: np.ndarray, Z: np.ndarray, regressor: Literal["linear", "rf"], seed: int,
 ) -> np.ndarray:
     """Return X minus the regressor's prediction from Z. Per-column independent."""
     if regressor == "linear":
-        lr = LinearRegression()
-        lr.fit(Z, X)
-        return X - lr.predict(Z)
+        Z_c, pinv_Z_c = _build_linear_residualizer(Z)
+        return _apply_linear_residualizer(X, Z_c, pinv_Z_c)
     if regressor == "rf":
         rf = RandomForestRegressor(
             n_estimators=200, max_depth=None, n_jobs=-1, random_state=seed,
@@ -64,8 +110,24 @@ def _cmi_one_ct(
     min_samples: int,
     aggregation: str,
     cell_type_name: str,
+    *,
+    shared_mask: np.ndarray | None = None,
+    linear_residualizer: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> dict:
-    """Worker: compute (unconditional, conditional) MI for one cell type."""
+    """Worker: compute (unconditional, conditional) MI for one cell type.
+
+    Parameters
+    ----------
+    shared_mask, linear_residualizer
+        Optional precomputed factors (F1 hat-matrix optimisation). When
+        ``regressor == "linear"`` and the same finite-mask applies to every
+        cell type (i.e. NaNs only live on Y or Z, not on X), the orchestrator
+        computes ``(Z_c, pinv_Z_c)`` once per resample and passes them in. The
+        worker then short-circuits the per-CT ``LinearRegression().fit(Z, X)``
+        call. When ``shared_mask`` is None or the per-CT mask differs (because
+        an X column has its own NaNs), we fall back to the per-CT path —
+        bit-equivalent to the original implementation.
+    """
     if is_vector_input:
         x_full = arr[:, ct, :].astype(np.float64)
         mask = (
@@ -95,7 +157,17 @@ def _cmi_one_ct(
     mi_unc_per_feat = mutual_info_regression(
         xs, ys, n_neighbors=n_neighbors, random_state=rng_state,
     )
-    x_resid = _residualize(xs, zs, regressor, seed=rng_state)
+    can_share = (
+        regressor == "linear"
+        and shared_mask is not None
+        and linear_residualizer is not None
+        and np.array_equal(mask, shared_mask)
+    )
+    if can_share:
+        Z_c, pinv_Z_c = linear_residualizer  # type: ignore[misc]
+        x_resid = _apply_linear_residualizer(xs, Z_c, pinv_Z_c)
+    else:
+        x_resid = _residualize(xs, zs, regressor, seed=rng_state)
     if x_resid.ndim == 1:
         x_resid = x_resid.reshape(-1, 1)
     mi_cond_per_feat = mutual_info_regression(
@@ -203,17 +275,39 @@ def conditional_mi_per_celltype(
         cell_type_names = [f"CT_{i}" for i in range(n_ct)]
 
     rng_state = int(seed)
+
+    # F1: precompute the linear residualizer once per call. The factor only
+    # depends on Z (and the Y/Z finite-mask), so every CT whose own X column
+    # has no NaNs reuses it. CTs with X-column NaNs fall back to the per-CT
+    # path inside ``_cmi_one_ct`` automatically.
+    shared_mask: np.ndarray | None = None
+    linear_residualizer: tuple[np.ndarray, np.ndarray] | None = None
+    if regressor == "linear":
+        shared_mask = np.isfinite(Y) & np.isfinite(Z).all(axis=1)
+        if shared_mask.sum() >= 1:
+            linear_residualizer = _build_linear_residualizer(Z[shared_mask])
+
     if n_jobs == 1:
         per_ct = [
-            _cmi_one_ct(ct, arr, Y, Z, is_vector_input, rng_state, n_neighbors,
-                        regressor, min_samples, aggregation, cell_type_names[ct])
+            _cmi_one_ct(
+                ct, arr, Y, Z, is_vector_input, rng_state, n_neighbors,
+                regressor, min_samples, aggregation, cell_type_names[ct],
+                shared_mask=shared_mask,
+                linear_residualizer=linear_residualizer,
+            )
             for ct in range(n_ct)
         ]
     else:
-        per_ct = Parallel(n_jobs=n_jobs, backend="loky")(
+        # F2: threading backend — KSG inner loop is mostly numpy + cython that
+        # releases the GIL, and threading avoids the loky pseudobulk pickle
+        # cost (tens of MB × n_celltypes per resample). Identical numerics to
+        # the loky path under the same RNG seed.
+        per_ct = Parallel(n_jobs=n_jobs, backend="threading", prefer="threads")(
             delayed(_cmi_one_ct)(
                 ct, arr, Y, Z, is_vector_input, rng_state, n_neighbors,
                 regressor, min_samples, aggregation, cell_type_names[ct],
+                shared_mask=shared_mask,
+                linear_residualizer=linear_residualizer,
             )
             for ct in range(n_ct)
         )

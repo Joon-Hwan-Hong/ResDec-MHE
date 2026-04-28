@@ -133,3 +133,54 @@ def test_cmi_handles_nan_subjects():
     out = conditional_mi_per_celltype(expr, y, z)
     assert out["per_cell_type"][0]["n_used"] == 90  # 100 - 10 NaN
     assert out["per_cell_type"][1]["n_used"] == 100  # CT 1 unaffected
+
+
+def test_cmi_linear_residualizer_matches_sklearn_linear_regression():
+    """F1: hat-matrix-based linear residualization is bit-equivalent to
+    sklearn.LinearRegression().fit(Z, X).predict(Z) up to fp64 ordering.
+
+    Verified at rtol=1e-12, atol=1e-10 — well within machine epsilon for
+    fp64 OLS.
+    """
+    from sklearn.linear_model import LinearRegression
+
+    from src.analysis.conditional_mi import (
+        _apply_linear_residualizer,
+        _build_linear_residualizer,
+    )
+
+    rng = np.random.default_rng(123)
+    n, n_x, n_z = 200, 11, 3
+    X = rng.standard_normal(size=(n, n_x))
+    Z = rng.standard_normal(size=(n, n_z))
+
+    # Reference: sklearn per-column OLS.
+    lr = LinearRegression()
+    lr.fit(Z, X)
+    sklearn_resid = X - lr.predict(Z)
+
+    # F1 path: hat-matrix once, applied to X.
+    Z_c, pinv_Z_c = _build_linear_residualizer(Z)
+    fast_resid = _apply_linear_residualizer(X, Z_c, pinv_Z_c)
+
+    np.testing.assert_allclose(sklearn_resid, fast_resid, rtol=1e-12, atol=1e-10)
+
+
+def test_cmi_serial_matches_threading_numerically():
+    """F2: threading backend yields identical numerics to serial path.
+
+    KSG estimator is deterministic under fixed RNG, so threading must not
+    perturb values.
+    """
+    rng = np.random.default_rng(0)
+    n, n_ct = 80, 5
+    expr = rng.normal(size=(n, n_ct))
+    y = rng.normal(size=n)
+    z = rng.normal(size=(n, 2))
+    out_serial = conditional_mi_per_celltype(expr, y, z, n_jobs=1)
+    out_threads = conditional_mi_per_celltype(expr, y, z, n_jobs=4)
+    for a, b in zip(out_serial["per_cell_type"], out_threads["per_cell_type"]):
+        assert a["unconditional_mi"] == pytest.approx(b["unconditional_mi"], rel=1e-12)
+        assert a["conditional_mi_given_pathology"] == pytest.approx(
+            b["conditional_mi_given_pathology"], rel=1e-12,
+        )
