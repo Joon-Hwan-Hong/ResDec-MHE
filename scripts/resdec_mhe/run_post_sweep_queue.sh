@@ -32,6 +32,20 @@ log_event() {
     printf '[%s] [post_sweep_queue] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
+wait_for_tmux_done() {
+    local session="$1"
+    log_event "Waiting for tmux session '$session' to terminate..."
+    local n=0
+    while tmux has-session -t "$session" 2>/dev/null; do
+        sleep 30
+        n=$((n + 1))
+        if (( n % 4 == 0 )); then
+            log_event "  still running; tmux '$session' alive"
+        fi
+    done
+    log_event "tmux session '$session' is gone — proceeding."
+}
+
 wait_until_gpu_free() {
     local gpu="$1"
     local max_mb="$2"
@@ -68,6 +82,16 @@ run_job() {
     fi
     return "$ec"
 }
+
+# Wait for the upstream sweep tmux session to fully terminate, NOT just for
+# GPU memory to drop. The memory-only gate slips through during the brief gap
+# between sweep fold launches and triggers OOM (verified during the first
+# queue invocation where lambda_0p01_fold3_rerun OOM'd against a
+# 44-GB-resident sweep training process). Use SWEEP_TMUX="" to skip.
+SWEEP_TMUX="${SWEEP_TMUX:-entropy_reg_sweep}"
+if [[ -n "$SWEEP_TMUX" ]]; then
+    wait_for_tmux_done "$SWEEP_TMUX"
+fi
 
 # ─── Job 1: λ=0.01 fold 3 re-run ────────────────────────────────────────────
 wait_until_gpu_free "$GATE_GPU" "$MAX_USED_MB"

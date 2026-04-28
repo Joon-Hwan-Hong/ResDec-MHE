@@ -200,7 +200,13 @@ def cmi_bootstrap_ci(
     )
     obs_cmi = {e["cell_type"]: e["conditional_mi_given_pathology"] for e in obs["per_cell_type"]}
 
-    # Bootstrap
+    # Bootstrap with heartbeat: log every HEARTBEAT_EVERY iters so a stuck
+    # bootstrap can be diagnosed externally (otherwise the inner CMI loop is
+    # silent for the entire wall, and a hung joblib worker looks identical to
+    # progress).
+    HEARTBEAT_EVERY = max(1, n_boot // 20)  # ~5% granularity
+    import time as _time
+    _t0 = _time.time()
     boot_per_ct: dict[str, list[float]] = {ct: [] for ct in obs_cmi}
     for b in range(n_boot):
         idx = rng.integers(0, n_subj, size=n_subj)
@@ -215,6 +221,14 @@ def cmi_bootstrap_ci(
         except Exception as exc:
             logger.warning("boot %d failed: %s", b, exc)
             continue
+        if (b + 1) % HEARTBEAT_EVERY == 0 or b == n_boot - 1:
+            elapsed = _time.time() - _t0
+            eta = (n_boot - b - 1) * (elapsed / max(b + 1, 1))
+            logger.info(
+                "  cmi_bootstrap heartbeat: %d / %d (%.0f%%) elapsed=%.1fmin ETA=%.1fmin",
+                b + 1, n_boot, 100 * (b + 1) / n_boot,
+                elapsed / 60.0, eta / 60.0,
+            )
 
     out: dict[str, dict] = {}
     for ct, vals in boot_per_ct.items():
