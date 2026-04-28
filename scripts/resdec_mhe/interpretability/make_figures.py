@@ -141,6 +141,9 @@ def make_fig1_ablation_bar(
       light outline-only bars and a "† pending" legend note.
     - Horizontal reference line at ``canonical_r2``.
     - Colour: baselines (gray), ours (steel blue), pending (light outline).
+    - Error bars: outer thin = std; inner thick red = SEM (= std / sqrt(n_folds))
+      so reviewers can see both sample-level dispersion (std) and the
+      uncertainty of the mean (SEM) at a glance.
     """
     if table is None:
         raise SkipFigure("fig1_ablation_bar: baseline table is None")
@@ -192,8 +195,16 @@ def make_fig1_ablation_bar(
     # Build y and yerr, mapping NaN to 0-height outline-only bars
     y = full["r2_mean"].fillna(0.0).to_numpy()
     yerr = full["r2_std"].fillna(0.0).to_numpy()
+    # SEM column (added 2026-04-28); fall back to std/sqrt(n_folds) if absent.
+    if "r2_sem" in full.columns:
+        ysem = full["r2_sem"].fillna(0.0).to_numpy()
+    else:
+        n_folds_arr = full["n_folds"].fillna(N_FOLDS).astype(float).to_numpy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ysem = np.where(n_folds_arr > 0, yerr / np.sqrt(n_folds_arr), 0.0)
     # No errbars on pending (outline-only) rows
     yerr[pending_any] = 0.0
+    ysem[pending_any] = 0.0
 
     for i in range(n):
         ax.bar(
@@ -204,6 +215,15 @@ def make_fig1_ablation_bar(
             linewidth=1.0 if fill[i] else 1.2,
             capsize=2.5,
             error_kw={"linewidth": 0.9, "ecolor": "#333333"},
+        )
+
+    # Inner SEM error bars (thicker, red) overlaid on top of std bars.
+    sem_mask = ysem > 0
+    if sem_mask.any():
+        ax.errorbar(
+            x[sem_mask], y[sem_mask], yerr=ysem[sem_mask],
+            fmt="none", ecolor="#cc3333", elinewidth=1.8, capsize=2.0,
+            capthick=1.8, zorder=4,
         )
 
     # Reference line at canonical R² (no label; the legend proxy carries it — M4)
@@ -226,6 +246,8 @@ def make_fig1_ablation_bar(
         Patch(facecolor="#3b6ea5", edgecolor="#2a4f78", label="ResDec-MHE (ours / ablation)"),
         Patch(facecolor="#888888", edgecolor="#555555", label="Baselines"),
         Patch(facecolor="none", edgecolor="#666666", label="† pending (n_folds < 5)"),
+        Line2D([0], [0], color="#333333", linewidth=0.9, label="± std (across folds)"),
+        Line2D([0], [0], color="#cc3333", linewidth=1.8, label="± SEM (= std / √n)"),
         Line2D([0], [0], color="#cc5533", linestyle="--",
                label=f"canonical R² = {canonical_r2:.3f}"),
     ]
@@ -734,11 +756,15 @@ def make_fig7_k_sensitivity(
     r2_means: list[float],
     r2_stds: list[float],
     bootstrap_ci: tuple[float, float] | None = None,
+    r2_sems: list[float] | None = None,
+    n_folds: int = N_FOLDS,
 ) -> plt.Figure:
-    """Line plot of 5-fold R² (mean ± std) vs TabPFN top-k feature count.
+    """Line plot of 5-fold R² (mean ± std, with inner SEM bars) vs TabPFN top-k.
 
     - X-axis: top-k (log scale, readable for {1000, 2000, 4000}).
-    - Y-axis: 5-fold mean R² with ±std errorbars.
+    - Y-axis: 5-fold mean R² with outer ±std errorbars and inner ±SEM
+      errorbars (thicker red caps); SEM = std / √n_folds when ``r2_sems``
+      is None.
     - Canonical k=2000 highlighted with a distinct marker / annotation.
     - Optional horizontal reference band from ``bootstrap_ci`` (canonical
       bootstrap R² 95 % CI) illustrating that all three k values sit deep
@@ -758,6 +784,15 @@ def make_fig7_k_sensitivity(
         )
     r2_arr = np.asarray(r2_means, dtype=np.float64)
     std_arr = np.asarray(r2_stds, dtype=np.float64)
+    # Treat empty list / None as "no SEM provided" — fall back to std/√n_folds.
+    if not r2_sems:
+        sem_arr = std_arr / np.sqrt(max(n_folds, 1))
+    else:
+        if len(r2_sems) != len(k_values):
+            raise SkipFigure(
+                "fig7_k_sensitivity: r2_sems length does not match k_values"
+            )
+        sem_arr = np.asarray(r2_sems, dtype=np.float64)
     if np.any(np.isnan(r2_arr)) or np.any(np.isnan(std_arr)):
         raise SkipFigure(
             "fig7_k_sensitivity: NaN in r2_means or r2_stds"
@@ -768,6 +803,7 @@ def make_fig7_k_sensitivity(
     k_sorted = np.asarray(k_values)[order]
     r2_sorted = r2_arr[order]
     std_sorted = std_arr[order]
+    sem_sorted = sem_arr[order]
 
     fig, ax = plt.subplots(figsize=(7, 5))
 
@@ -782,14 +818,21 @@ def make_fig7_k_sensitivity(
         ax.axhline(ci_lo, color="#cc5533", linestyle=":", linewidth=0.8, zorder=1)
         ax.axhline(ci_hi, color="#cc5533", linestyle=":", linewidth=0.8, zorder=1)
 
-    # Main line with error bars.
+    # Main line with outer std error bars.
     ax.errorbar(
         k_sorted, r2_sorted, yerr=std_sorted,
         marker="o", markersize=7, linewidth=1.4, capsize=4,
         color="#3b6ea5", ecolor="#222222", elinewidth=0.9,
         markerfacecolor="#3b6ea5", markeredgecolor="#1f3d5a",
-        label="ResDec-MHE (5-fold mean R² ± std)",
+        label="ResDec-MHE (5-fold mean R²; outer ± std)",
         zorder=3,
+    )
+
+    # Inner SEM error bars (thicker, red) overlaid on top.
+    ax.errorbar(
+        k_sorted, r2_sorted, yerr=sem_sorted,
+        fmt="none", ecolor="#cc3333", elinewidth=1.8, capsize=2.5,
+        capthick=1.8, zorder=4, label="± SEM (= std / √n)",
     )
 
     # Highlight canonical k=2000 (if present) with a distinct marker.
@@ -803,7 +846,11 @@ def make_fig7_k_sensitivity(
             zorder=5, label="canonical (k=2000)",
         )
         ax.annotate(
-            f"canonical\nR² = {r2_sorted[idx]:.3f} ± {std_sorted[idx]:.3f}",
+            (
+                f"canonical\nR² = {r2_sorted[idx]:.3f}"
+                f"\n ± {std_sorted[idx]:.3f} std"
+                f"\n ± {sem_sorted[idx]:.3f} SEM"
+            ),
             xy=(canonical_k, r2_sorted[idx]),
             xytext=(8, 14), textcoords="offset points",
             fontsize=8, ha="left", va="bottom",
@@ -811,12 +858,14 @@ def make_fig7_k_sensitivity(
                       alpha=0.85, boxstyle="round,pad=0.25"),
         )
 
-    # Annotate each non-canonical point with its R² value too.
-    for k_i, r2_i, sd_i in zip(k_sorted.tolist(), r2_sorted, std_sorted):
+    # Annotate each non-canonical point with its R² value (std + SEM both shown).
+    for k_i, r2_i, sd_i, se_i in zip(
+        k_sorted.tolist(), r2_sorted, std_sorted, sem_sorted
+    ):
         if k_i == canonical_k:
             continue
         ax.annotate(
-            f"{r2_i:.3f} ± {sd_i:.3f}",
+            f"{r2_i:.3f} ± {sd_i:.3f} (SEM {se_i:.3f})",
             xy=(k_i, r2_i), xytext=(6, -14), textcoords="offset points",
             fontsize=8, ha="left", va="top", color="#1f3d5a",
         )
@@ -830,7 +879,7 @@ def make_fig7_k_sensitivity(
     ax.set_xticks([], minor=True)
     ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.set_xlabel("TabPFN top-k features (log scale)")
-    ax.set_ylabel("5-fold cross-validated R² (mean ± std)")
+    ax.set_ylabel("5-fold cross-validated R² (mean ± std; inner ± SEM)")
     ax.set_title("TabPFN feature-count sensitivity")
 
     # Y-limits: respect bootstrap CI if provided so the band is visible.
@@ -928,16 +977,18 @@ def _load_calibration_per_subject(
 
 def _load_k_sensitivity_data(
     canonical_dir: Path, ablation_root: Path
-) -> tuple[list[int], list[float], list[float]]:
+) -> tuple[list[int], list[float], list[float], list[float]]:
     """Load k-sensitivity R² data from k=1000/2000/4000 summaries.
 
     Reads ``best_vs_tabpfn_summary.json`` from each of
     ``{ablation_root}/p5_ablation_topk_1000``, ``canonical_dir``,
     ``{ablation_root}/p5_ablation_topk_4000`` and computes per-k
-    ``(mean, std)`` over ``per_fold[i]["ours"]["r2"]``.
+    ``(mean, std, sem)`` over ``per_fold[i]["ours"]["r2"]``. SEM is
+    ``std / sqrt(n_folds)``.
 
-    Returns sorted k values, R² means, R² stds (ddof=1). Missing summaries
-    are skipped — the figure will be drawn with whatever k entries loaded.
+    Returns sorted k values, R² means, R² stds (ddof=1), R² SEMs. Missing
+    summaries are skipped — the figure will be drawn with whatever k
+    entries loaded.
     """
     k_to_dir: dict[int, Path] = {
         1000: ablation_root / "p5_ablation_topk_1000",
@@ -948,6 +999,7 @@ def _load_k_sensitivity_data(
     k_vals: list[int] = []
     r2_means: list[float] = []
     r2_stds: list[float] = []
+    r2_sems: list[float] = []
     for k in sorted(k_to_dir):
         summary_path = k_to_dir[k] / "best_vs_tabpfn_summary.json"
         if not summary_path.is_file():
@@ -963,10 +1015,12 @@ def _load_k_sensitivity_data(
                 continue
             k_vals.append(int(k))
             r2_means.append(float(np.mean(fold_r2s)))
-            r2_stds.append(float(np.std(fold_r2s, ddof=1)) if len(fold_r2s) > 1 else 0.0)
+            std_k = float(np.std(fold_r2s, ddof=1)) if len(fold_r2s) > 1 else 0.0
+            r2_stds.append(std_k)
+            r2_sems.append(std_k / float(np.sqrt(len(fold_r2s))) if fold_r2s else 0.0)
         except Exception as e:
             logger.warning("k=%d: failed to parse %s (%s)", k, summary_path, e)
-    return k_vals, r2_means, r2_stds
+    return k_vals, r2_means, r2_stds, r2_sems
 
 
 def _load_bootstrap_r2_ci(stat_rigor: dict | None) -> tuple[float, float] | None:
@@ -1159,18 +1213,19 @@ def main(argv: list[str] | None = None) -> int:
     # --- Fig 7: k-sensitivity ---
     fig7_paths: list[Path] = []
     try:
-        k_vals, r2_means, r2_stds = _load_k_sensitivity_data(
+        k_vals, r2_means, r2_stds, r2_sems = _load_k_sensitivity_data(
             canonical_dir=args.pred_root,
             ablation_root=args.ablation_root,
         )
     except Exception as e:
         logger.warning("k-sensitivity data load failed: %s", e)
-        k_vals, r2_means, r2_stds = [], [], []
+        k_vals, r2_means, r2_stds, r2_sems = [], [], [], []
     bootstrap_ci = _load_bootstrap_r2_ci(rigor)
     fig7_paths = _try_make(
         "fig7_k_sensitivity",
         lambda: make_fig7_k_sensitivity(
             k_values=k_vals, r2_means=r2_means, r2_stds=r2_stds,
+            r2_sems=r2_sems,
             bootstrap_ci=bootstrap_ci,
         ),
         args.out_dir, "fig_k_sensitivity",

@@ -86,6 +86,13 @@ class PathologyStratifiedAttention(nn.Module):
 
         self.out_proj = nn.Linear(d_fused, d_fused)
 
+        # When True, the forward replaces the SDPA + no-grad-attention
+        # re-compute with an explicit einsum+softmax path that keeps attention
+        # weights in the autograd graph. Required for any loss term computed
+        # on attention weights (e.g. entropy regularization). Default False
+        # preserves the canonical inference-friendly fast path.
+        self.compute_attention_with_grad: bool = False
+
     def forward(
         self,
         cell_type_embeddings: torch.Tensor,  # [B, n_cell_types, d_fused]
@@ -165,6 +172,33 @@ class PathologyStratifiedAttention(nn.Module):
             if all_masked.any():
                 all_masked_expanded = all_masked.view(-1, 1, 1, 1).expand_as(attn_bias)
                 attn_bias = attn_bias.masked_fill(all_masked_expanded, -1e9)
+
+        if self.compute_attention_with_grad:
+            # In-graph attention path. Computes attention_weights with
+            # gradients flowing through softmax, then derives `attended` from
+            # those weights so both share one node in the autograd graph (so a
+            # loss term on attention_weights backprops into the encoder).
+            scores = torch.einsum('bhqd,bhkd->bhqk', query, keys) / (self.d_head ** 0.5)
+            scores = scores + attn_bias  # [B, H, 1, C]
+            scores_2d = scores.squeeze(2)  # [B, H, C]
+            attention_weights = F.softmax(
+                scores_2d.float(), dim=-1).to(values.dtype)  # [B, H, C]
+            if cell_type_mask is not None and all_masked.any():
+                attention_weights = attention_weights.masked_fill(
+                    all_masked.unsqueeze(-1).unsqueeze(-1).expand_as(attention_weights),
+                    0.0,
+                )
+            attended = torch.einsum(
+                'bhk,bhkd->bhd', attention_weights, values
+            ).reshape(B, self.d_fused)
+            attended = self.out_proj(attended)
+            if cell_type_mask is not None and all_masked.any():
+                attended = attended.masked_fill(
+                    all_masked.unsqueeze(-1).expand_as(attended), 0.0
+                )
+            if not return_attention_weights:
+                attention_weights = None
+            return attended, attention_weights
 
         # Fused attention via SDPA (dispatches to FlashAttention/memory-efficient backend).
         # SDPA handles float32 softmax internally — no explicit .float() promotion needed.

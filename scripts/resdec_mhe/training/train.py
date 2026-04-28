@@ -75,6 +75,14 @@ def main(args: argparse.Namespace) -> None:
         cfg.data.tabpfn_oof_dir = args.tabpfn_oof_dir
     if args.tabpfn_outer_dir is not None:
         cfg.data.tabpfn_outer_dir = args.tabpfn_outer_dir
+    if args.reg_weight is not None:
+        if "attention_regularization" not in cfg.training:
+            raise ValueError(
+                "--reg-weight requires the config to have a "
+                "training.attention_regularization block (e.g. use "
+                "configs/resdec_mhe/entropy_reg.yaml)."
+            )
+        cfg.training.attention_regularization.weight = float(args.reg_weight)
 
     pl.seed_everything(int(cfg.experiment.seed), workers=True)
     torch.set_float32_matmul_precision("high")
@@ -265,4 +273,8 @@ if __name__ == "__main__":
                    help="Override cfg.data.tabpfn_oof_dir (per-fold OOF cache).")
     p.add_argument("--tabpfn-outer-dir", default=None,
                    help="Override cfg.data.tabpfn_outer_dir (per-fold outer cache).")
+    p.add_argument("--reg-weight", type=float, default=None,
+                   help="Override cfg.training.attention_regularization.weight "
+                        "(λ knob for the entropy-bonus sweep). Only effective "
+                        "when the config has attention_regularization.enabled=true.")
     main(p.parse_args())

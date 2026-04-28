@@ -306,9 +306,11 @@ def parse_tabpfn_standalone(
 # ---------------------------------------------------------------------------
 
 def summarise_row(metrics: dict[str, list[float]]) -> dict[str, float]:
-    """Return mean + std (ddof=1) for each metric, plus ``n_folds``.
+    """Return mean + std (ddof=1) + SEM for each metric, plus ``n_folds``.
 
     Empty metrics → all-NaN summary with n_folds = 0.
+    SEM = std / sqrt(n) — added so biologists (std) and statisticians (SEM)
+    both have what they expect from a per-fold CV summary.
     """
     n = len(metrics.get("r2", []))
     summary: dict[str, float] = {"n_folds": n}
@@ -320,11 +322,16 @@ def summarise_row(metrics: dict[str, list[float]]) -> dict[str, float]:
         if finite.size == 0:
             summary[f"{k}_mean"] = float("nan")
             summary[f"{k}_std"] = float("nan")
+            summary[f"{k}_sem"] = float("nan")
         else:
             summary[f"{k}_mean"] = float(finite.mean())
             # ddof=1 matches paper convention (sample std across folds).
-            summary[f"{k}_std"] = (
+            std = (
                 float(finite.std(ddof=1)) if finite.size > 1 else 0.0
+            )
+            summary[f"{k}_std"] = std
+            summary[f"{k}_sem"] = (
+                std / float(np.sqrt(finite.size)) if finite.size > 1 else 0.0
             )
     return summary
 
@@ -518,6 +525,7 @@ def _try_read_rosmap_baseline_summary(results_dir: Path) -> tuple[dict, int, Pat
         f"{k}_mean": float("nan") for k in _METRIC_KEYS
     }
     metric_dict.update({f"{k}_std": float("nan") for k in _METRIC_KEYS})
+    metric_dict.update({f"{k}_sem": float("nan") for k in _METRIC_KEYS})
     # Summary CSV rows use sklearn-idiomatic keys matching _METRIC_KEYS (r2, mae,
     # pearson_r, spearman_rho). rmse is absent from run_rosmap outputs.
     for _, row in summary_df.iterrows():
@@ -530,6 +538,13 @@ def _try_read_rosmap_baseline_summary(results_dir: Path) -> tuple[dict, int, Pat
     allfolds_files = sorted(results_dir.glob("AllFolds_*_ROSMAP.csv"))
     if allfolds_files:
         n_folds = len(pd.read_csv(allfolds_files[0]))
+
+    # Derive SEM = std / sqrt(n_folds) once n_folds is known.
+    if n_folds > 1:
+        for k in _METRIC_KEYS:
+            std = metric_dict[f"{k}_std"]
+            if np.isfinite(std):
+                metric_dict[f"{k}_sem"] = float(std / np.sqrt(n_folds))
 
     return metric_dict, n_folds, summary_path
 
@@ -560,6 +575,7 @@ def collect_nonresult_rows(baselines_root: Path) -> list[dict]:
             "n_folds": 0,
             **{f"{k}_mean": float("nan") for k in _METRIC_KEYS},
             **{f"{k}_std": float("nan") for k in _METRIC_KEYS},
+            **{f"{k}_sem": float("nan") for k in _METRIC_KEYS},
             "source_path": "baselines/mixmil/run_rosmap.py",
             "notes": (
                 "source only, no output: blocked on baselines/shared/mixmil_input.h5ad"
@@ -578,6 +594,7 @@ def collect_nonresult_rows(baselines_root: Path) -> list[dict]:
             "n_folds": 0,
             **{f"{k}_mean": float("nan") for k in _METRIC_KEYS},
             **{f"{k}_std": float("nan") for k in _METRIC_KEYS},
+            **{f"{k}_sem": float("nan") for k in _METRIC_KEYS},
             "source_path": "baselines/scPhase/run_rosmap.py",
             "notes": (
                 "source only, no output: blocked on baselines/shared/scphase_input.h5ad"
@@ -590,8 +607,10 @@ def collect_nonresult_rows(baselines_root: Path) -> list[dict]:
         "n_folds": 0,
         "r2_mean": CURRENT_ENCODER_ALONE_R2_REF,
         "r2_std": float("nan"),
+        "r2_sem": float("nan"),
         **{f"{k}_mean": float("nan") for k in _METRIC_KEYS if k != "r2"},
         **{f"{k}_std": float("nan") for k in _METRIC_KEYS if k != "r2"},
+        **{f"{k}_sem": float("nan") for k in _METRIC_KEYS if k != "r2"},
         "source_path": "(legacy training run; no per-fold CSV archived)",
         "notes": (
             f"reference R² only ({CURRENT_ENCODER_ALONE_R2_REF:.3f}) from "
@@ -624,7 +643,7 @@ def rows_to_dataframe(rows: list[dict]) -> pd.DataFrame:
     cols: list[str] = ["model", "display_name", "n_folds"]
     for k in _METRIC_KEYS:
         display = _METRIC_DISPLAY_NAMES[k]
-        cols.extend([f"{display}_mean", f"{display}_std"])
+        cols.extend([f"{display}_mean", f"{display}_std", f"{display}_sem"])
     cols.extend(["source_path", "notes"])
 
     # Rebuild rows with renamed keys so the DataFrame column names match the
@@ -636,7 +655,7 @@ def rows_to_dataframe(rows: list[dict]) -> pd.DataFrame:
             display = _METRIC_DISPLAY_NAMES[k]
             if k == display:
                 continue
-            for stat in ("mean", "std"):
+            for stat in ("mean", "std", "sem"):
                 old_key = f"{k}_{stat}"
                 new_key = f"{display}_{stat}"
                 if old_key in new_row:

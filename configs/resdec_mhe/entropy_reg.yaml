@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ResDec-MHE + entropy-bonus attention regularization — Scheme A sweep base.
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Identical to configs/resdec_mhe/canonical.yaml except:
+#   - model.return_attention_in_training=true   (encoder returns differentiable
+#     attention; PathologyStratifiedAttention swapped to in-graph einsum path)
+#   - training.attention_regularization.enabled=true with scheme=entropy_bonus
+#   - training.attention_regularization.weight is the λ knob — override via the
+#     sweep driver, e.g.
+#       uv run python scripts/resdec_mhe/training/train.py \
+#           --config configs/resdec_mhe/entropy_reg.yaml \
+#           --reg-weight 0.01 --fold 0
+#
+# Loss term added in training_step:  -λ · mean H(attention)   (entropy in nats)
+
+experiment:
+  run_name: "p5_entropy_reg"
+
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  return_attention_in_training: true
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+    n_stages: 1
+    aux_lambdas: [1.0]
+    use_diff_attn: false
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
+    monitor: "val/r2"
+    mode: "max"
+  attention_regularization:
+    enabled: true
+    scheme: entropy_bonus
+    # λ is set by the sweep driver via --reg-weight CLI override.
+    # Default 0 here means "wire is in place but no penalty applied"; sweep
+    # driver replaces with values from {0, 1e-3, 1e-2, 1e-1, 1.0}.
+    weight: 0.0
+
+data:
+  dataloader:
+    batch_size: 24
+  use_cached_embeddings: false
+  tabpfn_oof_dir: data/redesign
+  tabpfn_outer_dir: data/redesign

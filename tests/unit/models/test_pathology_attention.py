@@ -618,3 +618,76 @@ class TestCellTypeMasking:
             attended_masked, _ = attn(cell_embs, path_emb, cell_type_mask=mask)
 
         assert not torch.allclose(attended_no_mask, attended_masked, atol=1e-6)
+
+
+class TestComputeAttentionWithGrad:
+    """Flag-gated path that keeps attention in the autograd graph."""
+
+    def test_default_flag_is_false(self):
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=8,
+        )
+        assert attn.compute_attention_with_grad is False
+
+    def test_grad_path_returns_same_shape(self):
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=8,
+        )
+        attn.compute_attention_with_grad = True
+        cell_embs = torch.randn(2, 8, 64)
+        path_emb = torch.randn(2, 32)
+        attended, weights = attn(cell_embs, path_emb)
+        assert attended.shape == (2, 64)
+        assert weights.shape == (2, 4, 8)
+        # Each (batch, head) row sums to 1 (proper softmax distribution)
+        torch.testing.assert_close(
+            weights.sum(dim=-1), torch.ones(2, 4), atol=1e-5, rtol=1e-5,
+        )
+
+    def test_grad_path_attention_is_differentiable(self):
+        """Attention weights MUST flow gradients in the grad path. In the
+        canonical SDPA path attention is detached; here it should backprop
+        into the encoder."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        attn = PathologyStratifiedAttention(
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=8,
+        )
+        attn.compute_attention_with_grad = True
+        cell_embs = torch.randn(2, 8, 64, requires_grad=True)
+        path_emb = torch.randn(2, 32, requires_grad=True)
+        _, weights = attn(cell_embs, path_emb)
+        # Loss on attention weights (e.g. entropy bonus): if backprop flows,
+        # cell_embs and path_emb must receive non-zero gradients.
+        loss = -(weights * (weights + 1e-12).log()).sum(dim=-1).mean()
+        loss.backward()
+        assert cell_embs.grad is not None
+        assert path_emb.grad is not None
+        assert cell_embs.grad.abs().sum() > 0
+        assert path_emb.grad.abs().sum() > 0
+
+    def test_grad_path_canonical_path_numerical_close(self):
+        """The grad path's attended output should be close to the canonical
+        SDPA path output (drift expected from FlashAttention reorderings)."""
+        from src.models.fusion.pathology_attention import PathologyStratifiedAttention
+
+        torch.manual_seed(0)
+        attn = PathologyStratifiedAttention(
+            d_fused=64, d_cond=32, n_heads=4, n_cell_types=8,
+        )
+        attn.eval()
+        cell_embs = torch.randn(2, 8, 64)
+        path_emb = torch.randn(2, 32)
+        # Canonical SDPA path
+        attn.compute_attention_with_grad = False
+        with torch.no_grad():
+            canonical_att, _ = attn(cell_embs, path_emb)
+        # Grad-enabled einsum path
+        attn.compute_attention_with_grad = True
+        with torch.no_grad():
+            grad_att, _ = attn(cell_embs, path_emb)
+        torch.testing.assert_close(canonical_att, grad_att, atol=1e-4, rtol=1e-4)

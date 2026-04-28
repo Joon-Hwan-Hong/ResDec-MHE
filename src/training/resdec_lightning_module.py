@@ -144,6 +144,42 @@ class ResDecLightningModule(pl.LightningModule):
         # DEFAULT_SIGMA_EPS for rationale.
         self._sigma_eps = float(resdec_cfg.get("sigma_eps", DEFAULT_SIGMA_EPS))
 
+        # ------------------------------------------------------------------ #
+        # Attention regularization                                            #
+        # ------------------------------------------------------------------ #
+        # Reads training.attention_regularization.{enabled, scheme, weight}
+        # from the config. When enabled, the encoder must have
+        # `model.return_attention_in_training=True` so attention is in the
+        # autograd graph; otherwise the regularizer would be a no-op (its
+        # gradient wouldn't flow back to the encoder).
+        train_cfg = config.get("training", {}) or {}
+        reg_cfg = train_cfg.get("attention_regularization", {}) or {}
+        self._reg_enabled = bool(reg_cfg.get("enabled", False))
+        self._reg_scheme = str(reg_cfg.get("scheme", "entropy_bonus"))
+        self._reg_weight = float(reg_cfg.get("weight", 0.0))
+        if self._reg_enabled:
+            if not bool(model_cfg.get("return_attention_in_training", False)):
+                raise ValueError(
+                    "training.attention_regularization.enabled=True requires "
+                    "model.return_attention_in_training=True so the encoder "
+                    "returns differentiable attention weights during training."
+                )
+            if self._reg_scheme != "entropy_bonus":
+                raise NotImplementedError(
+                    f"attention_regularization.scheme={self._reg_scheme!r} is "
+                    "not yet implemented; only 'entropy_bonus' (Scheme A) is "
+                    "currently supported. Other schemes (kl_to_uniform, "
+                    "coverage_penalty, top1_cap) are skeleton in "
+                    "src/training/regularization.py."
+                )
+        else:
+            # Reg disabled — restore the canonical SDPA fast path even if the
+            # encoder was constructed with `return_attention_in_training=True`
+            # (the einsum-grad path is ~2× slower and unnecessary when no loss
+            # term backprops through attention).
+            if hasattr(self.encoder, "pathology_attention"):
+                self.encoder.pathology_attention.compute_attention_with_grad = False
+
         self.head = ResDecMHEHead(
             d_subject=d_subject,
             d_metadata=d_metadata,
@@ -407,6 +443,23 @@ class ResDecLightningModule(pl.LightningModule):
                 running_detached = running_detached + stage_k.detach()
 
             loss = L_main + sum(lam * Lk for lam, Lk in zip(self._aux_lambdas, aux_losses))
+
+            # Attention regularization (entropy bonus, scheme A).
+            # Only fires when (a) the user enabled it via config, AND (b) the
+            # encoder produced differentiable attention_weights (which it does
+            # when `model.return_attention_in_training=True`, validated in
+            # __init__). Adds `-λ · mean H(attention)` to the loss so the
+            # optimizer is rewarded for higher-entropy attention.
+            if self._reg_enabled and out.get("attention_weights") is not None:
+                from src.training.regularization import attention_entropy_bonus
+                reg_term = attention_entropy_bonus(
+                    out["attention_weights"], weight=self._reg_weight,
+                )
+                loss = loss + reg_term
+                self.log(
+                    "train/L_reg", reg_term, on_step=False, on_epoch=True,
+                    batch_size=bs, sync_dist=True,
+                )
 
             # Composite MSE (detached, for monitoring).
             # detach: composite MSE is log-only, no gradient contribution — the

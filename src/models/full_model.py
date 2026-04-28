@@ -135,6 +135,7 @@ class CognitiveResilienceModel(PyroModule):
         target_mean: float = 0.0,
         fusion_type: str = "concat",
         fusion_n_heads: int = 4,
+        return_attention_in_training: bool = False,
     ):
         super().__init__("cognitive_resilience_model")
 
@@ -167,6 +168,13 @@ class CognitiveResilienceModel(PyroModule):
         self.use_cell_transformer = use_cell_transformer
         self.use_pathology_attention = use_pathology_attention
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        # When True, override the eval-only attention extraction so
+        # attention_weights are returned during training too, and flip
+        # PathologyStratifiedAttention into its in-graph mode so attention is
+        # differentiable. Required for any training loss term computed on
+        # attention weights. Default False preserves canonical behavior (SDPA
+        # + detached attention extraction).
+        self.return_attention_in_training = bool(return_attention_in_training)
 
         disabled = [name for name, on in [
             ("hgt_encoder", use_hgt_encoder),
@@ -271,6 +279,9 @@ class CognitiveResilienceModel(PyroModule):
             n_heads=n_attention_heads,
             n_cell_types=n_cell_types,
         )
+        # Wire the in-graph attention path when the encoder-level flag is set.
+        if self.return_attention_in_training:
+            self.pathology_attention.compute_attention_with_grad = True
 
         # Prediction Head (Bayesian or Deterministic)
         if use_bayesian_head:
@@ -535,7 +546,7 @@ class CognitiveResilienceModel(PyroModule):
             # [B, d_fused], [B, n_heads, n_cell_types] or None
             attended, attention_weights = self.pathology_attention(
                 fused, path_emb, cell_type_mask=cell_type_mask,
-                return_attention_weights=not self.training,
+                return_attention_weights=(not self.training) or self.return_attention_in_training,
             )
         else:
             # Mean pooling over cell types (ablation: no pathology conditioning)
@@ -662,7 +673,7 @@ class CognitiveResilienceModel(PyroModule):
         if self.use_pathology_attention:
             attended, attention_weights = self.pathology_attention(
                 fused, path_emb, cell_type_mask=cell_type_mask,
-                return_attention_weights=not self.training,
+                return_attention_weights=(not self.training) or self.return_attention_in_training,
             )
         else:
             if cell_type_mask is not None:
@@ -807,4 +818,5 @@ def build_model_from_config(model_cfg) -> CognitiveResilienceModel:
         target_mean=model_cfg.head.get("target_mean", 0.0) or 0.0,
         fusion_type=fusion_cfg.get("type", "concat"),
         fusion_n_heads=fusion_cfg.get("n_heads", 4),
+        return_attention_in_training=model_cfg.get("return_attention_in_training", False),
     )
