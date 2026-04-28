@@ -1,27 +1,37 @@
-"""Per-subject counterfactual resilience explanations (Wachter et al. 2017).
+"""Per-subject counterfactual explanations (Wachter et al. 2017 Mode-A literal).
 
-For each sampled subject, find the smallest perturbation of their per-(cell type,
-gene) pseudobulk that drives the ResDec-MHE composite prediction toward a
-target value (flip toward the opposite resilience regime). Uses the Wachter
-quadratic loss ``(f(x) - y_target)^2 + lambda * ||x - x_init||^2``,
-gradient-descent optimised by ``find_counterfactual`` from
-``src.analysis.counterfactual_resilience``.
+Minimizes ``L(x, λ) = ‖x − x_init‖² + λ · (f(x) − y_target)²`` with
+adaptive λ doubling:
 
-Subject selection (default): top-N resilient + top-N vulnerable by canonical
-residual, covering both regimes.
+  * Start λ at ``--lambda-start`` (small → distance dominates).
+  * Run inner gradient descent for up to ``--max-steps`` iterations
+    with unit-norm L2 gradient clipping for stability at high λ.
+  * If target not reached (``|f(x) − target| > --tol``), reset
+    ``x ← x_init``, multiply λ by ``--lambda-mult`` (default 2.0),
+    and retry.
+  * Terminate at success OR when ``λ > --lambda-max``. The result
+    records which λ was the converging / closest attempt.
 
-Outputs JSON with per-subject {x_init, x_cf (sparse top-K only), y_init,
-y_cf, target_y, success, steps, l2_distance, top_k_features}. The full
-x_cf tensor is NOT saved (148K features × N subjects is large); instead
-we keep the top-K |x_cf - x_init| feature indices + values per subject.
+Perturbations are restricted to the PFC slice of ``region_pseudobulk``
+(31 cell types × 4,785 genes = 148 K dimensions). The other five
+regions are held at their original (typically zero, since most
+ROSMAP subjects are PFC-only) values, and the gradient is taken
+only with respect to the PFC slice.
+
+Two target modes are supported:
+  - ``relative`` — ``y_target = y_init ± target_delta``: each subject
+    is asked to move a fixed displacement in the opposite-regime
+    direction, giving constant per-subject search difficulty (best
+    for top-K aggregation across subjects).
+  - ``absolute`` — ``y_target = ± target_delta``: each subject is
+    asked to reach a fixed regime-side prediction value regardless
+    of starting point, giving variable difficulty.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -35,69 +45,77 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
-from src.analysis.counterfactual_resilience import find_counterfactual
+from src.analysis.counterfactual_resilience import find_counterfactual_mode_a_adaptive
+from src.data.constants import PFC_REGION_IDX
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits
 from src.training.resdec_lightning_module import ResDecLightningModule
+from src.utils.provenance import git_sha, pick_max_r2_ckpt
 
 logger = logging.getLogger(__name__)
-_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
 
 
-def _pick_max_r2_ckpt(ckpt_dir: Path) -> Path:
-    best: tuple[Path, float] | None = None
-    for p in ckpt_dir.glob("best-*.ckpt"):
-        m = _BEST_CKPT_RE.match(p.name)
-        if not m:
-            continue
-        r2 = float(m.group(2))
-        if best is None or r2 > best[1]:
-            best = (p, r2)
-    if best is None:
-        raise FileNotFoundError(f"No best-*.ckpt in {ckpt_dir}")
-    return best[0]
-
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=_WORKTREE_ROOT,
-        ).decode().strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unknown"
-
-
-def _build_subject_closures(
+def _build_pfc_only_closures(
     model: ResDecLightningModule,
     template_batch: dict,
-    pseudobulk_key: str,
     device: torch.device,
 ):
-    """Build (f, grad_f) closures for one subject's pseudobulk perturbation.
+    """Build (f, grad_f) closures for PFC-slice-only perturbation.
 
-    ``template_batch`` is the batch dict for ONE subject, already on
-    ``device``. ``pseudobulk_key`` is either 'pseudobulk' (single-region
-    format) or 'region_pseudobulk' (multi-region). The closure accepts a
-    flat numpy vector ``x`` of length ``prod(shape)`` and writes it into
-    ``template_batch[pseudobulk_key]`` before calling model.forward.
+    The perturbation vector ``x`` has shape (n_ct * n_gene,) and, when
+    reshaped to (1, n_ct, n_gene), is injected into region PFC of a copy
+    of the subject's ``region_pseudobulk`` tensor. Other regions retain
+    whatever values they had in the template batch (usually zero for
+    PFC-only subjects, real data for multi-region subjects). Gradient is
+    taken only with respect to the PFC slice.
     """
-    target_shape = template_batch[pseudobulk_key].shape
-    n_features = int(np.prod(target_shape))
+    if "region_pseudobulk" not in template_batch:
+        raise KeyError(
+            "template_batch is missing 'region_pseudobulk'; this orchestrator "
+            "requires the multi-region format (datamodule always provides this)"
+        )
+    orig_rp = template_batch["region_pseudobulk"]
+    _, n_regions, n_ct, n_gene = orig_rp.shape
+    pfc_shape = (1, n_ct, n_gene)
+    n_features = int(np.prod(pfc_shape))
+
+    # Pre-compute the constant non-PFC region slices once (they never change
+    # across GD steps). The naive implementation would clone orig_rp per step
+    # (a 3.4 MB GPU memcpy) and re-slice; both are wasted work since these
+    # slices are read-only.
+    pre_slice = orig_rp[:, :PFC_REGION_IDX, :, :].contiguous()
+    post_slice = orig_rp[:, PFC_REGION_IDX + 1:, :, :].contiguous()
+
+    # Pre-allocate the perturbation tensor once with requires_grad=True.
+    # Each call zeroes its grad and copies new x_np data into .data; the
+    # autograd graph is rebuilt fresh on each forward (since we re-do
+    # torch.cat etc.), but the leaf-tensor allocation is paid once.
+    xt_buf = torch.zeros(pfc_shape, dtype=torch.float32, device=device,
+                         requires_grad=True)
+
+    # Reusable batch dict — only region_pseudobulk gets swapped each call.
+    template_batch_copy = dict(template_batch)
 
     def _forward_with_x(x_np: np.ndarray, requires_grad: bool):
-        xt = torch.tensor(
-            x_np, dtype=torch.float32, device=device,
-        ).reshape(target_shape)
         if requires_grad:
-            xt.requires_grad_(True)
-        batch = dict(template_batch)
-        batch[pseudobulk_key] = xt
-        out = model(batch)
-        # ResDecLightningModule.forward returns {'prediction': [B], ...}.
-        # This is the encoder+head RESIDUAL prediction; the composite is
-        # ŷ_tabpfn (cached, fixed per subject) + prediction. For CF search
-        # we target the residual, since the TabPFN base is not a function
-        # of the perturbed pseudobulk.
+            # Reset grad and copy fresh data into the leaf tensor. Using
+            # data.copy_ avoids creating a new graph node for the assignment.
+            if xt_buf.grad is not None:
+                xt_buf.grad = None
+            with torch.no_grad():
+                xt_buf.data.copy_(
+                    torch.from_numpy(x_np).to(device).reshape(pfc_shape)
+                )
+            xt = xt_buf
+        else:
+            # No-grad path: use a fresh non-leaf tensor (cheaper than
+            # touching xt_buf which would carry its requires_grad flag).
+            xt = torch.from_numpy(x_np).to(
+                device=device, dtype=torch.float32,
+            ).reshape(pfc_shape)
+        new_rp = torch.cat([pre_slice, xt.unsqueeze(1), post_slice], dim=1)
+        template_batch_copy["region_pseudobulk"] = new_rp
+        out = model(template_batch_copy)
         y = out["prediction"].squeeze()
         return y, xt
 
@@ -109,10 +127,18 @@ def _build_subject_closures(
     def grad_f(x: np.ndarray) -> np.ndarray:
         y, xt = _forward_with_x(x, requires_grad=True)
         y.backward()
-        g = xt.grad.reshape(-1).detach().cpu().numpy().astype(np.float64)
-        return g
+        return xt.grad.reshape(-1).detach().cpu().numpy().astype(np.float64)
 
-    return f, grad_f, n_features
+    def f_and_grad(x: np.ndarray) -> tuple[float, np.ndarray]:
+        """Combined forward + backward; saves one forward pass per GD step."""
+        y, xt = _forward_with_x(x, requires_grad=True)
+        y.backward()
+        return (
+            float(y.detach().cpu().numpy()),
+            xt.grad.reshape(-1).detach().cpu().numpy().astype(np.float64),
+        )
+
+    return f, grad_f, f_and_grad, n_features, pfc_shape
 
 
 def main():
@@ -127,23 +153,40 @@ def main():
         "--residual-csv",
         default="outputs/redesign/interpretability/residual_per_subject.csv",
     )
-    p.add_argument("--device", default="cpu")
+    p.add_argument("--device", default="cuda:0")
     p.add_argument(
         "--out-dir",
         default="outputs/redesign/interpretability/counterfactuals",
     )
-    p.add_argument("--n-resilient", type=int, default=10,
-                   help="Number of top-resilient subjects to perturb.")
-    p.add_argument("--n-vulnerable", type=int, default=10,
-                   help="Number of top-vulnerable subjects to perturb.")
-    p.add_argument("--max-steps", type=int, default=200)
+    p.add_argument("--n-resilient", type=int, default=10)
+    p.add_argument("--n-vulnerable", type=int, default=10)
+    p.add_argument("--max-steps", type=int, default=1000,
+                   help="Inner GD steps per λ attempt.")
     p.add_argument("--lr", type=float, default=0.05)
-    p.add_argument("--lambda-dist", type=float, default=0.1)
-    p.add_argument("--top-k", type=int, default=50,
-                   help="Number of top-perturbed features to save per subject.")
-    p.add_argument("--target-delta", type=float, default=0.5,
-                   help="Target y offset from initial prediction (flip magnitude).")
+    p.add_argument("--tol", type=float, default=1e-3,
+                   help="Convergence tolerance |f(x) - target| <= tol.")
+    p.add_argument("--lambda-start", type=float, default=1e-3,
+                   help="Initial λ (small = distance-dominant).")
+    p.add_argument("--lambda-max", type=float, default=1e3,
+                   help="Terminate search when λ exceeds this value.")
+    p.add_argument("--lambda-mult", type=float, default=2.0,
+                   help="λ multiplier per adaptive step (Wachter: 2.0).")
+    p.add_argument("--top-k", type=int, default=50)
+    p.add_argument("--target-delta", type=float, default=0.5)
+    p.add_argument(
+        "--target-mode", choices=["relative", "absolute"], default="relative",
+        help=(
+            "relative: y_target = y_init ± target_delta (regime-direction; "
+            "constant per-subject search difficulty, better for top-K "
+            "aggregation). "
+            "absolute: y_target = ± target_delta (regime-direction; "
+            "variable per-subject difficulty, answers 'how hard to push "
+            "THIS subject across the y=0 decision line?')."
+        ),
+    )
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--no-compile", action="store_true",
+                   help="Disable torch.compile (use plain eager mode).")
     args = p.parse_args()
 
     logging.basicConfig(
@@ -163,7 +206,7 @@ def main():
     cfg.data.fold = int(args.fold)
 
     fold_dir = Path(args.canonical_dir) / f"fold{args.fold}"
-    ckpt_path = _pick_max_r2_ckpt(fold_dir / "checkpoints")
+    ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
     logger.info("fold %d: loading %s", args.fold, ckpt_path.name)
 
     splits = load_splits(str(args.splits_path))
@@ -175,15 +218,24 @@ def main():
         adata=None,
     )
     dm.setup(stage="fit")
-    # Force batch_size=1 for per-subject pseudobulk perturbation. ccc_edge_*
-    # tensors are flattened across the batch (not per-subject), so manual
-    # slicing breaks the HGT edge-index invariant — single-subject batches
-    # sidestep the issue entirely.
-    dm.batch_size = 1
+    dm.batch_size = 1  # per-subject perturbation; avoids flattened-edge-tensor slicing issues.
 
     model = ResDecLightningModule.load_from_checkpoint(
         str(ckpt_path), config=cfg, map_location="cpu",
     ).to(device).eval()
+    # Optimization B: torch.compile the model in eval mode. Saves ~1.1-1.3×
+    # on forward+backward via op fusion. Numerically identical to ~1e-6.
+    # mode="default" instead of "reduce-overhead" because cudagraphs (used
+    # by reduce-overhead) is incompatible with FiLM's gamma_proj(metadata)
+    # tensor-reuse pattern (errors out at "tensor output of CUDAGraphs has
+    # been overwritten by a subsequent run").
+    # Skip via --no-compile when debugging.
+    if not args.no_compile:
+        try:
+            model = torch.compile(model, mode="default", fullgraph=False)
+            logger.info("torch.compile enabled (mode=default)")
+        except Exception as exc:
+            logger.warning("torch.compile failed (%s); using uncompiled model", exc)
 
     # Residuals for subject selection.
     res_df = pd.read_csv(args.residual_csv)
@@ -193,7 +245,6 @@ def main():
     )
     res_df = res_df.rename(columns={id_col: "subject_id"})
     res_df["subject_id"] = res_df["subject_id"].astype(str)
-    # Select subjects from THIS fold's val split.
     val_subject_ids: set[str] = set()
     for batch in dm.val_dataloader():
         val_subject_ids.update(str(s) for s in batch["subject_ids"])
@@ -201,21 +252,19 @@ def main():
     val_res = val_res[np.isfinite(val_res["residual"])]
     top_res = val_res.nlargest(args.n_resilient, "residual")["subject_id"].tolist()
     top_vul = val_res.nsmallest(args.n_vulnerable, "residual")["subject_id"].tolist()
-    target_subjects = set(top_res) | set(top_vul)
+    regime_map: dict[str, str] = {**{s: "resilient" for s in top_res},
+                                   **{s: "vulnerable" for s in top_vul}}
     logger.info(
         "selected %d resilient + %d vulnerable val-fold subjects for CF search",
         len(top_res), len(top_vul),
     )
 
-    # Iterate val dataloader at batch_size=1; collect per-subject batches.
-    results: list[dict] = []
-    t0 = time.time()
     subject_batches: list[tuple[str, dict]] = []
     for batch in dm.val_dataloader():
         sids = list(batch["subject_ids"])
         assert len(sids) == 1, f"expected batch_size=1; got {len(sids)}"
         sid_str = str(sids[0])
-        if sid_str not in target_subjects:
+        if sid_str not in regime_map:
             continue
         per = {
             k: (v.to(device) if torch.is_tensor(v) else v)
@@ -223,32 +272,43 @@ def main():
         }
         subject_batches.append((sid_str, per))
 
+    results: list[dict] = []
+    t0 = time.time()
+    n_features = None
     for idx, (sid, template_batch) in enumerate(subject_batches):
-        if "region_pseudobulk" in template_batch and template_batch["region_pseudobulk"] is not None:
-            pseudobulk_key = "region_pseudobulk"
-        elif "pseudobulk" in template_batch and template_batch["pseudobulk"] is not None:
-            pseudobulk_key = "pseudobulk"
-        else:
-            logger.warning("subject %s: no pseudobulk key; skipping", sid)
+        if "region_pseudobulk" not in template_batch or template_batch["region_pseudobulk"] is None:
+            logger.warning("subject %s: no region_pseudobulk; skipping", sid)
             continue
-        f, grad_f, n_features = _build_subject_closures(
-            model, template_batch, pseudobulk_key, device,
+        f, grad_f, f_and_grad, n_features, pfc_shape = _build_pfc_only_closures(
+            model, template_batch, device,
         )
+        # Initial x is the subject's PFC slice flattened.
         x_init = (
-            template_batch[pseudobulk_key].detach().cpu().numpy()
-            .reshape(-1).astype(np.float64)
+            template_batch["region_pseudobulk"][:, PFC_REGION_IDX, :, :]
+            .detach().cpu().numpy().reshape(-1).astype(np.float64)
         )
         y_init = f(x_init)
-        # Flip target: if y_init > 0 push toward -delta; else toward +delta.
-        target_y = (
-            y_init - args.target_delta if y_init > 0
-            else y_init + args.target_delta
-        )
+        regime = regime_map[sid]
+        # Regime-based target (two modes):
+        #   relative — push y_init by ±target_delta in opposite-regime direction
+        #   absolute — force the prediction to ±target_delta regardless of y_init
+        if args.target_mode == "absolute":
+            target_y = (
+                -args.target_delta if regime == "resilient"
+                else args.target_delta
+            )
+        else:  # relative
+            target_y = (
+                y_init - args.target_delta if regime == "resilient"
+                else y_init + args.target_delta
+            )
         t_s = time.time()
-        cf = find_counterfactual(
+        cf = find_counterfactual_mode_a_adaptive(
             f, grad_f, x_init, target_y,
-            lr=args.lr, lambda_dist=args.lambda_dist,
-            max_steps=args.max_steps, seed=args.seed,
+            lr=args.lr, max_steps=args.max_steps, tol=args.tol,
+            lambda_start=args.lambda_start, lambda_max=args.lambda_max,
+            lambda_mult=args.lambda_mult, seed=args.seed,
+            f_and_grad=f_and_grad,
         )
         delta = np.abs(cf.x_cf - cf.x_init)
         top_k_idx = np.argsort(delta)[::-1][:args.top_k]
@@ -263,39 +323,47 @@ def main():
         ]
         results.append({
             "subject_id": sid,
-            "regime": "resilient" if sid in set(top_res) else "vulnerable",
+            "regime": regime,
             "y_init": cf.y_init,
             "y_cf": cf.y_cf,
             "target_y": cf.target_y,
             "success": cf.success,
             "n_steps_used": cf.n_steps_used,
             "l2_distance": cf.l2_distance,
+            "lambda_used": cf.lambda_used,
             "elapsed_s": round(time.time() - t_s, 1),
             "top_k_features": top_k,
         })
         logger.info(
             "[%d/%d] %s (%s): y=%+.3f → %+.3f (target %+.3f), "
-            "steps=%d, L2=%.3g, t=%.1fs",
-            idx + 1, len(subject_batches), sid,
-            results[-1]["regime"], cf.y_init, cf.y_cf, cf.target_y,
-            cf.n_steps_used, cf.l2_distance, results[-1]["elapsed_s"],
+            "steps=%d, L2=%.3g, λ=%.3g, success=%s, t=%.1fs",
+            idx + 1, len(subject_batches), sid, regime,
+            cf.y_init, cf.y_cf, cf.target_y, cf.n_steps_used,
+            cf.l2_distance, cf.lambda_used, cf.success, results[-1]["elapsed_s"],
         )
 
     summary = {
+        "method": "Wachter et al. 2017 Mode-A literal, adaptive λ doubling",
+        "loss": "L(x, λ) = ‖x - x_init‖² + λ · (f(x) - y_target)²",
+        "target_mode": args.target_mode,
         "fold": args.fold,
         "ckpt": str(ckpt_path),
-        "n_features_per_subject": int(n_features) if results else None,
+        "n_features_per_subject": n_features,
+        "pfc_shape": list(pfc_shape) if pfc_shape else None,
         "n_subjects_processed": len(results),
         "n_resilient_targeted": len(top_res),
         "n_vulnerable_targeted": len(top_vul),
         "max_steps": args.max_steps,
         "lr": args.lr,
-        "lambda_dist": args.lambda_dist,
+        "tol": args.tol,
+        "lambda_start": args.lambda_start,
+        "lambda_max": args.lambda_max,
+        "lambda_mult": args.lambda_mult,
         "target_delta": args.target_delta,
         "top_k_per_subject": args.top_k,
         "seed": args.seed,
         "elapsed_min": round((time.time() - t0) / 60, 2),
-        "git_commit": _git_sha(),
+        "git_commit": git_sha(_WORKTREE_ROOT),
         "results": results,
     }
     out_path = out_dir / f"counterfactuals_fold{args.fold}.json"

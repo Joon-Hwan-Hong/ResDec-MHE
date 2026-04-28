@@ -1,7 +1,7 @@
-"""Orchestrator: render counterfactual figures from CF v2 JSON outputs.
+"""Orchestrator: render counterfactual figures from CF JSON outputs.
 
-Loads either (default) both ``counterfactuals_v2_relative/`` and
-``counterfactuals_v2_absolute/`` outputs and renders the 3 plots from
+Loads (default) both ``counterfactuals_relative/`` and
+``counterfactuals_absolute/`` outputs and renders the 3 plots from
 ``src.visualization.counterfactual_plots`` per target mode:
 
   - ``fig_cf_movement_{relative,absolute}`` — per-subject fraction-of-target
@@ -104,28 +104,33 @@ def _render_one(json_path: Path, out_dir: Path, label: str) -> list[str]:
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
-        "--cf-v2-relative",
-        default="outputs/redesign/interpretability/counterfactuals_v2_relative/counterfactuals_fold0.json",
+        "--relative-json",
+        default="outputs/redesign/interpretability/counterfactuals_relative/counterfactuals_fold0.json",
+        help="Path to the relative-mode CF JSON.",
     )
     p.add_argument(
-        "--cf-v2-absolute",
-        default="outputs/redesign/interpretability/counterfactuals_v2_absolute/counterfactuals_fold0.json",
+        "--absolute-json",
+        default="outputs/redesign/interpretability/counterfactuals_absolute/counterfactuals_fold0.json",
+        help="Path to the absolute-mode CF JSON.",
     )
     p.add_argument(
         "--out-dir",
         default="outputs/redesign/interpretability/figures/counterfactual",
+        help="Output directory for the rendered figures.",
     )
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s | %(levelname)s | %(message)s")
     apply_theme()
+
+    rel_path = Path(args.relative_json)
+    abs_path = Path(args.absolute_json)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     all_rendered: list[str] = []
-    for label, path in (("relative", Path(args.cf_v2_relative)),
-                        ("absolute", Path(args.cf_v2_absolute))):
+    for label, path in (("relative", rel_path), ("absolute", abs_path)):
         if not path.exists():
             logger.warning("missing %s", path)
             continue
