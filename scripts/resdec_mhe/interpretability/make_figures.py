@@ -56,6 +56,7 @@ if (_WORKTREE_ROOT / "src").is_dir() and str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.resdec_io import load_all_folds, load_fold_predictions
+from src.visualization.theme import apply_theme
 
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,22 @@ class SkipFigure(RuntimeError):
 
 
 def _apply_paper_style() -> None:
-    """Paper-ready rcParams: ≥8 pt fonts, thin lines, tight layout defaults."""
+    """Paper-ready rcParams via the project-wide theme.
+
+    Delegates the bulk of the styling to ``src.visualization.theme.apply_theme``
+    (Helvetica / fonts / spines / ticks / grid / 600 DPI savefig). On top of
+    that base, restore the figure-script-specific overrides this orchestrator
+    has historically used:
+
+    - Slightly larger fonts than the default ``paper`` style (base 8 → 9) so
+      the multi-panel figures here read at journal print sizes without a
+      magnifier.
+    - Thinner grid + line widths (0.4 / 1.2 vs the theme's 0.6 / 1.4) so the
+      dense bar/scatter panels do not get visually overwhelmed by lines.
+    - ``savefig.bbox="tight"`` is already set by ``apply_theme`` but we keep
+      it explicit here for clarity.
+    """
+    apply_theme()
     matplotlib.rcParams.update({
         "font.size": 9,
         "axes.titlesize": 10,

@@ -35,6 +35,7 @@ from typing import Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec
+from sklearn.metrics import r2_score
 
 from src.visualization.theme import (
     PALETTES,
@@ -116,14 +117,25 @@ def plot_variance_partition_bar(
 
     Expected dict keys (raw values, not fractions): ``var_y``, ``var_tabpfn``,
     ``var_f1``, ``cov_tabpfn_f1``, ``var_resid``, optionally ``total_explained_fraction``.
+
+    Sign-of-covariance handling
+    ---------------------------
+    The covariance term ``2·Cov(TabPFN, residual)`` can be negative, in which
+    case the stacked bar visually "moves backwards" from the running base.
+    We retain that single-bar layout (no separate positive/negative stacks) and
+    instead emit an explicit caption beneath the bar so readers know to read
+    the term as a correction. Choice rationale: the caption is one-line and
+    keeps the bar geometry interpretable; splitting into two stacks would
+    double the legend entries for what is, in practice, almost always a small
+    correction (≤ a few percent of Var(y)).
     """
     apply_theme()
     var_y = var_components["var_y"]
+    cov_frac = 2 * var_components["cov_tabpfn_f1"] / var_y
     components = [
         ("Var(ŷ_TabPFN)", var_components["var_tabpfn"] / var_y, PALETTES["categorical"][0]),
         ("Var(f̂_residual)", var_components["var_f1"] / var_y, PALETTES["categorical"][3]),
-        ("2·Cov(TabPFN, residual)", 2 * var_components["cov_tabpfn_f1"] / var_y,
-         PALETTES["categorical"][2]),
+        ("2·Cov(TabPFN, residual)", cov_frac, PALETTES["categorical"][2]),
         ("Var(residual ε)", var_components["var_resid"] / var_y, PALETTES["categorical"][7]),
     ]
     fig, ax = plt.subplots(figsize=figsize)
@@ -140,9 +152,18 @@ def plot_variance_partition_bar(
     if explained is not None:
         title += f"\ntotal_explained_fraction = {100*explained:.1f}%"
     ax.set_title(title)
-    ax.set_xlim(0, max(1.05, base * 1.02))
+    # X limits must accommodate negative cov: use min/max over [0, base, cov_left_edge].
+    x_left = min(0.0, base, base - max(0.0, -cov_frac))
+    x_right = max(1.05, base * 1.02, base + max(0.0, cov_frac))
+    ax.set_xlim(x_left - 0.02 if x_left < 0 else 0, x_right)
     ax.set_xlabel("fraction of Var(y)")
     ax.set_yticks([])
+    if cov_frac < 0:
+        ax.text(0.5, -0.55,
+                "Negative covariance shown as right-edge correction term "
+                "(bar segment overlaps preceding stacks).",
+                transform=ax.transAxes, ha="center", va="top",
+                fontsize=6.5, style="italic", color="#444444")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2, frameon=True, fontsize=7)
     fmt_axes(ax)
     paths = save_fig(fig, out_stem, bbox_inches="tight")
@@ -212,11 +233,12 @@ def plot_residual_histogram_overlay(
 
 # Helper
 def _r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Finite-mask filter then ``sklearn.metrics.r2_score``.
+
+    Project convention (cf. ``make_baseline_table.py``, ``make_figures.py``);
+    matches sklearn semantics so panel R² values match the baseline tables.
+    """
     finite = np.isfinite(y_true) & np.isfinite(y_pred)
     if finite.sum() < 2:
         return float("nan")
-    yt = y_true[finite]
-    yp = y_pred[finite]
-    ss_tot = float(((yt - yt.mean()) ** 2).sum())
-    ss_res = float(((yt - yp) ** 2).sum())
-    return 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    return float(r2_score(y_true[finite], y_pred[finite]))

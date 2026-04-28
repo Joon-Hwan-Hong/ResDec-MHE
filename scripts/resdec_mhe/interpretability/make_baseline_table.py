@@ -42,7 +42,6 @@ import argparse
 import json
 import logging
 import math
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +58,7 @@ if (_WORKTREE_ROOT / "src").is_dir() and str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.resdec_io import load_tabpfn_outer_fold
+from src.utils.provenance import git_sha
 
 logger = logging.getLogger(__name__)
 
@@ -794,16 +794,10 @@ def _compute_provenance(args: argparse.Namespace) -> dict:
     the list of ablations requested so a downstream reader can reconstruct
     which files fed this table.
     """
-    try:
-        git_sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=Path(__file__).resolve().parent,
-        ).decode().strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        git_sha = "unknown"
+    sha = git_sha(_WORKTREE_ROOT)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "git_commit": git_sha,
+        "git_commit": sha,
         "canonical_dir": str(args.canonical_dir),
         "ablation_root": str(args.ablation_root),
         "baselines_root": str(args.baselines_root),
