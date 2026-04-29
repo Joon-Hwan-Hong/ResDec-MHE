@@ -515,6 +515,14 @@ def main():
             "cross-validation tests; the batched path is canonical."
         ),
     )
+    p.add_argument(
+        "--record-trajectory", action="store_true",
+        help=(
+            "If set, record per-subject (lambda, residual_at_end_of_inner_loop) "
+            "tuples per λ doubling and serialize them in the per-subject "
+            "result dict. Default off to keep the JSON compact."
+        ),
+    )
     args = p.parse_args()
 
     logging.basicConfig(
@@ -721,10 +729,11 @@ def _run_per_subject(
             lambda_start=args.lambda_start, lambda_max=args.lambda_max,
             lambda_mult=args.lambda_mult,
             f_and_grad=f_and_grad,
+            record_trajectory=args.record_trajectory,
         )
         # P2.2: emit ``gap`` and ``lambda_max_attempted`` alongside the legacy
         # ``lambda_used`` for downstream compat.
-        results.append({
+        result_dict = {
             "subject_id": sid,
             "regime": regime,
             "y_init": cf.y_init,
@@ -739,7 +748,13 @@ def _run_per_subject(
             "gap": cf.gap,
             "elapsed_s": round(time.time() - t_s, 1),
             "top_k_features": _make_top_k(cf, args.top_k),
-        })
+        }
+        if args.record_trajectory:
+            # list of (lam, residual_at_end_of_inner_loop) per λ doubling
+            result_dict["trajectory"] = [
+                [float(lam), float(res)] for (lam, res) in cf.trajectory
+            ]
+        results.append(result_dict)
         logger.info(
             "[%d/%d] %s (%s): y=%+.3f -> %+.3f (target %+.3f), "
             "steps=%d, L2=%.3g, lam=%.3g, gap=%.3g, success=%s, t=%.1fs",
@@ -808,6 +823,7 @@ def _run_batched(
         lr=args.lr, max_steps=args.max_steps, tol=args.tol,
         lambda_start=args.lambda_start, lambda_max=args.lambda_max,
         lambda_mult=args.lambda_mult,
+        record_trajectory=args.record_trajectory,
     )
     elapsed_min = round((time.time() - t0) / 60, 2)
     logger.info("batched CF search complete: %.1f min", elapsed_min)
@@ -816,7 +832,7 @@ def _run_batched(
     for i, cf in enumerate(cf_results):
         sid = sids_ordered[i]
         regime = regime_map[sid]
-        results.append({
+        result_dict = {
             "subject_id": sid,
             "regime": regime,
             "y_init": cf.y_init,
@@ -831,7 +847,13 @@ def _run_batched(
             "gap": cf.gap,
             "elapsed_s": None,  # batched: per-subject wall time not separable
             "top_k_features": _make_top_k(cf, args.top_k),
-        })
+        }
+        if args.record_trajectory:
+            # list of (lam, residual_at_end_of_inner_loop) per λ doubling
+            result_dict["trajectory"] = [
+                [float(lam), float(res)] for (lam, res) in cf.trajectory
+            ]
+        results.append(result_dict)
         logger.info(
             "[%d/%d] %s (%s): y=%+.3f -> %+.3f (target %+.3f), "
             "steps=%d, L2=%.3g, lam=%.3g, gap=%.3g, success=%s",

@@ -31,7 +31,9 @@ Arguments
     --metadata-path <path>       ROSMAP metadata.csv (default: from canonical config).
     --layer <{attended, fused}>  Which extracted layer to train on.
     --architecture <{topk, batch_topk}>
-    --expansion <{8, 16, 32}>    Dictionary expansion (m / n).
+    --expansion <int>            Dictionary expansion (m / n). Canonical
+                                 sweep uses {8, 16, 32}; smaller-m stability
+                                 sweep uses {4, 8, 16}.
     --k <int>                    Active features per sample (TopK / batch K-th).
     --aux-lambda <float>         Auxiliary-K loss weight (default 1/32 per Gao 2024).
     --aux-k <int>                Number of dead features in aux-K loss (default 256).
@@ -98,7 +100,14 @@ def main() -> int:
     )
     p.add_argument("--layer", choices=["attended", "fused"], required=True)
     p.add_argument("--architecture", choices=["topk", "batch_topk"], required=True)
-    p.add_argument("--expansion", type=int, choices=[8, 16, 32], required=True)
+    p.add_argument(
+        "--expansion", type=int, required=True,
+        help=(
+            "Dictionary expansion factor m / n. Canonical sweep uses {8, 16, 32}; "
+            "the smaller-m stability sweep uses {4, 8, 16}. Any positive integer "
+            "is accepted as long as k <= m == expansion * n."
+        ),
+    )
     p.add_argument("--k", type=int, required=True)
     p.add_argument("--aux-lambda", type=float, default=1.0 / 32.0)
     p.add_argument("--aux-k", type=int, default=256)
