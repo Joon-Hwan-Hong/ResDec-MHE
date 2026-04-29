@@ -211,7 +211,11 @@ def _draw_sae_feature_distribution(ax: plt.Axes, data: dict) -> None:
 def _draw_permutation_null(ax: plt.Axes, data: dict) -> None:
     """Render the permutation null distribution + canonical marker (Panel D)."""
     null_vals = np.asarray(data["null_mean_r2_per_perm"], dtype=float)
-    canonical = float(data["canonical_mean_r2"])
+    # Lab-meeting unified-R² choice: use pooled bootstrap point (0.4493) instead
+    # of per-fold mean (0.4436) so the canonical line matches what the scatter
+    # in slot 4.1/4.2 shows. See note in make_remaining_lab_meeting_figures.py
+    # _draw_panel_A_permutation. Single number throughout the deck.
+    canonical = 0.4493
     null_mean = float(data.get("null_mean", null_vals.mean()))
     null_std = float(data.get("null_std", null_vals.std(ddof=0)))
     z = float(data.get("z_under_null", (canonical - null_mean) / max(null_std, 1e-9)))
