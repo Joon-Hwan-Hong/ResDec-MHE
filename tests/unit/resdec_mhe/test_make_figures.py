@@ -384,8 +384,10 @@ def test_missing_input_raises_skipfigure_fig6():
 # ---------------------------------------------------------------------------
 
 
-def test_save_both_formats(tmp_path, mock_baseline_table):
-    """mod.save_figure writes both .png and .pdf when requested."""
+def test_save_drops_pdf_format(tmp_path, mock_baseline_table):
+    """mod.save_figure now writes PNG only — PDFs intentionally dropped per
+    user pref. Legacy callers passing ``formats=("png", "pdf")`` get PNG-only
+    output (the "pdf" entry is silently filtered)."""
     fig = mod.make_fig1_ablation_bar(
         table=mock_baseline_table, canonical_r2=0.4436
     )
@@ -393,8 +395,8 @@ def test_save_both_formats(tmp_path, mock_baseline_table):
         fig, tmp_path, "fig_test", formats=("png", "pdf"), dpi=72
     )
     assert (tmp_path / "fig_test.png").is_file()
-    assert (tmp_path / "fig_test.pdf").is_file()
-    assert len(out) == 2
+    assert not (tmp_path / "fig_test.pdf").is_file()
+    assert len(out) == 1
     plt.close(fig)
 
 
@@ -415,9 +417,17 @@ def test_skipfigure_has_message():
 
 def test_fig5_subgroup_labels_stripped(mock_subgroup_metrics):
     """After C1 fix the APOE/sex/age/pathology prefixes are stripped and
-    underscores replaced with spaces in the x-tick labels."""
+    underscores replaced with spaces in the x-tick labels.
+
+    NB: subgroups with n<10 (default ``min_subgroup_n``) are now omitted from
+    the plot entirely (user pref — small-n CIs distort the y-axis range), so
+    the e4_2 bar disappears here. To keep the label-stripping test focused
+    on the rendering logic, ``min_subgroup_n=0`` is passed so all subgroups
+    appear and stripping can be checked across every prefix family.
+    """
     fig = mod.make_fig5_subgroup_r2(
         metrics=mock_subgroup_metrics, canonical_r2=0.4436,
+        min_subgroup_n=0,
     )
     ax = fig.axes[0]
     # Strip any '†' truncation marker (I6) for label equivalence checks.
@@ -438,9 +448,16 @@ def test_fig5_subgroup_labels_stripped(mock_subgroup_metrics):
 
 def test_fig5_truncated_ci_gets_dagger(mock_subgroup_metrics):
     """I6: APOE_e4_2 has ci_lo=-8.0 (< -1.5 clip) → label carries '†'
-    and the footnote about axis range is present."""
+    and the footnote about axis range is present.
+
+    Pass ``min_subgroup_n=0`` so the small-n e4_2 subgroup is included
+    (default behaviour now omits it). The truncation-marker logic still
+    fires for any included subgroup whose CI lower bound is below the
+    visual clip.
+    """
     fig = mod.make_fig5_subgroup_r2(
         metrics=mock_subgroup_metrics, canonical_r2=0.4436,
+        min_subgroup_n=0,
     )
     ax = fig.axes[0]
     labels = [t.get_text() for t in ax.get_xticklabels()]
@@ -449,6 +466,29 @@ def test_fig5_truncated_ci_gets_dagger(mock_subgroup_metrics):
     # Footnote is drawn as a figure-level text; check presence.
     footnote_texts = [t.get_text() for t in fig.texts]
     assert any("CI lower bound extends" in t for t in footnote_texts)
+    plt.close(fig)
+
+
+def test_fig5_filters_small_n_subgroups(mock_subgroup_metrics):
+    """Default ``min_subgroup_n=10`` filters subgroups with fewer subjects.
+
+    The mock fixture has ``APOE_e4_2`` at n=8, which produces an absurd
+    CI and is omitted from the plot under the default. The omitted-list
+    footnote MUST list the filtered subgroup so the audience can see what
+    was dropped.
+    """
+    fig = mod.make_fig5_subgroup_r2(
+        metrics=mock_subgroup_metrics, canonical_r2=0.4436,
+    )
+    ax = fig.axes[0]
+    labels = [t.get_text().rstrip("†") for t in ax.get_xticklabels()]
+    # e4 2 should NOT appear as a tick label under default filtering.
+    assert "e4 2" not in labels, labels
+    # Footnote names the omitted subgroup (and its n).
+    footnote_texts = [t.get_text() for t in fig.texts]
+    assert any("APOE_e4_2" in t and "n=8" in t for t in footnote_texts), (
+        footnote_texts
+    )
     plt.close(fig)
 
 

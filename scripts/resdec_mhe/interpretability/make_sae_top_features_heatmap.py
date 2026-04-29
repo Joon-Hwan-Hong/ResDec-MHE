@@ -119,6 +119,19 @@ def load_feature_report(path: Path) -> list[dict]:
     return json.loads(Path(path).read_text())
 
 
+# Long CT names get truncated to fit the y-axis label area.
+_CT_NAME_MAX = 22
+
+
+def _ct_short(ct_name: str) -> str:
+    """Truncate long CT names for compact y-axis labels."""
+    if not ct_name:
+        return ""
+    if len(ct_name) <= _CT_NAME_MAX:
+        return ct_name
+    return ct_name[: _CT_NAME_MAX - 1] + "…"
+
+
 def select_relaxed_features(
     feature_report: list[dict],
     top_n: int,
@@ -231,15 +244,29 @@ def _draw_heatmap(
     feat_indices: list[int],
     *,
     splatter_row: int | None,
+    feat_dominant_ct: list[str] | None = None,
 ) -> object:
-    """Render the per-feature × per-CT heatmap with Splatter row highlighted."""
+    """Render the per-feature × per-CT heatmap with Splatter row highlighted.
+
+    Y-axis labels are ``"<feat_idx>: <dominant_CT>"`` when ``feat_dominant_ct``
+    is supplied (user pref — ``feat_<idx>`` alone is uninformative; the
+    dominant CT name carries the biological signal).
+    """
     cmap = PALETTES["sequential"]  # viridis
     im = ax.imshow(mass, aspect="auto", cmap=cmap, interpolation="nearest")
 
-    # Y-axis: feature indices (truncate to short labels for readability)
+    # Y-axis: feature index + dominant cell type so each row is identifiable
+    # at a glance. Falls back to "feat <idx>" if dominant CT is missing.
+    if feat_dominant_ct is not None and len(feat_dominant_ct) == len(feat_indices):
+        ylabels = [
+            f"{j}: {_ct_short(ct)}" if ct else f"feat {j}"
+            for j, ct in zip(feat_indices, feat_dominant_ct)
+        ]
+    else:
+        ylabels = [f"feat {j}" for j in feat_indices]
     ax.set_yticks(np.arange(len(feat_indices)))
-    ax.set_yticklabels([f"feat {j}" for j in feat_indices], fontsize=5)
-    ax.set_ylabel("SAE feature (sorted by mw_p_cognition asc)")
+    ax.set_yticklabels(ylabels, fontsize=5)
+    ax.set_ylabel("SAE feature  (idx : dominant CT)")
 
     # X-axis: 31 CT names rotated
     ax.set_xticks(np.arange(len(ct_order)))
@@ -297,11 +324,19 @@ def build_figure(
 
     splatter_row = _find_splatter_dominant_row(mass, ct_order)
 
+    # Per-feature dominant CT — top-1 column of the row-normalized mass.
+    # We use the live mass matrix (not feature_report.top_cell_types[0]) so
+    # the label and the heat actually agree row-by-row.
+    top1_idx = np.argmax(mass, axis=1)
+    feat_dominant_ct = [ct_order[i] for i in top1_idx]
+
     fig, ax = plt.subplots(figsize=(12.0, 14.0))
     im = _draw_heatmap(
         ax, mass, ct_order, feat_indices_out, splatter_row=splatter_row,
+        feat_dominant_ct=feat_dominant_ct,
     )
     fmt_axes(ax, hide_spines=("top", "right"), grid_major=False)
+    ax.minorticks_off()
 
     # Colorbar
     cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
@@ -335,6 +370,7 @@ def build_figure(
     meta = {
         "top_n": int(len(feat_indices_out)),
         "feature_indices": feat_indices_out,
+        "feature_dominant_ct": feat_dominant_ct,
         "cell_type_order": ct_order,
         "splatter_dominant_row": splatter_row,
         "splatter_dominant_feature_idx": (

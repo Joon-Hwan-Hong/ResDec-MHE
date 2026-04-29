@@ -37,6 +37,9 @@ def plot_predicted_vs_actual(
     color_by: np.ndarray | None = None,
     color_label: str | None = None,
     color_palette: dict | None = None,
+    show_identity: bool = True,
+    show_legend: bool = True,
+    scatter_size: float = 50,
 ) -> plt.Figure:
     """
     Plot predicted vs actual values with optional uncertainty.
@@ -107,7 +110,7 @@ def plot_predicted_vs_actual(
                 actual[m],
                 predicted_mean[m],
                 alpha=0.7,
-                s=50,
+                s=scatter_size,
                 color=color_palette.get(cat, "#777777"),
                 label=str(cat),
                 edgecolor="white",
@@ -121,20 +124,24 @@ def plot_predicted_vs_actual(
             c=predicted_std,
             cmap=get_sequential_cmap(),
             alpha=0.7,
-            s=50,
+            s=scatter_size,
         )
         plt.colorbar(scatter, ax=ax, label="Predicted Uncertainty (σ)")
     else:
-        ax.scatter(actual, predicted_mean, alpha=0.7, s=50, color=ACCENT_CORAL)
+        ax.scatter(actual, predicted_mean, alpha=0.7, s=scatter_size, color=ACCENT_CORAL)
 
-    # Add identity line
+    # Compute axis limits from data range.
     lims = [
         min(actual.min(), predicted_mean.min()),
         max(actual.max(), predicted_mean.max()),
     ]
     margin = (lims[1] - lims[0]) * 0.05
     lims = [lims[0] - margin, lims[1] + margin]
-    ax.plot(lims, lims, "k--", alpha=0.5, label="Identity")
+
+    # Identity line — gated so callers can drop it (user pref for the
+    # lab-meeting prediction scatters: keep regression fit only).
+    if show_identity:
+        ax.plot(lims, lims, "k--", alpha=0.5, label="Identity")
 
     # Add regression line
     slope, intercept, r_value, p_value, std_err = stats.linregress(actual, predicted_mean)
@@ -147,10 +154,11 @@ def plot_predicted_vs_actual(
     ax.set_xlabel("Actual Cognition Score")
     ax.set_ylabel("Predicted Cognition Score")
     ax.set_title(title)
-    if color_by is not None and color_label is not None:
-        ax.legend(loc="lower right", title=color_label)
-    else:
-        ax.legend(loc="lower right")
+    if show_legend:
+        if color_by is not None and color_label is not None:
+            ax.legend(loc="lower right", title=color_label)
+        else:
+            ax.legend(loc="lower right")
 
     # Add metrics annotation
     rmse = np.sqrt(np.mean((predicted_mean - actual) ** 2))
@@ -177,9 +185,15 @@ def plot_predicted_vs_actual(
         )
         # Strip spines + ticks from marginal panels for visual balance.
         for marg in (ax_top, ax_right):
-            marg.tick_params(left=False, bottom=False)
+            marg.tick_params(left=False, bottom=False, top=False, right=False,
+                             which="both")
             for s in ("top", "right"):
                 marg.spines[s].set_visible(False)
+            # User pref: no grid + no tick labels on density axis.
+            marg.grid(False)
+        # Drop the [0, 1]-style tick labels on the density axis.
+        ax_top.set_yticks([])
+        ax_right.set_xticks([])
         ax_top.set_ylabel("")
         ax_right.set_xlabel("")
     else:

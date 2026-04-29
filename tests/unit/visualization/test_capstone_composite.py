@@ -140,7 +140,7 @@ def test_build_figure_returns_4_axes(tmp_path):
     plt.close(fig)
 
 
-def test_main_writes_png_and_pdf(tmp_path):
+def test_main_writes_png_only(tmp_path):
     """End-to-end: orchestrator writes >50KB PNG + PDF in out_dir."""
     paths = _write_synthetic_inputs(tmp_path)
     out_dir = tmp_path / "composite"
@@ -157,7 +157,8 @@ def test_main_writes_png_and_pdf(tmp_path):
     png = out_dir / "fig_interpretability_capstone.png"
     pdf = out_dir / "fig_interpretability_capstone.pdf"
     assert png.exists(), f"missing PNG at {png}"
-    assert pdf.exists(), f"missing PDF at {pdf}"
+    # PDF intentionally NOT written (user pref — PNG only).
+    assert not pdf.exists(), f"unexpected PDF at {pdf}"
     assert png.stat().st_size > 50_000, (
         f"PNG too small ({png.stat().st_size} bytes) — figure likely empty"
     )

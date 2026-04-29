@@ -372,14 +372,21 @@ def build_slot4_3_statistical_rigor(
     fig = make_panel(
         panels,
         layout=(1, 3),
-        figsize=(15.0, 5.0),
+        figsize=(15.0, 4.5),
         labels=True,
-        label_kwargs={"offset": (-0.06, 1.03), "fontsize": 12.0},
+        # Tuck A/B/C labels close to the panel content (user pref). NB
+        # ``auto_letter`` *adds* offset to the anchor (0, 1) for top-left,
+        # so an effective y-coord of 1.02 means offset y = 0.02. Previously
+        # offset y = 1.03 placed the label at axes-frac y = 2.03 — way up
+        # in the suptitle band.
+        label_kwargs={"offset": (-0.02, 0.02), "fontsize": 12.0},
         wspace=0.35,
         hspace=0.30,
     )
-    # Composite GridSpec leaves big top/bottom margins; pull panels up.
-    fig.subplots_adjust(top=0.86, bottom=0.18, left=0.06, right=0.97)
+    # Tight margins so the panels fill the figure and the A/B/C labels are
+    # visually adjacent to the panel content (previous top=0.86 left a big
+    # blank band above the panels which exaggerated the label-to-content gap).
+    fig.subplots_adjust(top=0.92, bottom=0.18, left=0.06, right=0.97)
     return fig
 
 

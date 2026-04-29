@@ -117,46 +117,72 @@ def _load_attention(npz_path: Path) -> tuple[np.ndarray, list[str], list[str]]:
 def build_d2_figure(
     npz_path: Path,
 ) -> plt.Figure:
-    """Render the 5-panel D2 figure and return it (without saving)."""
+    """Render the 5-panel D2 figure and return it (without saving).
+
+    Layout: one shared global colorbar to the right of the rightmost panel
+    (user pref — 5 separate colorbars previously cluttered the figure and
+    were redundant since vmin/vmax are global). Y-tick labels appear only on
+    the leftmost panel so subsequent panels' rows do not collide with the
+    previous panel's heatmap edge.
+    """
     apply_theme()
     mean_att, ct_order, et_order = _load_attention(npz_path)
     n_et = len(et_order)
     cmap = PALETTES["sequential"]
 
-    # Per-panel global vmax = global max across panels (so colors are
-    # comparable; per §15 the dynamic range varies a lot between edge types
-    # so we still log per-panel ranges in the metadata).
+    # Single global vmax across all panels so colors are comparable; we
+    # also need a single global vmin so the shared colorbar is meaningful.
     vmax = float(mean_att.max())
+    vmin = 0.0
 
-    panels: list[dict] = []
+    # Direct GridSpec build so we can reserve a slim trailing column for the
+    # shared colorbar. make_panel doesn't expose a colorbar slot, hence the
+    # manual construction here.
+    from matplotlib.gridspec import GridSpec
+    fig = plt.figure(figsize=(16.5, 6.0))
+    # n_et data panels + 1 narrow colorbar column.
+    width_ratios = [1.0] * n_et + [0.08]
+    gs = GridSpec(
+        1, n_et + 1, figure=fig,
+        width_ratios=width_ratios,
+        wspace=0.55,  # extra spacing — fixes prev. row labels touching prev panel
+    )
+    last_im = None
     for ei, et in enumerate(et_order):
         display = EDGE_TYPE_DISPLAY_NAMES.get(et, et)
-        panel_data = mean_att[:, :, ei]
-
-        def _draw(ax, data=panel_data, label=display, vmax=vmax):
-            im = ax.imshow(
-                data, aspect="equal", cmap=cmap,
-                interpolation="nearest", vmin=0.0, vmax=vmax,
-            )
-            ax.set_xticks(np.arange(len(ct_order)))
+        ax = fig.add_subplot(gs[0, ei])
+        im = ax.imshow(
+            mean_att[:, :, ei], aspect="equal", cmap=cmap,
+            interpolation="nearest", vmin=vmin, vmax=vmax,
+        )
+        ax.set_xticks(np.arange(len(ct_order)))
+        ax.set_xticklabels(ct_order, rotation=70, ha="right", fontsize=4)
+        ax.set_xlabel("target CT", fontsize=7)
+        ax.set_title(display, fontsize=8)
+        if ei == 0:
             ax.set_yticks(np.arange(len(ct_order)))
-            ax.set_xticklabels(ct_order, rotation=70, ha="right", fontsize=4)
             ax.set_yticklabels(ct_order, fontsize=4)
-            ax.set_xlabel("target CT", fontsize=7)
             ax.set_ylabel("source CT", fontsize=7)
-            cbar = ax.figure.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
-            cbar.ax.tick_params(labelsize=6)
+        else:
+            ax.set_yticks([])
+        # Heatmap-style: keep frame around data, no top/right tick marks,
+        # no minor ticks, no grid behind data.
+        ax.tick_params(top=False, right=False, which="both")
+        ax.minorticks_off()
+        ax.grid(False)
+        # Letter label A-E top-left of each panel.
+        from src.visualization.composite import auto_letter
+        auto_letter(ax, chr(ord("A") + ei),
+                    offset=(-0.02, 1.01), fontsize=11)
+        last_im = im
 
-        panels.append({"draw": _draw, "title": display})
+    # Single shared colorbar in the trailing column.
+    cax = fig.add_subplot(gs[0, n_et])
+    cbar = fig.colorbar(last_im, cax=cax)
+    cbar.set_label("Subject-mean attention", fontsize=7)
+    cbar.ax.tick_params(labelsize=6)
+    cax.tick_params(top=False, right=False, which="both")
 
-    fig = make_panel(
-        panels,
-        layout=(1, n_et),
-        figsize=(16.0, 6.0),
-        labels=True,
-        wspace=0.45,
-        hspace=0.30,
-    )
     fig.suptitle(
         "CCC subject-mean attention per edge type "
         "(31 source CT × 31 target CT, mean across N=516 subjects)",

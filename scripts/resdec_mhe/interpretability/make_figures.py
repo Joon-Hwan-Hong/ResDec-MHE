@@ -176,7 +176,10 @@ def make_fig1_ablation_bar(
         )
 
     completed = completed.sort_values("r2_mean", ascending=False).reset_index(drop=True)
-    pending = pending.reset_index(drop=True)
+    # Drop pending rows entirely (user pref — "pending" entry should not appear
+    # on the lab-meeting ablation bar). Previously the script appended these
+    # as outline-only bars; the user explicitly asked for them to be removed.
+    pending = pending.iloc[0:0].reset_index(drop=True)
     full = pd.concat([completed, pending], ignore_index=True)
 
     n = len(full)
@@ -249,19 +252,22 @@ def make_fig1_ablation_bar(
     # Zero line
     ax.axhline(0.0, color="#000000", linewidth=0.5)
 
-    # Tick labels: the `display_name` from the table
+    # Tick labels: the `display_name` from the table. Smaller font + steeper
+    # rotation so labels do not overlap (user-flagged for the lab-meeting deck).
+    # 45° rotation + 7pt font reliably fits 25+ ablation/baseline names.
     ax.set_xticks(x)
     ax.set_xticklabels(
-        full["display_name"].to_list(), rotation=40, ha="right",
+        full["display_name"].to_list(), rotation=45, ha="right", fontsize=7,
     )
     ax.set_ylabel("Cross-validated R²")
     ax.set_title("Model / ablation R² comparison (5-fold)")
 
-    # Legend (outside axes so it never overlaps bars — M6)
+    # Legend (outside axes so it never overlaps bars — M6).
+    # Pending bars are no longer drawn (user pref) so the "† pending" legend
+    # entry has been removed.
     handles = [
         Patch(facecolor="#3b6ea5", edgecolor="#2a4f78", label="ResDec-MHE (ours / ablation)"),
         Patch(facecolor="#888888", edgecolor="#555555", label="Baselines"),
-        Patch(facecolor="none", edgecolor="#666666", label="† pending (n_folds < 5)"),
         Line2D([0], [0], color="#333333", linewidth=0.9, label="± std (across folds)"),
         Line2D([0], [0], color="#cc3333", linewidth=1.8, label="± SEM (= std / √n)"),
         Line2D([0], [0], color="#cc5533", linestyle="--",
@@ -558,12 +564,26 @@ _SUBGROUP_FAMILIES: tuple[tuple[str, str, list[str]], ...] = (
 def make_fig5_subgroup_r2(
     metrics: dict | None,
     canonical_r2: float = CANONICAL_R2,
+    *,
+    min_subgroup_n: int = 10,
 ) -> plt.Figure:
-    """Bar chart of per-subgroup R² with 95 % bootstrap CIs, grouped by family."""
+    """Bar chart of per-subgroup R² with 95 % bootstrap CIs, grouped by family.
+
+    Subgroups with ``n < min_subgroup_n`` are omitted (user pref — the
+    APOE_e4_2 homozygous-ε4 subgroup with n=8 produced an absurdly wide
+    bootstrap CI of [-7.99, 0.57] that distorted the y-axis range and
+    dominated the plot. The omitted subgroups are recorded in the bottom
+    footnote so the audience can see which were filtered).
+    """
     if metrics is None:
         raise SkipFigure("fig5_subgroup_r2: subgroup metrics is None")
     if not metrics:
         raise SkipFigure("fig5_subgroup_r2: subgroup metrics is empty")
+    omitted_small_n: list[tuple[str, int]] = [
+        (sg, int(entry.get("n", 0)))
+        for sg, entry in metrics.items()
+        if int(entry.get("n", 0)) < min_subgroup_n
+    ]
 
     fig, ax = plt.subplots(figsize=(11, 5))
 
@@ -589,6 +609,9 @@ def make_fig5_subgroup_r2(
             if sg not in metrics:
                 continue
             entry = metrics[sg]
+            # Skip small-n subgroups (user pref — see docstring).
+            if int(entry.get("n", 0)) < min_subgroup_n:
+                continue
             r2 = float(entry["r2"])
             ci = entry.get("r2_ci", [r2, r2])
             r2_vals.append(r2)
@@ -617,7 +640,16 @@ def make_fig5_subgroup_r2(
     yerr_hi = np.array(ci_hi) - y
 
     # clamp visually at a sane lower bound so tiny-n wild CIs don't blow up the axis.
-    lower_clip = R2_VISUAL_LOWER_CLIP
+    # Tighten the visual range to the actual data extent now that small-n
+    # subgroups (n < min_subgroup_n) are filtered out earlier — otherwise the
+    # default -1.5 floor leaves a huge empty band below the bars.
+    if len(ci_lo_arr) > 0:
+        data_min = float(min(ci_lo_arr.min(), 0.0))
+        # Round down to a tidy value (0.1 increments) and pad slightly.
+        tight_clip = float(np.floor(data_min * 10 - 1) / 10)
+        lower_clip = max(R2_VISUAL_LOWER_CLIP, tight_clip)
+    else:
+        lower_clip = R2_VISUAL_LOWER_CLIP
     yerr_lo_clipped = np.minimum(yerr_lo, y - lower_clip)
     yerr_lo_clipped = np.maximum(yerr_lo_clipped, 0.0)
 
@@ -667,6 +699,15 @@ def make_fig5_subgroup_r2(
             0.02, 0.01,
             "† CI lower bound extends below axis range "
             "(small-n subgroup; see subgroup_metrics.json)",
+            fontsize=8, style="italic", color="#444444",
+        )
+
+    # Footnote listing subgroups that were omitted because n < min_subgroup_n.
+    if omitted_small_n:
+        omitted_str = ", ".join(f"{sg} (n={n})" for sg, n in omitted_small_n)
+        fig.text(
+            0.02, 0.04 if any_truncated else 0.01,
+            f"Subgroups with n<{min_subgroup_n} omitted: {omitted_str}",
             fontsize=8, style="italic", color="#444444",
         )
 
@@ -941,12 +982,27 @@ def save_figure(
     fig: plt.Figure,
     out_dir: Path,
     stem: str,
-    formats: Sequence[str] = ("png", "pdf"),
+    formats: Sequence[str] = ("png",),
     dpi: int = 300,
 ) -> list[Path]:
-    """Save ``fig`` to ``out_dir/<stem>.<fmt>`` for each format; return paths."""
+    """Save ``fig`` to ``out_dir/<stem>.<fmt>`` for each format; return paths.
+
+    Default formats changed from ``("png", "pdf")`` to PNG-only at the user's
+    request — PDFs are not used in the lab-meeting deliverable. Any "pdf"
+    entry in ``formats`` is silently dropped so historical callers still
+    work. Also strips top/right ticks/spines via ``style_paper_axes`` so
+    every figure-rendering path produces the user's preferred minimal
+    axis frame.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    formats = tuple(f for f in formats if f.lower() != "pdf")
+    if not formats:
+        formats = ("png",)
+    # Apply paper-style axis stripping just before saving — single chokepoint
+    # so every figure produced through this helper inherits the look.
+    from src.visualization.theme import style_paper_axes
+    style_paper_axes(fig)
     out_paths: list[Path] = []
     for fmt in formats:
         p = out_dir / f"{stem}.{fmt}"
@@ -1098,7 +1154,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--out-dir", type=Path,
                    default=Path("outputs/canonical/interpretability/figures"))
     p.add_argument("--dpi", type=int, default=300)
-    p.add_argument("--figure-format", nargs="+", default=["png", "pdf"])
+    p.add_argument("--figure-format", nargs="+", default=["png"])
     p.add_argument("--canonical-r2", type=float, default=CANONICAL_R2)
     p.add_argument("--n-folds", type=int, default=N_FOLDS)
     return p.parse_args(argv)

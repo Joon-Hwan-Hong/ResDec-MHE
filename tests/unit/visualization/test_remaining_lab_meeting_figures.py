@@ -168,7 +168,8 @@ def test_all_three_figures_written(synthetic_inputs):
         png = out_dir / f"{stem}.png"
         pdf = out_dir / f"{stem}.pdf"
         assert png.exists(), f"missing {png}"
-        assert pdf.exists(), f"missing {pdf}"
+        # PDF intentionally NOT written (user pref — PNG only).
+        assert not pdf.exists(), f"unexpected pdf at {pdf}"
         size_kb = png.stat().st_size / 1024.0
         assert size_kb > 50.0, (
             f"{png} too small ({size_kb:.1f} KB); expected > 50 KB"

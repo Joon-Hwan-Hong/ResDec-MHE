@@ -146,6 +146,11 @@ def apply_theme(style: str = "paper", use_scienceplots: bool = True) -> str:
         "ytick.major.width":  0.8,
         "xtick.minor.size":   1.5,
         "ytick.minor.size":   1.5,
+        # No top/right tick marks anywhere by default (user pref).
+        "xtick.top":          False,
+        "ytick.right":        False,
+        "xtick.minor.top":    False,
+        "ytick.minor.right":  False,
 
         # Grid: major only, light gray, behind data.
         "axes.grid":          True,
@@ -215,18 +220,65 @@ def save_fig(
     path_stem: str | Path,
     *,
     dpi: int = 600,
-    formats: Iterable[str] = ("png", "pdf"),
+    formats: Iterable[str] = ("png",),
     bbox_inches: str | None = "tight",
 ) -> list[Path]:
-    """Save fig as <stem>.<ext> for each ext; return list of written paths."""
+    """Save fig as <stem>.<ext> for each ext; return list of written paths.
+
+    Default formats changed from ``("png", "pdf")`` to PNG-only at the user's
+    request for the lab-meeting deliverable — PDFs are not used.
+    """
     stem = Path(path_stem)
     stem.parent.mkdir(parents=True, exist_ok=True)
+    # Defensive: drop any accidental "pdf" entry so callers that passed the
+    # historical formats=("png", "pdf") still get PNG-only output.
+    formats = tuple(f for f in formats if f.lower() != "pdf")
+    if not formats:
+        formats = ("png",)
+    # Strip top/right ticks (and top/right spines on non-image axes) just
+    # before saving — single chokepoint so every figure produced through
+    # this helper inherits the user-preferred minimal axis frame.
+    style_paper_axes(fig)
     written = []
     for ext in formats:
         out = stem.with_suffix(f".{ext}")
         fig.savefig(out, dpi=dpi, bbox_inches=bbox_inches)
         written.append(out)
     return written
+
+
+def style_paper_axes(fig) -> None:
+    """Enforce paper-style axes on every axes in ``fig``.
+
+    Removes top/right ticks (major + minor) on all axes, hides top/right
+    spines on non-image axes, and turns minor ticks off on heatmap axes.
+    Applied centrally so every figure-rendering script can call this
+    once at the end of figure construction without per-axes bookkeeping.
+    """
+    for ax in fig.get_axes():
+        try:
+            # Remove top + right ticks regardless of whether the axes is a
+            # heatmap (image) or a regular plot — user explicitly dislikes
+            # those tick marks. Skipped for polar / 3D / non-rectilinear
+            # axes which don't expose top/right tick parameters.
+            ax.tick_params(top=False, right=False, which="both")
+        except (ValueError, TypeError):
+            continue
+        # Heatmap detection: any axes that contains an AxesImage retains
+        # its data-area frame (top/right spines must remain so the data
+        # region has a border) but loses minor ticks entirely.
+        has_image = len(ax.get_images()) > 0
+        if has_image:
+            try:
+                ax.minorticks_off()
+            except (AttributeError, NotImplementedError):
+                pass
+            continue
+        # Non-heatmap: hide top + right spines, if present (polar/3D axes
+        # don't have these keys).
+        for spine_name in ("top", "right"):
+            if spine_name in ax.spines:
+                ax.spines[spine_name].set_visible(False)
 
 
 def errorbar_caps(

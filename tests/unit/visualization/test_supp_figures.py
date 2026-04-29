@@ -233,7 +233,8 @@ def test_d1_writes_figure(synthetic_sae_inputs, tmp_path):
     png = out_dir / "fig_sae_top_features_heatmap.png"
     pdf = out_dir / "fig_sae_top_features_heatmap.pdf"
     assert png.exists(), f"missing {png}"
-    assert pdf.exists(), f"missing {pdf}"
+    # PDF intentionally NOT written (user pref — PNG only).
+    assert not pdf.exists(), f"unexpected pdf at {pdf}"
     size_kb = png.stat().st_size / 1024.0
     assert size_kb > 50.0, f"{png} too small ({size_kb:.1f} KB)"
 
@@ -276,7 +277,7 @@ def test_d2_writes_figure(synthetic_ccc_inputs, tmp_path):
     png = out_dir / "fig_ccc_per_edge_type_heatmap.png"
     pdf = out_dir / "fig_ccc_per_edge_type_heatmap.pdf"
     assert png.exists(), f"missing {png}"
-    assert pdf.exists(), f"missing {pdf}"
+    assert not pdf.exists(), f"unexpected pdf at {pdf}"
     size_kb = png.stat().st_size / 1024.0
     assert size_kb > 50.0, f"{png} too small ({size_kb:.1f} KB)"
 
@@ -292,7 +293,7 @@ def test_d3_writes_figure(synthetic_ccc_inputs, tmp_path):
     png = out_dir / "fig_ccc_subject_heterogeneity_strip.png"
     pdf = out_dir / "fig_ccc_subject_heterogeneity_strip.pdf"
     assert png.exists(), f"missing {png}"
-    assert pdf.exists(), f"missing {pdf}"
+    assert not pdf.exists(), f"unexpected pdf at {pdf}"
     size_kb = png.stat().st_size / 1024.0
     assert size_kb > 50.0, f"{png} too small ({size_kb:.1f} KB)"
 

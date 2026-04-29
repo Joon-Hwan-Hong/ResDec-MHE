@@ -53,7 +53,7 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 
-from src.visualization.theme import apply_theme, fmt_axes
+from src.visualization.theme import apply_theme, fmt_axes, style_paper_axes
 
 
 def auto_letter(
@@ -200,11 +200,23 @@ def make_panel(
         if title:
             ax.set_title(title)
         style = panel.get("style", {})
+        # Image-axes (heatmaps) must never have a grid drawn over the data —
+        # the rcParams default is grid-on, which produces white lines across
+        # imshow cells. fmt_axes with grid_major=False suppresses it.
+        has_image = len(ax.get_images()) > 0
+        if has_image and "grid_major" not in style:
+            style = {**style, "grid_major": False, "grid_minor": False}
         fmt_axes(ax, **style)
+        if has_image:
+            ax.minorticks_off()
         if labels:
             auto_letter(ax, label_letters[panel_idx], **label_kwargs)
     if suptitle:
         fig.suptitle(suptitle, y=0.99)
+    # Final sweep — strip top/right ticks on all axes (user pref). Heatmap
+    # axes keep their data-frame spines; non-image axes lose top/right
+    # spines as well.
+    style_paper_axes(fig)
     return fig
 
 
@@ -294,4 +306,5 @@ def make_facet_grid(
                 else:
                     ax.set_title(f"{rv} / {cv}")
                 fmt_axes(ax)
+    style_paper_axes(fig)
     return fig

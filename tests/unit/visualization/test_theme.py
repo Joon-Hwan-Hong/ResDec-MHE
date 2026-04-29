@@ -66,14 +66,27 @@ def test_fmt_axes_can_show_all_spines():
     plt.close(fig)
 
 
-def test_save_fig_writes_both_png_and_pdf(tmp_path):
+def test_save_fig_writes_png_only_by_default(tmp_path):
+    """save_fig now defaults to PNG-only (PDF dropped per user pref)."""
     apply_theme()
     fig, ax = plt.subplots()
     ax.plot([1, 2, 3], [1, 4, 9])
     paths = save_fig(fig, tmp_path / "test_fig", dpi=72)
-    assert len(paths) == 2
+    assert len(paths) == 1
     assert (tmp_path / "test_fig.png").exists()
-    assert (tmp_path / "test_fig.pdf").exists()
+    assert not (tmp_path / "test_fig.pdf").exists()
+    plt.close(fig)
+
+
+def test_save_fig_drops_pdf_even_when_requested(tmp_path):
+    """Defensive: legacy callers that still pass formats=("png","pdf") get PNG-only."""
+    apply_theme()
+    fig, ax = plt.subplots()
+    ax.plot([1, 2, 3], [1, 4, 9])
+    paths = save_fig(fig, tmp_path / "test_fig", dpi=72, formats=("png", "pdf"))
+    assert len(paths) == 1
+    assert (tmp_path / "test_fig.png").exists()
+    assert not (tmp_path / "test_fig.pdf").exists()
     plt.close(fig)
 
 

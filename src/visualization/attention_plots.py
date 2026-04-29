@@ -546,9 +546,12 @@ def plot_head_attention_bootstrap_ci(
         yticklabels=[f"head {h}" for h in range(n_head)],
         xticklabels=cell_type_names,
         annot=annot_mat, fmt="", annot_kws={"size": 10, "weight": "bold"},
-        linewidths=0.3, linecolor="white",
+        linewidths=0, linecolor="none",
     )
     ax_mean.set_ylabel("")
+    # Heatmaps must have NO minor ticks (user pref) and no top/right ticks.
+    ax_mean.minorticks_off()
+    ax_mean.tick_params(top=False, right=False, which="both")
     title_suffix = (
         f" (* CI excludes {null_reference:.4f})"
         if null_reference is not None else ""
@@ -564,7 +567,7 @@ def plot_head_attention_bootstrap_ci(
         cbar_kws={"label": "CI width (hi − lo)"},
         yticklabels=[f"head {h}" for h in range(n_head)],
         xticklabels=cell_type_names,
-        linewidths=0.3, linecolor="white",
+        linewidths=0, linecolor="none",
     )
     ax_width.set_ylabel("")
     ax_width.set_xlabel("")
@@ -572,6 +575,8 @@ def plot_head_attention_bootstrap_ci(
         ax_width.get_xticklabels(), rotation=45, ha="right", fontsize=6,
     )
     ax_width.set_title("Bootstrap CI width", fontsize=9)
+    ax_width.minorticks_off()
+    ax_width.tick_params(top=False, right=False, which="both")
 
     fig.tight_layout()
     if save_path is not None:

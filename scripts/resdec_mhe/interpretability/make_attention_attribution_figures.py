@@ -118,7 +118,15 @@ def _draw_heatmap(ax: plt.Axes, Z: np.ndarray, rank: np.ndarray,
     rank_sub = rank[order]
     cts_sub = [ct_names[i] for i in order]
 
-    im = ax.imshow(Z_sub, aspect="auto", cmap="RdBu_r", vmin=-2, vmax=2)
+    # interpolation="nearest" prevents matplotlib's antialiased default from
+    # introducing horizontal/vertical white-line artifacts between cells
+    # (user-flagged: "white lines cutting across all heatmap boxes").
+    im = ax.imshow(Z_sub, aspect="auto", cmap="RdBu_r", vmin=-2, vmax=2,
+                   interpolation="nearest")
+    # rcParams default has axes.grid=True which renders thin grid lines on
+    # top of imshow data — disable explicitly here.
+    ax.grid(False)
+    ax.minorticks_off()
     ax.set_xticks(range(len(METHODS)))
     ax.set_xticklabels([METHOD_LABELS[m] for m in METHODS], rotation=30, ha="right")
     ax.set_yticks(range(len(cts_sub)))
@@ -200,7 +208,9 @@ def _draw_method_correlation(ax: plt.Axes,
         for j, mj in enumerate(METHODS):
             r, _ = spearmanr(per_method_per_ct[mi], per_method_per_ct[mj])
             rho[i, j] = r
-    im = ax.imshow(rho, cmap="RdBu_r", vmin=-1, vmax=1)
+    im = ax.imshow(rho, cmap="RdBu_r", vmin=-1, vmax=1, interpolation="nearest")
+    ax.grid(False)
+    ax.minorticks_off()
     ax.set_xticks(range(M))
     ax.set_xticklabels([METHOD_LABELS[m] for m in METHODS], rotation=30, ha="right")
     ax.set_yticks(range(M))
@@ -262,9 +272,8 @@ def main(args: argparse.Namespace) -> int:
         len(METHODS),
     )
     fig = make_4panel_figure(per_method_per_ct, ct_names)
-    save_fig(fig, out_dir / "fig_attention_attribution_4panel",
-             formats=("png", "pdf"))
-    logger.info("Wrote %s/fig_attention_attribution_4panel.{png,pdf}", out_dir)
+    save_fig(fig, out_dir / "fig_attention_attribution_4panel")
+    logger.info("Wrote %s/fig_attention_attribution_4panel.png", out_dir)
     plt.close(fig)
     return 0
 

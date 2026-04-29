@@ -107,7 +107,13 @@ def make_addx_figure(
     out_stem: Path,
     figsize: tuple[float, float] = (6.0, 6.0),
 ) -> dict[str, float]:
-    """Predicted-vs-actual colored by AD diagnosis (cogdx)."""
+    """Predicted-vs-actual colored by AD diagnosis (cogdx).
+
+    Per user pref for the lab-meeting deliverable: no identity line, no
+    in-axes legend (covers the data), small scatter points. A separate
+    legend-only PNG is also written so the audience can see the colour
+    key in PowerPoint.
+    """
     cogdx_int = df["cogdx"].astype("Int64")
     labels = cogdx_int.map(COGDX_LABEL).fillna("Unknown").to_numpy()
     fig = plot_predicted_vs_actual(
@@ -119,9 +125,18 @@ def make_addx_figure(
         color_by=labels,
         color_label="AD diagnosis",
         color_palette=COGDX_PALETTE,
+        show_identity=False,
+        show_legend=False,
+        scatter_size=10,
     )
-    _save_dual_format(fig, out_stem)
+    _save_png(fig, out_stem)
     plt.close(fig)
+    _save_legend_only(
+        labels=labels,
+        palette=COGDX_PALETTE,
+        title="AD diagnosis",
+        out_stem=out_stem.with_name(out_stem.name + "_legend"),
+    )
     return _summary_metrics(df["predictions"].to_numpy(), df["actual"].to_numpy())
 
 
@@ -130,7 +145,7 @@ def make_sex_figure(
     out_stem: Path,
     figsize: tuple[float, float] = (6.0, 6.0),
 ) -> dict[str, float]:
-    """Predicted-vs-actual colored by sex (msex)."""
+    """Predicted-vs-actual colored by sex (msex). See ``make_addx_figure``."""
     sex_labels = df["msex"].map({0: "F", 1: "M"}).fillna("Unknown").to_numpy()
     fig = plot_predicted_vs_actual(
         predicted_mean=df["predictions"].to_numpy(),
@@ -141,17 +156,55 @@ def make_sex_figure(
         color_by=sex_labels,
         color_label="Sex",
         color_palette=SEX_PALETTE,
+        show_identity=False,
+        show_legend=False,
+        scatter_size=10,
     )
-    _save_dual_format(fig, out_stem)
+    _save_png(fig, out_stem)
     plt.close(fig)
+    _save_legend_only(
+        labels=sex_labels,
+        palette=SEX_PALETTE,
+        title="Sex",
+        out_stem=out_stem.with_name(out_stem.name + "_legend"),
+    )
     return _summary_metrics(df["predictions"].to_numpy(), df["actual"].to_numpy())
 
 
-def _save_dual_format(fig: plt.Figure, stem: Path) -> None:
-    """Save fig as both PNG and PDF at 600 DPI."""
+def _save_png(fig: plt.Figure, stem: Path) -> None:
+    """Save fig as PNG at 600 DPI (PDF intentionally dropped per user pref)."""
     stem.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(stem.with_suffix(".png"), dpi=600, bbox_inches="tight")
-    fig.savefig(stem.with_suffix(".pdf"), dpi=600, bbox_inches="tight")
+
+
+def _save_legend_only(
+    *,
+    labels: np.ndarray,
+    palette: dict,
+    title: str,
+    out_stem: Path,
+) -> None:
+    """Render and save just the categorical legend as a stand-alone PNG.
+
+    The user wants the predicted-vs-actual scatter without any in-axes
+    legend covering the data. Pasting this side-by-side in PowerPoint
+    preserves the colour key.
+    """
+    from matplotlib.patches import Patch
+    categories = list(dict.fromkeys(np.asarray(labels).tolist()))
+    handles = [
+        Patch(facecolor=palette.get(c, "#777777"), edgecolor="white", label=str(c))
+        for c in categories
+    ]
+    fig_l, ax_l = plt.subplots(figsize=(2.5, 2.0))
+    ax_l.axis("off")
+    ax_l.legend(
+        handles=handles, title=title,
+        loc="center", frameon=True, fontsize=10, title_fontsize=11,
+    )
+    out_stem.parent.mkdir(parents=True, exist_ok=True)
+    fig_l.savefig(out_stem.with_suffix(".png"), dpi=600, bbox_inches="tight")
+    plt.close(fig_l)
 
 
 def _summary_metrics(pred: np.ndarray, actual: np.ndarray) -> dict[str, float]:
