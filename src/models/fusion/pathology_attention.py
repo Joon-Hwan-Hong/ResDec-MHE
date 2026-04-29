@@ -196,8 +196,6 @@ class PathologyStratifiedAttention(nn.Module):
                 attended = attended.masked_fill(
                     all_masked.unsqueeze(-1).expand_as(attended), 0.0
                 )
-            if not return_attention_weights:
-                attention_weights = None
             return attended, attention_weights
 
         # Fused attention via SDPA (dispatches to FlashAttention/memory-efficient backend).

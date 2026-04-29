@@ -546,7 +546,7 @@ class CognitiveResilienceModel(PyroModule):
             # [B, d_fused], [B, n_heads, n_cell_types] or None
             attended, attention_weights = self.pathology_attention(
                 fused, path_emb, cell_type_mask=cell_type_mask,
-                return_attention_weights=(not self.training) or self.return_attention_in_training,
+                return_attention_weights=(not self.training),
             )
         else:
             # Mean pooling over cell types (ablation: no pathology conditioning)
@@ -673,7 +673,7 @@ class CognitiveResilienceModel(PyroModule):
         if self.use_pathology_attention:
             attended, attention_weights = self.pathology_attention(
                 fused, path_emb, cell_type_mask=cell_type_mask,
-                return_attention_weights=(not self.training) or self.return_attention_in_training,
+                return_attention_weights=(not self.training),
             )
         else:
             if cell_type_mask is not None:
