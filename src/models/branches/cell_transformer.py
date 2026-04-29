@@ -153,7 +153,7 @@ class CellTransformer(nn.Module):
         if total_cells > 0:
             cell_data = self.input_proj(cell_data)
 
-        max_cells = max(int(counts.max().item()), 1) if counts.numel() > 0 else 1
+        max_cells = max(int(counts.amax()), 1) if counts.numel() > 0 else 1
 
         # Build padded tensor [B * n_types, max_cells, d_model]
         pad_dim = self.d_model

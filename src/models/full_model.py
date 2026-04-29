@@ -427,43 +427,175 @@ class CognitiveResilienceModel(PyroModule):
                 - 'region_attention': [B, n_regions] normalized region weights (if return_region_attention)
                 - 'embeddings': dict of branch/fused/attended embeddings (if return_embeddings)
         """
+        # 2-line dispatch through the new public boundary so callers (e.g. the
+        # counterfactual orchestrator) can cache the cell branch via
+        # `compute_cell_emb_only` and reuse it across many region_pseudobulk
+        # perturbations via `forward_with_cached_cell_emb`. The behavior of
+        # `forward()` is unchanged: the cell branch is computed once, then the
+        # remainder of the pipeline runs identically to the previous inline
+        # implementation. See those methods for the full data flow.
+        batch = {
+            "region_pseudobulk": region_pseudobulk,
+            "region_mask": region_mask,
+            "pseudobulk": pseudobulk,
+            "ccc_edge_index": ccc_edge_index,
+            "ccc_edge_type": ccc_edge_type,
+            "ccc_edge_attr": ccc_edge_attr,
+            "cell_data": cell_data,
+            "cell_offsets": cell_offsets,
+            "cell_type_mask": cell_type_mask,
+            "pathology": pathology,
+            "cognition": cognition,
+        }
+        cell_emb = self.compute_cell_emb_only(batch)
+        return self.forward_with_cached_cell_emb(
+            batch,
+            cell_emb,
+            return_hgt_attention=return_hgt_attention,
+            return_pma_attention=return_pma_attention,
+            return_region_attention=return_region_attention,
+            return_embeddings=return_embeddings,
+        )
+
+    def compute_cell_emb_only(
+        self,
+        batch: dict,
+    ) -> torch.Tensor:
+        """Compute the CellTransformer cell-branch embedding only.
+
+        Returns the same `cell_emb` tensor that `forward()` would compute
+        internally before fusion. The cell branch consumes only `cell_data`
+        and `cell_offsets`; it is independent of `region_pseudobulk`,
+        `region_mask`, `pathology`, and `cell_type_mask`. This boundary lets
+        callers (e.g. the counterfactual orchestrator) cache the embedding
+        once per subject and reuse it across many region_pseudobulk
+        perturbations via `forward_with_cached_cell_emb`.
+
+        Mirrors the cell-branch portion of `forward()` exactly, including
+        the gradient-checkpointing branch and the use_cell_transformer=False
+        zero-tensor fallback. Always uses `return_attention=False`; if a
+        caller needs PMA attention they should use the regular `forward()`
+        (which re-runs the cell branch with `return_attention=True` via
+        `forward_with_cached_cell_emb` when requested).
+
+        Args:
+            batch: dict containing at minimum `cell_data` and `cell_offsets`.
+                Other fields (region_pseudobulk, pathology, etc.) are
+                ignored — only the inputs the cell branch consumes matter.
+                The dict must also let us infer batch size and device:
+                we read this from `cell_offsets[:, 0]` (always present).
+
+        Returns:
+            cell_emb: [B, n_cell_types, n_pma_seeds * d_embed] tensor.
+        """
+        cell_data = batch.get("cell_data")
+        cell_offsets = batch.get("cell_offsets")
+        if cell_data is None or cell_offsets is None:
+            raise ValueError(
+                "compute_cell_emb_only requires batch['cell_data'] and "
+                "batch['cell_offsets'] (matching the canonical collate output)"
+            )
+        B = cell_offsets.shape[0]
+        device = cell_data.device
+
+        if self.use_cell_transformer:
+            if self.use_gradient_checkpointing and self.training:
+                cell_emb, _ = torch.utils.checkpoint.checkpoint(
+                    self.cell_transformer,
+                    cell_data, cell_offsets,
+                    use_reentrant=False,
+                    return_attention=False,
+                )
+            else:
+                cell_emb, _ = self.cell_transformer(
+                    cell_data, cell_offsets,
+                    return_attention=False,
+                )
+        else:
+            cell_emb = torch.zeros(
+                B, self.n_cell_types, self.n_pma_seeds * self.d_embed,
+                device=device,
+            )
+        return cell_emb
+
+    def forward_with_cached_cell_emb(
+        self,
+        batch: dict,
+        cell_emb: torch.Tensor,
+        # Interpretability options (mirror forward())
+        return_hgt_attention: bool = False,
+        return_pma_attention: bool = False,
+        return_region_attention: bool = False,
+        return_embeddings: bool = False,
+    ) -> dict[str, torch.Tensor]:
+        """Forward pass given a precomputed cell-branch embedding.
+
+        Equivalent to `forward(**batch, return_*=...)` except that the cell
+        branch is not recomputed; instead the caller-supplied `cell_emb` is
+        used directly. The caller MUST guarantee `cell_emb` was computed
+        from a batch with the same `cell_data`/`cell_offsets` as `batch`
+        (these are the only fields the cell branch consumes). All other
+        fields may differ — this is precisely what enables CF-style reuse.
+
+        When `return_pma_attention=True` the cell branch is re-run with
+        `return_attention=True` to recover the PMA attention tensor; in
+        eval mode this is deterministic and matches `forward()`'s output.
+        In training mode (non-canonical path for interpretability), the
+        re-run consumes additional dropout RNG and is NOT bit-identical;
+        this matches expected interpretability semantics.
+
+        Args:
+            batch: same dict-of-tensors as forward() consumes (region_*,
+                cell_*, pathology, etc.).
+            cell_emb: [B, n_cell_types, n_pma_seeds * d_embed] tensor from
+                `compute_cell_emb_only` (or any equivalent computation).
+            return_hgt_attention, return_pma_attention,
+                return_region_attention, return_embeddings: see forward().
+
+        Returns:
+            Same dict shape as forward().
+        """
+        # Pull tensors from the batch dict
+        region_pseudobulk = batch.get("region_pseudobulk")
+        region_mask = batch.get("region_mask")
+        pseudobulk = batch.get("pseudobulk")
+        ccc_edge_index = batch.get("ccc_edge_index")
+        ccc_edge_type = batch.get("ccc_edge_type")
+        ccc_edge_attr = batch.get("ccc_edge_attr")
+        cell_data = batch.get("cell_data")
+        cell_offsets = batch.get("cell_offsets")
+        cell_type_mask = batch.get("cell_type_mask")
+        pathology = batch.get("pathology")
+        cognition = batch.get("cognition")
+
         # ─────────────────────────────────────────────────────────────────────
-        # Handle single-region vs multi-region input
+        # Handle single-region vs multi-region input (mirrors forward())
         # ─────────────────────────────────────────────────────────────────────
         if region_pseudobulk is not None:
-            # Multi-region format
             B = region_pseudobulk.size(0)
             device = region_pseudobulk.device
-
             if region_mask is None:
-                # Default: all regions available
                 region_mask = torch.ones(B, self.n_regions, dtype=torch.bool, device=device)
         elif pseudobulk is not None:
-            # Single-region fallback: expand to multi-region format
             B = pseudobulk.size(0)
             device = pseudobulk.device
-
-            # Expand [B, C, G] -> [B, n_regions, C, G] with only PFC region filled
             region_pseudobulk = torch.zeros(
                 B, self.n_regions, self.n_cell_types, self.n_genes,
-                device=device, dtype=pseudobulk.dtype
+                device=device, dtype=pseudobulk.dtype,
             )
             region_pseudobulk[:, PFC_REGION_IDX, :, :] = pseudobulk
-
-            # Mask: only PFC region is available
             region_mask = torch.zeros(B, self.n_regions, dtype=torch.bool, device=device)
             region_mask[:, PFC_REGION_IDX] = True
         else:
             raise ValueError("Must provide either region_pseudobulk or pseudobulk")
 
-        # Validate optional cell_type_mask shape early
+        # Validate optional cell_type_mask shape early (mirrors forward())
         if cell_type_mask is not None and cell_type_mask.shape != (B, self.n_cell_types):
             raise ValueError(
                 f"cell_type_mask shape must be [{B}, {self.n_cell_types}], "
                 f"got {list(cell_type_mask.shape)}"
             )
 
-        # Validate cell inputs — need flat format (cell_data + cell_offsets)
         if cell_data is None or cell_offsets is None:
             raise ValueError(
                 "Must provide (cell_data, cell_offsets) — "
@@ -474,16 +606,12 @@ class CognitiveResilienceModel(PyroModule):
 
         # ─────────────────────────────────────────────────────────────────────
         # Branch 1: HGT input pipeline + region handling + HGT encoding
-        # GeneAttentionGate → Linear → RegionHandler → HGT
         # ─────────────────────────────────────────────────────────────────────
-        # [B, n_regions, n_cell_types, n_genes] -> [B, n_regions, n_cell_types, d_embed]
         region_encoded = self._encode_hgt_input_per_region(region_pseudobulk, region_mask)
-        # Pool across regions: [B, n_cell_types, d_embed] + [B, d_embed] + [B, n_regions]
         hgt_node_features, region_context, region_attn = self.region_handler(region_encoded, region_mask)
 
         hgt_attention = None
         if self.use_hgt_encoder:
-            # Handle no-edges case
             if ccc_edge_index is None:
                 ccc_edge_index = torch.zeros(2, 0, dtype=torch.long, device=device)
                 ccc_edge_type = torch.zeros(0, dtype=torch.long, device=device)
@@ -501,29 +629,22 @@ class CognitiveResilienceModel(PyroModule):
             hgt_emb = torch.zeros(B, self.n_cell_types, self.d_embed, device=device)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Branch 2: Cell transformer (cell-level heterogeneity)
+        # Branch 2: cell branch is precomputed (cached). Recover pma_attention
+        # only if explicitly requested.
         # ─────────────────────────────────────────────────────────────────────
         pma_attention = None
-        if self.use_cell_transformer:
-            if self.use_gradient_checkpointing and self.training:
-                cell_emb, pma_attention = torch.utils.checkpoint.checkpoint(
-                    self.cell_transformer,
-                    cell_data, cell_offsets,
-                    use_reentrant=False,
-                    return_attention=return_pma_attention,
-                )
-            else:
-                cell_emb, pma_attention = self.cell_transformer(
-                    cell_data, cell_offsets,
-                    return_attention=return_pma_attention,
-                )
-        else:
-            cell_emb = torch.zeros(B, self.n_cell_types, self.n_pma_seeds * self.d_embed, device=device)
+        if return_pma_attention and self.use_cell_transformer:
+            # Re-run cell branch ONLY for the attention tensor; cell_emb is
+            # already cached. Eval-mode: deterministic, bit-identical to a
+            # single forward() call. Training-mode (interpretability): may
+            # differ in dropout RNG; matches expected interp semantics.
+            _, pma_attention = self.cell_transformer(
+                cell_data, cell_offsets, return_attention=True,
+            )
 
         # ─────────────────────────────────────────────────────────────────────
         # Fusion: combine HGT + Cell branches
         # ─────────────────────────────────────────────────────────────────────
-        # [B, n_cell_types, d_fused]
         if self.use_gradient_checkpointing and self.training:
             fused = torch.utils.checkpoint.checkpoint(
                 self.fusion_layer,
@@ -536,29 +657,26 @@ class CognitiveResilienceModel(PyroModule):
         # ─────────────────────────────────────────────────────────────────────
         # Pathology encoding with region context
         # ─────────────────────────────────────────────────────────────────────
-        # [B, d_cond]
         path_emb = self.pathology_encoder(pathology, region_context)
 
         # ─────────────────────────────────────────────────────────────────────
         # Pathology-stratified attention over cell types (or mean pooling)
         # ─────────────────────────────────────────────────────────────────────
         if self.use_pathology_attention:
-            # [B, d_fused], [B, n_heads, n_cell_types] or None
             attended, attention_weights = self.pathology_attention(
                 fused, path_emb, cell_type_mask=cell_type_mask,
                 return_attention_weights=(not self.training),
             )
         else:
-            # Mean pooling over cell types (ablation: no pathology conditioning)
             if cell_type_mask is not None:
-                mask = cell_type_mask.unsqueeze(-1).float()  # [B, n_cell_types, 1]
+                mask = cell_type_mask.unsqueeze(-1).float()
                 attended = (fused * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
             else:
-                attended = fused.mean(dim=1)  # [B, d_fused]
+                attended = fused.mean(dim=1)
             attention_weights = None
 
         # ─────────────────────────────────────────────────────────────────────
-        # Prediction
+        # Output assembly + prediction
         # ─────────────────────────────────────────────────────────────────────
         output = {'attention_weights': attention_weights, 'attended': attended}
 
@@ -573,10 +691,10 @@ class CognitiveResilienceModel(PyroModule):
 
         if return_embeddings:
             output['embeddings'] = {
-                'hgt': hgt_emb,                # [B, n_cell_types, d_embed]
-                'cell': cell_emb,              # [B, n_cell_types, d_embed]
-                'fused': fused,                # [B, n_cell_types, d_fused]
-                'attended': attended,           # [B, d_fused]
+                'hgt': hgt_emb,
+                'cell': cell_emb,
+                'fused': fused,
+                'attended': attended,
             }
 
         if self.use_bayesian_head:
