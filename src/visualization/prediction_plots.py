@@ -32,6 +32,11 @@ def plot_predicted_vs_actual(
     figsize: tuple[float, float] = (8, 8),
     title: str = "Predicted vs Actual Cognition",
     save_path: str | Path | None = None,
+    *,
+    add_marginals: bool = False,
+    color_by: np.ndarray | None = None,
+    color_label: str | None = None,
+    color_palette: dict | None = None,
 ) -> plt.Figure:
     """
     Plot predicted vs actual values with optional uncertainty.
@@ -43,6 +48,14 @@ def plot_predicted_vs_actual(
         figsize: Figure size
         title: Plot title
         save_path: If provided, save figure to this path
+        add_marginals: If True, add KDE marginal panels on top + right of
+            the main scatter (Seaborn JointGrid-like layout).
+        color_by: Optional categorical color array (len == n). When set,
+            scatter and (when ``add_marginals``) marginal KDEs are split
+            per category.
+        color_label: Optional legend title for the color-by category axis.
+        color_palette: Optional ``{category: hex_color}`` dict. If omitted
+            and ``color_by`` is set, falls back to ``tab10``.
 
     Returns:
         Matplotlib Figure
@@ -57,11 +70,50 @@ def plot_predicted_vs_actual(
     predicted_mean = predicted_mean[valid_mask]
     if predicted_std is not None:
         predicted_std = predicted_std[valid_mask]
+    if color_by is not None:
+        color_by = np.asarray(color_by)[valid_mask]
 
-    fig, ax = plt.subplots(figsize=figsize)
+    if add_marginals:
+        # JointGrid-style layout: main + top + right.
+        fig = plt.figure(figsize=figsize)
+        gs = fig.add_gridspec(
+            2, 2,
+            width_ratios=(4, 1),
+            height_ratios=(1, 4),
+            wspace=0.05,
+            hspace=0.05,
+        )
+        ax = fig.add_subplot(gs[1, 0])
+        ax_top = fig.add_subplot(gs[0, 0], sharex=ax)
+        ax_right = fig.add_subplot(gs[1, 1], sharey=ax)
+        # Hide tick labels on marginals to keep main axes clean.
+        plt.setp(ax_top.get_xticklabels(), visible=False)
+        plt.setp(ax_right.get_yticklabels(), visible=False)
+    else:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax_top = None
+        ax_right = None
 
-    # Scatter plot
-    if predicted_std is not None:
+    # Scatter plot — three branches: color_by (categorical), predicted_std
+    # (continuous uncertainty colorbar), or single accent color.
+    if color_by is not None:
+        categories = list(dict.fromkeys(np.asarray(color_by).tolist()))
+        if color_palette is None:
+            tab10 = list(plt.get_cmap("tab10").colors)
+            color_palette = {c: tab10[i % len(tab10)] for i, c in enumerate(categories)}
+        for cat in categories:
+            m = np.asarray(color_by) == cat
+            ax.scatter(
+                actual[m],
+                predicted_mean[m],
+                alpha=0.7,
+                s=50,
+                color=color_palette.get(cat, "#777777"),
+                label=str(cat),
+                edgecolor="white",
+                linewidth=0.4,
+            )
+    elif predicted_std is not None:
         # Color by uncertainty
         scatter = ax.scatter(
             actual,
@@ -95,7 +147,10 @@ def plot_predicted_vs_actual(
     ax.set_xlabel("Actual Cognition Score")
     ax.set_ylabel("Predicted Cognition Score")
     ax.set_title(title)
-    ax.legend(loc="lower right")
+    if color_by is not None and color_label is not None:
+        ax.legend(loc="lower right", title=color_label)
+    else:
+        ax.legend(loc="lower right")
 
     # Add metrics annotation
     rmse = np.sqrt(np.mean((predicted_mean - actual) ** 2))
@@ -109,12 +164,83 @@ def plot_predicted_vs_actual(
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
     )
 
-    plt.tight_layout()
+    # KDE marginals — per-category if color_by, otherwise pooled.
+    if add_marginals:
+        _draw_marginal_kdes(
+            ax_top=ax_top,
+            ax_right=ax_right,
+            actual=actual,
+            predicted_mean=predicted_mean,
+            color_by=color_by,
+            color_palette=color_palette,
+            single_color=ACCENT_CORAL,
+        )
+        # Strip spines + ticks from marginal panels for visual balance.
+        for marg in (ax_top, ax_right):
+            marg.tick_params(left=False, bottom=False)
+            for s in ("top", "right"):
+                marg.spines[s].set_visible(False)
+        ax_top.set_ylabel("")
+        ax_right.set_xlabel("")
+    else:
+        plt.tight_layout()
 
     if save_path:
         save_figure(fig, str(save_path))
 
     return fig
+
+
+def _draw_marginal_kdes(
+    *,
+    ax_top,
+    ax_right,
+    actual: np.ndarray,
+    predicted_mean: np.ndarray,
+    color_by: np.ndarray | None,
+    color_palette: dict | None,
+    single_color: str,
+) -> None:
+    """Draw KDE on top (over actual) and right (over predicted) marginals.
+
+    Per-category if color_by is provided, else pooled. Uses scipy.stats.gaussian_kde
+    so we have no extra dependencies. Falls back to histograms when KDE is
+    degenerate (e.g., < 2 unique values in a category).
+    """
+    def _kde_or_hist(values: np.ndarray, color: str, axis: str, ax_):
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size < 2 or float(np.std(values)) < 1e-12:
+            # Degenerate — draw a thin histogram instead.
+            if axis == "x":
+                ax_.hist(values, bins=8, color=color, alpha=0.5, orientation="vertical")
+            else:
+                ax_.hist(values, bins=8, color=color, alpha=0.5, orientation="horizontal")
+            return
+        kde = stats.gaussian_kde(values)
+        lo, hi = float(values.min()), float(values.max())
+        pad = (hi - lo) * 0.1 + 1e-6
+        grid = np.linspace(lo - pad, hi + pad, 200)
+        density = kde(grid)
+        if axis == "x":
+            ax_.fill_between(grid, density, color=color, alpha=0.3)
+            ax_.plot(grid, density, color=color, linewidth=1.0)
+        else:
+            ax_.fill_betweenx(grid, density, color=color, alpha=0.3)
+            ax_.plot(density, grid, color=color, linewidth=1.0)
+
+    if color_by is None:
+        _kde_or_hist(actual, single_color, "x", ax_top)
+        _kde_or_hist(predicted_mean, single_color, "y", ax_right)
+        return
+
+    categories = list(dict.fromkeys(np.asarray(color_by).tolist()))
+    palette = color_palette or {}
+    for cat in categories:
+        m = np.asarray(color_by) == cat
+        c = palette.get(cat, "#777777")
+        _kde_or_hist(actual[m], c, "x", ax_top)
+        _kde_or_hist(predicted_mean[m], c, "y", ax_right)
 
 
 def plot_calibration_curve(
