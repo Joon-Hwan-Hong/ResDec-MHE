@@ -146,9 +146,59 @@ def _is_ours_row(model: str) -> bool:
     return any(model.startswith(tok) for tok in _OURS_MODEL_TOKENS)
 
 
+_CANONICAL_MODEL_KEY: str = "p5_canonical_seed42"
+
+# Feature-set suffix → readable English. Source: scripts/analysis/run_baselines.py:74-97.
+#   A   = flattened snRNA-seq pseudobulk (148_607 dims)
+#   C   = 31 cell-type proportions only
+#   E   = CCC graph-summary features (~18 dims)
+_FSET_RENAME: dict[str, str] = {
+    "[A+C+E]": "(all features)",
+    "[A]": "(expression)",
+    "[C]": "(CT proportions)",
+    "[E]": "(CCC summary)",
+}
+
+
+def _readable_display_name(name: str) -> str:
+    """Replace bracketed feature-set codes with human-readable suffixes."""
+    for code, repl in _FSET_RENAME.items():
+        name = name.replace(code, repl)
+    return name
+
+
+def _filter_table_for_mode(
+    df: pd.DataFrame, mode: str
+) -> pd.DataFrame:
+    """Filter the baseline table for the requested comparison mode.
+
+    Modes:
+      - "all": every row (legacy behavior).
+      - "vs_baselines": canonical row + every non-p5_* row (true baselines).
+        Excludes the 8 p5_ablation_* rows AND the 4 architecture-variant rows
+        (p5_filmwired_*, p5_phase3_*).
+      - "vs_ablations" (strict): canonical row + the 8 p5_ablation_* rows ONLY.
+        Excludes baselines AND the 4 architecture-variant rows.
+    """
+    if mode == "all":
+        return df
+    is_canonical = df["model"] == _CANONICAL_MODEL_KEY
+    is_p5 = df["model"].str.startswith("p5_", na=False)
+    is_p5_ablation = df["model"].str.startswith("p5_ablation_", na=False)
+    if mode == "vs_baselines":
+        keep = is_canonical | (~is_p5)
+    elif mode == "vs_ablations":
+        keep = is_canonical | is_p5_ablation
+    else:
+        raise ValueError(f"unknown mode: {mode!r}")
+    return df[keep].copy().reset_index(drop=True)
+
+
 def make_fig1_ablation_bar(
     table: pd.DataFrame | None,
     canonical_r2: float = CANONICAL_R2,
+    mode: str = "all",
+    title_override: str | None = None,
 ) -> plt.Figure:
     """Bar chart of R² mean ± std for every row in the baseline table.
 
@@ -164,7 +214,11 @@ def make_fig1_ablation_bar(
     if table is None:
         raise SkipFigure("fig1_ablation_bar: baseline table is None")
 
-    df = table.copy()
+    df = _filter_table_for_mode(table.copy(), mode)
+    if df.empty:
+        raise SkipFigure(f"fig1_ablation_bar: empty after mode={mode!r} filter")
+    # Rename bracketed feature-set codes ([A]/[C]/[A+C+E]) into readable English.
+    df["display_name"] = df["display_name"].astype(str).map(_readable_display_name)
 
     completed_mask = df["n_folds"].fillna(0).astype(int) >= N_FOLDS
     completed = df[completed_mask & df["r2_mean"].notna()].copy()
@@ -260,7 +314,14 @@ def make_fig1_ablation_bar(
         full["display_name"].to_list(), rotation=45, ha="right", fontsize=7,
     )
     ax.set_ylabel("Cross-validated R²")
-    ax.set_title("Model / ablation R² comparison (5-fold)")
+    if title_override is not None:
+        ax.set_title(title_override)
+    elif mode == "vs_baselines":
+        ax.set_title("Canonical model vs baselines (5-fold R²)")
+    elif mode == "vs_ablations":
+        ax.set_title("Canonical model vs ablations (5-fold R²)")
+    else:
+        ax.set_title("Model / ablation R² comparison (5-fold)")
 
     # Legend (outside axes so it never overlaps bars — M6).
     # Pending bars are no longer drawn (user pref) so the "† pending" legend
@@ -1197,6 +1258,26 @@ def main(argv: list[str] | None = None) -> int:
         "fig1_ablation_bar",
         lambda: make_fig1_ablation_bar(table=table, canonical_r2=args.canonical_r2),
         args.out_dir, "fig_ablation_bar",
+        args.figure_format, args.dpi,
+    )
+
+    # --- Fig 1b: canonical vs baselines (excludes p5_* family) ---
+    _try_make(
+        "fig1b_canonical_vs_baselines",
+        lambda: make_fig1_ablation_bar(
+            table=table, canonical_r2=args.canonical_r2, mode="vs_baselines",
+        ),
+        args.out_dir, "fig_canonical_vs_baselines",
+        args.figure_format, args.dpi,
+    )
+
+    # --- Fig 1c: canonical vs ablations (strict: only p5_ablation_*) ---
+    _try_make(
+        "fig1c_canonical_vs_ablations",
+        lambda: make_fig1_ablation_bar(
+            table=table, canonical_r2=args.canonical_r2, mode="vs_ablations",
+        ),
+        args.out_dir, "fig_canonical_vs_ablations",
         args.figure_format, args.dpi,
     )
 

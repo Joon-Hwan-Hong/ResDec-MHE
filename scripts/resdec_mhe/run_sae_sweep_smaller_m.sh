@@ -54,10 +54,18 @@
 #   cd /host/milan/tank/Joon/proj_ml_snrna/.worktrees/refinement-two
 #   CUDA_VISIBLE_DEVICES=0 bash scripts/resdec_mhe/run_sae_sweep_smaller_m.sh
 
+# set -euo pipefail with intentional set +e / set -e around the per-config
+# uv run python (lines further down) so a single training failure does not
+# abort the entire 180-config sweep — the surrounding mkdir/printf/tr ops
+# are checked but per-run failures are counted in n_failed and the sweep
+# continues.
 set -euo pipefail
 
 WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Both ACTIVATIONS_DIR and OUT_ROOT are resolved relative to WORKTREE_ROOT
+# (the cd on line 102 below is what makes that work). To pass an absolute
+# path, override the env var with one starting at /.
 ACTIVATIONS_DIR="${ACTIVATIONS_DIR:-outputs/canonical/sae}"
 OUT_ROOT="${OUT_ROOT:-outputs/canonical/sae/stability_smaller_m}"
 N_STEPS="${N_STEPS:-50000}"
@@ -129,7 +137,11 @@ for arch in "${ARCHITECTURES[@]}"; do
                     fi
 
                     log_hash=$(printf '%s' "${run_tag}" | tr '/' '_' | tr -d ' ')
-                    log_file="/tmp/sae_smaller_m_gpu${GPU_INDEX}_${log_hash}.log"
+                    # Colocate logs with sweep outputs (avoids /tmp collisions
+                    # across worktrees and survives reboot).
+                    SWEEP_LOG_DIR="${OUT_ROOT}/_sae_sweep_logs"
+                    mkdir -p "${SWEEP_LOG_DIR}"
+                    log_file="${SWEEP_LOG_DIR}/sae_smaller_m_gpu${GPU_INDEX}_${log_hash}.log"
 
                     echo "[smaller-m][gpu${GPU_INDEX}] [${n_total}/${TOTAL_GRID}] RUN ${run_tag} → ${run_dir}"
                     echo "[smaller-m][gpu${GPU_INDEX}]    log: ${log_file}"

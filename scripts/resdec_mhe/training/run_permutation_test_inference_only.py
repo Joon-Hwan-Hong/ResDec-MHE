@@ -165,8 +165,14 @@ def run_permutation_test_inference_only(
         except json.JSONDecodeError:
             perm_records = []
 
+    # De-dupe on resume: skip seeds already in the persisted records so an
+    # overlapping --start-perm range doesn't double-count.
+    existing_seeds = {r["perm_seed"] for r in perm_records}
+
     t_total = time.time()
     for k in range(start_perm, start_perm + num_perms):
+        if k in existing_seeds:
+            continue
         t0 = time.time()
         y_lookup = shuffle_finite_labels(
             base_metadata_csv, perm_seed=k,
@@ -195,8 +201,9 @@ def run_permutation_test_inference_only(
     )
     n_perms = int(null_means.size)
     null_mean = float(null_means.mean()) if n_perms > 0 else float("nan")
-    # Use sample std (ddof=1) when N > 1; for N=1 fall back to 0.
-    null_std = float(null_means.std(ddof=1)) if n_perms > 1 else 0.0
+    # Population std (ddof=0) — matches existing canonical N=10 perm summary
+    # convention (verified: (0.4436 - (-0.2944)) / 0.0845 = 8.73).
+    null_std = float(null_means.std(ddof=0)) if n_perms > 1 else 0.0
     n_perms_ge_canonical = int((null_means >= canonical_mean_r2).sum())
     p_value_one_sided = (1 + n_perms_ge_canonical) / (n_perms + 1) if n_perms > 0 else float("nan")
     z_under_null = (

@@ -64,18 +64,27 @@ def generate_shuffled_metadata(
 
 
 def run_step(cmd: list, log_handle, step_name: str) -> float:
-    """Run cmd as subprocess; tee output to log_handle; return elapsed seconds."""
+    """Run cmd as subprocess; tee output to log_handle; return elapsed seconds.
+
+    Note: env inherits parent's CUDA_VISIBLE_DEVICES — non-training stages
+    (top-k, TabPFN) see whatever GPU mask the launcher set, which is correct
+    under perm-shard parallelization.
+    """
     log_handle.write(f"\n=== {step_name} === @ {time.strftime('%H:%M:%S')}\n")
     log_handle.write(f"$ {' '.join(str(c) for c in cmd)}\n")
     log_handle.flush()
     t0 = time.time()
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
-    result = subprocess.run(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=env)
+    try:
+        subprocess.run(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=env, check=True)
+    except subprocess.CalledProcessError as exc:
+        elapsed = time.time() - t0
+        log_handle.write(f"=== {step_name} FAILED in {elapsed:.1f}s, exit {exc.returncode} ===\n")
+        log_handle.flush()
+        raise RuntimeError(f"{step_name} failed (see log); cmd: {cmd}") from exc
     elapsed = time.time() - t0
-    log_handle.write(f"=== {step_name} done in {elapsed:.1f}s, exit {result.returncode} ===\n")
+    log_handle.write(f"=== {step_name} done in {elapsed:.1f}s ===\n")
     log_handle.flush()
-    if result.returncode != 0:
-        raise RuntimeError(f"{step_name} failed (see log); cmd: {cmd}")
     return elapsed
 
 
@@ -123,6 +132,7 @@ def run_one_permutation(
     precomputed_dir: Path,
     target_col: str,
     id_col: str,
+    gpus: list[int] | None = None,
 ) -> dict:
     perm_dir = output_base / f"perm_{perm_seed}"
     perm_dir.mkdir(parents=True, exist_ok=True)
@@ -183,8 +193,9 @@ def run_one_permutation(
             "--tabpfn-oof-dir", str(tabpfn_dir),
             "--tabpfn-outer-dir", str(tabpfn_dir),
         ]
+        gpus_to_use = gpus or [0, 1]  # treat None or empty list as default 2-GPU
         train_elapsed = run_train_folds_parallel(
-            folds=[0, 1, 2, 3, 4], gpus=[0, 1], base_args=train_args, log_handle=log,
+            folds=[0, 1, 2, 3, 4], gpus=gpus_to_use, base_args=train_args, log_handle=log,
         )
         log.write(f"\n=== train all folds done in {train_elapsed:.1f}s ===\n")
 
@@ -240,7 +251,16 @@ def main():
     p.add_argument("--precomputed-dir", default="data/precomputed")
     p.add_argument("--target-col", default=DEFAULT_TARGET)
     p.add_argument("--id-col", default=DEFAULT_ID_COL)
+    p.add_argument(
+        "--gpus", default="0,1",
+        help="comma-separated GPU indices to use within each perm (default: 0,1 = "
+             "fold-shard within perm). Set to '0' or '1' for perm-shard mode where "
+             "the wrapper launches two processes, one per GPU, with this arg set.",
+    )
     args = p.parse_args()
+    gpus_list = [int(g.strip()) for g in args.gpus.split(",") if g.strip()]
+    if not gpus_list:
+        raise SystemExit("--gpus must specify at least one GPU index (e.g. '0' or '0,1')")
 
     output_base = Path(args.output_base)
     output_base.mkdir(parents=True, exist_ok=True)
@@ -263,6 +283,7 @@ def main():
                 precomputed_dir=Path(args.precomputed_dir),
                 target_col=args.target_col,
                 id_col=args.id_col,
+                gpus=gpus_list,
             )
         except Exception as exc:
             print(f"  perm {k} FAILED: {exc}", flush=True)
