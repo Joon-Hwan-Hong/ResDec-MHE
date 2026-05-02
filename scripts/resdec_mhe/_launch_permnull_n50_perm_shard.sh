@@ -11,7 +11,7 @@ if [ -z "${TMUX:-}" ]; then
     exit 1
 fi
 
-WT="${WT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+WT="${WT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$WT"
 
 OUT_BASE=outputs/canonical/permutation_test_n50_full

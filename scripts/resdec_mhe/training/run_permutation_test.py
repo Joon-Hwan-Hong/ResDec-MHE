@@ -109,7 +109,16 @@ def run_train_folds_parallel(
                 f"\n=== train fold {f} on GPU {g} === @ {time.strftime('%H:%M:%S')}\n"
             )
             log_handle.flush()
-            env = {**os.environ, "PYTHONPATH": str(ROOT), "CUDA_VISIBLE_DEVICES": str(g)}
+            # CUDA_VISIBLE_DEVICES is ABSOLUTE in a fresh subprocess.Popen — it
+            # overrides any parent mask. So in perm-shard mode (parent has e.g.
+            # CUDA_VISIBLE_DEVICES=1 to pin shard B to physical GPU 1, len(gpus)==1),
+            # setting it to "0" in the child would force the child onto physical
+            # GPU 0, fighting shard A. Only override when len(gpus) > 1 (fold-shard
+            # within-perm mode where the parent sees all GPUs and the children
+            # need to be assigned individually).
+            env = {**os.environ, "PYTHONPATH": str(ROOT)}
+            if len(gpus) > 1:
+                env["CUDA_VISIBLE_DEVICES"] = str(g)
             p = subprocess.Popen(
                 cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=env,
             )
@@ -271,7 +280,27 @@ def main():
     else:
         results = []
 
+    # Resume logic: if a perm seed is already in `results` AND has no `error`
+    # field, skip it on this invocation. If it has an `error` field, drop the
+    # stale failure record so the retry below appends a fresh entry.
+    successful_seeds = {
+        r["perm_seed"] for r in results
+        if "error" not in r and r.get("mean_r2_true") is not None
+    }
+    failed_records = [r for r in results if "error" in r]
+    if failed_records:
+        print(
+            f"Resume mode: {len(successful_seeds)} prior successes will be skipped; "
+            f"dropping {len(failed_records)} stale failure records to retry their seeds.",
+            flush=True,
+        )
+        results = [r for r in results if "error" not in r]
+        aggregate_path.write_text(json.dumps(results, indent=2))
+
     for k in range(args.start_perm, args.start_perm + args.num_perms):
+        if k in successful_seeds:
+            print(f"=== Permutation {k} already successful — skipping ===", flush=True)
+            continue
         print(f"\n=== Permutation {k} starting @ {time.strftime('%H:%M:%S')} ===", flush=True)
         t0 = time.time()
         try:
