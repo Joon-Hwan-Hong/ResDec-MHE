@@ -34,6 +34,15 @@ def _move_to_device(value: Any, device: torch.device) -> Any:
         return value
 
 
+#: Registry of batch metadata keys that must stay on CPU when batches are
+#: moved to the GPU. Inference and manual scripts use this set; if a new
+#: non-tensor metadata key is added in collate (e.g., ``"region_names"``,
+#: ``"cell_type_order"``), include it here too.
+CPU_ONLY_BATCH_KEYS: frozenset[str] = frozenset(
+    {"subject_ids", "batch_size", "n_nodes_per_graph"}
+)
+
+
 def move_batch_to_device(
     batch: dict[str, Any],
     device: torch.device | str,
@@ -41,9 +50,10 @@ def move_batch_to_device(
     """
     Move batch tensors to specified device.
 
-    WARNING: This function is for manual/debugging use only.
-    When using PyTorch Lightning, device placement is handled automatically
-    by the Trainer. Do NOT call this in LightningModule.training_step().
+    Note: For PyTorch Lightning training, device placement is handled
+    automatically by the Trainer — do NOT call this in
+    ``LightningModule.training_step()``. Inference (Predictor) and manual
+    scripts may use this helper directly.
 
     Handles nested structures including:
     - torch.Tensor
@@ -68,11 +78,8 @@ def move_batch_to_device(
 
     moved = {}
 
-    # Keys that should remain on CPU (non-tensor metadata)
-    cpu_keys = {"subject_ids", "batch_size", "n_nodes_per_graph"}
-
     for key, value in batch.items():
-        if key in cpu_keys:
+        if key in CPU_ONLY_BATCH_KEYS:
             moved[key] = value
         else:
             moved[key] = _move_to_device(value, device)

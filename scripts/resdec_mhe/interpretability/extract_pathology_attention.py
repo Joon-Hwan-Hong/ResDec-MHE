@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 from pathlib import Path
 
@@ -52,23 +51,9 @@ from src.data.constants import CELL_TYPE_ORDER
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits
 from src.training.resdec_lightning_module import ResDecLightningModule
+from src.utils.provenance import pick_max_r2_ckpt
 
 logger = logging.getLogger(__name__)
-_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
-
-
-def _pick_max_r2_ckpt(ckpt_dir: Path) -> Path:
-    best: tuple[Path, float] | None = None
-    for p in ckpt_dir.glob("best-*.ckpt"):
-        m = _BEST_CKPT_RE.match(p.name)
-        if not m:
-            continue
-        r2 = float(m.group(2))
-        if best is None or r2 > best[1]:
-            best = (p, r2)
-    if best is None:
-        raise FileNotFoundError(f"No best-*.ckpt files in {ckpt_dir}")
-    return best[0]
 
 
 def extract_one_fold(args: argparse.Namespace, fold: int,
@@ -83,7 +68,7 @@ def extract_one_fold(args: argparse.Namespace, fold: int,
     cfg.data.fold = int(fold)
 
     fold_dir = Path(args.pred_root) / f"fold{fold}"
-    ckpt_path = _pick_max_r2_ckpt(fold_dir / "checkpoints")
+    ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
     logger.info("fold %d: loading %s", fold, ckpt_path.name)
 
     splits = load_splits(str(args.splits_path))
@@ -109,7 +94,9 @@ def extract_one_fold(args: argparse.Namespace, fold: int,
                 k: v.to(device) if torch.is_tensor(v) else v
                 for k, v in batch.items()
             }
-            out = model.forward(batch_d)
+            # Use ``model(batch_d)`` rather than ``model.forward(batch_d)``
+            # so nn.Module hooks fire (canonical __call__ semantics).
+            out = model(batch_d)
             attn = out.get("attention_weights")
             if attn is None:
                 raise RuntimeError(
@@ -188,7 +175,7 @@ def main(args: argparse.Namespace) -> int:
                 "mean_attention_avg_heads": float(mean_per[:, c].mean()),
                 "std_attention_avg_heads": float(std_per[:, c].mean()),
             }
-            for c in np.argsort(-mean_per.mean(axis=0))[:5]
+            for c in np.argsort(-mean_per.mean(axis=0), kind="stable")[:5]
         ],
     }
     summary_path = out_dir / "pathology_attention_summary.json"

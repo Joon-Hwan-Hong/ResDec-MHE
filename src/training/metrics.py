@@ -10,11 +10,13 @@ ResilienceMetrics computes prediction quality and uncertainty calibration:
 
 import numpy as np
 import torch
-from scipy.special import erf as scipy_erf
 from scipy.stats import pearsonr, spearmanr
 
 from src.data.constants import EPSILON_DIVISION, EPSILON_POSITIVE_FLOOR
-from src.utils.statistics import calibration_error as _shared_calibration_error
+from src.utils.statistics import (
+    calibration_error as _shared_calibration_error,
+    crps_gaussian as _shared_crps_gaussian,
+)
 
 
 class ResilienceMetrics:
@@ -59,7 +61,13 @@ class ResilienceMetrics:
         ss_res = np.sum(residuals ** 2)
         ss_tot = np.sum((target_np - target_np.mean()) ** 2)
 
-        r2 = 1.0 - ss_res / (ss_tot + EPSILON_DIVISION) if ss_tot > EPSILON_DIVISION else 0.0
+        # Constant target → R² is undefined (not 0). Return NaN to match the
+        # convention in resdec_lightning_module.py:on_validation_epoch_end.
+        r2 = (
+            1.0 - ss_res / (ss_tot + EPSILON_DIVISION)
+            if ss_tot > EPSILON_DIVISION
+            else float("nan")
+        )
         rmse = float(np.sqrt(np.mean(residuals ** 2)))
         mae = float(np.mean(np.abs(residuals)))
 
@@ -69,29 +77,34 @@ class ResilienceMetrics:
             coeffs = np.polyfit(mean_np, target_np, 1)
             calibrated_pred = coeffs[0] * mean_np + coeffs[1]
             ss_res_cal = np.sum((target_np - calibrated_pred) ** 2)
-            r2_calibrated = 1.0 - ss_res_cal / (ss_tot + EPSILON_DIVISION) if ss_tot > EPSILON_DIVISION else 0.0
+            # Same convention: NaN for constant target.
+            r2_calibrated = (
+                1.0 - ss_res_cal / (ss_tot + EPSILON_DIVISION)
+                if ss_tot > EPSILON_DIVISION
+                else float("nan")
+            )
         else:
             r2_calibrated = float('nan')
 
         # Correlation
         if len(mean_np) >= 3 and np.std(mean_np) > EPSILON_POSITIVE_FLOOR and np.std(target_np) > EPSILON_POSITIVE_FLOOR:
-            pearson_r_val = float(pearsonr(mean_np, target_np)[0])
-            spearman_rho_val = float(spearmanr(mean_np, target_np)[0])
+            pearson_r = float(pearsonr(mean_np, target_np)[0])
+            spearman_rho = float(spearmanr(mean_np, target_np)[0])
         else:
-            pearson_r_val = float('nan')
-            spearman_rho_val = float('nan')
+            pearson_r = float('nan')
+            spearman_rho = float('nan')
 
         result = {
             "r2": float(r2),
             "r2_calibrated": float(r2_calibrated),
             "rmse": rmse,
             "mae": mae,
-            "pearson_r": pearson_r_val,
-            "spearman_rho": spearman_rho_val,
+            "pearson_r": pearson_r,
+            "spearman_rho": spearman_rho,
         }
 
-        # Uncertainty metrics (only if std provided)
-        if std is not None:
+        # Uncertainty metrics (only if std is a non-empty tensor)
+        if std is not None and std.numel() > 0:
             std_np = std.detach().cpu().float().numpy().flatten()
             result["mean_std"] = float(np.mean(std_np))
             result["calibration_error"] = float(
@@ -148,49 +161,44 @@ class ResilienceMetrics:
                 residuals = t_boot - m_boot
                 ss_res = np.sum(residuals ** 2)
                 ss_tot = np.sum((t_boot - t_boot.mean()) ** 2)
-                r2 = 1.0 - ss_res / (ss_tot + EPSILON_DIVISION) if ss_tot > EPSILON_DIVISION else 0.0
+                # Constant resample → R² undefined. NaN matches the
+                # convention used in compute() and resdec_lightning_module.
+                r2 = (
+                    1.0 - ss_res / (ss_tot + EPSILON_DIVISION)
+                    if ss_tot > EPSILON_DIVISION
+                    else float("nan")
+                )
                 boot_results["r2"].append(r2)
 
         alpha = (1 - ci) / 2
         result = {}
         for m in metrics:
             vals = np.array(boot_results[m])
-            result[m] = (
-                float(np.percentile(vals, 100 * alpha)),
-                float(np.percentile(vals, 100 * (1 - alpha))),
-            )
+            # Drop NaNs (e.g., constant-target resamples for R²) before
+            # percentile so the CI reflects only well-defined draws.
+            finite = vals[np.isfinite(vals)]
+            if finite.size == 0:
+                result[m] = (float("nan"), float("nan"))
+            else:
+                result[m] = (
+                    float(np.percentile(finite, 100 * alpha)),
+                    float(np.percentile(finite, 100 * (1 - alpha))),
+                )
         return result
 
-    # NOTE: This is an evaluation metric (numpy, non-differentiable), NOT a
-    # training loss. The differentiable CRPSLoss class was intentionally removed
-    # (designed but deferred; see design doc changelog Round 14). This metric is
-    # retained because CRPS is a standard proper scoring rule for evaluating
-    # probabilistic predictions alongside calibration error.
+    # NOTE: CRPS is a standard proper scoring rule for evaluating
+    # probabilistic predictions; the canonical implementation lives in
+    # src.utils.statistics.crps_gaussian. This thin wrapper preserves the
+    # ResilienceMetrics class API (kept for backward compatibility with
+    # any direct callers); new code should call the shared helper.
     @staticmethod
     def _crps(
         mean: np.ndarray,
         std: np.ndarray,
         target: np.ndarray,
     ) -> float:
-        """
-        Compute mean CRPS for Gaussian predictions (numpy version).
-
-        CRPS(N(μ,σ), y) = σ * [z*(2Φ(z) - 1) + 2φ(z) - 1/√π]
-        where z = (y - μ) / σ
-
-        Args:
-            mean: [N] predicted values
-            std: [N] predicted standard deviations
-            target: [N] ground truth values
-
-        Returns:
-            Mean CRPS across all samples
-        """
-        z = (target - mean) / (std + EPSILON_DIVISION)
-        cdf_z = 0.5 * (1.0 + scipy_erf(z / np.sqrt(2.0)))
-        pdf_z = np.exp(-0.5 * z ** 2) / np.sqrt(2.0 * np.pi)
-        crps = std * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z - 1.0 / np.sqrt(np.pi))
-        return float(np.mean(crps))
+        """Mean CRPS for Gaussian predictions (delegates to shared helper)."""
+        return _shared_crps_gaussian(mean, std, target)
 
     @staticmethod
     def _calibration_error(

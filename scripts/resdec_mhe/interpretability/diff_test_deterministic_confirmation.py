@@ -38,6 +38,20 @@ Usage
 from __future__ import annotations
 
 import os
+import sys as _sys
+
+# Hard fail if anyone imports this module after torch has been loaded — the
+# env-var setting + torch.use_deterministic_algorithms below must run before
+# torch CUDA backend init, otherwise the determinism guarantee is silently
+# lost. This script is meant to be the entry point.
+if "torch" in _sys.modules:
+    raise RuntimeError(
+        "diff_test_deterministic_confirmation must be imported BEFORE torch "
+        "is imported elsewhere in the process — the deterministic env-var "
+        "setup at module top relies on torch CUDA backend not being "
+        "pre-initialised. Run as a script (`uv run python ...`), not as an "
+        "imported module."
+    )
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -74,7 +88,7 @@ def _git_sha() -> str:
         return subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True
         ).strip()
-    except Exception:  # pragma: no cover  - non-fatal probe
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):  # pragma: no cover  - non-fatal probe
         return "unknown"
 
 

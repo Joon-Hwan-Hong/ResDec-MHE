@@ -8,13 +8,28 @@ Tests verify that:
 - Cross-branch dimension consistency for fusion
 - Gradient flow through entire pipeline
 - Edge cases across full pipeline
+- Real ``PrecomputedDataset.__getitem__`` output flows through collate → model
+
+The hand-written ``create_mock_dataset_sample(...)`` helper kept for shape
+testing exercises ONLY the format contract. The
+``TestRealPrecomputedDatasetIntegration`` class below additionally pulls a
+sample from the actual dataset (via ``tmp_path``-built precomputed dir) so a
+silent drift between the dataset's emit schema and what the model expects
+will fail this test instead of going undetected.
 """
 
-import torch
+import numpy as np
+import pandas as pd
 import pytest
+import torch
 
-from src.data.constants import N_CELL_TYPES, N_REGIONS, CELL_TYPE_ORDER, ALL_EDGE_TYPES
-
+from src.data.constants import (
+    ALL_EDGE_TYPES,
+    CELL_TYPE_ORDER,
+    N_CELL_TYPES,
+    N_REGIONS,
+    REGION_ORDER,
+)
 
 def create_mock_dataset_sample(
     n_genes: int = 100,
@@ -43,7 +58,6 @@ def create_mock_dataset_sample(
         "cognition": torch.randn(1),
         "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
     }
-
 
 def create_mock_sample_with_empty_cell_types(
     n_genes: int = 100,
@@ -95,7 +109,6 @@ def create_mock_sample_with_empty_cell_types(
         "region_mask": torch.ones(N_REGIONS, dtype=torch.bool),
     }
 
-
 class TestDatasetToCollate:
     """Test that dataset output format works with collate functions."""
 
@@ -123,7 +136,6 @@ class TestDatasetToCollate:
         assert "ccc_edge_type" in result
         assert "ccc_edge_attr" in result
         assert "ccc_edge_counts" not in result
-
 
 class TestCollateToCellTransformer:
     """Test that collate output works with CellTransformer."""
@@ -184,7 +196,6 @@ class TestCollateToCellTransformer:
         # Gradients should flow
         assert cells.grad is not None
         assert not torch.all(cells.grad == 0)
-
 
 class TestEndToEndPipeline:
     """Test complete pipeline from dataset format to model output."""
@@ -284,11 +295,9 @@ class TestEndToEndPipeline:
         assert embeddings.shape[0] == 4
         assert torch.isfinite(embeddings).all()
 
-
 # =============================================================================
 # HGT Encoder Integration Tests
 # =============================================================================
-
 
 class TestCollateToHGTEncoderTensor:
     """Test that collate_for_hgt output works with HGTEncoderTensor."""
@@ -372,11 +381,9 @@ class TestCollateToHGTEncoderTensor:
 
         assert x.grad is not None
 
-
 # =============================================================================
 # Cross-Branch Consistency Tests
 # =============================================================================
-
 
 class TestCrossBranchConsistency:
     """Test that all branches produce compatible outputs for fusion."""
@@ -448,11 +455,9 @@ class TestCrossBranchConsistency:
         assert hgt_input.shape[1] == N_CELL_TYPES
         assert cell_out.shape[1] == N_CELL_TYPES
 
-
 # =============================================================================
 # DataLoader Integration Tests
 # =============================================================================
-
 
 class TestDataLoaderIntegration:
     """Test DataLoader with collate functions."""
@@ -514,11 +519,9 @@ class TestDataLoaderIntegration:
 
         assert n_batches == 4  # 10 samples / 3 = 4 batches (last has 1 sample)
 
-
 # =============================================================================
 # Gradient Flow Audit Tests
 # =============================================================================
-
 
 class TestGradientFlowAudit:
     """Verify gradients flow to all learnable parameters."""
@@ -614,11 +617,9 @@ class TestGradientFlowAudit:
         for isab in transformer.set_encoder.isab_layers:
             assert isab.inducing_points.grad is not None
 
-
 # =============================================================================
 # Edge Cases Across Full Pipeline
 # =============================================================================
-
 
 class TestPipelineEdgeCases:
     """Test edge cases across the full pipeline."""
@@ -694,11 +695,9 @@ class TestPipelineEdgeCases:
         assert embeddings.shape[0] == 1
         assert torch.isfinite(embeddings).all()
 
-
 # =============================================================================
 # Numerical Stability End-to-End
 # =============================================================================
-
 
 class TestNumericalStabilityEndToEnd:
     """Test numerical stability across the full pipeline."""
@@ -789,3 +788,126 @@ class TestNumericalStabilityEndToEnd:
         assert not torch.isnan(cell_out).any()
         if attention is not None:
             assert not torch.isnan(attention).any()
+
+
+# =============================================================================
+# Real PrecomputedDataset integration (T-Crit-4 fix)
+# =============================================================================
+
+
+def _write_precomputed_pt_files(
+    tmp_path,
+    *,
+    subject_ids: list[str],
+    n_genes: int,
+    cells_per_type: int,
+) -> None:
+    """Write minimal .pt files matching the schema PrecomputedDataset reads.
+
+    Schema (per ``save_precomputed_features``): pseudobulk, cell_type_mask,
+    cell_counts, region_mask, ccc_edge_*, cell_data, cell_offsets,
+    cell_type_order, available_regions.
+    """
+    n_ct = len(CELL_TYPE_ORDER)
+    n_regions = len(REGION_ORDER)
+    cell_counts = torch.full((n_ct,), cells_per_type, dtype=torch.long)
+    cell_offsets = torch.zeros(n_ct + 1, dtype=torch.long)
+    for ct in range(n_ct):
+        cell_offsets[ct + 1] = cell_offsets[ct] + cells_per_type
+    total_cells = n_ct * cells_per_type
+
+    for sid in subject_ids:
+        torch.save(
+            {
+                "pseudobulk": torch.randn(n_ct, n_genes),
+                "cell_type_mask": torch.ones(n_ct, dtype=torch.bool),
+                "cell_counts": cell_counts.clone(),
+                "region_mask": torch.tensor(
+                    [True] + [False] * (n_regions - 1), dtype=torch.bool,
+                ),
+                "cell_data": torch.randn(total_cells, n_genes),
+                "cell_offsets": cell_offsets.clone(),
+                "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
+                "ccc_edge_type": torch.zeros(0, dtype=torch.long),
+                "ccc_edge_attr": torch.zeros(0, 1),
+                "cell_type_order": list(CELL_TYPE_ORDER),
+                "available_regions": [0],
+            },
+            tmp_path / f"{sid}.pt",
+        )
+
+
+class TestRealPrecomputedDatasetIntegration:
+    """Real PrecomputedDataset.__getitem__ output → collate → model.
+
+    Counterpart to the inline-mock tests above: drift between the dataset's
+    emit schema and the model's expected input is detected here, not silently
+    masked by hand-rolled ``create_mock_dataset_sample(...)``.
+    """
+
+    def test_precomputed_dataset_sample_flows_through_pipeline(self, tmp_path):
+        """Pull a sample from the real dataset, run it through collate +
+        CellTransformer; verify shapes + finiteness."""
+        from src.data.collate import collate_fn
+        from src.data.datasets import PrecomputedDataset
+        from src.models.branches.cell_transformer import CellTransformer
+
+        n_genes = 32
+        cells_per_type = 4
+        subject_ids = [f"subj_{i}" for i in range(4)]
+        _write_precomputed_pt_files(
+            tmp_path,
+            subject_ids=subject_ids,
+            n_genes=n_genes,
+            cells_per_type=cells_per_type,
+        )
+
+        metadata = pd.DataFrame({
+            "ROSMAP_IndividualID": subject_ids,
+            "cogn_global": np.random.randn(len(subject_ids)),
+            "gpath": np.random.rand(len(subject_ids)),
+            "amylsqrt": np.random.rand(len(subject_ids)),
+            "tangsqrt": np.random.rand(len(subject_ids)),
+        })
+
+        dataset = PrecomputedDataset(
+            feature_dir=tmp_path,
+            subject_ids=subject_ids,
+            metadata=metadata,
+        )
+
+        # Pull samples through real __getitem__
+        batch = [dataset[i] for i in range(len(dataset))]
+        for sample in batch:
+            # Schema check: dataset must emit the keys the collate / model expect
+            assert "pseudobulk" in sample
+            assert "cell_data" in sample
+            assert "cell_offsets" in sample
+            assert "cell_type_mask" in sample
+            assert "ccc_edge_index" in sample
+            assert "ccc_edge_type" in sample
+            assert "ccc_edge_attr" in sample
+            assert "region_mask" in sample
+            assert "pathology" in sample
+            assert "cognition" in sample
+            # Shape contract: cell_offsets must be 1-D with N_CELL_TYPES + 1 entries
+            assert sample["cell_offsets"].dim() == 1
+            assert sample["cell_offsets"].shape[0] == N_CELL_TYPES + 1
+
+        collated = collate_fn(batch)
+        assert collated["batch_size"] == len(batch)
+        assert collated["pseudobulk"].shape == (len(batch), N_CELL_TYPES, n_genes)
+
+        transformer = CellTransformer(
+            n_genes=n_genes,
+            n_cell_types=N_CELL_TYPES,
+            d_model=32,
+            n_heads=4,
+            n_isab_layers=1,
+            n_inducing=8,
+        )
+        embeddings, _ = transformer(
+            collated["cell_data"], collated["cell_offsets"],
+        )
+        assert embeddings.shape == (len(batch), N_CELL_TYPES, 32)
+        assert torch.isfinite(embeddings).all()

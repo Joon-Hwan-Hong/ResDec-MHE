@@ -87,6 +87,7 @@ def _assemble_region_tensors(
     region_keys = [f"region_{idx}_pseudobulk" for idx in range(n_regions)]
 
     missing_count = 0
+    derived_first = None  # Tracks derived-regions sample for end-of-batch warn
 
     for i, s in enumerate(batch):
         # Determine available regions for this sample
@@ -96,15 +97,8 @@ def _assemble_region_tensors(
             derived_regions = _derive_available_regions_from_keys(s)
             if derived_regions:
                 available_regions = derived_regions
-                if i == 0:  # Warn once per batch
-                    warnings.warn(
-                        f"Sample missing 'available_regions' key but has "
-                        f"region_*_pseudobulk keys for regions {derived_regions}. "
-                        f"Deriving available_regions from keys. Consider adding "
-                        f"'available_regions' explicitly to samples.",
-                        UserWarning,
-                        stacklevel=3,
-                    )
+                if derived_first is None:
+                    derived_first = derived_regions
             else:
                 available_regions = [PFC_REGION_IDX]
         else:
@@ -124,11 +118,23 @@ def _assemble_region_tensors(
                     # Non-PFC region key missing — zero-filled, mask stays False
                     missing_count += 1
 
-    if missing_count > 0:
+    # Single end-of-batch warning combining both missing-key situations.
+    if derived_first is not None or missing_count > 0:
+        msg_parts: list[str] = []
+        if derived_first is not None:
+            msg_parts.append(
+                f"sample(s) missing 'available_regions' key but had "
+                f"region_*_pseudobulk keys (first sample: {derived_first}); "
+                f"deriving available_regions from keys"
+            )
+        if missing_count > 0:
+            msg_parts.append(
+                f"{missing_count} region entries missing across batch "
+                f"(zero-filled, region_mask=False) — expected for "
+                f"single-region subjects"
+            )
         warnings.warn(
-            f"{missing_count} region entries missing across batch "
-            f"(zero-filled, region_mask=False). "
-            f"This is expected for single-region subjects.",
+            "; ".join(msg_parts),
             UserWarning,
             stacklevel=2,
         )
@@ -174,6 +180,18 @@ def _collate_edges(
         ccc_edge_type: [E_total]
         ccc_edge_attr: [E_total, edge_dim]
     """
+    # All samples must have ``pseudobulk[0] == n_nodes_per_graph`` (the fixed
+    # 31 cell types). If a future dataset returns variable per-subject node
+    # counts, the per-sample ``i * n_nodes_per_graph`` offset arithmetic
+    # would silently mis-shift edge indices.
+    assert all(
+        s["pseudobulk"].shape[0] == n_nodes_per_graph for s in batch
+    ), (
+        f"_collate_edges expects every sample to have "
+        f"pseudobulk.shape[0] == {n_nodes_per_graph}; got shapes "
+        f"{[s['pseudobulk'].shape[0] for s in batch]}."
+    )
+
     all_edge_indices: list[torch.Tensor] = []
     all_edge_types: list[torch.Tensor] = []
     all_edge_attrs: list[torch.Tensor] = []
@@ -653,27 +671,7 @@ def create_dataloader(
 # ─────────────────────────────────────────────────────────────────────────────
 # Device utilities (for non-Lightning usage only)
 # ─────────────────────────────────────────────────────────────────────────────
-# Canonical implementations live in src.utils.device.  Re-exported here for
-from src.utils.device import move_batch_to_device
-
-
-def get_effective_batch_size(batch_size: int, num_gpus: int, strategy: str = "ddp") -> int:
-    """
-    Calculate effective batch size for distributed training.
-
-    Args:
-        batch_size: Per-GPU batch size
-        num_gpus: Number of GPUs
-        strategy: Training strategy ("ddp", "dp", "ddp_spawn")
-
-    Returns:
-        Effective batch size across all GPUs
-    """
-    if strategy in ("ddp", "ddp_spawn", "deepspeed"):
-        # Each GPU processes batch_size samples independently
-        return batch_size * num_gpus
-    elif strategy == "dp":
-        # DataParallel splits batch across GPUs
-        return batch_size
-    else:
-        return batch_size
+# Canonical implementations live in src.utils.device. Re-exported here for
+# backward compatibility with callers that previously imported these helpers
+# from src.data.collate.
+from src.utils.device import move_batch_to_device  # noqa: E402,F401

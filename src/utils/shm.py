@@ -17,7 +17,10 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-# Regex for PID-tagged shm dirs: hpo_{pid}_{name}
+# Regex for PID-tagged shm dirs: hpo_{pid}_{name}.
+# Matches the convention from scripts/training/hpo.py shm-cache initialiser
+# (HPO orchestrator names cache dirs with the worker PID so cleanup can
+# tell live workers from stale ones).
 _HPO_PID_RE = re.compile(r"^hpo_(\d+)_")
 
 
@@ -39,6 +42,12 @@ def cleanup_stale_shm(shm_root: Path | None = None) -> None:
 
     shm_root = shm_root or Path("/dev/shm")
     if not shm_root.exists():
+        # Non-Linux platforms (macOS, Windows) lack /dev/shm. Surface
+        # the no-op at debug level so silent skip is at least visible.
+        logger.debug(
+            "cleanup_stale_shm: %s does not exist (non-Linux platform); "
+            "no-op.", shm_root,
+        )
         return
     removed = []
     for d in shm_root.iterdir():

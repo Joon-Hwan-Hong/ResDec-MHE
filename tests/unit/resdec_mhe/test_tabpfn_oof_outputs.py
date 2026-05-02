@@ -9,19 +9,15 @@ import numpy as np
 import pytest
 from sklearn.metrics import r2_score
 
-
 OOF_DIR = Path("data/canonical")
-
 
 def _have_all_folds() -> bool:
     return all((OOF_DIR / f"tabpfn_oof_fold{f}.npz").exists() for f in range(5))
-
 
 pytestmark = pytest.mark.skipif(
     not _have_all_folds(),
     reason="TabPFN OOF files not yet generated (run scripts/resdec_mhe/tabpfn/compute_oof.py)",
 )
-
 
 def test_tabpfn_oof_shapes_consistent():
     for fold_idx in range(5):
@@ -31,7 +27,6 @@ def test_tabpfn_oof_shapes_consistent():
         assert len(d["y_tabpfn_oof"]) == n
         assert len(d["sigma_tabpfn_oof"]) == n
         assert n > 0
-
 
 def test_tabpfn_oof_no_nan_and_sensible_range():
     for fold_idx in range(5):
@@ -43,12 +38,10 @@ def test_tabpfn_oof_no_nan_and_sensible_range():
         assert d["y_tabpfn_oof"].min() >= y_min - 3, f"fold {fold_idx}: suspiciously low"
         assert d["y_tabpfn_oof"].max() <= y_max + 3, f"fold {fold_idx}: suspiciously high"
 
-
 def test_tabpfn_oof_sigma_positive():
     for fold_idx in range(5):
         d = np.load(OOF_DIR / f"tabpfn_oof_fold{fold_idx}.npz", allow_pickle=True)
         assert (d["sigma_tabpfn_oof"] > 0).all(), f"fold {fold_idx}: non-positive sigma"
-
 
 def test_tabpfn_oof_r2_sensible_range():
     """Mean inner-OOF R² across folds should be reasonably high (sanity window 0.15–0.80).

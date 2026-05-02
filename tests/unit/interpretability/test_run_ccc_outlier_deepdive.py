@@ -13,8 +13,7 @@ from pathlib import Path
 
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def test_run_ccc_outlier_deepdive_runs(tmp_path: Path) -> None:
     summary_json = (
@@ -66,9 +65,7 @@ def test_run_ccc_outlier_deepdive_runs(tmp_path: Path) -> None:
     assert isinstance(payload["outlier_subjects"], list)
     assert len(payload["outlier_subjects"]) == payload["config"]["n_outliers"]
 
-
 def test_split_outlier_typical() -> None:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import run_ccc_outlier_deepdive as mod  # noqa: E402
 
     summary = {
@@ -82,9 +79,7 @@ def test_split_outlier_typical() -> None:
     assert {s["subject_id"] for s in out} == {"B", "C"}
     assert {s["subject_id"] for s in typ} == {"A"}
 
-
 def test_top_pair_frequency() -> None:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import run_ccc_outlier_deepdive as mod  # noqa: E402
 
     records = [

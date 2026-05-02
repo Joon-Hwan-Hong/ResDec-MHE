@@ -22,11 +22,9 @@ import torch.nn as nn
 
 from src.data.constants import N_CELL_TYPES, N_REGIONS
 
-
 # =============================================================================
 # FIXTURES
 # =============================================================================
-
 
 @pytest.fixture
 def small_handler():
@@ -34,19 +32,15 @@ def small_handler():
     from src.models.components.region_handler import RegionHandler
     return RegionHandler(d_model=32, n_regions=N_REGIONS)
 
-
 @pytest.fixture
 def handler_for_training():
     """Handler configured for training tests."""
     from src.models.components.region_handler import RegionHandler
-    torch.manual_seed(42)
     return RegionHandler(d_model=64, n_regions=N_REGIONS)
-
 
 # =============================================================================
 # 1. WEIGHT INITIALIZATION TESTS
 # =============================================================================
-
 
 class TestWeightInitialization:
     """Tests for RegionHandler weight initialization."""
@@ -75,11 +69,9 @@ class TestWeightInitialization:
                 f"With {n_regions} regions, weights should be uniform 1/{n_regions}"
             )
 
-
 # =============================================================================
 # 2. GRADIENT FLOW TESTS
 # =============================================================================
-
 
 class TestGradientFlow:
     """Tests for gradient flow to region weights."""
@@ -188,11 +180,9 @@ class TestGradientFlow:
 
         assert handler.region_weights.grad is not None
 
-
 # =============================================================================
 # 3. WEIGHT EVOLUTION DURING TRAINING TESTS
 # =============================================================================
-
 
 class TestWeightEvolutionDuringTraining:
     """Tests for weight changes during training."""
@@ -201,7 +191,6 @@ class TestWeightEvolutionDuringTraining:
         """Weights should actually change with gradient descent steps."""
         from src.models.components.region_handler import RegionHandler
 
-        torch.manual_seed(42)
         handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.SGD(handler.parameters(), lr=0.1)
 
@@ -237,7 +226,6 @@ class TestWeightEvolutionDuringTraining:
         """Weights should remain normalized (sum to 1) after training updates."""
         from src.models.components.region_handler import RegionHandler
 
-        torch.manual_seed(42)
         handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.Adam(handler.parameters(), lr=0.01)
 
@@ -313,7 +301,6 @@ class TestWeightEvolutionDuringTraining:
         """After sufficient training, weights should stabilize."""
         from src.models.components.region_handler import RegionHandler
 
-        torch.manual_seed(42)
         handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.Adam(handler.parameters(), lr=0.01)
 
@@ -348,11 +335,9 @@ class TestWeightEvolutionDuringTraining:
             f"Weights should be stable after convergence, max change: {weight_change:.4f}"
         )
 
-
 # =============================================================================
 # 4. REGION IMPORTANCE EXTRACTION TESTS
 # =============================================================================
-
 
 class TestRegionImportanceExtraction:
     """Tests for get_region_importance_dict method."""
@@ -422,11 +407,9 @@ class TestRegionImportanceExtraction:
                 f"Value for {name} should be float, got {type(value)}"
             )
 
-
 # =============================================================================
 # 5. INTEGRATION WITH FULL MODEL TESTS
 # =============================================================================
-
 
 class TestIntegrationWithFullModel:
     """Tests for RegionHandler weight learning in full model context."""
@@ -434,8 +417,6 @@ class TestIntegrationWithFullModel:
     def test_region_weights_in_full_model_training(self):
         """Region weights should update during full model training."""
         from src.models.components.region_handler import RegionHandler
-
-        torch.manual_seed(42)
 
         # Setup
         n_genes = 50
@@ -589,11 +570,9 @@ class TestIntegrationWithFullModel:
             "Gradient should reach region_weights through full pipeline"
         )
 
-
 # =============================================================================
 # 6. ADDITIONAL EDGE CASES
 # =============================================================================
-
 
 class TestEdgeCasesLearning:
     """Additional edge cases for weight learning."""
@@ -629,7 +608,6 @@ class TestEdgeCasesLearning:
         """Training should work with varying sparse masks per batch."""
         from src.models.components.region_handler import RegionHandler
 
-        torch.manual_seed(42)
         handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
         optimizer = torch.optim.Adam(handler.parameters(), lr=0.01)
 

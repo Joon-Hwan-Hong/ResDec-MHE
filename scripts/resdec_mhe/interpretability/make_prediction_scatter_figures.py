@@ -26,6 +26,10 @@ import logging
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -34,31 +38,24 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
+from src.data.constants import COGDX_LABEL  # canonical 1..6 → label mapping
 from src.visualization.prediction_plots import plot_predicted_vs_actual
 from src.visualization.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 
 
-# ROSMAP cogdx coding — from `dcfdx_lv` and the ROSMAP data dictionary.
-COGDX_LABEL = {
-    1: "NCI",
-    2: "MCI",
-    3: "AD",
-    4: "AD + other",
-    5: "Other dementia",
-    6: "Other",
-}
-
 # Palettes — drawn from the project theme color tokens.
-# AD-dx: ordinal severity → tab10 sequence (no NaN expected after merge).
+# AD-dx label keys come from src.data.constants.COGDX_LABEL:
+#   1=NCI, 2=MCI, 3=MCI+, 4=AD-prob, 5=AD-poss, 6=Other (non-AD dementia).
+# AD/non-AD binarization (used elsewhere in the codebase) is cogdx ∈ {4,5} = AD.
 COGDX_PALETTE = {
-    "NCI":            "#2ca02c",  # green — cognitively normal
-    "MCI":            "#ff7f0e",  # orange — mild impairment
-    "AD":             "#d62728",  # red — AD
-    "AD + other":     "#9467bd",  # purple — AD + other dementia
-    "Other dementia": "#8c564b",  # brown — non-AD dementia
-    "Other":          "#7f7f7f",  # gray — other
+    "NCI":     "#2ca02c",  # green — cognitively normal
+    "MCI":     "#ff7f0e",  # orange — mild impairment, no other condition
+    "MCI+":    "#9467bd",  # purple — MCI plus another contributing condition
+    "AD-prob": "#d62728",  # red — Alzheimer's, probable (NINCDS-ADRDA)
+    "AD-poss": "#e377c2",  # pink — Alzheimer's, possible
+    "Other":   "#8c564b",  # brown — other (non-AD) dementia
 }
 
 # Sex: F/M, two distinct theme accent colors.
@@ -224,17 +221,23 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--canonical-dir",
-        default="outputs/canonical/p5_canonical_seed42",
+        type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42",
         help="Directory containing fold{N}/val_predictions_best.npz",
     )
     p.add_argument(
         "--metadata-csv",
-        default="data/metadata_ROSMAP/metadata.csv",
+        type=Path,
+        default=_WORKTREE_ROOT / "data/metadata_ROSMAP/metadata.csv",
     )
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument(
         "--out-dir",
-        default="outputs/canonical/interpretability/figures/prediction",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/figures/prediction"
+        ),
     )
     args = p.parse_args()
 

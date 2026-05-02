@@ -13,10 +13,8 @@ from pathlib import Path
 
 import pytest
 
-
 WT = Path(__file__).resolve().parents[3]
 SCRIPT = WT / "scripts" / "resdec_mhe" / "training" / "aggregate_permnull_n50_shards.py"
-
 
 @pytest.fixture(scope="module")
 def mod():
@@ -26,10 +24,8 @@ def mod():
     spec.loader.exec_module(module)
     return module
 
-
 def test_wt_resolves_to_worktree(mod):
     assert mod.WT == WT
-
 
 def test_canonical_permnull_path_exists(mod):
     """The canonical N=10 perm summary that we read CANONICAL_R2 from must exist."""
@@ -38,12 +34,10 @@ def test_canonical_permnull_path_exists(mod):
         "the N=50 aggregator depends on it for canonical R²."
     )
 
-
 def test_canonical_r2_loads_finite_value(mod):
     r2 = mod._load_canonical_r2()
     assert isinstance(r2, float)
     assert 0.0 < r2 < 1.0, f"canonical R² out of plausible range: {r2}"
-
 
 def test_canonical_n10_schema_has_required_fields(mod):
     """Guards against schema drift: the N=10 file must have the field names
@@ -60,8 +54,8 @@ def test_canonical_n10_schema_has_required_fields(mod):
     missing = required - set(summary.keys())
     assert not missing, f"N=10 perm summary missing fields: {missing}"
 
-
-def test_main_handles_missing_shards(mod, tmp_path, monkeypatch):
+def test_main_handles_missing_shards(mod, tmp_path):
     """If shard files don't exist, main() should print a message and return — no crash."""
-    monkeypatch.setattr(mod, "ROOT", tmp_path / "nonexistent")
-    mod.main()
+    fake_root = tmp_path / "nonexistent"
+    # Pass --output-base via argv (post-CC1 the aggregator is argparse-driven).
+    mod.main(argv=[f"--output-base={fake_root}"])

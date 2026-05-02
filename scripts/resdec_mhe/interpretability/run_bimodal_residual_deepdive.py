@@ -127,9 +127,17 @@ def _bootstrap_unimodality_test(
 
     null_ll_diffs = np.zeros(n_boot, dtype=np.float64)
     for i in range(n_boot):
+        # Per-iter integer seed so each bootstrap GMM init starts from a
+        # different point. Reusing ``random_state`` across all iterations would
+        # correlate the null draws (every iter starts from the SAME deterministic
+        # init, so ``null_ll_diff`` would be biased toward agreement and the
+        # empirical p-value variance would be under-estimated). bit-generator
+        # raw integer extraction (rng.integers) is the project convention here
+        # — see run_cmi_subsample_bootstrap.py.
+        boot_seed = int(rng.integers(0, 2**31 - 1))
         boot = rng.normal(loc=mu, scale=sigma, size=(n, 1))
-        g1b = GaussianMixture(n_components=1, random_state=random_state).fit(boot)
-        g2b = GaussianMixture(n_components=2, random_state=random_state).fit(boot)
+        g1b = GaussianMixture(n_components=1, random_state=boot_seed).fit(boot)
+        g2b = GaussianMixture(n_components=2, random_state=boot_seed).fit(boot)
         null_ll_diffs[i] = float(g2b.score(boot) - g1b.score(boot)) * n
 
     p_val = float(np.mean(null_ll_diffs >= obs_ll_diff))

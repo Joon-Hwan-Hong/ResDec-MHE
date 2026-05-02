@@ -13,7 +13,6 @@ Test coverage includes:
 - Edge cases
 """
 
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -29,39 +28,30 @@ from src.analysis.cell_type_importance import (
     load_cell_type_importance,
 )
 
-
 # ============================================================================
 # Fixtures
 # ============================================================================
 
-
 @pytest.fixture
 def sample_attention():
     """Sample pathology attention weights [n_subjects, n_heads, n_cell_types]."""
-    np.random.seed(42)
     return np.random.rand(20, 4, N_CELL_TYPES).astype(np.float32)
-
 
 @pytest.fixture
 def sample_pathology_scores():
     """Sample pathology scores [n_subjects]."""
-    np.random.seed(42)
     return np.random.rand(20).astype(np.float32)
-
 
 @pytest.fixture
 def sample_region_labels():
     """Sample region labels [n_subjects]."""
-    np.random.seed(42)
     regions = ["PFC", "AG", "MTC", "EC", "HC", "TH"]
     return np.array([regions[i % len(regions)] for i in range(20)])
-
 
 @pytest.fixture
 def sample_subject_ids():
     """Sample subject IDs."""
     return [f"subj_{i:03d}" for i in range(20)]
-
 
 @pytest.fixture
 def analyzer(sample_attention, sample_pathology_scores, sample_region_labels, sample_subject_ids):
@@ -73,11 +63,9 @@ def analyzer(sample_attention, sample_pathology_scores, sample_region_labels, sa
         subject_ids=sample_subject_ids,
     )
 
-
 # ============================================================================
 # CellTypeImportanceResult Dataclass Tests
 # ============================================================================
-
 
 class TestCellTypeImportanceResult:
     """Tests for CellTypeImportanceResult dataclass."""
@@ -114,11 +102,9 @@ class TestCellTypeImportanceResult:
         assert result.by_pathology is not None
         assert result.metadata["key"] == "value"
 
-
 # ============================================================================
 # CellTypeImportanceAnalyzer Initialization Tests
 # ============================================================================
-
 
 class TestAnalyzerInit:
     """Tests for CellTypeImportanceAnalyzer initialization."""
@@ -177,11 +163,9 @@ class TestAnalyzerInit:
                 subject_ids=bad_ids,
             )
 
-
 # ============================================================================
 # Overall Importance Computation Tests
 # ============================================================================
-
 
 class TestOverallImportance:
     """Tests for overall importance computation."""
@@ -229,11 +213,9 @@ class TestOverallImportance:
         actual_mean = result.overall[result.overall["cell_type"] == first_ct]["mean_attention"].values[0]
         assert np.isclose(actual_mean, expected_means[0], atol=1e-6)
 
-
 # ============================================================================
 # Pathology-Stratified Importance Tests
 # ============================================================================
-
 
 class TestPathologyStratified:
     """Tests for pathology-stratified importance computation."""
@@ -273,7 +255,6 @@ class TestPathologyStratified:
 
     def test_by_pathology_low_tertile_has_low_pathology_subjects(self, sample_attention, sample_pathology_scores):
         """Low tertile contains subjects with lowest pathology scores."""
-        np.random.seed(42)
         # Create distinct pathology scores
         pathology = np.linspace(0, 1, 20).astype(np.float32)
 
@@ -288,11 +269,9 @@ class TestPathologyStratified:
         # At least some subjects in low tertile
         assert (low_data["n_subjects"] > 0).any()
 
-
 # ============================================================================
 # Region-Stratified Importance Tests
 # ============================================================================
-
 
 class TestRegionStratified:
     """Tests for region-stratified importance computation."""
@@ -341,92 +320,81 @@ class TestRegionStratified:
             assert len(unique_counts) == 1
             assert unique_counts[0] == expected_count
 
-
 # ============================================================================
 # Save/Load Tests
 # ============================================================================
 
-
 class TestSaveLoad:
     """Tests for save and load functionality."""
 
-    def test_save_creates_files(self, analyzer):
+    def test_save_creates_files(self, analyzer, tmp_path):
         """save() creates expected files."""
         result = analyzer.analyze()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            saved = analyzer.save(result, tmpdir)
+        saved = analyzer.save(result, tmp_path)
 
-            # Check files exist
-            assert (Path(tmpdir) / "cell_type_importance.parquet").exists()
-            assert (Path(tmpdir) / "cell_type_importance.csv").exists()
+        # Check files exist
+        assert (tmp_path / "cell_type_importance.parquet").exists()
+        assert (tmp_path / "cell_type_importance.csv").exists()
 
-    def test_save_creates_pathology_files_when_present(self, analyzer):
+    def test_save_creates_pathology_files_when_present(self, analyzer, tmp_path):
         """save() creates pathology-stratified files when data present."""
         result = analyzer.analyze()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir)
+        analyzer.save(result, tmp_path)
 
-            assert (Path(tmpdir) / "cell_type_importance_by_pathology.parquet").exists()
-            assert (Path(tmpdir) / "cell_type_importance_by_pathology.csv").exists()
+        assert (tmp_path / "cell_type_importance_by_pathology.parquet").exists()
+        assert (tmp_path / "cell_type_importance_by_pathology.csv").exists()
 
-    def test_save_creates_region_files_when_present(self, analyzer):
+    def test_save_creates_region_files_when_present(self, analyzer, tmp_path):
         """save() creates region-stratified files when data present."""
         result = analyzer.analyze()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir)
+        analyzer.save(result, tmp_path)
 
-            assert (Path(tmpdir) / "cell_type_importance_by_region.parquet").exists()
-            assert (Path(tmpdir) / "cell_type_importance_by_region.csv").exists()
+        assert (tmp_path / "cell_type_importance_by_region.parquet").exists()
+        assert (tmp_path / "cell_type_importance_by_region.csv").exists()
 
-    def test_save_parquet_only(self, analyzer):
+    def test_save_parquet_only(self, analyzer, tmp_path):
         """save() can save only parquet format."""
         result = analyzer.analyze()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir, formats=["parquet"])
+        analyzer.save(result, tmp_path, formats=["parquet"])
 
-            assert (Path(tmpdir) / "cell_type_importance.parquet").exists()
-            assert not (Path(tmpdir) / "cell_type_importance.csv").exists()
+        assert (tmp_path / "cell_type_importance.parquet").exists()
+        assert not (tmp_path / "cell_type_importance.csv").exists()
 
-    def test_load_parquet(self, analyzer):
+    def test_load_parquet(self, analyzer, tmp_path):
         """load_cell_type_importance loads parquet files."""
         result = analyzer.analyze()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir)
-            loaded = load_cell_type_importance(Path(tmpdir) / "cell_type_importance.parquet")
+        analyzer.save(result, tmp_path)
+        loaded = load_cell_type_importance(tmp_path / "cell_type_importance.parquet")
 
         pd.testing.assert_frame_equal(loaded, result.overall)
 
-    def test_load_csv(self, analyzer):
+    def test_load_csv(self, analyzer, tmp_path):
         """load_cell_type_importance loads CSV files."""
         result = analyzer.analyze()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir)
-            loaded = load_cell_type_importance(Path(tmpdir) / "cell_type_importance.csv")
+        analyzer.save(result, tmp_path)
+        loaded = load_cell_type_importance(tmp_path / "cell_type_importance.csv")
 
         assert len(loaded) == len(result.overall)
         assert set(loaded.columns) == set(result.overall.columns)
 
-    def test_save_creates_nested_directories(self, analyzer):
+    def test_save_creates_nested_directories(self, analyzer, tmp_path):
         """save() creates nested parent directories."""
         result = analyzer.analyze()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            nested_path = Path(tmpdir) / "a" / "b" / "c"
-            analyzer.save(result, nested_path)
+        nested_path = tmp_path / "a" / "b" / "c"
+        analyzer.save(result, nested_path)
 
-            assert (nested_path / "cell_type_importance.parquet").exists()
-
+        assert (nested_path / "cell_type_importance.parquet").exists()
 
 # ============================================================================
 # Convenience Function Tests
 # ============================================================================
-
 
 class TestConvenienceFunction:
     """Tests for compute_cell_type_importance function."""
@@ -436,15 +404,14 @@ class TestConvenienceFunction:
         result = compute_cell_type_importance(attention=sample_attention)
         assert isinstance(result, CellTypeImportanceResult)
 
-    def test_compute_with_output_dir_saves_files(self, sample_attention):
+    def test_compute_with_output_dir_saves_files(self, sample_attention, tmp_path):
         """compute_cell_type_importance saves when output_dir provided."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = compute_cell_type_importance(
-                attention=sample_attention,
-                output_dir=tmpdir,
-            )
+        result = compute_cell_type_importance(
+            attention=sample_attention,
+            output_dir=tmp_path,
+        )
 
-            assert (Path(tmpdir) / "cell_type_importance.parquet").exists()
+        assert (tmp_path / "cell_type_importance.parquet").exists()
 
     def test_compute_without_output_dir_does_not_save(self, sample_attention):
         """compute_cell_type_importance does not save when output_dir None."""
@@ -452,11 +419,9 @@ class TestConvenienceFunction:
         result = compute_cell_type_importance(attention=sample_attention)
         assert result is not None
 
-
 # ============================================================================
 # Schema Validation Tests
 # ============================================================================
-
 
 class TestOutputSchemaValidation:
     """Tests validating output DataFrame schemas."""
@@ -503,11 +468,9 @@ class TestOutputSchemaValidation:
         result = analyzer.analyze()
         assert (result.overall["std_attention"] >= 0).all()
 
-
 # ============================================================================
 # Property-Based Tests (Hypothesis)
 # ============================================================================
-
 
 class TestPropertyBased:
     """Property-based tests using Hypothesis."""
@@ -586,11 +549,9 @@ class TestPropertyBased:
         # Rankings should be identical
         assert ranking1 == ranking2
 
-
 # ============================================================================
 # Edge Case Tests
 # ============================================================================
-
 
 class TestEdgeCases:
     """Edge case tests."""
@@ -697,18 +658,15 @@ class TestEdgeCases:
         assert result.by_pathology is not None
         assert not result.by_pathology["mean_attention"].isna().any()
 
-
 # ============================================================================
 # Region-label none handling + related fixes
 # ============================================================================
-
 
 class TestRegionLabelNoneHandling:
     """Tests for empty-string region label filtering."""
 
     def test_empty_region_labels_excluded(self):
         """Subjects with empty region labels are excluded from region stratification."""
-        np.random.seed(42)
         n_subjects = 20
         attention = np.random.rand(n_subjects, 4, N_CELL_TYPES).astype(np.float32)
         # Mix of real regions and empty strings (simulating missing metadata)
@@ -727,13 +685,11 @@ class TestRegionLabelNoneHandling:
         assert "PFC" in unique_result_regions
         assert "AG" in unique_result_regions
 
-
 class TestPathologyNaNExclusion:
     """Tests for NaN pathology exclusion from tertiles."""
 
     def test_nan_pathology_excluded_from_tertile_counts(self):
         """NaN pathology subjects should not be counted in any tertile group."""
-        np.random.seed(42)
         n_subjects = 30
         attention = np.random.rand(n_subjects, 4, N_CELL_TYPES).astype(np.float32)
         pathology = np.random.rand(n_subjects).astype(np.float32)

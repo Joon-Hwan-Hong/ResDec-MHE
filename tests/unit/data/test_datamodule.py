@@ -8,7 +8,6 @@ from omegaconf import OmegaConf
 
 from src.data.datamodule import CognitiveResilienceDataModule
 
-
 @pytest.fixture
 def minimal_config():
     """Minimal config for DataModule."""
@@ -33,14 +32,12 @@ def minimal_config():
         "experiment": {"seed": 42},
     })
 
-
 @pytest.fixture
 def mock_metadata():
     return pd.DataFrame({
         "ROSMAP_IndividualID": [f"subj_{i}" for i in range(20)],
         "cogn_global": np.random.randn(20),
     })
-
 
 @pytest.fixture
 def mock_splits():
@@ -52,7 +49,6 @@ def mock_splits():
             {"train": subjects[4:14], "val": subjects[14:]},
         ],
     }
-
 
 @pytest.fixture
 def precomputed_dir(tmp_path, mock_metadata):
@@ -86,7 +82,6 @@ def precomputed_dir(tmp_path, mock_metadata):
             "available_regions": [0],
         }, tmp_path / f"{sid}.pt")
     return tmp_path
-
 
 class TestCognitiveResilienceDataModule:
     def test_init_with_precomputed(self, minimal_config, mock_metadata, mock_splits, precomputed_dir):
@@ -178,7 +173,6 @@ class TestCognitiveResilienceDataModule:
         test_loader = dm.test_dataloader()
         assert test_loader is not None
 
-
 class TestSetupBehavior:
     """T6: Test setup() creates correct datasets for each stage."""
 
@@ -221,7 +215,6 @@ class TestSetupBehavior:
         assert dm._train_ds is not None
         assert dm._val_ds is None
 
-
 class TestMakeDataset:
     """T6: Test _make_dataset paths."""
 
@@ -250,7 +243,6 @@ class TestMakeDataset:
         subjects = ["subj_0", "subj_1", "subj_2"]
         ds = dm._make_dataset(subjects)
         assert len(ds) == 3
-
 
 class TestDataloaderConfig:
     """T6: Verify DataLoader configuration."""
@@ -292,7 +284,6 @@ class TestDataloaderConfig:
         )
         assert dm.batch_size == 8
 
-
 class TestTrainTargetMean:
     """Tests for train_target_mean property (data-driven prior centering)."""
 
@@ -319,7 +310,6 @@ class TestTrainTargetMean:
             mock_metadata["ROSMAP_IndividualID"].isin(train_subjects)
         ]["cogn_global"].mean()
         assert abs(result - expected) < 1e-5
-
 
 class TestWorkerInitFn:
     """T6: Verify rank-aware worker init function."""

@@ -18,8 +18,7 @@ from pathlib import Path
 
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def test_make_integrated_pathway_figure_runs(tmp_path: Path) -> None:
     """End-to-end smoke: script runs against canonical inputs and writes PNG/PDF."""
@@ -88,10 +87,8 @@ def test_make_integrated_pathway_figure_runs(tmp_path: Path) -> None:
     assert "set_sizes" in payload["panel_d"]
     assert "all_method_intersection_size" in payload["panel_d"]
 
-
 def test_load_de_top_genes_set_filters_and_sorts() -> None:
     """DE loader returns only genes for the requested CT, sorted by p_value."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         make_integrated_pathway_figure as mod,
     )
@@ -114,10 +111,8 @@ def test_load_de_top_genes_set_filters_and_sorts() -> None:
     s_none = mod.load_de_top_genes_set(de_dir, "ZZZZZZZ", 50)
     assert s_none == set()
 
-
 def test_load_de_top_genes_set_returns_top_50_when_full_table_available() -> None:
     """The per-CT DE table holds 4785 genes per CT; top-50 is satisfiable."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         make_integrated_pathway_figure as mod,
     )
@@ -131,10 +126,8 @@ def test_load_de_top_genes_set_returns_top_50_when_full_table_available() -> Non
     s50 = mod.load_de_top_genes_set(de_dir, "Splatter", 50)
     assert len(s50) == 50, len(s50)
 
-
 def test_load_reactome_top10_returns_sorted() -> None:
     """Reactome loader returns 10 rows sorted by adjusted p ascending."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         make_integrated_pathway_figure as mod,
     )
@@ -155,14 +148,12 @@ def test_load_reactome_top10_returns_sorted() -> None:
     leading = rows[0]["genes"]
     assert any(g in leading for g in ("VAMP2", "SNAP25", "CPLX1")), leading
 
-
 def test_load_per_ct_top1_returns_splatter_with_six_nt() -> None:
     """Splatter row in the per-CT top-1 table has 6 NT-release pathways.
 
     This pins the F5 finding (6/10 NT-release Splatter-specific) so the
     Panel B annotation cannot silently regress.
     """
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         make_integrated_pathway_figure as mod,
     )
@@ -183,10 +174,8 @@ def test_load_per_ct_top1_returns_splatter_with_six_nt() -> None:
     assert splatter_row is not None, rows
     assert splatter_row["n_nt_in_top10"] == 6, splatter_row
 
-
 def test_intersection_table_enumerates_all_non_empty_cells() -> None:
     """Builder returns all 2^N - 1 cells when every set is distinct."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         make_integrated_pathway_figure as mod,
     )
@@ -211,10 +200,8 @@ def test_intersection_table_enumerates_all_non_empty_cells() -> None:
     sizes = [s for _, s in cells]
     assert sizes == sorted(sizes, reverse=True)
 
-
 def test_shorten_reactome_term_strips_id_and_falls_back() -> None:
     """Reactome short-name helper strips R-HSA-* and falls back to base."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         make_integrated_pathway_figure as mod,
     )

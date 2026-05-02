@@ -79,14 +79,26 @@ ALL_PREDICTORS = (*CONTINUOUS_PREDICTORS, *PASSTHROUGH_PREDICTORS)
 # ── APOE genotype parsing ───────────────────────────────────────────────────
 
 
-def parse_apoe4_dosage(genotype: float | int | str | None) -> float:
+def parse_apoe4_dosage(
+    genotype: float | int | str | None, *, strict: bool = False,
+) -> float:
     """Parse APOE genotype encoding into ε4 allele count {0, 1, 2}.
 
     ROSMAP `apoe_genotype` is stored as a two-digit number where each digit is
     one allele, e.g. 34 -> alleles {3, 4} -> dosage 1; 44 -> dosage 2; 33 ->
     dosage 0; 22 -> 0; 23 -> 0; 24 -> 1.
 
-    Returns NaN for missing input. Raises ValueError on unexpected encodings.
+    Returns NaN for missing input.
+
+    Parameters
+    ----------
+    genotype
+        Raw value from the metadata CSV. Accepts int, float, str, or None.
+    strict
+        If True, raise ValueError on unparseable / out-of-range / non-{2,3,4}
+        encodings (legacy behaviour). If False (default), log a warning and
+        return NaN. Lenient default avoids crashing the whole baseline on a
+        single typoed genotype — for research code this is the safer default.
     """
     if genotype is None or (isinstance(genotype, float) and np.isnan(genotype)):
         return float("nan")
@@ -95,14 +107,33 @@ def parse_apoe4_dosage(genotype: float | int | str | None) -> float:
     try:
         gint = int(round(float(genotype)))
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Cannot parse APOE genotype: {genotype!r}") from exc
+        if strict:
+            raise ValueError(f"Cannot parse APOE genotype: {genotype!r}") from exc
+        logger.warning("Cannot parse APOE genotype %r; returning NaN", genotype)
+        return float("nan")
 
     if not 22 <= gint <= 44:
-        raise ValueError(f"APOE genotype {gint} outside expected range [22, 44]")
+        if strict:
+            raise ValueError(
+                f"APOE genotype {gint} outside expected range [22, 44]"
+            )
+        logger.warning(
+            "APOE genotype %d outside expected range [22, 44]; returning NaN",
+            gint,
+        )
+        return float("nan")
 
     a1, a2 = divmod(gint, 10)
     if a1 not in (2, 3, 4) or a2 not in (2, 3, 4):
-        raise ValueError(f"APOE genotype {gint} contains non-{{2,3,4}} alleles")
+        if strict:
+            raise ValueError(
+                f"APOE genotype {gint} contains non-{{2,3,4}} alleles"
+            )
+        logger.warning(
+            "APOE genotype %d contains non-{2,3,4} alleles; returning NaN",
+            gint,
+        )
+        return float("nan")
 
     return float(int(a1 == 4) + int(a2 == 4))
 
@@ -178,6 +209,13 @@ def prepare_fold(
     val_df = val_df[~val_df[TARGET_COLUMN].isna()]
 
     # Impute apoe4_dosage missing -> train mean.
+    # Note (B-CB4): apoe4 is a passthrough predictor (binary-like discrete
+    # variable in {0, 1, 2}) so we use a manual mean rather than the
+    # StandardScaler that handles the continuous predictors below. Both
+    # routes use TRAIN-fold-only stats — no leakage — but the asymmetry is
+    # intentional: z-scoring an integer dosage would obscure the
+    # interpretable {0, 1, 2} encoding the LinReg/ElasticNet coefficients
+    # are reported against.
     train_apoe_mean = float(train_df["apoe4_dosage"].mean())
     train_df["apoe4_dosage"] = train_df["apoe4_dosage"].fillna(train_apoe_mean)
     val_df["apoe4_dosage"] = val_df["apoe4_dosage"].fillna(train_apoe_mean)
@@ -224,8 +262,12 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         out["pearson_r"] = float("nan")
         out["spearman_rho"] = float("nan")
     else:
-        out["pearson_r"] = float(pearsonr(y_true, y_pred)[0])
-        out["spearman_rho"] = float(spearmanr(y_true, y_pred)[0])
+        # Use .statistic / .correlation attributes to match the modern scipy
+        # API used in run_5fold_parallel.sh:115 + run_reinfer_parallel.sh.
+        # The legacy [0]-subscript form still works on current scipy but
+        # standardising avoids divergence between baselines.
+        out["pearson_r"] = float(pearsonr(y_true, y_pred).statistic)
+        out["spearman_rho"] = float(spearmanr(y_true, y_pred).statistic)
     return out
 
 
@@ -284,7 +326,11 @@ def load_reference_per_fold(reference_path: Path) -> dict[str, list[float]]:
 
 
 def paired_wilcoxon(ours: list[float], theirs: list[float]) -> dict:
-    """One-sided paired Wilcoxon: H1: theirs > ours (snRNA model > clinical).
+    """One-sided paired Wilcoxon: H1: ours < theirs (clinical < snRNA reference).
+
+    The scipy ``alternative="less"`` convention is "X is stochastically less
+    than Y" — here X = ``ours`` (clinical), Y = ``theirs`` (snRNA reference).
+    A small p-value rejects H0 in favour of H1.
 
     Returns statistic + p-value + summary; falls back to NaN with the
     statistic-not-defined cause if both vectors are identical.

@@ -18,7 +18,6 @@ import torch
 
 from src.models.resdec_head.resdec_mhe_head import ResDecMHEHead
 
-
 def _mk_head(d_subject: int = 64, d_metadata: int = 8,
              k_tabm: int = 2, n_stages: int = 3) -> ResDecMHEHead:
     """Smaller k_tabm keeps tests fast — the semantics are identical to k=8."""
@@ -33,7 +32,6 @@ def _mk_head(d_subject: int = 64, d_metadata: int = 8,
         n_stages=n_stages,
     )
     return head.to(torch.float32)
-
 
 # --------------------------------------------------------------------------- #
 # Forward shapes per n_stages                                                 #
@@ -69,7 +67,6 @@ def test_forward_shapes(n_stages):
     assert torch.allclose(out["prediction"], expected_pred, atol=1e-6), \
         f"prediction != sum of present stages (n_stages={n_stages})"
 
-
 # --------------------------------------------------------------------------- #
 # n_stages=1 sanity: composer reduces to FiLM + single TabM[NPT] + readout    #
 # --------------------------------------------------------------------------- #
@@ -84,13 +81,11 @@ def test_n_stages_1_only_builds_stage_1():
     leaks = [name for name in sd_keys for f in forbidden if name.startswith(f + ".")]
     assert not leaks, f"n_stages=1 head leaked stage 2/3 params: {leaks[:5]}"
 
-
 def test_invalid_n_stages_rejected():
     """Constructor must reject n_stages outside {1, 2, 3}."""
     for bad in (0, 4, -1):
         with pytest.raises(ValueError, match="n_stages must be one of"):
             ResDecMHEHead(d_subject=32, d_metadata=4, n_stages=bad)
-
 
 # --------------------------------------------------------------------------- #
 # Cross-stage attention wiring                                                #
@@ -129,7 +124,6 @@ def test_cross_stage_attention_wired_h1(n_stages):
         assert delta_s3 > 1e-5, \
             f"stage_3 unchanged when latent_1 perturbed (delta={delta_s3}); cross-attn not wired."
 
-
 def test_cross_stage_attention_wired_h2_to_s3():
     """At n_stages=3, perturbing latent_2 must change stage_3's output."""
     head = _mk_head(d_subject=32, d_metadata=4, k_tabm=2, n_stages=3)
@@ -158,7 +152,6 @@ def test_cross_stage_attention_wired_h2_to_s3():
     assert delta_s3 > 1e-5, \
         f"stage_3 unchanged when latent_2 perturbed (delta={delta_s3}); stage 3 not attending to h_2."
 
-
 # --------------------------------------------------------------------------- #
 # Gradient detach contracts                                                   #
 # --------------------------------------------------------------------------- #
@@ -178,7 +171,6 @@ def _collect_stage_params(head: ResDecMHEHead, which: str) -> list[torch.nn.Para
     readout = getattr(head, f"stage_{which}_readout")
     params = list(wrapper.parameters()) + list(readout.parameters())
     return params
-
 
 def test_gradient_detach_stage2():
     """Aux-2 loss uses ``y - y_tabpfn - stage_1.detach()``. Backward through it
@@ -215,7 +207,6 @@ def test_gradient_detach_stage2():
         (0.0 if p.grad is None else p.grad.abs().max().item()) for p in stage2_params
     )
     assert max_stage2_grad > 0.0, "aux_2 loss did not flow into stage_2 (test is broken)"
-
 
 def test_gradient_detach_stage3():
     """Aux-3 loss uses ``y - y_tabpfn - stage_1.detach() - stage_2.detach()``.
@@ -254,7 +245,6 @@ def test_gradient_detach_stage3():
         (0.0 if p.grad is None else p.grad.abs().max().item()) for p in stage3_params
     )
     assert max_stage3_grad > 0.0, "aux_3 loss did not flow into stage_3 (test is broken)"
-
 
 # --------------------------------------------------------------------------- #
 # TabMWrapper k_tabm=1 degenerate case (parametrized over n_stages)           #

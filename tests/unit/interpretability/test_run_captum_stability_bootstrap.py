@@ -18,19 +18,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 from scripts.resdec_mhe.interpretability import (  # noqa: E402
     run_captum_stability_bootstrap as mod,
 )
 
-
 # =============================================================================
 # canonical_top_k_per_ct
 # =============================================================================
-
 
 class TestCanonicalTopKPerCT:
     """``canonical_top_k_per_ct`` returns descending-ranked argsort + values."""
@@ -71,11 +67,9 @@ class TestCanonicalTopKPerCT:
         with pytest.raises(ValueError, match="K"):
             mod.canonical_top_k_per_ct(abs_attr, top_k=4)
 
-
 # =============================================================================
 # bootstrap_inclusion_and_ranks
 # =============================================================================
-
 
 class TestBootstrapInclusionAndRanks:
     """``bootstrap_inclusion_and_ranks`` returns inclusion and ranks."""
@@ -140,11 +134,9 @@ class TestBootstrapInclusionAndRanks:
         )
         np.testing.assert_array_equal(incl_a, incl_b)
 
-
 # =============================================================================
 # median_iqr
 # =============================================================================
-
 
 class TestMedianIQR:
     """``median_iqr`` returns (median, Q1, Q3); NaN for empty."""
@@ -159,11 +151,9 @@ class TestMedianIQR:
         assert q1 == pytest.approx(2.0)
         assert q3 == pytest.approx(6.0)
 
-
 # =============================================================================
 # build_payload + render_md sanity
 # =============================================================================
-
 
 class TestBuildPayload:
     """``build_payload`` returns a serializable dict with summary + per-CT."""
@@ -244,11 +234,9 @@ class TestBuildPayload:
         assert "Splatter" in md
         assert "GENE_A" in md and "GENE_B" in md
 
-
 # =============================================================================
 # End-to-end smoke
 # =============================================================================
-
 
 class TestEndToEndSmoke:
     """Run the orchestrator on a synthetic mini-tensor."""

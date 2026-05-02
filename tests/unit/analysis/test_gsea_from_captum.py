@@ -27,7 +27,7 @@ import pytest
 from scipy.stats import hypergeom
 
 # Make the script importable as a module.
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 _SCRIPTS_DIR = _WORKTREE_ROOT / "scripts" / "resdec_mhe" / "interpretability"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -41,11 +41,9 @@ from gsea_from_captum import (
     rank_cell_types_from_summary,
 )
 
-
 # ---------------------------------------------------------------------------
 # AD_GWAS_GENES constant
 # ---------------------------------------------------------------------------
-
 
 class TestADGWASGenes:
     def test_is_nonempty_set_of_strings(self):
@@ -71,11 +69,9 @@ class TestADGWASGenes:
             f"Missing core AD genes: {core - AD_GWAS_GENES}"
         )
 
-
 # ---------------------------------------------------------------------------
 # build_gene_list_from_summary
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def mock_summary():
@@ -107,7 +103,6 @@ def mock_summary():
             {"cell_type": "Vascular", "total_abs_attribution": 0.2},
         ],
     }
-
 
 class TestBuildGeneListFromSummary:
     def test_global_top_k(self, mock_summary):
@@ -141,11 +136,9 @@ class TestBuildGeneListFromSummary:
                 mock_summary, scope="cell_type", cell_type=None, top_k=5
             )
 
-
 # ---------------------------------------------------------------------------
 # rank_cell_types_from_summary
 # ---------------------------------------------------------------------------
-
 
 class TestBuildGeneListFromNpz:
     def _make_fixture(self):
@@ -217,7 +210,6 @@ class TestBuildGeneListFromNpz:
         # |A|=0.9, |C|=0.5, |B|=0.1
         assert out == ["A", "C", "B"]
 
-
 class TestRankCellTypesFromSummary:
     def test_returns_top_n(self, mock_summary):
         ranked = rank_cell_types_from_summary(mock_summary, top_n=2)
@@ -227,11 +219,9 @@ class TestRankCellTypesFromSummary:
         ranked = rank_cell_types_from_summary(mock_summary, top_n=10)
         assert ranked == ["Splatter", "Fibroblast", "Vascular"]
 
-
 # ---------------------------------------------------------------------------
 # hypergeometric_overlap_pvalue — independent scipy sanity check
 # ---------------------------------------------------------------------------
-
 
 class TestHypergeometricOverlap:
     def test_strong_overlap_pvalue_significant(self):
@@ -276,11 +266,9 @@ class TestHypergeometricOverlap:
                 overlap=-1, sample_size=200, n_successes_pop=75, pop_size=4785
             )
 
-
 # ---------------------------------------------------------------------------
 # compute_ad_gwas_overlap
 # ---------------------------------------------------------------------------
-
 
 class TestComputeADGWASOverlap:
     def test_synthetic_known_overlap(self):
@@ -358,12 +346,10 @@ class TestComputeADGWASOverlap:
         assert result["n_gwas_in_universe"] == 1  # only APOE in universe
         assert result["overlap_genes"] == ["APOE"]
 
-
 # ---------------------------------------------------------------------------
 # End-to-end smoke: load a real summary JSON, run through everything except
 # Enrichr. Uses the actual Captum composite_attribution_summary.json.
 # ---------------------------------------------------------------------------
-
 
 SUMMARY_JSON_PATH = (
     _WORKTREE_ROOT
@@ -374,7 +360,6 @@ SUMMARY_JSON_PATH = (
     / "composite_attribution_summary.json"
 )
 GENE_NAMES_PATH = _WORKTREE_ROOT / "data" / "precomputed" / "gene_names.npy"
-
 
 @pytest.mark.skipif(
     not SUMMARY_JSON_PATH.exists() or not GENE_NAMES_PATH.exists(),

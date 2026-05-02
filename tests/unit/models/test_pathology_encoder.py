@@ -11,7 +11,6 @@ Test organization:
 import pytest
 import torch
 
-
 class TestInitialization:
     """Tests for PathologyEncoder initialization."""
 
@@ -60,7 +59,6 @@ class TestInitialization:
         assert encoder.d_cond == 128
         assert encoder.region_proj.in_features == 256
         assert encoder.region_proj.out_features == 128
-
 
 class TestForwardPass:
     """Tests for PathologyEncoder forward pass."""
@@ -156,7 +154,6 @@ class TestForwardPass:
 
         assert output.shape == (4, 128)
 
-
 class TestGradientFlow:
     """Tests for gradient flow through PathologyEncoder."""
 
@@ -208,7 +205,6 @@ class TestGradientFlow:
         for name, param in encoder.named_parameters():
             assert param.grad is not None, f"No gradient for {name}"
             assert not torch.all(param.grad == 0), f"Zero gradient for {name}"
-
 
 class TestValidation:
     """Tests for input validation."""
@@ -315,7 +311,6 @@ class TestValidation:
         with pytest.raises(ValueError, match="Batch size mismatch"):
             encoder(pathology, region_context)
 
-
 class TestEdgeCasesExtended:
     """Extended edge case tests."""
 
@@ -349,7 +344,6 @@ class TestEdgeCasesExtended:
         assert torch.allclose(out[0], out[1])
         assert torch.allclose(out[1], out[2])
         assert torch.allclose(out[2], out[3])
-
 
 class TestExtraRepr:
     """Tests for extra_repr method."""

@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 from pathlib import Path
 
@@ -65,23 +64,9 @@ from src.training.resdec_lightning_module import (
     ENCODER_KWARG_KEYS,
     ResDecLightningModule,
 )
+from src.utils.provenance import pick_max_r2_ckpt
 
 logger = logging.getLogger(__name__)
-_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
-
-
-def _pick_max_r2_ckpt(ckpt_dir: Path) -> Path:
-    best: tuple[Path, float] | None = None
-    for p in ckpt_dir.glob("best-*.ckpt"):
-        m = _BEST_CKPT_RE.match(p.name)
-        if not m:
-            continue
-        r2 = float(m.group(2))
-        if best is None or r2 > best[1]:
-            best = (p, r2)
-    if best is None:
-        raise FileNotFoundError(f"No best-*.ckpt files in {ckpt_dir}")
-    return best[0]
 
 
 def _move_batch(b: dict, device: torch.device) -> dict:
@@ -156,7 +141,7 @@ def extract_per_subject_attention(args: argparse.Namespace, device: torch.device
         cfg.data.fold = int(fold)
 
         fold_dir = Path(args.pred_root) / f"fold{fold}"
-        ckpt_path = _pick_max_r2_ckpt(fold_dir / "checkpoints")
+        ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
         logger.info("fold %d: loading %s", fold, ckpt_path.name)
 
         splits = load_splits(str(args.splits_path))

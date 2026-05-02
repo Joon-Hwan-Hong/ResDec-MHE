@@ -15,11 +15,11 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
-import os
 import platform
 import socket
 import subprocess
 from dataclasses import asdict, dataclass, field
+from os import fspath
 from pathlib import Path
 from typing import Any
 
@@ -153,7 +153,7 @@ def build_manifest(
 
 def _json_default(o: Any) -> Any:
     if hasattr(o, "__fspath__"):
-        return os.fspath(o)
+        return fspath(o)
     return str(o)
 
 

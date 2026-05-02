@@ -16,9 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 # Import the module under test using importlib (script lives in scripts/).
 import importlib.util  # noqa: E402
@@ -27,7 +25,6 @@ _SCRIPT_PATH = (
     _WORKTREE_ROOT
     / "scripts/resdec_mhe/interpretability/run_coverage_stratified_loco.py"
 )
-
 
 def _load_module():
     spec = importlib.util.spec_from_file_location(
@@ -38,11 +35,9 @@ def _load_module():
     spec.loader.exec_module(mod)
     return mod
 
-
 # -----------------------------------------------------------------------
 # Pure-Python helper tests (no GPU / disk required)
 # -----------------------------------------------------------------------
-
 
 def _make_synthetic_fold_payloads(
     n_folds: int = 2, n_val: int = 4, n_ct: int = 3, seed: int = 0,
@@ -104,7 +99,6 @@ def _make_synthetic_fold_payloads(
         })
     return payloads, counts_dict
 
-
 def test_aggregate_loco_full_vs_restricted_basic():
     mod = _load_module()
     payloads, counts = _make_synthetic_fold_payloads()
@@ -130,7 +124,6 @@ def test_aggregate_loco_full_vs_restricted_basic():
         for v in row["delta_r2_restricted_per_fold"]:
             assert v is None or isinstance(v, float)
 
-
 def test_aggregate_loco_canonical_recovers_per_fold_r2():
     """Canonical R² should equal r2_score(true_y, comp_canon) per fold."""
     mod = _load_module()
@@ -143,7 +136,6 @@ def test_aggregate_loco_canonical_recovers_per_fold_r2():
         expect = float(r2_score(fp["true_y"], fp["comp_canon"]))
         got = out["canonical_per_fold_full"][f]
         assert abs(got - expect) < 1e-9, (got, expect)
-
 
 def test_aggregate_loco_restricted_paired_semantics():
     """Restricted ΔR² for fold f and CT ct equals r2(loco) - r2(canon) on
@@ -176,7 +168,6 @@ def test_aggregate_loco_restricted_paired_semantics():
             got = ct_row["delta_r2_restricted_per_fold"][f]
             assert got is not None and abs(got - expect) < 1e-9
 
-
 def test_compute_rank_shift_handles_none_restricted():
     """CTs whose restricted ΔR² is None should not appear in restricted ranking."""
     mod = _load_module()
@@ -203,7 +194,6 @@ def test_compute_rank_shift_handles_none_restricted():
     assert rows[1]["rank_shift"] == 2 - 1  # full_rank - rest_rank = 1
     assert rows[2]["restricted_rank"] == 2
     assert aggregated["n_cell_types_with_valid_restricted"] == 2
-
 
 def test_merge_coverage_stats_attaches_fields(tmp_path: Path):
     mod = _load_module()
@@ -232,7 +222,6 @@ def test_merge_coverage_stats_attaches_fields(tmp_path: Path):
     assert aggregated["per_cell_type"][0]["zero_frac"] == 0.0
     assert aggregated["per_cell_type"][1]["zero_frac"] == 0.95
     assert aggregated["coverage_n_subjects_total"] == 100
-
 
 def test_write_json_and_md_round_trip(tmp_path: Path):
     mod = _load_module()
@@ -294,7 +283,6 @@ def test_write_json_and_md_round_trip(tmp_path: Path):
     assert "Splatter" in md_text
     assert "Cerebellar inhibitory" in md_text
 
-
 def test_build_subject_cell_counts_smoke(tmp_path: Path):
     """Build subject cell_counts map from real precomputed dir (smoke)."""
     mod = _load_module()
@@ -309,11 +297,9 @@ def test_build_subject_cell_counts_smoke(tmp_path: Path):
     # — but cell_counts are already int64 totals per CT).
     assert counts.sum() > 0
 
-
 # -----------------------------------------------------------------------
 # Integration smoke test — single fold via the script CLI.
 # -----------------------------------------------------------------------
-
 
 @pytest.mark.slow
 def test_script_runs_smoke_one_fold(tmp_path: Path):

@@ -288,6 +288,11 @@ def preprocess_adata(
     # 20 subjects in the "DLPFC" batch have fractional counts from CellBender
     # ambient RNA correction. Round to nearest integer so seurat_v3 HVG
     # selection operates on proper count data.
+    #
+    # In-place mutation of adata.X.data is safe here because we just
+    # sc.read_h5ad'd it (memory-backed, not file-backed). If a future
+    # caller passes an AnnData opened with backed="r", this would mutate
+    # the on-disk representation through the mmap view.
     if sparse.issparse(adata.X):
         np.round(adata.X.data, out=adata.X.data)
     else:
@@ -430,7 +435,10 @@ def preprocess_adata(
         # Gene-level mean expression (for loess normalization)
         gene_means = X_sub.mean(axis=0)  # [n_genes]
 
-        # Loess normalization: fit mean-variance trend, divide out
+        # Loess normalization: fit mean-variance trend, divide out.
+        # Lazy import: statsmodels has heavy startup cost (~0.5 s) and is
+        # only needed by the blocked-HVG path; importing at module scope
+        # would slow every preprocessing call.
         from statsmodels.nonparametric.smoothers_lowess import lowess
         finite_mask = np.isfinite(mean_var) & (gene_means > 0)
         loess_result = lowess(
@@ -478,13 +486,13 @@ def preprocess_adata(
     n_final = final_mask.sum()
     logger.info(f"Final gene set: {n_final:,} genes (from {adata.n_vars:,})")
 
-    # This is the ONE copy — from 20K genes to ~4K genes
+    # This is the ONE copy — from 20K genes to ~4K genes. The previous
+    # split-then-rebind via ``adata_subset = adata[:, final_mask].copy()``
+    # → ``del adata; adata = adata_subset; del adata_subset`` was equivalent
+    # but harder to read than a direct rebind.
     logger.info("Subsetting to final gene set (this may take a few minutes)...")
-    adata_subset = adata[:, final_mask].copy()
-    del adata
+    adata = adata[:, final_mask].copy()
     gc.collect()
-    adata = adata_subset
-    del adata_subset
     logger.info(f"After subset: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes")
 
     if sparse.issparse(adata.X):

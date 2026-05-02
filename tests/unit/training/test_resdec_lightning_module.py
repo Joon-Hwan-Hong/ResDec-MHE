@@ -15,11 +15,12 @@ import torch
 from omegaconf import OmegaConf
 
 from src.training.resdec_lightning_module import ResDecLightningModule
+from tests.conftest import _build_canonical_batch
 
 
 @pytest.fixture
-def cfg():
-    base = OmegaConf.load("configs/default.yaml")
+def cfg(default_config_path):
+    base = OmegaConf.load(default_config_path)
     OmegaConf.set_struct(base, False)
     OmegaConf.set_struct(base.model, False)
     base.model.n_genes = 4785
@@ -34,7 +35,6 @@ def cfg():
     base.training.weight_decay = 5.6e-6
     return base
 
-
 def test_module_builds(cfg):
     mod = ResDecLightningModule(cfg)
     assert mod.encoder is not None
@@ -42,39 +42,14 @@ def test_module_builds(cfg):
     # d_subject inferred from d_fused (64 in default.yaml)
     assert mod.head.d_subject == cfg.model.d_fused
 
-
 def test_module_forward_dummy_batch(cfg):
     mod = ResDecLightningModule(cfg)
     mod.eval()
 
     B = 2
-    N_CT, N_GENES, N_REGIONS = 31, 4785, 6
-    cells_per_ct = 10
-    cells_per_subject = cells_per_ct * N_CT
-
-    region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
-    region_mask[:, 0] = True  # PFC-only, matches real data distribution
-
-    # [B, N_CT+1] offsets: subject i starts at i * cells_per_subject
-    offsets_per_subj = torch.arange(0, cells_per_subject + 1, cells_per_ct, dtype=torch.long)
-    subj_offsets = torch.arange(B, dtype=torch.long) * cells_per_subject
-    cell_offsets = subj_offsets.unsqueeze(1) + offsets_per_subj.unsqueeze(0)
-
-    edges_per_subj = 50
-    total_edges = B * edges_per_subj
-
-    batch = {
-        "region_pseudobulk": torch.randn(B, N_REGIONS, N_CT, N_GENES),
-        "region_mask": region_mask,
-        "ccc_edge_index": torch.randint(0, N_CT, (2, total_edges)),
-        "ccc_edge_type": torch.randint(0, 5, (total_edges,)),
-        "ccc_edge_attr": torch.rand(total_edges, 1),
-        "cell_type_mask": torch.ones(B, N_CT, dtype=torch.bool),
-        "cell_data": torch.randn(B * cells_per_subject, N_GENES),
-        "cell_offsets": cell_offsets,
-        "pathology": torch.randn(B, 3),
-        "cognition": torch.randn(B, 1),
-    }
+    batch = _build_canonical_batch(
+        batch_size=B, n_genes=4785, cells_per_ct=10, edges_per_subj=50,
+    )
 
     with torch.no_grad():
         out = mod(batch)
@@ -98,35 +73,16 @@ def test_module_handles_missing_metadata(cfg):
     mod = ResDecLightningModule(cfg)
     mod.eval()
 
+    # NOTE: no "metadata" key → zero-tensor placeholder kicks in
+    # Empty CCC graphs (edges_per_subj=0) match the original test fixture.
     B = 2
-    N_CT, N_GENES, N_REGIONS = 31, 4785, 6
-    cells_per_ct = 10
-    cells_per_subject = cells_per_ct * N_CT
-
-    region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
-    region_mask[:, 0] = True
-    offsets_per_subj = torch.arange(0, cells_per_subject + 1, cells_per_ct, dtype=torch.long)
-    subj_offsets = torch.arange(B, dtype=torch.long) * cells_per_subject
-    cell_offsets = subj_offsets.unsqueeze(1) + offsets_per_subj.unsqueeze(0)
-
-    batch = {
-        "region_pseudobulk": torch.randn(B, N_REGIONS, N_CT, N_GENES),
-        "region_mask": region_mask,
-        "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
-        "ccc_edge_type": torch.zeros(0, dtype=torch.long),
-        "ccc_edge_attr": torch.zeros(0, 1),
-        "cell_type_mask": torch.ones(B, N_CT, dtype=torch.bool),
-        "cell_data": torch.randn(B * cells_per_subject, N_GENES),
-        "cell_offsets": cell_offsets,
-        "pathology": torch.randn(B, 3),
-        "cognition": torch.randn(B, 1),
-        # NOTE: no "metadata" key → zero-tensor placeholder kicks in
-    }
+    batch = _build_canonical_batch(
+        batch_size=B, n_genes=4785, cells_per_ct=10, edges_per_subj=0,
+    )
 
     with torch.no_grad():
         out = mod(batch)
     assert out["prediction"].shape == (B,)
-
 
 # ---------------------------------------------------------------------------
 # §31.7 fix: training-time attention path
@@ -139,33 +95,14 @@ def test_module_handles_missing_metadata(cfg):
 # When regularization is disabled, no attention_weights are emitted during
 # training (no_grad block skipped + einsum path off).
 
-
 def _build_dummy_train_batch(B: int = 2):
-    """Construct a minimal train batch (cell_data path, no metadata)."""
-    N_CT, N_GENES, N_REGIONS = 31, 4785, 6
-    cells_per_ct = 2  # tiny for fast tests
-    cells_per_subject = cells_per_ct * N_CT
+    """Construct a minimal train batch (cell_data path, no metadata).
 
-    region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
-    region_mask[:, 0] = True
-
-    offsets_per_subj = torch.arange(0, cells_per_subject + 1, cells_per_ct, dtype=torch.long)
-    subj_offsets = torch.arange(B, dtype=torch.long) * cells_per_subject
-    cell_offsets = subj_offsets.unsqueeze(1) + offsets_per_subj.unsqueeze(0)
-
-    return {
-        "region_pseudobulk": torch.randn(B, N_REGIONS, N_CT, N_GENES),
-        "region_mask": region_mask,
-        "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
-        "ccc_edge_type": torch.zeros(0, dtype=torch.long),
-        "ccc_edge_attr": torch.zeros(0, 1),
-        "cell_type_mask": torch.ones(B, N_CT, dtype=torch.bool),
-        "cell_data": torch.randn(B * cells_per_subject, N_GENES),
-        "cell_offsets": cell_offsets,
-        "pathology": torch.randn(B, 3),
-        "cognition": torch.randn(B, 1),
-    }
-
+    Uses cells_per_ct=2 for fast tests + empty CCC graphs.
+    """
+    return _build_canonical_batch(
+        batch_size=B, n_genes=4785, cells_per_ct=2, edges_per_subj=0,
+    )
 
 def test_training_attention_weights_none_when_reg_disabled(cfg):
     """§31.7 fix: with attention_regularization.enabled=False (default), the
@@ -194,7 +131,6 @@ def test_training_attention_weights_none_when_reg_disabled(cfg):
         "attention_weights must be absent during training when "
         "attention_regularization is disabled (§31.7 fix)."
     )
-
 
 def test_training_attention_weights_present_when_reg_enabled(cfg):
     """When attention_regularization.enabled=True, the lightning module wires

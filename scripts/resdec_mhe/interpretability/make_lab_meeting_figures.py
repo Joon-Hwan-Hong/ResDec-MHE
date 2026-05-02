@@ -41,6 +41,10 @@ import os
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np

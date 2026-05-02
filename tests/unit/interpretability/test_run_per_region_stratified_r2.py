@@ -25,8 +25,7 @@ from pathlib import Path
 
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def test_run_per_region_stratified_r2_runs(tmp_path: Path) -> None:
     pred_root = _WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42"

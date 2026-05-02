@@ -13,7 +13,6 @@ Test coverage includes:
 - Edge cases
 """
 
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -28,32 +27,24 @@ from src.analysis.resilience_signatures import (
     compute_resilience_signature,
 )
 
-
 # ============================================================================
 # Fixtures
 # ============================================================================
 
-
 @pytest.fixture
 def sample_attention():
     """Sample pathology attention [n_subjects, n_heads, n_cell_types]."""
-    np.random.seed(42)
     return np.random.rand(30, 4, N_CELL_TYPES).astype(np.float32)
-
 
 @pytest.fixture
 def sample_pathology_scores():
     """Sample pathology scores (higher = more pathology)."""
-    np.random.seed(42)
     return np.random.rand(30).astype(np.float32)
-
 
 @pytest.fixture
 def sample_cognition_scores():
     """Sample cognition scores (higher = better cognition)."""
-    np.random.seed(42)
     return np.random.rand(30).astype(np.float32)
-
 
 @pytest.fixture
 def analyzer(sample_attention, sample_pathology_scores, sample_cognition_scores):
@@ -64,11 +55,9 @@ def analyzer(sample_attention, sample_pathology_scores, sample_cognition_scores)
         cognition_scores=sample_cognition_scores,
     )
 
-
 # ============================================================================
 # ResilienceSignatureResult Dataclass Tests
 # ============================================================================
-
 
 class TestResilienceSignatureResult:
     """Tests for ResilienceSignatureResult dataclass."""
@@ -92,11 +81,9 @@ class TestResilienceSignatureResult:
         result = ResilienceSignatureResult(signature=signature)
         assert result.metadata == {}
 
-
 # ============================================================================
 # ResilienceSignatureAnalyzer Initialization Tests
 # ============================================================================
-
 
 class TestAnalyzerInit:
     """Tests for ResilienceSignatureAnalyzer initialization."""
@@ -140,11 +127,9 @@ class TestAnalyzerInit:
         )
         assert analyzer.cell_type_names == list(CELL_TYPE_ORDER)
 
-
 # ============================================================================
 # Group Identification Tests
 # ============================================================================
-
 
 class TestGroupIdentification:
     """Tests for resilient/vulnerable group identification."""
@@ -177,11 +162,9 @@ class TestGroupIdentification:
             # Resilient should have above-average pathology
             assert resilient_path >= all_path * 0.5  # Relaxed threshold
 
-
 # ============================================================================
 # Signature Computation Tests
 # ============================================================================
-
 
 class TestSignatureComputation:
     """Tests for signature computation."""
@@ -219,11 +202,9 @@ class TestSignatureComputation:
         abs_sigs = np.abs(result.signature["signature"].values)
         assert all(abs_sigs[i] >= abs_sigs[i + 1] for i in range(len(abs_sigs) - 1))
 
-
 # ============================================================================
 # Permutation Test Tests
 # ============================================================================
-
 
 class TestPermutationTest:
     """Tests for permutation significance testing."""
@@ -270,11 +251,9 @@ class TestPermutationTest:
 
         pd.testing.assert_frame_equal(result1.permutation_pvalues, result2.permutation_pvalues)
 
-
 # ============================================================================
 # Group Statistics Tests
 # ============================================================================
-
 
 class TestGroupStatistics:
     """Tests for group statistics computation."""
@@ -297,30 +276,25 @@ class TestGroupStatistics:
         # At least one group should be present
         assert len(groups) >= 1
 
-
 # ============================================================================
 # Save/Load Tests
 # ============================================================================
 
-
 class TestSaveLoad:
     """Tests for save functionality."""
 
-    def test_save_creates_files(self, analyzer):
+    def test_save_creates_files(self, analyzer, tmp_path):
         """save() creates expected files."""
         result = analyzer.analyze(n_permutations=100)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            saved = analyzer.save(result, tmpdir)
-            assert (Path(tmpdir) / "resilience_signature.parquet").exists()
-            assert (Path(tmpdir) / "resilience_signature.csv").exists()
-            assert (Path(tmpdir) / "signature_pvalues.parquet").exists()
-            assert (Path(tmpdir) / "group_statistics.csv").exists()
-
+        saved = analyzer.save(result, tmp_path)
+        assert (tmp_path / "resilience_signature.parquet").exists()
+        assert (tmp_path / "resilience_signature.csv").exists()
+        assert (tmp_path / "signature_pvalues.parquet").exists()
+        assert (tmp_path / "group_statistics.csv").exists()
 
 # ============================================================================
 # Schema Validation Tests
 # ============================================================================
-
 
 class TestOutputSchemaValidation:
     """Tests validating output DataFrame schemas."""
@@ -343,11 +317,9 @@ class TestOutputSchemaValidation:
         assert (result.signature["vulnerable_mean"] >= 0).all()
         assert (result.signature["vulnerable_mean"] <= 1).all()
 
-
 # ============================================================================
 # Property-Based Tests
 # ============================================================================
-
 
 @pytest.mark.filterwarnings("ignore:Degrees of freedom <= 0 for slice:RuntimeWarning")
 @pytest.mark.filterwarnings("ignore:invalid value encountered in divide:RuntimeWarning")
@@ -396,11 +368,9 @@ class TestPropertyBased:
 
         assert analyzer.n_resilient + analyzer.n_vulnerable <= analyzer.high_pathology_mask.sum()
 
-
 # ============================================================================
 # Convenience Function Tests
 # ============================================================================
-
 
 class TestConvenienceFunction:
     """Tests for compute_resilience_signature function."""
@@ -415,23 +385,20 @@ class TestConvenienceFunction:
         )
         assert isinstance(result, ResilienceSignatureResult)
 
-    def test_compute_with_output_dir_saves_files(self, sample_attention, sample_pathology_scores, sample_cognition_scores):
+    def test_compute_with_output_dir_saves_files(self, sample_attention, sample_pathology_scores, sample_cognition_scores, tmp_path):
         """compute_resilience_signature saves when output_dir provided."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = compute_resilience_signature(
-                attention=sample_attention,
-                pathology_scores=sample_pathology_scores,
-                cognition_scores=sample_cognition_scores,
-                n_permutations=10,
-                output_dir=tmpdir,
-            )
-            assert (Path(tmpdir) / "resilience_signature.parquet").exists()
-
+        result = compute_resilience_signature(
+            attention=sample_attention,
+            pathology_scores=sample_pathology_scores,
+            cognition_scores=sample_cognition_scores,
+            n_permutations=10,
+            output_dir=tmp_path,
+        )
+        assert (tmp_path / "resilience_signature.parquet").exists()
 
 # ============================================================================
 # Edge Case Tests
 # ============================================================================
-
 
 class TestEdgeCases:
     """Edge case tests."""
@@ -504,11 +471,9 @@ class TestEdgeCases:
         result = analyzer.analyze(n_permutations=0)
         assert result.signature is not None
 
-
 # ============================================================================
 # Regional Analysis Tests
 # ============================================================================
-
 
 class TestRegionalAnalysis:
     """Tests for regional resilience signature analysis."""
@@ -516,7 +481,6 @@ class TestRegionalAnalysis:
     @pytest.fixture
     def regional_analyzer(self):
         """Analyzer with regional labels for sufficient subjects per region."""
-        np.random.seed(42)
         n_subjects = 60  # Need sufficient subjects per region
         attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
         pathology = np.random.rand(n_subjects).astype(np.float32)
@@ -594,17 +558,15 @@ class TestRegionalAnalysis:
         assert "n_regions_analyzed" in result.metadata
         assert "regions" in result.metadata
 
-    def test_regional_analysis_saves_by_region_file(self, regional_analyzer):
+    def test_regional_analysis_saves_by_region_file(self, regional_analyzer, tmp_path):
         """save() creates by_region files."""
         result = regional_analyzer.analyze(n_permutations=0)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            regional_analyzer.save(result, tmpdir)
-            assert (Path(tmpdir) / "resilience_signature_by_region.parquet").exists()
-            assert (Path(tmpdir) / "resilience_signature_by_region.csv").exists()
+        regional_analyzer.save(result, tmp_path)
+        assert (tmp_path / "resilience_signature_by_region.parquet").exists()
+        assert (tmp_path / "resilience_signature_by_region.csv").exists()
 
     def test_regional_skips_region_with_few_subjects(self):
         """Regions with insufficient subjects are skipped."""
-        np.random.seed(42)
         n_subjects = 30
         attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
         pathology = np.random.rand(n_subjects).astype(np.float32)
@@ -627,11 +589,9 @@ class TestRegionalAnalysis:
             regions = result.by_region["region"].unique()
             assert "DLPFC" not in regions
 
-
 # ============================================================================
 # Ablation Study Tests
 # ============================================================================
-
 
 class TestAblationStudy:
     """Tests for ablation study functionality."""
@@ -748,7 +708,6 @@ class TestAblationStudy:
 
     def test_ablation_with_embeddings(self):
         """Zero embedding ablation works with provided embeddings."""
-        np.random.seed(42)
         n_subjects = 30
         n_cell_types = 5
         embed_dim = 16
@@ -795,19 +754,18 @@ class TestAblationStudy:
         assert "ablation_method" in result.metadata
         assert "ablation_methods_correlation" in result.metadata
 
-    def test_ablation_saves_files(self, analyzer):
+    def test_ablation_saves_files(self, analyzer, tmp_path):
         """save() creates ablation files."""
         result = analyzer.analyze(
             n_permutations=0,
             run_ablation=True,
             ablation_method="both",
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir)
-            assert (Path(tmpdir) / "ablation_importance.parquet").exists()
-            assert (Path(tmpdir) / "ablation_importance.csv").exists()
-            assert (Path(tmpdir) / "ablation_comparison.parquet").exists()
-            assert (Path(tmpdir) / "ablation_comparison.csv").exists()
+        analyzer.save(result, tmp_path)
+        assert (tmp_path / "ablation_importance.parquet").exists()
+        assert (tmp_path / "ablation_importance.csv").exists()
+        assert (tmp_path / "ablation_comparison.parquet").exists()
+        assert (tmp_path / "ablation_comparison.csv").exists()
 
     def test_ablation_importance_type_categorization(self, analyzer):
         """Ablation comparison categorizes importance type."""
@@ -828,11 +786,9 @@ class TestAblationStudy:
         )
         assert result.ablation_comparison["methods_agree"].dtype == bool
 
-
 # ============================================================================
 # Permutation Null Distribution Tests
 # ============================================================================
-
 
 class TestPermutationNullDistribution:
     """Tests for permutation null distribution storage."""
@@ -853,26 +809,23 @@ class TestPermutationNullDistribution:
         result = analyzer.analyze(n_permutations=0)
         assert result.permutation_null is None
 
-    def test_permutation_null_saved_to_hdf5(self, analyzer):
+    def test_permutation_null_saved_to_hdf5(self, analyzer, tmp_path):
         """Permutation null is saved to HDF5 file."""
         result = analyzer.analyze(n_permutations=100)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir)
-            h5_path = Path(tmpdir) / "resilience_permutation_null.h5"
-            assert h5_path.exists()
+        analyzer.save(result, tmp_path)
+        h5_path = tmp_path / "resilience_permutation_null.h5"
+        assert h5_path.exists()
 
-            # Verify contents
-            import h5py
-            with h5py.File(h5_path, "r") as f:
-                assert "null_distribution" in f
-                assert f["null_distribution"].shape == (100, N_CELL_TYPES)
-                assert f.attrs["n_permutations"] == 100
-
+        # Verify contents
+        import h5py
+        with h5py.File(h5_path, "r") as f:
+            assert "null_distribution" in f
+            assert f["null_distribution"].shape == (100, N_CELL_TYPES)
+            assert f.attrs["n_permutations"] == 100
 
 # ============================================================================
 # Regional Ablation Tests
 # ============================================================================
-
 
 class TestRegionalAblation:
     """Tests for regional ablation analysis."""
@@ -880,7 +833,6 @@ class TestRegionalAblation:
     @pytest.fixture
     def regional_ablation_analyzer(self):
         """Analyzer with regional labels for ablation."""
-        np.random.seed(42)
         n_subjects = 60
         attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
         pathology = np.random.rand(n_subjects).astype(np.float32)
@@ -946,23 +898,20 @@ class TestRegionalAblation:
         )
         assert result.ablation_by_region is None
 
-    def test_regional_ablation_saved(self, regional_ablation_analyzer):
+    def test_regional_ablation_saved(self, regional_ablation_analyzer, tmp_path):
         """Regional ablation is saved to files."""
         result = regional_ablation_analyzer.analyze(
             n_permutations=0,
             run_ablation=True,
             ablation_method="both",
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            regional_ablation_analyzer.save(result, tmpdir)
-            assert (Path(tmpdir) / "ablation_by_region.parquet").exists()
-            assert (Path(tmpdir) / "ablation_by_region.csv").exists()
-
+        regional_ablation_analyzer.save(result, tmp_path)
+        assert (tmp_path / "ablation_by_region.parquet").exists()
+        assert (tmp_path / "ablation_by_region.csv").exists()
 
 # ============================================================================
 # Cohen's d CI Tests
 # ============================================================================
-
 
 class TestCohensD_CI:
     """Tests for Cohen's d confidence intervals."""
@@ -984,7 +933,6 @@ class TestCohensD_CI:
 
     def test_cohens_d_ci_in_regional(self):
         """Regional signatures include Cohen's d CI."""
-        np.random.seed(42)
         n_subjects = 60
         attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
         pathology = np.random.rand(n_subjects).astype(np.float32)
@@ -1005,18 +953,15 @@ class TestCohensD_CI:
             assert "cohens_d_ci_lower" in result.by_region.columns
             assert "cohens_d_ci_upper" in result.by_region.columns
 
-
 # ============================================================================
 # NaN Handling Tests
 # ============================================================================
-
 
 class TestNaNHandling:
     """Tests for NaN handling in resilience analysis (Finding 4)."""
 
     def test_nan_pathology_excluded_from_groups(self):
         """Subjects with NaN pathology should be excluded from all groups."""
-        np.random.seed(42)
         n_subjects = 30
         attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
         pathology = np.random.rand(n_subjects).astype(np.float32)
@@ -1046,7 +991,6 @@ class TestNaNHandling:
 
     def test_nan_cognition_excluded_from_groups(self):
         """Subjects with NaN cognition should be excluded from all groups."""
-        np.random.seed(42)
         n_subjects = 30
         attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
         pathology = np.random.rand(n_subjects).astype(np.float32)
@@ -1070,7 +1014,6 @@ class TestNaNHandling:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_all_nan_raises_or_handles_gracefully(self):
         """All NaN scores should be handled gracefully."""
-        np.random.seed(42)
         attention = np.random.rand(10, 4, 5).astype(np.float32)
         pathology = np.full(10, np.nan)
         cognition = np.random.rand(10).astype(np.float32)
@@ -1092,7 +1035,6 @@ class TestNaNHandling:
     def test_nan_warning_logged(self, caplog):
         """NaN values in input should trigger a warning."""
         import logging
-        np.random.seed(42)
         n_subjects = 20
         attention = np.random.rand(n_subjects, 4, 5).astype(np.float32)
         pathology = np.random.rand(n_subjects).astype(np.float32)
@@ -1109,18 +1051,15 @@ class TestNaNHandling:
 
         assert any("NaN" in record.message for record in caplog.records)
 
-
 # ============================================================================
 # FDR Threshold Tests
 # ============================================================================
-
 
 class TestFDRThreshold:
     """Test that fdr_threshold parameter is threaded through."""
 
     def test_custom_fdr_threshold_affects_significance(self):
         """Custom fdr_threshold should affect the 'significant' column."""
-        np.random.seed(42)
         n = 40
         attention = np.random.rand(n, 4, 5).astype(np.float32)
         pathology = np.random.rand(n)
@@ -1158,7 +1097,6 @@ class TestFDRThreshold:
 
     def test_fdr_threshold_default_matches_005(self):
         """Default fdr_threshold=0.05 should make 'significant' match 'significant_005'."""
-        np.random.seed(42)
         n = 40
         attention = np.random.rand(n, 4, 5).astype(np.float32)
         pathology = np.random.rand(n)
@@ -1180,18 +1118,15 @@ class TestFDRThreshold:
                 check_names=False,
             )
 
-
 # ============================================================================
 # Region filter + seed determinism
 # ============================================================================
-
 
 class TestEmptyRegionFilterResilience:
     """Tests for empty-string region label filtering in resilience analysis."""
 
     def test_empty_region_labels_excluded(self):
         """Subjects with empty region labels are excluded from regional analysis."""
-        np.random.seed(42)
         n = 60
         attention = np.random.rand(n, 4, N_CELL_TYPES).astype(np.float32)
         pathology = np.random.rand(n).astype(np.float32)
@@ -1211,13 +1146,11 @@ class TestEmptyRegionFilterResilience:
             regions_in_result = result.by_region["region"].unique()
             assert "" not in regions_in_result
 
-
 class TestSeedDeterminism:
     """Tests that same seed produces identical permutation results."""
 
     def test_same_seed_same_result(self):
         """Permutation test with same seed must be deterministic."""
-        np.random.seed(42)
         n = 30
         attention = np.random.rand(n, 4, N_CELL_TYPES).astype(np.float32)
         pathology = np.random.rand(n).astype(np.float32)
@@ -1235,7 +1168,6 @@ class TestSeedDeterminism:
         if r1.permutation_pvalues is not None:
             pd.testing.assert_frame_equal(r1.permutation_pvalues, r2.permutation_pvalues)
 
-
 class TestVectorizedCohensDSharedUtility:
     """Tests that vectorized Cohen's d from statistics.py matches scalar version."""
 
@@ -1244,7 +1176,6 @@ class TestVectorizedCohensDSharedUtility:
         from src.utils.statistics import (
             cohens_d_vectorized, cohens_d_ci_vectorized, cohens_d_with_ci,
         )
-        np.random.seed(42)
         n1, n2 = 15, 12
         n_features = 5
         group1 = np.random.rand(n1, n_features)
@@ -1266,11 +1197,9 @@ class TestVectorizedCohensDSharedUtility:
             np.testing.assert_almost_equal(ci_lo_vec[i], ci_lo_scalar, decimal=6)
             np.testing.assert_almost_equal(ci_hi_vec[i], ci_hi_scalar, decimal=6)
 
-
 # ============================================================================
 # 2D Embedding Ablation Fallback Tests
 # ============================================================================
-
 
 def test_ablation_skips_2d_embeddings():
     """2D embeddings (attended) should not crash einsum; ablation should fall back to attention-only."""
@@ -1292,11 +1221,9 @@ def test_ablation_skips_2d_embeddings():
     assert "importance" in result.columns
     assert len(result) == n_cell_types
 
-
 # ============================================================================
 # Resilience Grouping Consistency Tests
 # ============================================================================
-
 
 class TestIdentifyGroupsMatchesDeriveResilienceGroups:
     """_identify_groups() must produce same resilient/vulnerable masks
@@ -1307,7 +1234,6 @@ class TestIdentifyGroupsMatchesDeriveResilienceGroups:
         as derive_resilience_groups() for identical inputs."""
         from src.utils.statistics import derive_resilience_groups
 
-        np.random.seed(42)
         n = 50
         pathology = np.random.rand(n)
         cognition = np.random.rand(n)

@@ -43,6 +43,12 @@ from src.data.constants import N_REGIONS
 from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 from src.training.losses import BetaNLLLoss, mse_loss
 from src.training.metrics import ResilienceMetrics
+from src.training.utils import (
+    build_cosine_warmup_scheduler,
+    is_global_zero_or_true,
+    make_prototype_batch,
+    world_size_or_one,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +77,11 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         ResilienceModelCheckpoint. When loading from checkpoint, pass config explicitly::
 
             checkpoint = torch.load("path/to/checkpoint.ckpt")
-            config = OmegaConf.create(checkpoint["model_config"])
+            # Prefer the canonical "full_config" key; legacy "model_config"
+            # is supported as a fallback for older checkpoints.
+            config = OmegaConf.create(
+                checkpoint.get("full_config", checkpoint["model_config"])
+            )
             module = CognitiveResilienceLightningModule.load_from_checkpoint(
                 "path/to/checkpoint.ckpt",
                 config=config,
@@ -95,13 +105,26 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         self.guide = None
 
         if self._use_bayesian_svi:
-            # Safe to clear globally: the CV loop creates exactly one module at a
-            # time per fold and does not hold references to previous fold modules
-            # when constructing the next one (see scripts/training/hpo.py train_fn).
             # Constraint: only one CognitiveResilienceLightning instance may exist
             # per process at a time. Under DDP, each rank is a separate process,
-            # so this is safe across ranks.
+            # so this is safe across ranks. We enforce this with a process-local
+            # guard so a second instantiation in the same process (e.g.,
+            # accidental HPO loop bug) errors loudly instead of silently nuking
+            # the previous module's variational parameters.
+            if pyro.get_param_store().keys() and not getattr(
+                CognitiveResilienceLightningModule, "_pyro_param_store_owned", False,
+            ):
+                raise RuntimeError(
+                    "pyro.get_param_store() is non-empty but no "
+                    "CognitiveResilienceLightningModule owns it. Either a "
+                    "previous module's variational parameters are still alive "
+                    "in this process (release them first) or another caller "
+                    "wrote to the global param store. Refuse to clear "
+                    "blindly — explicitly call pyro.clear_param_store() if "
+                    "this is intentional."
+                )
             pyro.clear_param_store()
+            CognitiveResilienceLightningModule._pyro_param_store_owned = True
             self.guide = AutoDiagonalNormal(self.model)
             # Disable Pyro's runtime validation (shape/support/constraint checks
             # on every pyro.sample call). This is a GLOBAL Pyro setting that persists
@@ -196,7 +219,6 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         Excludes biases, LayerNorm params, and gene gate logits from weight
         decay (Loshchilov & Hutter 2019, "Decoupled Weight Decay Regularization").
         """
-        _NO_DECAY_SUFFIXES = {"bias", "weight"}  # LayerNorm.weight should not decay
         _NO_DECAY_KEYWORDS = {"LayerNorm", "layernorm", "layer_norm", "gate_logits"}
 
         decay = []
@@ -341,7 +363,10 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         # Fix NaN data upstream (precompute_features validation) instead.
         nan_batch_policy = self._nan_batch_policy
         nan_loss_policy = self._nan_loss_policy
-        world_size = self.trainer.world_size if self._trainer is not None else 1
+        # Use the canonical world_size_or_one helper (centralises the
+        # "trainer not yet attached" RuntimeError handling). Avoids reaching
+        # into Lightning's private ``_trainer`` attribute.
+        world_size = world_size_or_one(self)
         if world_size > 1:
             nan_batch_policy = "fail"
             nan_loss_policy = "fail"
@@ -534,13 +559,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         all_stds = torch.cat(stds_list, dim=0) if stds_list else None
 
         # Gather across DDP ranks for correct correlation computation
-        try:
-            world_size = self.trainer.world_size
-            is_global_zero = self.trainer.is_global_zero
-        except RuntimeError:
-            # Module not attached to Trainer (unit tests)
-            world_size = 1
-            is_global_zero = True
+        world_size = world_size_or_one(self)
+        is_global_zero = is_global_zero_or_true(self)
 
         if world_size > 1:
             all_means = self.all_gather(all_means).reshape(-1, all_means.shape[-1])
@@ -675,34 +695,9 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         except RuntimeError:
             device = torch.device("cpu")
 
-        dummy_batch = {
-            "region_pseudobulk": torch.zeros(
-                1, N_REGIONS, model_cfg.n_cell_types, model_cfg.n_genes,
-                device=device,
-            ),
-            "region_mask": torch.ones(1, N_REGIONS, dtype=torch.bool, device=device),
-            "cell_data": torch.zeros(
-                0, model_cfg.n_genes,
-                device=device,
-            ),
-            "cell_offsets": torch.zeros(
-                1, model_cfg.n_cell_types + 1, dtype=torch.long,
-                device=device,
-            ),
-            "cell_type_mask": torch.ones(
-                1, model_cfg.n_cell_types, dtype=torch.bool,
-                device=device,
-            ),
-            "pathology": torch.zeros(
-                1,
-                model_cfg.get("pathology_attention", {}).get("n_pathology_features", 3),
-                device=device,
-            ),
-            "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long, device=device),
-            "ccc_edge_type": torch.zeros(0, dtype=torch.long, device=device),
-            "ccc_edge_attr": torch.zeros(0, 1, device=device),
-            "cognition": torch.zeros(1, 1, device=device),
-        }
+        dummy_batch = make_prototype_batch(
+            model_cfg, device, include_cell_type_mask=True, include_ccc=True,
+        )
         self._is_prototyping = True
         try:
             with torch.no_grad():
@@ -738,11 +733,8 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         train_cfg = self.config.training
         opt_cfg = train_cfg.optimizer
 
-        # Query world_size once (used for LR scaling and ELBO scaling)
-        try:
-            world_size = self.trainer.world_size
-        except RuntimeError:
-            world_size = 1
+        # Query world_size once (used for LR scaling and ELBO scaling).
+        world_size = world_size_or_one(self)
 
         # Linear LR scaling for multi-GPU (Goyal et al. 2017)
         # effective_lr = base_lr * n_gpus when using DDP
@@ -843,35 +835,13 @@ class CognitiveResilienceLightningModule(pl.LightningModule):
         eta_min = sched_cfg.get("eta_min", 1e-6)
 
         if sched_cfg.type == "cosine":
-            # Allow explicit T_max override (e.g., to keep schedule calibrated
-            # at 100 epochs while training for 150 — epochs beyond T_max train
-            # at eta_min, acting as a low-LR fine-tuning phase).
-            t_max = sched_cfg.get("T_max", train_cfg.max_epochs - warmup_epochs)
-            if t_max <= 0:
-                raise ValueError(
-                    f"warmup_epochs ({warmup_epochs}) must be less than "
-                    f"max_epochs ({train_cfg.max_epochs}) for cosine scheduler"
-                )
-            cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            scheduler = build_cosine_warmup_scheduler(
                 optimizer,
-                T_max=t_max,
-                eta_min=eta_min,
+                max_epochs=int(train_cfg.max_epochs),
+                warmup_epochs=int(warmup_epochs),
+                eta_min=float(eta_min),
+                t_max_override=sched_cfg.get("T_max"),
             )
-
-            if warmup_epochs > 0:
-                warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-                    optimizer,
-                    start_factor=0.01,
-                    end_factor=1.0,
-                    total_iters=warmup_epochs,
-                )
-                scheduler = torch.optim.lr_scheduler.SequentialLR(
-                    optimizer,
-                    schedulers=[warmup_scheduler, cosine_scheduler],
-                    milestones=[warmup_epochs],
-                )
-            else:
-                scheduler = cosine_scheduler
         else:
             raise ValueError(f"Unknown scheduler type: {sched_cfg.type}")
 

@@ -23,19 +23,18 @@ import pandas as pd
 import pytest
 from scipy.stats import spearmanr
 
+from tests.conftest import WORKTREE_ROOT
+
 # baselines/scPhase/ is a script dir, not a package. Add it to sys.path so we
 # can import ``summary_canonical`` as a standalone module.
-_SCPHASE_DIR = (
-    Path(__file__).resolve().parents[3] / "baselines" / "scPhase"
-)
+_SCPHASE_DIR = WORKTREE_ROOT / "baselines" / "scPhase"
 if str(_SCPHASE_DIR) not in sys.path:
     sys.path.insert(0, str(_SCPHASE_DIR))
 
-from summary_canonical import (
+from summary_canonical import (  # noqa: E402
     write_canonical_summary,
     write_dl_results_csv,
 )
-
 
 def _make_allfolds_csv(
     results_dir: Path,
@@ -49,7 +48,6 @@ def _make_allfolds_csv(
     path = results_dir / f"AllFolds_{model_name}.csv"
     pd.DataFrame(rows).to_csv(path, index=False)
     return path
-
 
 def _make_predictions_csv(
     results_dir: Path,
@@ -73,7 +71,6 @@ def _make_predictions_csv(
     path = preds_dir / f"{model_name}_predictions.csv"
     pd.DataFrame(rows).to_csv(path, index=False)
     return path
-
 
 class TestWriteCanonicalSummary:
 
@@ -171,7 +168,6 @@ class TestWriteCanonicalSummary:
         ])
         with pytest.raises(FileNotFoundError):
             write_canonical_summary(tmp_path)
-
 
 class TestWriteDLResultsCsv:
     """Per-fold results.csv (DL baseline schema: fold, r2, mae, rmse, pearson_r,

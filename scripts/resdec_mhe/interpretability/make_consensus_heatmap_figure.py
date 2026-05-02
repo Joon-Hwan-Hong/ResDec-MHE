@@ -31,6 +31,10 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -152,11 +156,20 @@ def _select_rows(rankings: dict[str, dict[str, int]], top_n: int) -> list[str]:
             if rank <= 5:
                 freq[ct] = freq.get(ct, 0) + 1
     # Tie-break on best (lowest) overall rank sum so Splatter beats CTs with
-    # similar frequency.
+    # similar frequency. The "absent CT" rank fallback is one past the worst
+    # possible rank (= max_rank + 1), where max_rank is the largest rank that
+    # could appear given each method's CT universe. We compute this from the
+    # rankings dict instead of hardcoding 32 (was: 31 CTs + 1) so the heatmap
+    # tolerates expanded CT taxonomies.
+    max_rank_per_method = max(
+        (max(ranks.values(), default=0) for ranks in rankings.values()),
+        default=0,
+    )
+    absent_rank_fallback = max_rank_per_method + 1
     rank_sum: dict[str, int] = {}
     for ct in freq:
         rank_sum[ct] = sum(
-            ranks.get(ct, 32) for ranks in rankings.values()
+            ranks.get(ct, absent_rank_fallback) for ranks in rankings.values()
         )
     rows = sorted(freq.keys(), key=lambda c: (-freq[c], rank_sum[c]))
     return rows[:top_n]

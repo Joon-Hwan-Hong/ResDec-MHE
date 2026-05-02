@@ -2,11 +2,21 @@
 
 Loads canonical 5-fold predictions:
   - outputs/canonical/p5_canonical_seed42/fold{0..4}/val_predictions_best.npz
-    (provides predictions = f̂_residual, targets = y_true, subject_ids)
+    (provides predictions = ŷ_composite [= ŷ_tabpfn + f̂_residual],
+     targets = y_true, subject_ids)
   - data/canonical/tabpfn_outer_fold{0..4}.npz
     (provides y_tabpfn = outer-fold TabPFN baseline)
   - outputs/canonical/interpretability/variance_decomposition.json (var components)
   - outputs/canonical/interpretability/residual_per_subject.csv (pathology covariates)
+
+Y-target semantics: ``val_predictions_best.npz["predictions"]`` is already
+the COMPOSITE (``ŷ_tabpfn + f̂_residual``) — see
+``src/training/resdec_lightning_module.py:498`` where the per-fold writer
+applies ``pred = pred + y_tabpfn`` before serialisation. Adding
+``y_tabpfn`` again would double-count (memory rule
+``feedback_verify_y_semantics.md``). The visualization helpers in
+``src.visualization.tabpfn_residual_plots`` take ``y_composite`` directly
+and recover ``f̂_residual = y_composite - y_tabpfn`` internally.
 
 Renders 4 candidate figures to outputs/canonical/interpretability/figures/tabpfn_residual/:
   - fig_additive_3panel.{png,pdf}        — y vs TabPFN + y vs composite + residual hist
@@ -23,6 +33,10 @@ import json
 import logging
 import sys
 from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import (pyplot pulled in via theme)
 
 import numpy as np
 import pandas as pd
@@ -44,14 +58,17 @@ logger = logging.getLogger(__name__)
 def _load_composite_per_subject(
     pred_root: Path, tabpfn_root: Path, n_folds: int = 5,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Concatenate y_true, y_tabpfn, y_residual across all val folds.
+    """Concatenate y_true, y_tabpfn, y_composite across all val folds.
 
-    Returns (y_true, y_tabpfn, y_residual, subject_ids) all length N=516.
-    Aligns by val_subject_ids per fold.
+    Returns (y_true, y_tabpfn, y_composite, subject_ids) all length N=516.
+    Aligns by val_subject_ids per fold. ``y_composite`` is read directly
+    from ``val_predictions_best.npz["predictions"]`` which already contains
+    ``ŷ_tabpfn + f̂_residual`` per the producer at
+    ``src/training/resdec_lightning_module.py:498``.
     """
     y_true: list[np.ndarray] = []
     y_tabpfn: list[np.ndarray] = []
-    y_residual: list[np.ndarray] = []
+    y_composite: list[np.ndarray] = []
     subj: list[np.ndarray] = []
     for fold in range(n_folds):
         v = np.load(pred_root / f"fold{fold}/val_predictions_best.npz", allow_pickle=True)
@@ -62,12 +79,14 @@ def _load_composite_per_subject(
         idx_t = [sids_t.index(s) for s in sids_v]
         y_true.append(np.asarray(v["targets"], dtype=np.float64))
         y_tabpfn.append(np.asarray(t["y_tabpfn"], dtype=np.float64)[idx_t])
-        y_residual.append(np.asarray(v["predictions"], dtype=np.float64))
+        # NOTE: predictions IS the composite (ŷ_tabpfn + f̂_residual); do NOT
+        # add y_tabpfn again — see module docstring.
+        y_composite.append(np.asarray(v["predictions"], dtype=np.float64))
         subj.append(np.asarray(sids_v, dtype=object))
     return (
         np.concatenate(y_true),
         np.concatenate(y_tabpfn),
-        np.concatenate(y_residual),
+        np.concatenate(y_composite),
         np.concatenate(subj),
     )
 
@@ -76,21 +95,38 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--pred-root",
-        default="outputs/canonical/p5_canonical_seed42",
+        type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42",
     )
-    p.add_argument("--tabpfn-root", default="data/canonical")
+    p.add_argument(
+        "--tabpfn-root",
+        type=Path,
+        default=_WORKTREE_ROOT / "data/canonical",
+    )
     p.add_argument(
         "--variance-decomposition-json",
-        default="outputs/canonical/interpretability/variance_decomposition.json",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/variance_decomposition.json"
+        ),
     )
     p.add_argument(
         "--residual-csv",
-        default="outputs/canonical/interpretability/residual_per_subject.csv",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/residual_per_subject.csv"
+        ),
         help="Provides per-subject pathology covariates (gpath, etc.).",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/canonical/interpretability/figures/tabpfn_residual",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/figures/tabpfn_residual"
+        ),
     )
     p.add_argument("--n-folds", type=int, default=5)
     args = p.parse_args()
@@ -101,12 +137,15 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Load composite predictions ───────────────────────────────────────────
-    y_true, y_tabpfn, y_residual, subj_ids = _load_composite_per_subject(
+    y_true, y_tabpfn, y_composite, subj_ids = _load_composite_per_subject(
         Path(args.pred_root), Path(args.tabpfn_root), n_folds=args.n_folds,
     )
     logger.info(
-        "loaded n=%d subjects across %d folds; y_true mean=%.3f std=%.3f",
-        len(y_true), args.n_folds, float(y_true.mean()), float(y_true.std()),
+        "loaded n=%d subjects across %d folds; y_true mean=%.3f std=%.3f, "
+        "y_composite mean=%.3f std=%.3f",
+        len(y_true), args.n_folds,
+        float(y_true.mean()), float(y_true.std()),
+        float(y_composite.mean()), float(y_composite.std()),
     )
 
     # ── Load pathology covariate ────────────────────────────────────────────
@@ -132,7 +171,7 @@ def main() -> int:
         path_label = f"Global pathology ({path_col})"
 
     # ── Render the 4 figures ─────────────────────────────────────────────────
-    p1 = plot_additive_3panel(y_true, y_tabpfn, y_residual, out_dir / "fig_additive_3panel")
+    p1 = plot_additive_3panel(y_true, y_tabpfn, y_composite, out_dir / "fig_additive_3panel")
     logger.info("wrote %s", p1)
 
     with open(args.variance_decomposition_json) as f:
@@ -142,14 +181,14 @@ def main() -> int:
     logger.info("wrote %s", p2)
 
     p3 = plot_per_subject_delta_scatter(
-        y_tabpfn, y_residual, pathology,
+        y_tabpfn, y_composite, pathology,
         out_dir / "fig_per_subject_delta_scatter",
         pathology_label=path_label,
     )
     logger.info("wrote %s", p3)
 
     p4 = plot_residual_histogram_overlay(
-        y_true, y_tabpfn, y_residual,
+        y_true, y_tabpfn, y_composite,
         out_dir / "fig_residual_histogram_overlay",
     )
     logger.info("wrote %s", p4)

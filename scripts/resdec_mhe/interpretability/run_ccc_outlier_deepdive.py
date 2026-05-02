@@ -22,7 +22,7 @@ Outputs:
         per_subject_outlier_analysis.json
         per_subject_outlier_analysis.md
 
-Caveat: the URL (Upper-rhombic-lip) cell type is Tier-3 sparse
+Caveat: the URL (Upper-rhombic-lip) cell type is sparse
 (zero_frac ≈ 0.79), so any URL involvement in outlier edges is
 coverage-artifact-affected; this is logged in both JSON and MD.
 """
@@ -408,7 +408,7 @@ def _build_markdown(
     if url_caveat:
         lines.append(
             "> **Caveat (URL coverage):** the URL (Upper-rhombic-lip) cell type "
-            "is Tier 3 sparse with zero_frac ≈ 0.79 across subjects, so any URL "
+            "is sparse (zero_frac ≈ 0.79 across subjects), so any URL "
             "involvement in the outlier dominant edges should be treated as "
             "coverage-artifact-affected, not biology-bearing."
         )
@@ -574,7 +574,7 @@ def main() -> int:
         "url_caveat": {
             "url_appears_in_outlier_edges": bool(url_in_outliers),
             "note": (
-                "URL (Upper-rhombic-lip) is Tier 3 sparse (zero_frac ~ 0.79), "
+                "URL (Upper-rhombic-lip) is sparse (zero_frac ~ 0.79), "
                 "so URL involvement in dominant edges is coverage-artifact-affected."
             ),
         },

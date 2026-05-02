@@ -16,11 +16,12 @@ import pytest
 from omegaconf import OmegaConf
 
 from src.models.full_model import build_model_from_config
+from tests.conftest import WORKTREE_ROOT, _build_canonical_batch
 
 
 @pytest.fixture(scope="module")
 def encoder():
-    cfg = OmegaConf.load("configs/default.yaml")
+    cfg = OmegaConf.load(WORKTREE_ROOT / "configs" / "default.yaml")
     OmegaConf.set_struct(cfg.model, False)
     cfg.model.n_genes = 64
     cfg.model.n_cell_types = 31
@@ -36,44 +37,20 @@ def encoder():
 
 
 def _make_dummy_batch(batch_size: int, n_genes: int, device: torch.device) -> dict:
-    """Same shape contract as test_encoder_integration._make_dummy_batch but smaller."""
-    N_CT = 31
-    N_REGIONS = 6
-    rng = torch.Generator(device="cpu").manual_seed(0)
+    """Thin wrapper over the canonical batch builder.
 
-    region_mask = torch.zeros(batch_size, N_REGIONS, dtype=torch.bool)
-    region_mask[:, 0] = True
-
-    region_pseudobulk = torch.randn(batch_size, N_REGIONS, N_CT, n_genes, generator=rng)
-    region_pseudobulk = region_pseudobulk * region_mask.float().unsqueeze(-1).unsqueeze(-1)
-
-    edges_per_subj = 8
-    total_edges = batch_size * edges_per_subj
-    ccc_edge_index = torch.randint(0, N_CT, (2, total_edges), generator=rng)
-    ccc_edge_type = torch.randint(0, 5, (total_edges,), generator=rng)
-    ccc_edge_attr = torch.rand(total_edges, 1, generator=rng)
-
-    cells_per_ct = 3
-    cells_per_subject = cells_per_ct * N_CT
-    total_cells = batch_size * cells_per_subject
-    cell_data = torch.randn(total_cells, n_genes, generator=rng)
-    offsets_per_subj = torch.arange(0, cells_per_subject + 1, cells_per_ct, dtype=torch.long)
-    subj_offsets = torch.arange(batch_size, dtype=torch.long) * cells_per_subject
-    cell_offsets = subj_offsets.unsqueeze(1) + offsets_per_subj.unsqueeze(0)
-
-    return {
-        "region_pseudobulk": region_pseudobulk.to(device),
-        "region_mask": region_mask.to(device),
-        "ccc_edge_index": ccc_edge_index.to(device),
-        "ccc_edge_type": ccc_edge_type.to(device),
-        "ccc_edge_attr": ccc_edge_attr.to(device),
-        "cell_type_mask": torch.ones(batch_size, N_CT, dtype=torch.bool).to(device),
-        "cell_data": cell_data.to(device),
-        "cell_offsets": cell_offsets.to(device),
-        "pathology": torch.randn(batch_size, 3, generator=rng).to(device),
-        "cognition": torch.randn(batch_size, 1, generator=rng).to(device),
-    }
-
+    Preserves the original signature here (fixture is module-scoped, so we
+    can't take ``make_canonical_batch`` directly) but routes to the shared
+    builder in ``tests/conftest.py``.
+    """
+    return _build_canonical_batch(
+        batch_size=batch_size,
+        n_genes=n_genes,
+        cells_per_ct=3,  # smaller batch for CPU speed in this test module
+        edges_per_subj=8,
+        device=device,
+        seed=0,
+    )
 
 def _call_forward(model, batch: dict, **extra) -> dict:
     return model(
@@ -90,11 +67,9 @@ def _call_forward(model, batch: dict, **extra) -> dict:
         **extra,
     )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Test: compute_cell_emb_only exists and matches the cell branch in forward()
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_compute_cell_emb_only_returns_tensor_with_expected_shape(encoder):
     device = next(encoder.parameters()).device
@@ -107,7 +82,6 @@ def test_compute_cell_emb_only_returns_tensor_with_expected_shape(encoder):
     assert cell_emb.dim() == 3
     assert cell_emb.shape[0] == 2  # batch size
     assert cell_emb.shape[1] == encoder.n_cell_types
-
 
 def test_compute_cell_emb_only_matches_internal_cell_branch(encoder):
     """compute_cell_emb_only output equals what forward() computes internally
@@ -123,11 +97,9 @@ def test_compute_cell_emb_only_matches_internal_cell_branch(encoder):
 
     assert torch.equal(cell_emb_via_method, cell_emb_direct)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Test: forward_with_cached_cell_emb produces the same dict as forward()
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_forward_with_cached_cell_emb_matches_full_forward_bitexact(encoder):
     """forward(batch) and compute_cell_emb_only -> forward_with_cached_cell_emb
@@ -168,7 +140,6 @@ def test_forward_with_cached_cell_emb_matches_full_forward_bitexact(encoder):
             f"max abs diff = {(v_cached - v_full).abs().max().item():.3e}"
         )
 
-
 def test_forward_deterministic_under_seeded_rng(encoder):
     """forward() must consume the same RNG draws on each call when seeded
     identically. This anchors the bit-identity test above: if
@@ -192,11 +163,9 @@ def test_forward_deterministic_under_seeded_rng(encoder):
             continue
         assert torch.equal(out1[k], out2[k]), f"Key {k} not deterministic across two forward calls"
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Test: caching enables independence from cell-branch on perturbed input
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_cached_cell_emb_invariant_to_region_pseudobulk_perturbation(encoder):
     """When region_pseudobulk changes but cell_data/cell_offsets do not,

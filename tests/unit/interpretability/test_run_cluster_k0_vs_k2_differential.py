@@ -10,8 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 # Import the module under test
 import importlib.util
@@ -22,7 +21,6 @@ _SCRIPT = (
 _spec = importlib.util.spec_from_file_location("run_cluster_k0_vs_k2_differential", _SCRIPT)
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)  # type: ignore
-
 
 # ---------------------------------------------------------------------------
 # Unit tests
@@ -45,7 +43,6 @@ def test_fit_k4_clusters_reproduces_canonical_sizes():
     # Cluster 2 should be the most-positive
     assert means[2] > 0.5, means
 
-
 def test_wilcoxon_two_groups_basic():
     a = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
     b = np.array([5.0, 5.0, 5.0, 5.0, 5.0])
@@ -56,14 +53,12 @@ def test_wilcoxon_two_groups_basic():
     # FC: |0|+eps vs |5|+eps → log2 ≈ -log2(5e9) ≈ -32 (eps in numerator)
     assert log2_fc < 0
 
-
 def test_wilcoxon_two_groups_too_few():
     a = np.array([1.0, 2.0])  # < 3
     b = np.array([3.0, 4.0, 5.0, 6.0])
     u, p, fc = mod.wilcoxon_two_groups(a, b)
     assert not np.isfinite(p)
     assert not np.isfinite(u)
-
 
 def test_bh_correct_basic():
     p_arr = np.array([0.001, 0.002, 0.05, 0.1, 0.5])
@@ -72,13 +67,11 @@ def test_bh_correct_basic():
     assert np.all(q >= p_arr - 1e-9)  # BH never reduces below raw p
     assert np.all(np.isfinite(q))
 
-
 def test_bh_correct_with_nan():
     p_arr = np.array([0.001, np.nan, 0.05, 0.1, 0.5])
     q = mod.bh_correct(p_arr)
     assert not np.isfinite(q[1])
     assert np.all(np.isfinite(q[[0, 2, 3, 4]]))
-
 
 def test_cell_count_differential_synthetic():
     """Construct counts where CT 0 is highly different and CT 1 is the same."""
@@ -97,7 +90,6 @@ def test_cell_count_differential_synthetic():
     p_b = df.loc[df["cell_type"] == "B", "p_value"].iloc[0]
     assert (not np.isfinite(p_b)) or p_b > 0.05
 
-
 def test_attribution_differential_synthetic():
     rng = np.random.default_rng(0)
     n_subj, n_ct, n_gene = 20, 2, 5
@@ -113,7 +105,6 @@ def test_attribution_differential_synthetic():
     target = df.query("cell_type == 'A' and gene == 'g2'")
     assert len(target) == 1
     assert target["sig_q05"].iloc[0]
-
 
 # ---------------------------------------------------------------------------
 # Smoke test

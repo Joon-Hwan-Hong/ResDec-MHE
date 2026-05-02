@@ -12,7 +12,6 @@ Test coverage includes:
 - Edge cases
 """
 
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -28,11 +27,9 @@ from src.analysis.ccc_importance import (
     create_edge_metadata_from_graph,
 )
 
-
 # ============================================================================
 # Fixtures
 # ============================================================================
-
 
 @pytest.fixture
 def sample_edge_metadata():
@@ -49,23 +46,18 @@ def sample_edge_metadata():
             })
     return pd.DataFrame(rows)
 
-
 @pytest.fixture
 def sample_edge_attention():
     """Sample edge attention scores [n_subjects, n_edges]."""
-    np.random.seed(42)
     n_subjects = 20
     n_edges = 30  # Matches sample_edge_metadata (3 edge types × 10 edges)
     return np.random.rand(n_subjects, n_edges).astype(np.float32)
 
-
 @pytest.fixture
 def sample_region_labels():
     """Sample region labels."""
-    np.random.seed(42)
     regions = ["PFC", "AG", "MTC"]
     return np.array([regions[i % len(regions)] for i in range(20)])
-
 
 @pytest.fixture
 def analyzer(sample_edge_attention, sample_edge_metadata, sample_region_labels):
@@ -76,11 +68,9 @@ def analyzer(sample_edge_attention, sample_edge_metadata, sample_region_labels):
         region_labels=sample_region_labels,
     )
 
-
 # ============================================================================
 # CCCImportanceResult Dataclass Tests
 # ============================================================================
-
 
 class TestCCCImportanceResult:
     """Tests for CCCImportanceResult dataclass."""
@@ -100,11 +90,9 @@ class TestCCCImportanceResult:
         result = CCCImportanceResult(edge_importance=edge_importance, top_interactions=top_interactions)
         assert result.metadata == {}
 
-
 # ============================================================================
 # CCCImportanceAnalyzer Initialization Tests
 # ============================================================================
-
 
 class TestAnalyzerInit:
     """Tests for CCCImportanceAnalyzer initialization."""
@@ -131,11 +119,9 @@ class TestAnalyzerInit:
         analyzer = CCCImportanceAnalyzer()
         assert analyzer.edge_types == list(ALL_EDGE_TYPES)
 
-
 # ============================================================================
 # Edge Importance Tests
 # ============================================================================
-
 
 class TestEdgeImportance:
     """Tests for edge importance computation."""
@@ -171,11 +157,9 @@ class TestEdgeImportance:
         actual_mean = result.edge_importance["mean_attention"].iloc[0]
         assert np.isclose(actual_mean, expected_mean, atol=1e-6)
 
-
 # ============================================================================
 # Top Interactions Tests
 # ============================================================================
-
 
 class TestTopInteractions:
     """Tests for top interactions extraction."""
@@ -207,11 +191,9 @@ class TestTopInteractions:
         expected_ranks = list(range(1, n_rows + 1))
         assert result.top_interactions["rank"].tolist() == expected_ranks
 
-
 # ============================================================================
 # Region-Stratified Importance Tests
 # ============================================================================
-
 
 class TestRegionStratified:
     """Tests for region-stratified importance computation."""
@@ -243,11 +225,9 @@ class TestRegionStratified:
         expected_regions = set(np.unique(sample_region_labels))
         assert regions == expected_regions
 
-
 # ============================================================================
 # Network Summary Tests
 # ============================================================================
-
 
 class TestNetworkSummary:
     """Tests for network summary computation."""
@@ -271,36 +251,30 @@ class TestNetworkSummary:
         edge_types_in_data = result.edge_importance["edge_type"].unique()
         assert set(edge_types_in_summary) == set(edge_types_in_data)
 
-
 # ============================================================================
 # Save/Load Tests
 # ============================================================================
 
-
 class TestSaveLoad:
     """Tests for save functionality."""
 
-    def test_save_creates_files(self, analyzer):
+    def test_save_creates_files(self, analyzer, tmp_path):
         """save() creates expected files."""
         result = analyzer.analyze()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            saved = analyzer.save(result, tmpdir)
-            assert (Path(tmpdir) / "ccc_importance.parquet").exists()
-            assert (Path(tmpdir) / "top_interactions.csv").exists()
-            assert (Path(tmpdir) / "ccc_network_summary.csv").exists()
+        saved = analyzer.save(result, tmp_path)
+        assert (tmp_path / "ccc_importance.parquet").exists()
+        assert (tmp_path / "top_interactions.csv").exists()
+        assert (tmp_path / "ccc_network_summary.csv").exists()
 
-    def test_save_creates_region_files_when_present(self, analyzer):
+    def test_save_creates_region_files_when_present(self, analyzer, tmp_path):
         """save() creates region files when by_region available."""
         result = analyzer.analyze()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir)
-            assert (Path(tmpdir) / "ccc_importance_by_region.parquet").exists()
-
+        analyzer.save(result, tmp_path)
+        assert (tmp_path / "ccc_importance_by_region.parquet").exists()
 
 # ============================================================================
 # Schema Validation Tests
 # ============================================================================
-
 
 class TestOutputSchemaValidation:
     """Tests validating output DataFrame schemas."""
@@ -320,11 +294,9 @@ class TestOutputSchemaValidation:
         assert (result.edge_importance["mean_attention"] >= 0).all()
         assert (result.edge_importance["mean_attention"] <= 1).all()
 
-
 # ============================================================================
 # Convenience Function Tests
 # ============================================================================
-
 
 class TestConvenienceFunction:
     """Tests for compute_ccc_importance function."""
@@ -337,21 +309,18 @@ class TestConvenienceFunction:
         )
         assert isinstance(result, CCCImportanceResult)
 
-    def test_compute_with_output_dir_saves_files(self, sample_edge_attention, sample_edge_metadata):
+    def test_compute_with_output_dir_saves_files(self, sample_edge_attention, sample_edge_metadata, tmp_path):
         """compute_ccc_importance saves when output_dir provided."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = compute_ccc_importance(
-                edge_attention_scores=sample_edge_attention,
-                edge_metadata=sample_edge_metadata,
-                output_dir=tmpdir,
-            )
-            assert (Path(tmpdir) / "ccc_importance.parquet").exists()
-
+        result = compute_ccc_importance(
+            edge_attention_scores=sample_edge_attention,
+            edge_metadata=sample_edge_metadata,
+            output_dir=tmp_path,
+        )
+        assert (tmp_path / "ccc_importance.parquet").exists()
 
 # ============================================================================
 # Edge Metadata Creation Tests
 # ============================================================================
-
 
 class TestEdgeMetadataCreation:
     """Tests for create_edge_metadata_from_graph."""
@@ -374,11 +343,9 @@ class TestEdgeMetadataCreation:
         expected_cols = {"source", "target", "edge_type", "source_idx", "target_idx"}
         assert set(df.columns) == expected_cols
 
-
 # ============================================================================
 # Edge Case Tests
 # ============================================================================
-
 
 class TestEdgeCases:
     """Edge case tests."""
@@ -434,11 +401,9 @@ class TestEdgeCases:
         result = analyzer.analyze(top_k=1000)  # Much larger than actual edges
         assert len(result.top_interactions) == len(sample_edge_metadata)
 
-
 # ============================================================================
 # CCC Length Validation Tests
 # ============================================================================
-
 
 class TestCCCLengthValidation:
     """Test CCC analyzer rejects mismatched attention/metadata lengths."""
@@ -475,11 +440,9 @@ class TestCCCLengthValidation:
         result = analyzer.analyze()
         assert result.edge_importance is not None
 
-
 # ============================================================================
 # Empty region label filtering
 # ============================================================================
-
 
 def test_edge_importance_with_nan_scores():
     """NaN edge scores (sparse edge types) must not propagate to importance output."""
@@ -503,13 +466,11 @@ def test_edge_importance_with_nan_scores():
     assert not result.edge_importance["std_attention"].isna().any(), \
         "NaN leaked into edge_importance std_attention"
 
-
 class TestEmptyRegionLabelFiltering:
     """Tests for empty-string region label filtering in CCC importance."""
 
     def test_empty_region_labels_excluded_from_stratification(self):
         """Subjects with empty region labels are excluded from by-region analysis."""
-        np.random.seed(42)
         n_subjects, n_edges = 20, 10
         attention = np.random.rand(n_subjects, n_edges).astype(np.float32)
         metadata = pd.DataFrame({

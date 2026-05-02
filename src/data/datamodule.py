@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -174,6 +175,20 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         return self._train_ds
 
     @property
+    def _is_ddp(self) -> bool:
+        """True iff a Trainer is attached and ``world_size > 1`` (DDP active).
+
+        Centralises the "trainer is attached and CUDA is in use under DDP"
+        check that the train/val/test dataloader builders previously
+        repeated three times.
+        """
+        return (
+            torch.cuda.is_available()
+            and self.trainer is not None
+            and self.trainer.world_size > 1
+        )
+
+    @property
     def train_target_mean(self) -> float | None:
         """Compute mean of training targets for data-driven prior centering.
 
@@ -182,7 +197,12 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         """
         if self._train_ds is None or len(self._train_ds) == 0:
             return None
-        # Direct array access avoids N __getitem__ calls + dict construction
+        # Direct array access avoids N __getitem__ calls + dict construction.
+        # Both CognitiveResilienceDataset and PrecomputedDataset expose
+        # ``_target_array``; gate on hasattr to fail soft against future
+        # dataset replacements (caller can recover by walking __getitem__).
+        if not hasattr(self._train_ds, "_target_array"):
+            return None
         return float(np.mean(self._train_ds._target_array))
 
     def _make_dataset(self, subject_ids: list[str]):
@@ -326,11 +346,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
 
         # Under DDP on CUDA, add DistributedSampler ourselves (see docstring)
         sampler = None
-        if (
-            torch.cuda.is_available()
-            and self.trainer is not None
-            and self.trainer.world_size > 1
-        ):
+        if self._is_ddp:
             from torch.utils.data.distributed import DistributedSampler
 
             sampler = DistributedSampler(
@@ -452,6 +468,23 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
             pf.shutdown()
         self._prefetchers.clear()
 
+    @staticmethod
+    def _seed_worker(worker_seed: int) -> None:
+        """Seed numpy / random / torch and the per-dataset CellSampler RNG.
+
+        Shared between the rank-aware (train) and deterministic (val/test)
+        worker init factories below, replacing two near-duplicate closures.
+        """
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+
+        worker_info = torch.utils.data.get_worker_info()
+        dataset = worker_info.dataset
+        # PrecomputedDataset has no sampler — hasattr is a no-op for it.
+        if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
+            dataset.sampler.rng = np.random.default_rng(worker_seed)
+
     def _make_worker_init_fn(self):
         """Create a rank-aware worker init function for DDP reproducibility.
 
@@ -468,23 +501,17 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         only when num_workers, batch_size, and DDP world_size are held constant.
         """
         global_rank = self.trainer.global_rank if self.trainer is not None else 0
+        # ``max_workers >= 1`` so the per-rank stride never collapses to 0
+        # when num_workers=0; without this clamp, all ranks would land on
+        # the same worker_seed for worker_id=0.
         max_workers = max(self._dl_cfg.get("num_workers", 4), 1)
         global_seed = self.config.experiment.get("seed", 42)
 
         def _rank_aware_worker_init_fn(worker_id: int) -> None:
-            import random
-
-            worker_seed = (global_seed + global_rank * max_workers + worker_id) % (2**32)
-            np.random.seed(worker_seed)
-            random.seed(worker_seed)
-            torch.manual_seed(worker_seed)
-
-            # Re-seed CellSampler's RNG if the dataset has one
-            worker_info = torch.utils.data.get_worker_info()
-            dataset = worker_info.dataset
-            # PrecomputedDataset has no sampler — hasattr is a no-op for it
-            if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
-                dataset.sampler.rng = np.random.default_rng(worker_seed)
+            worker_seed = (
+                global_seed + global_rank * max_workers + worker_id
+            ) % (2**32)
+            CognitiveResilienceDataModule._seed_worker(worker_seed)
 
         return _rank_aware_worker_init_fn
 
@@ -503,18 +530,9 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         global_seed = self.config.experiment.get("seed", 42)
 
         def _det_worker_init_fn(worker_id: int) -> None:
-            import random
-
             seed = global_seed + worker_id
-            np.random.seed(seed)
-            random.seed(seed)
-            torch.manual_seed(seed)
-
-            worker_info = torch.utils.data.get_worker_info()
-            dataset = worker_info.dataset
-            # PrecomputedDataset has no sampler — hasattr is a no-op for it
-            if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "rng"):
-                dataset.sampler.rng = np.random.default_rng(seed)
+            CognitiveResilienceDataModule._seed_worker(seed)
 
         return _det_worker_init_fn
+
 

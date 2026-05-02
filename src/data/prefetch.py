@@ -25,10 +25,13 @@ Works because:
 - .to(device, non_blocking=True) releases the GIL during DMA
 """
 
+import logging
 import queue
 import threading
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 
 class ThreadedPrefetcher:
@@ -95,7 +98,11 @@ class ThreadedPrefetcher:
                             break
                         except queue.Full:
                             continue
-            except Exception as e:
+            except (RuntimeError, OSError, ValueError, KeyError, TypeError) as e:
+                # Narrow except: deliberately catches data-loading failures
+                # so the consumer can re-raise them. KeyboardInterrupt and
+                # SystemExit propagate normally so a Ctrl-C kills the
+                # process instead of becoming a silent stall.
                 error_box[0] = e
             finally:
                 q.put(None)  # sentinel
@@ -118,6 +125,17 @@ class ThreadedPrefetcher:
         finally:
             abort.set()
             thread.join(timeout=10)
+            if thread.is_alive():
+                # Thread did not honour the abort within the timeout; this
+                # usually means the producer was blocked in dataloader I/O
+                # (e.g., a stuck disk read). The thread becomes effectively
+                # zombie until the I/O unblocks.
+                logger.warning(
+                    "ThreadedPrefetcher producer did not shut down within "
+                    "10 s; thread is still alive (likely blocked in disk "
+                    "I/O). Continuing — daemon=True ensures it does not "
+                    "block process exit."
+                )
             if error_box[0] is not None:
                 raise error_box[0]
 

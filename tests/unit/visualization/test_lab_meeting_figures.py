@@ -14,17 +14,10 @@ import json
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
 import numpy as np
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def _write_synthetic_canonical_dir(tmp_path: Path) -> Path:
     """Write 5 fold-NPZ files with synthetic predictions/targets."""
@@ -49,7 +42,6 @@ def _write_synthetic_canonical_dir(tmp_path: Path) -> Path:
             pearson_r=0.7, spearman_rho=0.65,
         )
     return canonical
-
 
 def _write_synthetic_marker_jsons(tmp_path: Path) -> tuple[Path, Path]:
     """Write minimal extended_marker_verification.json + splatter_marker_*.json."""
@@ -116,7 +108,6 @@ def _write_synthetic_marker_jsons(tmp_path: Path) -> tuple[Path, Path]:
 
     return extended_path, splatter_path
 
-
 @pytest.fixture
 def synthetic_inputs(tmp_path: Path) -> dict[str, Path]:
     """Create all synthetic inputs needed by the 3-figure orchestrator."""
@@ -130,13 +121,11 @@ def synthetic_inputs(tmp_path: Path) -> dict[str, Path]:
         "out_dir": out_dir,
     }
 
-
 def test_orchestrator_module_imports():
     """The orchestrator must be importable."""
     from scripts.resdec_mhe.interpretability import (  # noqa: F401
         make_lab_meeting_figures as orch,
     )
-
 
 def test_all_three_figures_written(synthetic_inputs):
     """Smoke: orchestrator writes all 3 figures (PNG + PDF), > 50 KB each."""
@@ -168,7 +157,6 @@ def test_all_three_figures_written(synthetic_inputs):
             f"{png} too small ({size_kb:.1f} KB); expected > 50 KB"
         )
 
-
 def test_slot1_residual_definition_panel_count(synthetic_inputs):
     """Slot 1 figure should be single-panel (1 axes)."""
     from scripts.resdec_mhe.interpretability import make_lab_meeting_figures as orch
@@ -180,7 +168,6 @@ def test_slot1_residual_definition_panel_count(synthetic_inputs):
     # Single-panel figure: exactly 1 Axes.
     assert len(fig.axes) == 1, f"expected 1 axes, got {len(fig.axes)}"
 
-
 def test_slot2_marker_validation_has_heatmap(synthetic_inputs):
     """Slot 2 figure should be a heatmap with at least 2 rows × 2 cols."""
     from scripts.resdec_mhe.interpretability import make_lab_meeting_figures as orch
@@ -191,7 +178,6 @@ def test_slot2_marker_validation_has_heatmap(synthetic_inputs):
     )
     # Should have at least 1 axes (the heatmap).
     assert len(fig.axes) >= 1
-
 
 def test_slot6_methods_recap_is_diagram(synthetic_inputs):
     """Slot 6 figure should be a block diagram (no data plotting)."""

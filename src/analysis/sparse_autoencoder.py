@@ -336,12 +336,17 @@ class _SAETorch(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns (h_pre, h, x_hat) for a per-sample TopK forward."""
+        # ``self.config.k`` is validated to be a positive int by SAEConfig
+        # (see _train_sae_torch's positive-int check), but the class
+        # annotation is ``int | None``. Hoist into a local int so the
+        # encode_* call sites do not need a per-call type: ignore.
+        k_int: int = int(self.config.k) if self.config.k is not None else 0
         if self.config.architecture == "topk":
             h_pre = self.encode_pre(x)
-            h = self.encode_topk(x, self.config.k)  # type: ignore[arg-type]
+            h = self.encode_topk(x, k_int)
         else:  # "batch_topk" (Literal in SAEConfig restricts to {topk, batch_topk}).
             h_pre = self.encode_pre(x)
-            h, _ = self.encode_batch_topk(x, self.config.k)  # type: ignore[arg-type]
+            h, _ = self.encode_batch_topk(x, k_int)
         x_hat = self.decode(h)
         return h_pre, h, x_hat
 
@@ -512,11 +517,18 @@ def _train_sae_torch(
             # ``.item()`` here. The result is materialised to a Python float
             # exactly once after training finishes (see below).
             if config.architecture == "batch_topk" and step >= threshold_warmup_steps:
+                # batch_threshold is set in the batch_topk branch above; the
+                # outer architecture check above guarantees we don't enter
+                # this block in the topk path. Hoist into a local non-None
+                # alias so downstream calls don't need a per-call type:
+                # ignore.
+                assert batch_threshold is not None
+                bt: torch.Tensor = batch_threshold
                 if step == threshold_warmup_steps:
-                    running_threshold.copy_(batch_threshold)  # type: ignore[arg-type]
+                    running_threshold.copy_(bt)
                 else:
                     running_threshold.mul_(running_threshold_alpha).add_(
-                        batch_threshold, alpha=one_minus_alpha,  # type: ignore[arg-type]
+                        bt, alpha=one_minus_alpha,
                     )
 
     # Final stats over the full dataset.

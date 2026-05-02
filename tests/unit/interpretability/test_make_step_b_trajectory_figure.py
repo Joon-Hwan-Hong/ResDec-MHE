@@ -18,8 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def test_make_step_b_trajectory_runs(tmp_path: Path) -> None:
     rel_json = (
@@ -59,7 +58,6 @@ def test_make_step_b_trajectory_runs(tmp_path: Path) -> None:
     assert png.is_file() and png.stat().st_size > 1000, png
     assert pdf.is_file() and pdf.stat().st_size > 1000, pdf
 
-
 def test_placeholder_branch_runs(tmp_path: Path) -> None:
     """If both inputs are missing, script still emits PNG+PDF placeholder."""
     out_dir = tmp_path / "step_b_trajectory_placeholder"
@@ -86,10 +84,8 @@ def test_placeholder_branch_runs(tmp_path: Path) -> None:
     assert png.is_file() and png.stat().st_size > 500, png
     assert pdf.is_file() and pdf.stat().st_size > 500, pdf
 
-
 def test_trajectory_to_arrays_squares() -> None:
     """The helper must return ``signed_gap ** 2`` to match the spec."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import make_step_b_trajectory_figure as mod  # noqa: E402
 
     traj = [[1e-3, 0.5], [2e-3, -0.4], [4e-3, -0.1], [8e-3, 0.0]]
@@ -97,9 +93,7 @@ def test_trajectory_to_arrays_squares() -> None:
     assert steps.tolist() == [0, 1, 2, 3]
     np.testing.assert_allclose(vals, np.array([0.25, 0.16, 0.01, 0.0]))
 
-
 def test_trajectory_to_arrays_empty() -> None:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import make_step_b_trajectory_figure as mod  # noqa: E402
 
     steps, vals = mod._trajectory_to_arrays([])

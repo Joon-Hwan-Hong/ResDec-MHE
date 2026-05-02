@@ -15,22 +15,14 @@ import json
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
 import numpy as np
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 # ---------------------------------------------------------------------------
 # Synthetic-input fixtures: minimal canonical-shaped artifacts for each fig.
 # ---------------------------------------------------------------------------
-
 
 CT_NAMES = [
     "Astrocyte", "Oligodendrocyte", "Oligodendrocyte precursor",
@@ -45,7 +37,6 @@ CT_NAMES = [
     "Cerebellar inhibitory", "Vascular", "Fibroblast", "Ependymal",
     "Choroid plexus", "Miscellaneous", "Splatter",
 ]
-
 
 def _write_synthetic_sae(tmp_path: Path) -> dict[str, Path]:
     """Write minimal SAE artifacts: feature_report.json + sae_model.npz +
@@ -143,7 +134,6 @@ def _write_synthetic_sae(tmp_path: Path) -> dict[str, Path]:
         "feature_report": fr_path,
     }
 
-
 def _write_synthetic_ccc(tmp_path: Path) -> dict[str, Path]:
     """Write a small per_subject_ccc_attention.npz + summary JSON."""
     rng = np.random.default_rng(7)
@@ -198,27 +188,22 @@ def _write_synthetic_ccc(tmp_path: Path) -> dict[str, Path]:
 
     return {"npz": npz_path, "summary": summary_path}
 
-
 @pytest.fixture
 def synthetic_sae_inputs(tmp_path: Path) -> dict[str, Path]:
     return _write_synthetic_sae(tmp_path)
-
 
 @pytest.fixture
 def synthetic_ccc_inputs(tmp_path: Path) -> dict[str, Path]:
     return _write_synthetic_ccc(tmp_path)
 
-
 # ---------------------------------------------------------------------------
 # D1: SAE top-N feature × 31-CT heatmap
 # ---------------------------------------------------------------------------
-
 
 def test_d1_orchestrator_imports():
     from scripts.resdec_mhe.interpretability import (  # noqa: F401
         make_sae_top_features_heatmap as orch,
     )
-
 
 def test_d1_writes_figure(synthetic_sae_inputs, tmp_path):
     from scripts.resdec_mhe.interpretability import make_sae_top_features_heatmap as orch
@@ -238,7 +223,6 @@ def test_d1_writes_figure(synthetic_sae_inputs, tmp_path):
     size_kb = png.stat().st_size / 1024.0
     assert size_kb > 50.0, f"{png} too small ({size_kb:.1f} KB)"
 
-
 def test_d1_per_feature_per_ct_mass_matches_decoder_projection(synthetic_sae_inputs):
     """Recomputed mass MUST match the (per_ct_means @ W_dec[:, j])**2 formula
     used by sparse_autoencoder.py (interpret_features). This guards against
@@ -255,17 +239,14 @@ def test_d1_per_feature_per_ct_mass_matches_decoder_projection(synthetic_sae_inp
     # Each row sums to 1 (within float tol) when normalize=True
     np.testing.assert_allclose(mat.sum(axis=1), 1.0, atol=1e-5)
 
-
 # ---------------------------------------------------------------------------
 # D2 + D3: CCC supplementary figures
 # ---------------------------------------------------------------------------
-
 
 def test_ccc_supp_orchestrator_imports():
     from scripts.resdec_mhe.interpretability import (  # noqa: F401
         make_ccc_supp_figures as orch,
     )
-
 
 def test_d2_writes_figure(synthetic_ccc_inputs, tmp_path):
     from scripts.resdec_mhe.interpretability import make_ccc_supp_figures as orch
@@ -280,7 +261,6 @@ def test_d2_writes_figure(synthetic_ccc_inputs, tmp_path):
     assert not pdf.exists(), f"unexpected pdf at {pdf}"
     size_kb = png.stat().st_size / 1024.0
     assert size_kb > 50.0, f"{png} too small ({size_kb:.1f} KB)"
-
 
 def test_d3_writes_figure(synthetic_ccc_inputs, tmp_path):
     from scripts.resdec_mhe.interpretability import make_ccc_supp_figures as orch
@@ -297,14 +277,12 @@ def test_d3_writes_figure(synthetic_ccc_inputs, tmp_path):
     size_kb = png.stat().st_size / 1024.0
     assert size_kb > 50.0, f"{png} too small ({size_kb:.1f} KB)"
 
-
 def test_d2_panel_count_equals_n_edge_types(synthetic_ccc_inputs):
     from scripts.resdec_mhe.interpretability import make_ccc_supp_figures as orch
     fig = orch.build_d2_figure(npz_path=synthetic_ccc_inputs["npz"])
     # 5 panels (one per edge type); colorbars may add extra axes — so we
     # require AT LEAST 5 axes containing imshow data.
     assert len(fig.axes) >= 5, f"expected ≥ 5 axes, got {len(fig.axes)}"
-
 
 def test_d3_outlier_count_threshold(synthetic_ccc_inputs):
     from scripts.resdec_mhe.interpretability import make_ccc_supp_figures as orch

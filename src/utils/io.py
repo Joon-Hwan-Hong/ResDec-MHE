@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 import pandas as pd
 
-from src.data.constants import sanitize_key
+from src.data.constants import CELL_TYPE_ORDER, sanitize_key
 
 
 def save_attention_weights(
@@ -66,6 +66,13 @@ def save_attention_weights(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    # NOTE: This writer is NOT atomic. Following the pattern at
+    # src/data/datasets.py:save_precomputed_features (tempfile + rename)
+    # would prevent partial-write corruption on crash, but requires
+    # restructuring the entire ~200-line ``with h5py.File(path, "w") as f:``
+    # body. Tracked as a future hardening item; current callers tolerate
+    # rerun-on-corruption because the writer is fast and the inputs are
+    # deterministic.
     with h5py.File(path, "w") as f:
         f.attrs["schema_version"] = "2.0"
 
@@ -196,8 +203,6 @@ def save_attention_weights(
 
         # --- Nested PMA attention group ---
         if pma_attention is not None and len(pma_attention) > 0:
-            from src.data.constants import CELL_TYPE_ORDER
-
             pma_group = f.create_group("pma_attention")
             pma_group.attrs["description"] = "Cell-level attention from Set Transformer PMA"
 
@@ -459,8 +464,6 @@ def unpack_pma_attention(
         For cell-level analysis, use run_cell_heterogeneity.py which handles this structure.
         Returns None if per_cell_type data is not found.
     """
-    from src.data.constants import CELL_TYPE_ORDER
-
     per_ct = pma_data.get("per_cell_type", {})
     if not per_ct:
         return None
@@ -567,7 +570,7 @@ def load_dataframe(
             except (ValueError, OSError):
                 try:
                     return pd.read_csv(path)
-                except Exception:
+                except (ValueError, OSError, pd.errors.ParserError):
                     raise ValueError(
                         f"Could not read {path} as parquet or CSV. "
                         f"Provide an explicit fmt= parameter."

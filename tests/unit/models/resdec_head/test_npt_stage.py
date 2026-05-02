@@ -2,7 +2,6 @@ import pytest
 import torch
 from src.models.resdec_head.npt_stage import NPTStage
 
-
 def test_npt_stage_shapes():
     stage = NPTStage(d_subject=64, n_heads=4, n_hc_streams=4, lambda_init=0.8)
     z_cond = torch.randn(8, 64)  # 8 subjects in batch
@@ -10,14 +9,12 @@ def test_npt_stage_shapes():
     assert latent.shape == (8, 64)
     assert scalar.shape == (8,)
 
-
 def test_npt_stage_gradient_flow():
     stage = NPTStage(d_subject=32, n_heads=4)
     z_cond = torch.randn(6, 32, requires_grad=True)
     _, scalar = stage(z_cond)
     scalar.sum().backward()
     assert z_cond.grad is not None
-
 
 def test_npt_stage_attends_across_subjects():
     """Changing ONE subject's input should change OTHER subjects' outputs

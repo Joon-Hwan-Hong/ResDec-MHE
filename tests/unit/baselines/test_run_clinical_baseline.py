@@ -29,9 +29,7 @@ from scripts.resdec_mhe.baselines.run_clinical_baseline import (
     run_clinical_baseline,
 )
 
-
 # ─── parse_apoe4_dosage ─────────────────────────────────────────────────
-
 
 @pytest.mark.parametrize(
     ("genotype", "expected"),
@@ -52,26 +50,41 @@ from scripts.resdec_mhe.baselines.run_clinical_baseline import (
 def test_parse_apoe4_dosage_matches_allele_count(genotype, expected):
     assert parse_apoe4_dosage(genotype) == expected
 
-
 def test_parse_apoe4_dosage_nan_passthrough():
     assert np.isnan(parse_apoe4_dosage(float("nan")))
     assert np.isnan(parse_apoe4_dosage(None))
 
-
-def test_parse_apoe4_dosage_rejects_invalid_range():
+def test_parse_apoe4_dosage_strict_rejects_invalid_range():
+    """In strict mode, out-of-range genotypes raise ValueError (legacy behaviour)."""
     with pytest.raises(ValueError):
-        parse_apoe4_dosage(11)
+        parse_apoe4_dosage(11, strict=True)
     with pytest.raises(ValueError):
-        parse_apoe4_dosage(50)
+        parse_apoe4_dosage(50, strict=True)
 
+def test_parse_apoe4_dosage_lenient_returns_nan_on_invalid_range():
+    """Default (lenient) mode returns NaN on out-of-range encodings."""
+    assert np.isnan(parse_apoe4_dosage(11))
+    assert np.isnan(parse_apoe4_dosage(50))
 
-def test_parse_apoe4_dosage_rejects_unparseable():
+def test_parse_apoe4_dosage_strict_rejects_unparseable():
+    """In strict mode, unparseable genotypes raise ValueError."""
     with pytest.raises(ValueError):
-        parse_apoe4_dosage("not-a-genotype")
+        parse_apoe4_dosage("not-a-genotype", strict=True)
 
+def test_parse_apoe4_dosage_lenient_returns_nan_on_unparseable():
+    """Default (lenient) mode returns NaN on unparseable input."""
+    assert np.isnan(parse_apoe4_dosage("not-a-genotype"))
+
+def test_parse_apoe4_dosage_lenient_returns_nan_on_non_234_alleles():
+    """Default (lenient) mode returns NaN on non-{2,3,4} alleles in-range.
+
+    The range check ([22, 44]) admits values like 25 / 35 / 45 whose digits
+    include non-{2,3,4} alleles (the 5). Those should return NaN, not raise.
+    """
+    assert np.isnan(parse_apoe4_dosage(25))
+    assert np.isnan(parse_apoe4_dosage(35))
 
 # ─── build_predictor_frame ──────────────────────────────────────────────
-
 
 def _toy_metadata(n: int = 12, *, seed: int = 0) -> pd.DataFrame:
     """Synthetic ROSMAP-shaped metadata with the columns the script needs."""
@@ -95,7 +108,6 @@ def _toy_metadata(n: int = 12, *, seed: int = 0) -> pd.DataFrame:
     df.loc[3, "apoe_genotype"] = np.nan
     return df
 
-
 def test_build_predictor_frame_columns():
     df = _toy_metadata()
     out = build_predictor_frame(df)
@@ -104,15 +116,12 @@ def test_build_predictor_frame_columns():
     # APOE-4 dosage parsed from genotype digits, 1 NaN preserved.
     assert int(out["apoe4_dosage"].isna().sum()) == 1
 
-
 def test_build_predictor_frame_missing_column_raises():
     df = _toy_metadata().drop(columns=["braaksc"])
     with pytest.raises(KeyError):
         build_predictor_frame(df)
 
-
 # ─── prepare_fold ───────────────────────────────────────────────────────
-
 
 def test_prepare_fold_zscores_continuous_on_train_only():
     df = _toy_metadata(n=20)
@@ -139,7 +148,6 @@ def test_prepare_fold_zscores_continuous_on_train_only():
     fractional = np.abs(apoe_vals - np.round(apoe_vals)) > 1e-9
     assert int(fractional.sum()) <= 1
 
-
 def test_prepare_fold_imputes_apoe4_to_train_mean():
     """Setting subject 3 (in train) NaN -> imputed with train mean apoe4_dosage."""
     df = _toy_metadata(n=20)
@@ -155,9 +163,7 @@ def test_prepare_fold_imputes_apoe4_to_train_mean():
     assert not np.isnan(apoe_train).any()
     assert not np.isnan(fold.X_val[:, apoe_col_idx]).any()
 
-
 # ─── estimators ──────────────────────────────────────────────────────────
-
 
 def _toy_fold(n_train: int = 60, n_val: int = 20, *, seed: int = 7):
     """Build a fold where y is a noisy linear combination of predictors."""
@@ -173,14 +179,12 @@ def _toy_fold(n_train: int = 60, n_val: int = 20, *, seed: int = 7):
     val_ids = [f"R{i:06d}" for i in range(n_train, n_train + n_val)]
     return prepare_fold(predictors, train_ids, val_ids, fold_idx=0)
 
-
 def test_fit_predict_linreg_returns_valid_metrics():
     fold = _toy_fold()
     metrics = fit_predict_linreg(fold)
     assert set(metrics).issuperset({"r2", "mae", "rmse", "pearson_r", "spearman_rho", "coef"})
     assert -1.0 <= metrics["r2"] <= 1.0
     assert set(metrics["coef"].keys()) == set(fold.feature_names)
-
 
 def test_fit_predict_elasticnet_returns_valid_metrics():
     fold = _toy_fold()
@@ -189,9 +193,7 @@ def test_fit_predict_elasticnet_returns_valid_metrics():
     assert metrics["alpha"] > 0
     assert metrics["l1_ratio"] in (0.1, 0.3, 0.5, 0.7, 0.9)
 
-
 # ─── paired Wilcoxon ─────────────────────────────────────────────────────
-
 
 def test_paired_wilcoxon_detects_difference():
     ours = [0.10, 0.12, 0.08, 0.14, 0.09]
@@ -202,14 +204,11 @@ def test_paired_wilcoxon_detects_difference():
     assert res["p_value"] < 0.1
     assert res["n"] == 5
 
-
 def test_paired_wilcoxon_zero_diff_returns_p_one():
     res = paired_wilcoxon([0.3, 0.3], [0.3, 0.3])
     assert res["p_value"] == 1.0
 
-
 # ─── load_reference_per_fold ─────────────────────────────────────────────
-
 
 def test_load_reference_per_fold_parses_canonical_shape(tmp_path: Path):
     payload = {
@@ -224,14 +223,11 @@ def test_load_reference_per_fold_parses_canonical_shape(tmp_path: Path):
     assert out["resdec_mhe"] == [0.4, 0.5]
     assert out["tabpfn"] == [0.3, 0.42]
 
-
 def test_load_reference_missing_returns_empty(tmp_path: Path):
     out = load_reference_per_fold(tmp_path / "does_not_exist.json")
     assert out == {}
 
-
 # ─── end-to-end driver ──────────────────────────────────────────────────
-
 
 def test_run_clinical_baseline_end_to_end(tmp_path: Path):
     """Synthetic-data smoke test: writes JSON + MD, contains expected keys."""
@@ -320,7 +316,6 @@ def test_run_clinical_baseline_end_to_end(tmp_path: Path):
     md = md_path.read_text()
     assert "Clinical-only Baseline" in md
     assert "Paired Wilcoxon" in md
-
 
 def test_summary_predictor_list_is_complete():
     """The summary predictors block must include all five required predictors."""

@@ -37,6 +37,10 @@ import os
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -52,6 +56,25 @@ from src.visualization.theme import (  # noqa: E402
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _load_canonical_pooled_r2(stat_rigor_path: Path) -> float:
+    """Load the canonical pooled-bootstrap point R² (single source of truth).
+
+    Reads ``bootstrap_r2_ci.point_r2`` from
+    ``outputs/canonical/interpretability/statistical_rigor.json``.
+    Falls back to 0.4493 (the historic lab-meeting display value) if the
+    file is missing, but logs a warning so stale literals are visible.
+    """
+    if not stat_rigor_path.exists():
+        logger.warning(
+            "statistical_rigor.json not found at %s; falling back to 0.4493 "
+            "lab-meeting display literal. Re-generate the file to remove "
+            "this warning.", stat_rigor_path,
+        )
+        return 0.4493
+    payload = json.loads(stat_rigor_path.read_text())
+    return float(payload["bootstrap_r2_ci"]["point_r2"])
 
 
 # ===========================================================================
@@ -100,40 +123,80 @@ def _draw_panel_A_permutation(
     ax: plt.Axes,
     *,
     perm_summary: dict,
+    canonical_r2: float,
 ) -> None:
-    """Panel A: histogram of null R² with canonical overlay."""
-    null_r2 = np.asarray(
-        perm_summary.get("null_mean_r2_per_perm", []), dtype=np.float64,
+    """Panel A: histogram of null R² with canonical overlay.
+
+    Lab-meeting unified-R² choice: ``canonical_r2`` is the pooled bootstrap
+    point estimate (loaded from ``statistical_rigor.json::bootstrap_r2_ci.
+    point_r2``) so the canonical line matches what the slot 4.1/4.2
+    predicted-vs-actual scatter shows. This is the same model as the
+    per-fold-mean R²=0.4436 reported in MASTER-INFO; the difference is
+    statistic choice (pooled vs mean-of-folds) and is < 0.01 R² — within
+    fold variance. Single number throughout the deck avoids audience
+    confusion.
+
+    Tolerates schemas missing ``null_mean_r2_per_perm`` (e.g., the N=50
+    canonical aggregate prior to the post-CC1 fix): when the array is
+    absent or empty, draws a Gaussian density around ``null_mean`` ±
+    ``null_std`` instead of a histogram and annotates the panel with a
+    "summary-only" notice rather than silently producing an empty bar.
+    Note on ddof: per-perm draws are an exhaustive enumeration of the
+    fitted permutation distribution at the chosen N — so ``null_std`` is
+    treated as a population statistic (``ddof=0``) for consistency with
+    the on-disk N=50 / N=100 perm summaries (which use ``pstdev``).
+    """
+    null_r2_raw = perm_summary.get("null_mean_r2_per_perm", [])
+    null_r2 = np.asarray(null_r2_raw, dtype=np.float64)
+    have_array = null_r2.size > 0
+
+    null_mean = float(
+        perm_summary.get("null_mean", null_r2.mean() if have_array else 0.0)
     )
-    # Lab-meeting unified-R² choice: use pooled bootstrap point estimate (0.4493)
-    # to match the R² shown in the slot 4.1/4.2 predicted-vs-actual scatter
-    # legends. This is the same model as the per-fold-mean R²=0.4436 reported in
-    # MASTER-INFO; the difference is statistic choice (pooled vs mean-of-folds)
-    # and is < 0.01 R² — within fold variance. Single number throughout the deck
-    # avoids audience confusion.
-    canonical = 0.4493
-    null_mean = float(perm_summary.get("null_mean", null_r2.mean() if null_r2.size else 0.0))
     null_std = float(
         perm_summary.get(
-            "null_std", null_r2.std(ddof=1) if null_r2.size > 1 else 0.0,
+            "null_std",
+            null_r2.std(ddof=0) if null_r2.size > 1 else 0.0,
         )
     )
     z = float(perm_summary.get("z_under_null", float("nan")))
     n_ge = int(perm_summary.get("n_perms_ge_canonical", 0))
     n_perms = int(perm_summary.get("n_permutations", null_r2.size))
 
-    # Histogram of nulls.
-    if null_r2.size > 0:
+    if have_array:
+        # Histogram of nulls.
         bins = max(5, min(10, null_r2.size))
         ax.hist(
             null_r2, bins=bins,
             color="#888888", edgecolor="white", linewidth=0.6, alpha=0.8,
             label="null R² (N=%d)" % n_perms,
         )
+    elif np.isfinite(null_mean) and null_std > 0:
+        # Schema-fallback: draw a Gaussian density around (null_mean, null_std).
+        x_lo = null_mean - 4.0 * null_std
+        x_hi = max(null_mean + 4.0 * null_std, canonical_r2 + 0.05)
+        xs = np.linspace(x_lo, x_hi, 200)
+        density = (
+            np.exp(-0.5 * ((xs - null_mean) / null_std) ** 2)
+            / (null_std * np.sqrt(2.0 * np.pi))
+        )
+        ax.fill_between(
+            xs, density, color="#888888", alpha=0.5, edgecolor="white",
+            linewidth=0.6,
+            label=f"null R² (Gaussian, N={n_perms})",
+        )
+        ax.set_ylim(bottom=0)
+        ax.text(
+            0.5, 0.4,
+            "summary-only\n(raw perm R² not in source)",
+            transform=ax.transAxes,
+            ha="center", va="center",
+            fontsize=6, style="italic", color="#666666",
+        )
     # Canonical line.
     ax.axvline(
-        canonical, color="#1f77b4", linestyle="-", linewidth=1.6,
-        label=f"canonical R² = {canonical:.4f}",
+        canonical_r2, color="#1f77b4", linestyle="-", linewidth=1.6,
+        label=f"canonical R² = {canonical_r2:.4f}",
     )
     # Null mean line.
     ax.axvline(
@@ -142,10 +205,15 @@ def _draw_panel_A_permutation(
     )
 
     # Pad x-limits so canonical R² is visible at far right.
-    if null_r2.size > 0:
+    if have_array:
         x_lo = float(null_r2.min()) - 0.05
-        x_hi = max(canonical + 0.05, float(null_r2.max()) + 0.05)
+        x_hi = max(canonical_r2 + 0.05, float(null_r2.max()) + 0.05)
         ax.set_xlim(x_lo, x_hi)
+    elif np.isfinite(null_mean) and null_std > 0:
+        ax.set_xlim(
+            null_mean - 4.0 * null_std,
+            max(null_mean + 4.0 * null_std, canonical_r2 + 0.05),
+        )
 
     ax.set_xlabel("R²")
     ax.set_ylabel("# permutations")
@@ -347,12 +415,14 @@ def build_slot4_3_statistical_rigor(
     rigor = json.loads(statistical_rigor.read_text())
     wilcoxon = json.loads(seed_wilcoxon.read_text())
     blines = _read_baseline_table(baseline_table)
+    canonical_r2 = _load_canonical_pooled_r2(statistical_rigor)
+    n_perms = int(perm.get("n_permutations", 0))
 
     panels = [
         {
-            "title": "Permutation null (N=10)",
+            "title": f"Permutation null (N={n_perms})" if n_perms else "Permutation null",
             "draw": lambda ax: _draw_panel_A_permutation(
-                ax, perm_summary=perm,
+                ax, perm_summary=perm, canonical_r2=canonical_r2,
             ),
         },
         {

@@ -12,23 +12,16 @@ import json
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
 import matplotlib.pyplot as plt
 import pytest
 
 # Add worktree root to sys.path so `import scripts...` works from tests.
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 # Import the orchestrator module under test.
 from scripts.resdec_mhe.interpretability import (  # noqa: E402
     make_interpretability_capstone_composite as orch,
 )
-
 
 def _write_synthetic_inputs(tmp_path: Path) -> dict[str, Path]:
     """Write minimal-but-valid JSON inputs for all four panels."""
@@ -106,25 +99,35 @@ def _write_synthetic_inputs(tmp_path: Path) -> dict[str, Path]:
         "z_under_null": 8.73,
         "p_value_one_sided": 0.0909,
     }
+    statistical_rigor = {
+        "bootstrap_r2_ci": {
+            "point_r2": 0.4493,
+            "ci_lower": 0.3731,
+            "ci_upper": 0.5070,
+            "n_boot": 1000,
+            "conf": 0.95,
+            "n": 516,
+        },
+    }
 
     paths = {
         "consensus": tmp_path / "consensus_heatmap_data.json",
         "wasserstein": tmp_path / "wasserstein_per_celltype_pseudobulk.json",
         "xref": tmp_path / "feature_xref_consensus.json",
         "permutation": tmp_path / "permutation_summary.json",
+        "statistical_rigor": tmp_path / "statistical_rigor.json",
     }
     paths["consensus"].write_text(json.dumps(consensus))
     paths["wasserstein"].write_text(json.dumps(wasserstein))
     paths["xref"].write_text(json.dumps(xref))
     paths["permutation"].write_text(json.dumps(perm))
+    paths["statistical_rigor"].write_text(json.dumps(statistical_rigor))
     return paths
-
 
 def test_orchestrator_module_imports():
     """The orchestrator module must be importable and expose `build_figure`."""
     assert hasattr(orch, "build_figure")
     assert hasattr(orch, "main")
-
 
 def test_build_figure_returns_4_axes(tmp_path):
     """`build_figure` must return a matplotlib Figure with exactly 4 axes."""
@@ -134,11 +137,11 @@ def test_build_figure_returns_4_axes(tmp_path):
         wasserstein_path=paths["wasserstein"],
         xref_path=paths["xref"],
         permutation_path=paths["permutation"],
+        statistical_rigor_path=paths["statistical_rigor"],
     )
     # 4 panels.
     assert len(fig.axes) == 4
     plt.close(fig)
-
 
 def test_main_writes_png_only(tmp_path):
     """End-to-end: orchestrator writes >50KB PNG + PDF in out_dir."""
@@ -150,6 +153,7 @@ def test_main_writes_png_only(tmp_path):
             f"--wasserstein-json={paths['wasserstein']}",
             f"--xref-json={paths['xref']}",
             f"--permutation-summary={paths['permutation']}",
+            f"--statistical-rigor={paths['statistical_rigor']}",
             f"--out-dir={out_dir}",
         ]
     )
@@ -163,7 +167,6 @@ def test_main_writes_png_only(tmp_path):
         f"PNG too small ({png.stat().st_size} bytes) — figure likely empty"
     )
 
-
 def test_panel_letters_present(tmp_path):
     """All four letters A/B/C/D must appear in the figure."""
     paths = _write_synthetic_inputs(tmp_path)
@@ -172,6 +175,7 @@ def test_panel_letters_present(tmp_path):
         wasserstein_path=paths["wasserstein"],
         xref_path=paths["xref"],
         permutation_path=paths["permutation"],
+        statistical_rigor_path=paths["statistical_rigor"],
     )
     letters = {t.get_text() for ax in fig.axes for t in ax.texts}
     for ltr in ("A", "B", "C", "D"):

@@ -5,8 +5,8 @@ returns a ``matplotlib.figure.Figure``; missing inputs raise ``SkipFigure``
 so the orchestrator can log a WARNING and skip that figure without
 aborting the whole run.
 
-``matplotlib.use("Agg")`` is set at module level so tests do not require
-an X display.
+``matplotlib.use("Agg")`` is set centrally in ``tests/conftest.py`` so all
+test modules inherit the Agg backend without each having to set it.
 """
 from __future__ import annotations
 
@@ -14,28 +14,19 @@ import json
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")  # must be set before pyplot import
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
 
-
 # Make the script importable via scripts.resdec_mhe.interpretability.
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 from scripts.resdec_mhe.interpretability import make_figures as mod
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal canonical-shaped inputs for each figure.
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def mock_baseline_table() -> pd.DataFrame:
@@ -79,7 +70,6 @@ def mock_baseline_table() -> pd.DataFrame:
         },
     ])
 
-
 @pytest.fixture
 def mock_resilience_df() -> pd.DataFrame:
     rng = np.random.default_rng(42)
@@ -94,7 +84,6 @@ def mock_resilience_df() -> pd.DataFrame:
         "y_tabpfn": y_true + rng.normal(0.0, 0.7, size=n),
         "f1_residual": rng.normal(0.0, 0.5, size=n),
     })
-
 
 @pytest.fixture
 def mock_captum_summary() -> dict:
@@ -132,7 +121,6 @@ def mock_captum_summary() -> dict:
             {"cell_type": "Microglia", "total_abs_attribution": 0.85},
         ],
     }
-
 
 @pytest.fixture
 def mock_head_analysis() -> dict:
@@ -188,7 +176,6 @@ def mock_head_analysis() -> dict:
         ],
     }
 
-
 @pytest.fixture
 def mock_subgroup_metrics() -> dict:
     return {
@@ -220,7 +207,6 @@ def mock_subgroup_metrics() -> dict:
                                   "r2_ci": [0.16, 0.45]},
     }
 
-
 @pytest.fixture
 def mock_statistical_rigor() -> dict:
     return {
@@ -235,7 +221,6 @@ def mock_statistical_rigor() -> dict:
         }
     }
 
-
 @pytest.fixture
 def mock_calibration_per_subject() -> pd.DataFrame:
     rng = np.random.default_rng(1)
@@ -245,11 +230,9 @@ def mock_calibration_per_subject() -> pd.DataFrame:
         "sigma_tabpfn": np.abs(rng.normal(0.73, 0.1, n)),
     })
 
-
 # ---------------------------------------------------------------------------
 # Per-figure tests
 # ---------------------------------------------------------------------------
-
 
 def test_make_fig1_ablation_bar_returns_figure(mock_baseline_table):
     fig = mod.make_fig1_ablation_bar(
@@ -260,7 +243,6 @@ def test_make_fig1_ablation_bar_returns_figure(mock_baseline_table):
     ax = fig.axes[0]
     assert len(ax.patches) >= 1
     plt.close(fig)
-
 
 def test_make_fig1_ablation_bar_sorts_desc(mock_baseline_table):
     """Bars should be sorted by r2_mean descending (NaN / pending last)."""
@@ -280,7 +262,6 @@ def test_make_fig1_ablation_bar_sorts_desc(mock_baseline_table):
     assert canonical_label_idx < tabpfn_idx, (labels, canonical_label_idx, tabpfn_idx)
     plt.close(fig)
 
-
 def test_make_fig2_resilience_scatter_returns_figure(mock_resilience_df):
     fig = mod.make_fig2_resilience_scatter(df=mock_resilience_df)
     assert isinstance(fig, plt.Figure)
@@ -289,7 +270,6 @@ def test_make_fig2_resilience_scatter_returns_figure(mock_resilience_df):
     assert len(ax.collections) >= 1
     plt.close(fig)
 
-
 def test_make_fig3_celltype_gene_heatmap_returns_figure(mock_captum_summary):
     fig = mod.make_fig3_celltype_gene_heatmap(summary=mock_captum_summary)
     assert isinstance(fig, plt.Figure)
@@ -297,7 +277,6 @@ def test_make_fig3_celltype_gene_heatmap_returns_figure(mock_captum_summary):
     ax = fig.axes[0]
     assert len(ax.images) >= 1
     plt.close(fig)
-
 
 def test_make_fig4_head_specialization_returns_figure(mock_head_analysis):
     fig = mod.make_fig4_head_specialization(
@@ -310,7 +289,6 @@ def test_make_fig4_head_specialization_returns_figure(mock_head_analysis):
     assert len(ax.patches) >= 4
     plt.close(fig)
 
-
 def test_make_fig5_subgroup_r2_returns_figure(mock_subgroup_metrics):
     fig = mod.make_fig5_subgroup_r2(
         metrics=mock_subgroup_metrics, canonical_r2=0.4436
@@ -320,7 +298,6 @@ def test_make_fig5_subgroup_r2_returns_figure(mock_subgroup_metrics):
     # At least one bar per subgroup family represented
     assert len(ax.patches) >= 1
     plt.close(fig)
-
 
 def test_make_fig6_calibration_returns_figure(
     mock_statistical_rigor, mock_calibration_per_subject
@@ -334,16 +311,13 @@ def test_make_fig6_calibration_returns_figure(
     assert len(fig.axes) == 2
     plt.close(fig)
 
-
 # ---------------------------------------------------------------------------
 # Missing-input handling
 # ---------------------------------------------------------------------------
 
-
 def test_missing_input_raises_skipfigure_fig1():
     with pytest.raises(mod.SkipFigure):
         mod.make_fig1_ablation_bar(table=None, canonical_r2=0.44)
-
 
 def test_missing_input_raises_skipfigure_fig1_all_nan(mock_baseline_table):
     """If every ablation has NaN r2, should raise SkipFigure."""
@@ -353,36 +327,29 @@ def test_missing_input_raises_skipfigure_fig1_all_nan(mock_baseline_table):
     with pytest.raises(mod.SkipFigure):
         mod.make_fig1_ablation_bar(table=table, canonical_r2=0.44)
 
-
 def test_missing_input_raises_skipfigure_fig2():
     with pytest.raises(mod.SkipFigure):
         mod.make_fig2_resilience_scatter(df=None)
-
 
 def test_missing_input_raises_skipfigure_fig3():
     with pytest.raises(mod.SkipFigure):
         mod.make_fig3_celltype_gene_heatmap(summary=None)
 
-
 def test_missing_input_raises_skipfigure_fig4():
     with pytest.raises(mod.SkipFigure):
         mod.make_fig4_head_specialization(head_summary=None)
-
 
 def test_missing_input_raises_skipfigure_fig5():
     with pytest.raises(mod.SkipFigure):
         mod.make_fig5_subgroup_r2(metrics=None, canonical_r2=0.44)
 
-
 def test_missing_input_raises_skipfigure_fig6():
     with pytest.raises(mod.SkipFigure):
         mod.make_fig6_calibration(stat_rigor=None, per_subject=None)
 
-
 # ---------------------------------------------------------------------------
 # Output saving
 # ---------------------------------------------------------------------------
-
 
 def test_save_drops_pdf_format(tmp_path, mock_baseline_table):
     """mod.save_figure now writes PNG only — PDFs intentionally dropped per
@@ -399,7 +366,6 @@ def test_save_drops_pdf_format(tmp_path, mock_baseline_table):
     assert len(out) == 1
     plt.close(fig)
 
-
 def test_skipfigure_has_message():
     """SkipFigure error message names the missing input."""
     try:
@@ -409,11 +375,9 @@ def test_skipfigure_has_message():
     else:
         pytest.fail("SkipFigure not raised")
 
-
 # ---------------------------------------------------------------------------
 # Label-content regression tests (M8)
 # ---------------------------------------------------------------------------
-
 
 def test_fig5_subgroup_labels_stripped(mock_subgroup_metrics):
     """After C1 fix the APOE/sex/age/pathology prefixes are stripped and
@@ -445,7 +409,6 @@ def test_fig5_subgroup_labels_stripped(mock_subgroup_metrics):
         assert bad not in labels, (bad, labels)
     plt.close(fig)
 
-
 def test_fig5_truncated_ci_gets_dagger(mock_subgroup_metrics):
     """I6: APOE_e4_2 has ci_lo=-8.0 (< -1.5 clip) → label carries '†'
     and the footnote about axis range is present.
@@ -467,7 +430,6 @@ def test_fig5_truncated_ci_gets_dagger(mock_subgroup_metrics):
     footnote_texts = [t.get_text() for t in fig.texts]
     assert any("CI lower bound extends" in t for t in footnote_texts)
     plt.close(fig)
-
 
 def test_fig5_filters_small_n_subgroups(mock_subgroup_metrics):
     """Default ``min_subgroup_n=10`` filters subgroups with fewer subjects.
@@ -491,7 +453,6 @@ def test_fig5_filters_small_n_subgroups(mock_subgroup_metrics):
     )
     plt.close(fig)
 
-
 def test_fig1_has_canonical_line(mock_baseline_table):
     """M8: figure 1 draws a horizontal line at the canonical R² value."""
     fig = mod.make_fig1_ablation_bar(
@@ -509,7 +470,6 @@ def test_fig1_has_canonical_line(mock_baseline_table):
             break
     assert found, "No axhline at canonical_r2=0.4436 found in fig1"
     plt.close(fig)
-
 
 def test_fig2_quadrant_labels_canonical(mock_resilience_df):
     """C2: after fix, fig2 has canonical-resilience quadrant labels.
@@ -531,14 +491,12 @@ def test_fig2_quadrant_labels_canonical(mock_resilience_df):
     assert "low pathology" not in joined
     plt.close(fig)
 
-
 def test_fig2_title_says_pooled_r2(mock_resilience_df):
     """M9: fig2 title identifies the R² as pooled (not mean-per-fold)."""
     fig = mod.make_fig2_resilience_scatter(df=mock_resilience_df)
     ax = fig.axes[0]
     assert "pooled R" in ax.get_title(), ax.get_title()
     plt.close(fig)
-
 
 def test_make_fig7_k_sensitivity_returns_figure():
     """Fig 7: 3-point k-sensitivity line plot with bootstrap CI band."""
@@ -567,7 +525,6 @@ def test_make_fig7_k_sensitivity_returns_figure():
     assert "0.39" in caption and "0.51" in caption
     plt.close(fig)
 
-
 def test_make_fig7_skipfigure_on_nan():
     """Fig 7: NaN in r2_means or r2_stds raises SkipFigure."""
     with pytest.raises(mod.SkipFigure):
@@ -590,7 +547,6 @@ def test_make_fig7_skipfigure_on_nan():
         mod.make_fig7_k_sensitivity(
             k_values=[1000, 2000], r2_means=[0.45], r2_stds=[0.08],
         )
-
 
 def test_fig1_nan_nfolds_does_not_crash():
     """I3: a NaN n_folds entry must not crash label-building."""

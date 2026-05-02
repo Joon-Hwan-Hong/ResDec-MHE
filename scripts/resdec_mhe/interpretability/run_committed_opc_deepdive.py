@@ -59,35 +59,58 @@ def cohens_d(a: np.ndarray, b: np.ndarray) -> float:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
-        "--residual-csv",
-        default="outputs/canonical/interpretability/residual_per_subject.csv",
-    )
-    p.add_argument("--precomputed-dir", default="data/precomputed")
-    p.add_argument("--gene-names-npy", default="data/precomputed/gene_names.npy")
-    p.add_argument(
-        "--de-csv",
-        default="outputs/canonical/interpretability/de_resilient_vs_vulnerable/CT_03_de.csv",
+        "--residual-csv", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/residual_per_subject.csv"
+        ),
     )
     p.add_argument(
-        "--perm-csv",
-        default="outputs/canonical/interpretability/de_storey_and_permutation/perm_pvalues_per_ct_top50.csv",
+        "--precomputed-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed",
     )
     p.add_argument(
-        "--out-json",
-        default="outputs/canonical/interpretability/committed_opc_stable_genes_deepdive.json",
+        "--gene-names-npy", type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed/gene_names.npy",
+    )
+    p.add_argument(
+        "--de-csv", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/de_resilient_vs_vulnerable"
+            / "CT_03_de.csv"
+        ),
+    )
+    p.add_argument(
+        "--perm-csv", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/de_storey_and_permutation"
+            / "perm_pvalues_per_ct_top50.csv"
+        ),
+    )
+    p.add_argument(
+        "--out-json", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability"
+            / "committed_opc_stable_genes_deepdive.json"
+        ),
     )
     p.add_argument("--quartile-fraction", type=float, default=0.25)
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s | %(levelname)s | %(message)s")
-    root = _WORKTREE_ROOT
-    residual_csv = (root / args.residual_csv).resolve()
-    precomp_dir = (root / args.precomputed_dir).resolve()
-    gene_names_npy = (root / args.gene_names_npy).resolve()
-    de_csv = (root / args.de_csv).resolve()
-    perm_csv = (root / args.perm_csv).resolve()
-    out_json = (root / args.out_json).resolve()
+    # Resolve paths relative to the project worktree root for stability across
+    # cwd; defaults are already absolute via _WORKTREE_ROOT but explicit
+    # resolution here protects against user-supplied relative overrides.
+    residual_csv = Path(args.residual_csv).resolve()
+    precomp_dir = Path(args.precomputed_dir).resolve()
+    gene_names_npy = Path(args.gene_names_npy).resolve()
+    de_csv = Path(args.de_csv).resolve()
+    perm_csv = Path(args.perm_csv).resolve()
+    out_json = Path(args.out_json).resolve()
     out_json.parent.mkdir(parents=True, exist_ok=True)
 
     # Reproduce DE-orchestrator quartile split.

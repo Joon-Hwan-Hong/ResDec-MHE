@@ -44,17 +44,34 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--residual-csv",
-        default="outputs/canonical/interpretability/residual_per_subject.csv",
-    )
-    p.add_argument("--precomputed-dir", default="data/precomputed")
-    p.add_argument("--gene-names-npy", default="data/precomputed/gene_names.npy")
-    p.add_argument(
-        "--out-dir",
-        default="outputs/canonical/interpretability/de_resilient_vs_vulnerable",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/residual_per_subject.csv"
+        ),
     )
     p.add_argument(
-        "--cell-type-names-source",
-        default="outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json",
+        "--precomputed-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed",
+    )
+    p.add_argument(
+        "--gene-names-npy", type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed/gene_names.npy",
+    )
+    p.add_argument(
+        "--out-dir", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/de_resilient_vs_vulnerable"
+        ),
+    )
+    p.add_argument(
+        "--cell-type-names-source", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/captum_ig"
+            / "composite_attribution_summary.json"
+        ),
         help="JSON containing cell_types_ranked_by_total_attribution.",
     )
     p.add_argument("--method", choices=["wilcoxon", "deseq2"], default="wilcoxon")

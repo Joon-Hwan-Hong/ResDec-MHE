@@ -36,11 +36,9 @@ from src.analysis.resdec_ccc_importance import (
 from src.data.constants import ALL_EDGE_TYPES, CELL_TYPE_ORDER, N_EDGE_TYPES
 from src.training.resdec_lightning_module import ENCODER_KWARG_KEYS
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures: synthetic encoder model + batch
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 class _FakeHGTModel(torch.nn.Module):
     """Minimal stand-in for CognitiveResilienceModel exposing the attention API.
@@ -87,7 +85,6 @@ class _FakeHGTModel(torch.nn.Module):
             out["hgt_attention"] = attn_list
         return out
 
-
 def _make_toy_batch(device: torch.device) -> dict:
     """Construct a small toy batch — 2 subjects, 4 edges total, 3 edge types."""
     # ccc_edge_index: [2, E_total], node indices already offset per-subject
@@ -104,11 +101,9 @@ def _make_toy_batch(device: torch.device) -> dict:
         "ccc_edge_attr": ccc_edge_attr,
     }
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # extract_hgt_edge_attention
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_extract_hgt_edge_attention_shape():
     """Extractor returns dict with expected keys / shapes."""
@@ -138,7 +133,6 @@ def test_extract_hgt_edge_attention_shape():
     assert counts[0] == 2 and counts[1] == 1 and counts[2] == 1
     assert counts[3] == 0 and counts[4] == 0
 
-
 def test_extract_hgt_edge_attention_values():
     """Fake model returns attention = (edge_type + 1) * (layer + 1); verify aggregation."""
     device = torch.device("cpu")
@@ -166,7 +160,6 @@ def test_extract_hgt_edge_attention_values():
     np.testing.assert_allclose(per_et[:3], np.array([2.0, 4.0, 6.0]))  # mean of [1,2,3], [2,4,6], [3,6,9]
     assert np.isnan(per_et[3:]).all()
 
-
 def test_extract_hgt_edge_attention_pair_breakdown():
     """With return_pair_breakdown=True the extractor also returns a (source_ct,
     target_ct, edge_type) DataFrame whose row count == number of unique triples."""
@@ -192,7 +185,6 @@ def test_extract_hgt_edge_attention_pair_breakdown():
     # n_edges per row sums to 4 (total edges in batch).
     assert int(pair_df["n_edges"].sum()) == 4
 
-
 def test_extract_hgt_edge_attention_pair_breakdown_requires_n_nodes():
     """return_pair_breakdown=True without n_nodes_per_graph raises ValueError."""
     device = torch.device("cpu")
@@ -203,7 +195,6 @@ def test_extract_hgt_edge_attention_pair_breakdown_requires_n_nodes():
             model, batch, device=device, n_edge_types=5,
             return_pair_breakdown=True,
         )
-
 
 def test_extract_hgt_edge_attention_zero_edges():
     """Zero-edge batch returns a dict with all NaN attention and zero counts."""
@@ -219,11 +210,9 @@ def test_extract_hgt_edge_attention_zero_edges():
     assert np.isnan(result["per_edge_type_attention"]).all()
     assert (result["per_edge_type_counts"] == 0).all()
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # drop_edges_of_type (ablation primitive)
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_drop_edges_of_type_removes_only_target_type():
     """Dropping type 1 keeps edges of type 0, 2."""
@@ -236,7 +225,6 @@ def test_drop_edges_of_type_removes_only_target_type():
     # Edge attributes and indices should match the filtered rows
     assert new_batch["ccc_edge_attr"].shape[0] == 3
     assert new_batch["ccc_edge_index"].shape == (2, 3)
-
 
 def test_drop_edges_of_type_all_removed():
     """Dropping the only type produces an empty edge batch."""
@@ -251,7 +239,6 @@ def test_drop_edges_of_type_all_removed():
     assert new_batch["ccc_edge_index"].shape[1] == 0
     assert new_batch["ccc_edge_attr"].shape[0] == 0
 
-
 def test_drop_edges_of_type_preserves_other_keys():
     """Non-edge keys (pathology, pseudobulk, etc.) pass through unchanged."""
     device = torch.device("cpu")
@@ -262,11 +249,9 @@ def test_drop_edges_of_type_preserves_other_keys():
     assert torch.equal(new_batch["pathology"], batch["pathology"])
     assert new_batch["subject_ids"] == ["S0", "S1"]
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # aggregate_attention_by_celltype_pair
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_aggregate_attention_by_celltype_pair_shape_and_values():
     """Given a flat [E, H] attention and edge index/type, aggregate to
@@ -290,7 +275,6 @@ def test_aggregate_attention_by_celltype_pair_shape_and_values():
     for col in ("source_ct_idx", "target_ct_idx", "edge_type", "mean_attention", "n_edges"):
         assert col in df.columns
 
-
 def test_aggregate_attention_by_celltype_pair_batch_offset():
     """Node indices that exceed n_nodes_per_graph get modulo'd back to per-graph indices."""
     ccc_edge_index = torch.tensor([[0, 31, 62], [1, 32, 63]], dtype=torch.long)
@@ -309,11 +293,9 @@ def test_aggregate_attention_by_celltype_pair_batch_offset():
     assert df["target_ct_idx"].iloc[0] == 1
     assert df["n_edges"].iloc[0] == 3
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # aggregate_attention_by_edge_type
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_aggregate_attention_by_edge_type_basic():
     """Mean attention per edge type index, plus counts."""
@@ -327,19 +309,15 @@ def test_aggregate_attention_by_edge_type_basic():
     assert np.isnan(mean_per_type[3:]).all()
     np.testing.assert_array_equal(counts, np.array([2, 1, 1, 0, 0]))
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # liana_correlation
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 def _ranking_df(src: list[str], tgt: list[str], imp: list[float]) -> pd.DataFrame:
     return pd.DataFrame({"source_ct": src, "target_ct": tgt, "importance": imp})
 
-
 def _liana_df(src: list[str], tgt: list[str], score: list[float]) -> pd.DataFrame:
     return pd.DataFrame({"source": src, "target": tgt, "score": score})
-
 
 def test_liana_correlation_perfect_rank_match():
     """Identical rank orders → Spearman ρ = 1.0, Pearson in [−1, 1].
@@ -358,7 +336,6 @@ def test_liana_correlation_perfect_rank_match():
     assert result["spearman_rho"] == pytest.approx(1.0, abs=1e-10)
     assert result["pearson_r"] == pytest.approx(1.0, abs=1e-10)
 
-
 def test_liana_correlation_sign_flip_on_rank_score():
     """LIANA's magnitude_rank is "lower = more important"; with default
     ``higher_is_better=False`` the sign is inverted so that perfect agreement
@@ -376,7 +353,6 @@ def test_liana_correlation_sign_flip_on_rank_score():
     # Sign-flipped LIANA ranks are monotonic-increasing with our importance.
     assert result["spearman_rho"] == pytest.approx(1.0, abs=1e-10)
 
-
 def test_liana_correlation_anti_correlated():
     """Reversed rank orders → Spearman ρ = -1.0."""
     our = _ranking_df(
@@ -388,7 +364,6 @@ def test_liana_correlation_anti_correlated():
     result = liana_correlation(our, liana, score_col="score", higher_is_better=True)
     assert result["n_pairs"] == 4
     assert result["spearman_rho"] == pytest.approx(-1.0, abs=1e-10)
-
 
 def test_liana_correlation_handles_missing_pairs(caplog):
     """Pairs in ``our_ranking`` absent from ``liana_df`` are dropped; a WARNING is emitted."""
@@ -404,7 +379,6 @@ def test_liana_correlation_handles_missing_pairs(caplog):
     assert any("missing" in r.getMessage().lower() or "drop" in r.getMessage().lower()
                for r in caplog.records)
 
-
 def test_liana_correlation_empty_intersection_returns_nan():
     """Zero overlap returns NaN statistics + n_pairs=0."""
     our = _ranking_df(src=["A"], tgt=["B"], imp=[1.0])
@@ -413,7 +387,6 @@ def test_liana_correlation_empty_intersection_returns_nan():
     assert result["n_pairs"] == 0
     assert np.isnan(result["spearman_rho"])
     assert np.isnan(result["pearson_r"])
-
 
 def test_liana_correlation_constant_ranking_returns_nan():
     """Degenerate ranking (all identical values) → NaN correlation (scipy contract)."""
@@ -424,7 +397,6 @@ def test_liana_correlation_constant_ranking_returns_nan():
     # Spearman of constant vector is undefined → NaN.
     assert np.isnan(result["spearman_rho"])
 
-
 def test_liana_correlation_result_has_aggregation_level_field():
     """Downstream consumers rely on ``aggregation_level`` for figure captions."""
     our = _ranking_df(src=["A", "B"], tgt=["C", "D"], imp=[1.0, 2.0])
@@ -433,11 +405,9 @@ def test_liana_correlation_result_has_aggregation_level_field():
     assert "aggregation_level" in result
     assert result["aggregation_level"] == "population_mean_source_target"
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # load_liana_reference
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_load_liana_reference_roundtrip(tmp_path):
     """Happy path: write a LIANA parquet, round-trip back with expected columns."""
@@ -452,12 +422,10 @@ def test_load_liana_reference_roundtrip(tmp_path):
     assert len(loaded) == 2
     assert set(loaded.columns) >= {"source", "target", "magnitude_rank", "subject_id"}
 
-
 def test_load_liana_reference_missing_subject_raises(tmp_path):
     """Requesting a nonexistent subject leaves zero parquets → FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
         load_liana_reference(tmp_path, subject_ids=["nonexistent"])
-
 
 def test_load_liana_reference_missing_score_col_raises(tmp_path):
     """Schema check raises ValueError with the available columns listed."""
@@ -469,11 +437,9 @@ def test_load_liana_reference_missing_score_col_raises(tmp_path):
     with pytest.raises(ValueError, match="missing required columns"):
         load_liana_reference(tmp_path, subject_ids=["s1"], score_col="lrscore")
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # drop_edges_of_type edge cases
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_drop_edges_of_type_no_edges_key_returns_as_is():
     """If the batch has no ccc_edge_type key, drop_edges_of_type is a no-op."""

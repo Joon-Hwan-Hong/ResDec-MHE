@@ -167,7 +167,14 @@ class TrajectoryProbeCallback(pl.Callback):
 
     @staticmethod
     def _param_checksum(model: torch.nn.Module) -> str:
-        """sha256 hash over all trainable parameters' contents (concatenated)."""
+        """sha256 hash over all trainable parameters' contents (concatenated).
+
+        Wall-time cost: O(N_params) CPU copies + bytes conversion + sha256
+        update. For canonical ResDec-MHE (~few-million params) this adds
+        roughly ~100 ms per training step (dominated by ``.cpu().numpy()``
+        + ``tobytes()``). The fp32 cast is required for stable hashing
+        across precision modes — accept the cost for the probe.
+        """
         h = hashlib.sha256()
         for name, p in model.named_parameters():
             if not p.requires_grad:
@@ -277,8 +284,21 @@ class _AttentionStatsHook:
 
     def __init__(self, callback: TrajectoryProbeCallback):
         self.callback = callback
+        self._last_observed_step: int | None = None
 
     def __call__(self, module: torch.nn.Module, inputs, outputs) -> None:
+        # Step-id check: enforce one fire per step. If we already saw this
+        # step, the hook is firing twice — assertion surfaces the issue
+        # rather than silently overwriting stats from a previous fire.
+        cur_step = self.callback.step_idx
+        if self._last_observed_step == cur_step:
+            raise AssertionError(
+                f"_AttentionStatsHook fired twice in step {cur_step} — the "
+                "register_forward_hook firing-order invariant has broken. "
+                "Check whether pathology_attention's forward is invoked "
+                "multiple times per step (e.g. due to a refactor)."
+            )
+        self._last_observed_step = cur_step
         # outputs = (attended, attention_weights | None)
         if not isinstance(outputs, tuple) or len(outputs) < 2:
             return
@@ -302,14 +322,22 @@ class _PredictionStatsHook:
 
     Same hook-firing-order assumption as :class:`_AttentionStatsHook` —
     ResDec-MHE's training_step calls encoder → head exactly once per batch,
-    so this hook fires exactly once per training step and the cached stats
-    are fresh by the time ``on_train_batch_end`` is invoked.
+    so this hook fires exactly once per training step. Step-id check
+    enforces single-fire per step.
     """
 
     def __init__(self, callback: TrajectoryProbeCallback):
         self.callback = callback
+        self._last_observed_step: int | None = None
 
     def __call__(self, module: torch.nn.Module, inputs, outputs) -> None:
+        cur_step = self.callback.step_idx
+        if self._last_observed_step == cur_step:
+            raise AssertionError(
+                f"_PredictionStatsHook fired twice in step {cur_step} — the "
+                "register_forward_hook firing-order invariant has broken."
+            )
+        self._last_observed_step = cur_step
         if isinstance(outputs, dict) and "prediction" in outputs:
             pred = outputs["prediction"].detach().to(torch.float32)
             self.callback._latest_pred_stats = {
@@ -429,7 +457,10 @@ if __name__ == "__main__":
     p.add_argument("--config", required=True)
     p.add_argument("--fold", type=int, default=0)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--max-epochs", type=int, default=5)
+    # Step-1 divergence is the central question; 1 epoch (~13 batches at
+    # batch_size=40 over n=516) is more than enough. Override only when
+    # investigating multi-epoch trajectory drift.
+    p.add_argument("--max-epochs", type=int, default=1)
     p.add_argument("--output-dir", required=True)
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--precomputed-dir", default=None)

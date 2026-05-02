@@ -18,19 +18,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 from scripts.resdec_mhe.interpretability import (  # noqa: E402
     run_subgroup_r2_table as mod,
 )
 
-
 # =============================================================================
 # Tertile labelling
 # =============================================================================
-
 
 class TestTertileLabel:
     """``_tertile_label`` correctly buckets values against ``(q1, q2)``."""
@@ -52,11 +48,9 @@ class TestTertileLabel:
         assert mod._tertile_label(float("nan"), (5.0, 10.0)) is None
         assert mod._tertile_label(float("inf"), (5.0, 10.0)) is None
 
-
 # =============================================================================
 # AD-dx labelling
 # =============================================================================
-
 
 class TestAdDxLabel:
     """``_ad_dx_label`` binarizes cogdx codes correctly."""
@@ -75,11 +69,9 @@ class TestAdDxLabel:
     def test_nan_excluded(self) -> None:
         assert mod._ad_dx_label(float("nan")) is None
 
-
 # =============================================================================
 # Tertile cut computation
 # =============================================================================
-
 
 class TestComputeTertileCuts:
     def test_uniform_distribution_split_evenly(self) -> None:
@@ -100,11 +92,9 @@ class TestComputeTertileCuts:
         with pytest.raises(ValueError, match="Cannot compute tertiles"):
             mod._compute_tertile_cuts(pd.Series([1.0, 2.0]))
 
-
 # =============================================================================
 # assign_strata
 # =============================================================================
-
 
 class TestAssignStrata:
     """Synthetic 12-row frame covering every stratum value."""
@@ -159,11 +149,9 @@ class TestAssignStrata:
         assert out.loc[df["cogdx"] == 4, "stratum_addx"].eq("AD").all()
         assert out.loc[df["cogdx"] == 1, "stratum_addx"].eq("non-AD").all()
 
-
 # =============================================================================
 # _per_fold_metrics + _aggregate
 # =============================================================================
-
 
 class TestPerFoldMetrics:
     @staticmethod
@@ -226,11 +214,9 @@ class TestPerFoldMetrics:
         assert math.isnan(mean)
         assert math.isnan(std)
 
-
 # =============================================================================
 # compute_subgroup_r2_table
 # =============================================================================
-
 
 class TestComputeSubgroupR2Table:
     def test_table_shape_and_keys(self) -> None:
@@ -261,11 +247,9 @@ class TestComputeSubgroupR2Table:
                 assert len(stats["per_fold_mae"]) == 5
                 assert len(stats["n_per_fold"]) == 5
 
-
 # =============================================================================
 # Markdown rendering
 # =============================================================================
-
 
 class TestRenderMarkdownTable:
     def test_produces_header_and_rows(self) -> None:
@@ -297,11 +281,9 @@ class TestRenderMarkdownTable:
         assert "Highest mean R²" in md
         assert "Lowest mean R²" in md
 
-
 # =============================================================================
 # End-to-end smoke (uses real predictions if available)
 # =============================================================================
-
 
 def test_orchestrator_runs_against_canonical(tmp_path: Path) -> None:
     """End-to-end: invoke the script as a subprocess and inspect the JSON / MD / figure."""

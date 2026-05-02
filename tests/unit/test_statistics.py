@@ -5,7 +5,6 @@ import pytest
 
 from src.utils.statistics import derive_resilience_groups
 
-
 class TestDeriveResilienceGroups:
     """Tests for derive_resilience_groups utility."""
 
@@ -61,7 +60,6 @@ class TestDeriveResilienceGroups:
 
     def test_resilient_has_high_pathology_and_cognition(self):
         """Resilient subjects should have high pathology AND high cognition."""
-        np.random.seed(42)
         n = 100
         pathology = np.random.rand(n)
         cognition = np.random.rand(n)

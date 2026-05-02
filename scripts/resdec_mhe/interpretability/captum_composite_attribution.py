@@ -13,7 +13,7 @@ in our PyTorch graph). IG on f̂_1 isolates **what the encoder + head learned to
 contribute on top of TabPFN** — exactly the biologically interpretable signal
 unique to our architecture.
 
-Output (default ``outputs/canonical/interpretability/``):
+Output (default ``outputs/canonical/interpretability/captum_ig/``):
   - composite_attributions.npz       — keys: subject_ids [N], attributions [N, C, G],
                                         predictions_residual [N], folds [N]
   - composite_attribution_summary.json
@@ -27,7 +27,7 @@ Usage
     CUDA_VISIBLE_DEVICES=0 \\
     uv run python scripts/resdec_mhe/interpretability/captum_composite_attribution.py \\
         --pred-root outputs/canonical/p5_canonical_seed42 \\
-        --out-dir outputs/canonical/interpretability \\
+        --out-dir outputs/canonical/interpretability/captum_ig \\
         --n-steps 50 --internal-batch-size 4
 
 Arguments
@@ -46,7 +46,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 from pathlib import Path
 
@@ -69,23 +68,9 @@ from src.data.constants import CELL_TYPE_ORDER, N_REGIONS, PFC_REGION_IDX
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits
 from src.training.resdec_lightning_module import ResDecLightningModule
+from src.utils.provenance import pick_max_r2_ckpt
 
 logger = logging.getLogger(__name__)
-_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
-
-
-def _pick_max_r2_ckpt(ckpt_dir: Path) -> Path:
-    best: tuple[Path, float] | None = None
-    for p in ckpt_dir.glob("best-*.ckpt"):
-        m = _BEST_CKPT_RE.match(p.name)
-        if not m:
-            continue
-        r2 = float(m.group(2))
-        if best is None or r2 > best[1]:
-            best = (p, r2)
-    if best is None:
-        raise FileNotFoundError(f"No best-*.ckpt files in {ckpt_dir}")
-    return best[0]
 
 
 class _ResDecCompositeWrapper(torch.nn.Module):
@@ -141,9 +126,11 @@ class _ResDecCompositeWrapper(torch.nn.Module):
         enc_out = self.lit_module.encoder.forward_encoder_only(**kwargs)
         z = enc_out["attended"]  # [B, d_subject]
 
-        # Metadata wiring is not needed for attribution — fall back to zeros
-        # (FiLM is near-identity init at zero metadata, so prediction is
-        # well-defined).
+        # Metadata wiring is not needed for attribution — fall back to zeros.
+        # FiLM is near-identity init at zero metadata, so prediction is
+        # well-defined; this also matches the canonical zero-metadata FiLM
+        # decision (real metadata HURTS — see project_resdec_mhe_phase5_results
+        # and CLAUDE.md).
         metadata = torch.zeros(B, self._d_metadata, device=device, dtype=dtype)
 
         head_out = self.lit_module.head(z, metadata)
@@ -161,7 +148,7 @@ def attribute_one_fold(args: argparse.Namespace, fold: int,
     cfg.data.fold = int(fold)
 
     fold_dir = Path(args.pred_root) / f"fold{fold}"
-    ckpt_path = _pick_max_r2_ckpt(fold_dir / "checkpoints")
+    ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
     logger.info("fold %d: loading %s", fold, ckpt_path.name)
 
     splits = load_splits(str(args.splits_path))
@@ -231,8 +218,11 @@ def summarize(attr_npz_path: Path, ct_names: list[str], gene_names: list[str],
     global_importance = abs_attr.mean(axis=(0, 1))  # [G]
     per_ct_importance = abs_attr.mean(axis=0)       # [C, G]
 
+    # All argsort calls below use ``kind="stable"`` so ties break by
+    # original index — matches gsea_from_captum.py and keeps top-K rankings
+    # deterministic across reruns.
     # Global top-K genes (averaged over subjects + cell types).
-    top_global_idx = np.argsort(-global_importance)[:top_k]
+    top_global_idx = np.argsort(-global_importance, kind="stable")[:top_k]
     top_global = [
         {"gene": gene_names[i] if i < len(gene_names) else f"gene_{i}",
          "mean_abs_attribution": float(global_importance[i])}
@@ -242,7 +232,7 @@ def summarize(attr_npz_path: Path, ct_names: list[str], gene_names: list[str],
     # Per-cell-type top-K genes.
     top_per_ct: dict[str, list[dict]] = {}
     for c, ct in enumerate(ct_names[:per_ct_importance.shape[0]]):
-        idx = np.argsort(-per_ct_importance[c])[:top_k]
+        idx = np.argsort(-per_ct_importance[c], kind="stable")[:top_k]
         top_per_ct[ct] = [
             {"gene": gene_names[i] if i < len(gene_names) else f"gene_{i}",
              "mean_abs_attribution": float(per_ct_importance[c, i])}
@@ -251,7 +241,7 @@ def summarize(attr_npz_path: Path, ct_names: list[str], gene_names: list[str],
 
     # Top-K (cell_type, gene) pairs across the entire C × G heatmap.
     flat = per_ct_importance.flatten()
-    top_pair_idx = np.argsort(-flat)[:top_k]
+    top_pair_idx = np.argsort(-flat, kind="stable")[:top_k]
     top_pairs = []
     for k in top_pair_idx:
         c, g = divmod(int(k), per_ct_importance.shape[1])
@@ -266,7 +256,7 @@ def summarize(attr_npz_path: Path, ct_names: list[str], gene_names: list[str],
     ct_rank = [
         {"cell_type": ct_names[c] if c < len(ct_names) else f"ct_{c}",
          "total_abs_attribution": float(per_ct_total[c])}
-        for c in np.argsort(-per_ct_total)
+        for c in np.argsort(-per_ct_total, kind="stable")
     ]
 
     return {
@@ -360,8 +350,9 @@ def main(args: argparse.Namespace) -> int:
     summary_path.write_text(json.dumps(summary, indent=2))
     logger.info("Wrote %s", summary_path)
 
-    # Top-100 (cell_type, gene) pairs CSV — paper-table-ready.
-    top_pairs_top100 = summary["top_cell_type_gene_pairs"][:min(100, len(summary["top_cell_type_gene_pairs"]))]
+    # Top-100 (cell_type, gene) pairs CSV — paper-table-ready. List slicing
+    # already truncates if fewer than 100 pairs exist; no min() guard needed.
+    top_pairs_top100 = summary["top_cell_type_gene_pairs"][:100]
     pd.DataFrame(top_pairs_top100).to_csv(out_dir / "top_pairs_table.csv", index=False)
     logger.info("Wrote %s", out_dir / "top_pairs_table.csv")
 
@@ -383,7 +374,11 @@ if __name__ == "__main__":
     p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument("--pred-root", default="outputs/canonical/p5_canonical_seed42")
     p.add_argument("--splits-path", default="outputs/splits.json")
-    p.add_argument("--out-dir", default="outputs/canonical/interpretability")
+    # CC1 fix: default must match downstream consumers which read
+    # outputs/canonical/interpretability/captum_ig/ (e.g., make_attention_figures,
+    # make_figures, gradient_shap_smoothgrad_attribution). Writing to the parent
+    # dir would conflict with sibling artifacts there.
+    p.add_argument("--out-dir", default="outputs/canonical/interpretability/captum_ig")
     p.add_argument("--n-steps", type=int, default=50)
     p.add_argument("--internal-batch-size", type=int, default=4)
     p.add_argument("--top-k", type=int, default=50)

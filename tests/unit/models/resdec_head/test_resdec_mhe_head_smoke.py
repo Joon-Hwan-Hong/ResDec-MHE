@@ -2,7 +2,6 @@ import pytest
 import torch
 from src.models.resdec_head.resdec_mhe_head import ResDecMHEHead
 
-
 def test_head_forward_shape_and_keys():
     head = ResDecMHEHead(d_subject=64, d_metadata=8)
     z = torch.randn(4, 64)  # encoder subject embedding
@@ -12,7 +11,6 @@ def test_head_forward_shape_and_keys():
     assert "latent_1" in out
     assert out["prediction"].shape == (4,)
     assert out["latent_1"].shape == (4, 64)
-
 
 def test_head_gradient_flow():
     head = ResDecMHEHead(d_subject=32, d_metadata=8)
@@ -28,7 +26,6 @@ def test_head_gradient_flow():
         for p in head.parameters() if p.requires_grad
     )
     assert has_head_grad
-
 
 def test_head_near_identity_film_at_init():
     """With FiLM's near-identity init, the head's behavior depends only on

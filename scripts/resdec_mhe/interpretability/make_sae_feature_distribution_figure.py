@@ -24,6 +24,10 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -76,7 +80,10 @@ def _draw_hist_panel(
     cts = [kv[0] for kv in items]
     vals = [kv[1] for kv in items]
 
-    colors = [splatter_color if c.lower() == "splatter" else bar_color for c in cts]
+    # Exact match — the canonical CT name in src.data.constants.CELL_TYPE_ORDER
+    # is "Splatter" (case-sensitive). A `.lower()` match would silently colour
+    # any "splatter*" prefix, which is an aliasing risk.
+    colors = [splatter_color if c == "Splatter" else bar_color for c in cts]
     x = np.arange(len(cts))
     ax.bar(x, vals, color=colors, edgecolor="white", linewidth=0.4, width=0.85)
 

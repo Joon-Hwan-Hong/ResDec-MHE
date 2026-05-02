@@ -11,7 +11,6 @@ import torch
 
 from src.data.constants import N_CELL_TYPES, N_REGIONS
 
-
 class TestRegionHandlerWithCellTransformerOutput:
     """Integration tests: CellTransformer-shaped output + RegionHandler.
 
@@ -60,7 +59,6 @@ class TestRegionHandlerWithCellTransformerOutput:
 
         assert not torch.allclose(pooled_full, pooled_partial, atol=1e-6), \
             "Full-mask and partial-mask outputs should differ"
-
 
 class TestRegionHandlerToDownstreamComponents:
     """Integration tests: RegionHandler output -> PathologyEncoder / FusionLayer."""

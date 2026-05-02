@@ -54,8 +54,15 @@ class GeneAttentionGate(nn.Module):
             raise ValueError(f"n_cell_types must be positive, got {n_cell_types}")
         if n_genes <= 0:
             raise ValueError(f"n_genes must be positive, got {n_genes}")
-        if temperature <= 0:
-            raise ValueError(f"temperature must be positive, got {temperature}")
+        # Reject ``temperature < 0.05`` outright instead of silently
+        # smashing it to the 0.05 floor (the previous ``max(temperature,
+        # 0.05)`` clamp made caller intent invisible). 0.05 is the lower
+        # bound used by the temperature annealing schedule.
+        if temperature < 0.05:
+            raise ValueError(
+                f"temperature must be >= 0.05 (got {temperature}); set "
+                "0.05 as the minimum or pass a larger value."
+            )
 
         self.n_cell_types = n_cell_types
         self.n_genes = n_genes
@@ -72,7 +79,9 @@ class GeneAttentionGate(nn.Module):
         # Temperature buffer kept for backward compatibility with checkpoints
         # and the TemperatureAnnealing callback. Setting it is a no-op for
         # sigmoid gating, but we store it to avoid breaking checkpoint loading.
-        self.register_buffer("_temperature_buf", torch.tensor(max(float(temperature), 0.05)))
+        # The constructor enforces ``temperature >= 0.05`` above, so no
+        # additional clamp is needed.
+        self.register_buffer("_temperature_buf", torch.tensor(float(temperature)))
 
     @property
     def temperature(self) -> float:
@@ -82,9 +91,13 @@ class GeneAttentionGate(nn.Module):
     @temperature.setter
     def temperature(self, value: float) -> None:
         """Set temperature (no-op for sigmoid gate, kept for compatibility)."""
-        if value <= 0:
-            raise ValueError(f"temperature must be positive, got {value}")
-        self._temperature_buf.fill_(max(value, 0.05))
+        if value < 0.05:
+            raise ValueError(
+                f"temperature must be >= 0.05 (got {value}); the previous "
+                "clamp behaviour silently smashed values into the "
+                "[0, 0.05] band."
+            )
+        self._temperature_buf.fill_(float(value))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

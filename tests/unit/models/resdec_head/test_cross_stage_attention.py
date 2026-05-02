@@ -2,7 +2,6 @@ import pytest
 import torch
 from src.models.resdec_head.cross_stage_attention import CrossStageAttention
 
-
 def test_cross_stage_attention_shape():
     csa = CrossStageAttention(d_subject=64, n_heads=4)
     z = torch.randn(4, 64)
@@ -10,7 +9,6 @@ def test_cross_stage_attention_shape():
     prior2 = torch.randn(4, 64)
     ctx = csa(z, [prior1, prior2])
     assert ctx.shape == (4, 64)
-
 
 def test_cross_stage_attention_empty_priors_returns_zeros():
     """No prior stages → zero context (stage 1 case)."""
@@ -20,14 +18,12 @@ def test_cross_stage_attention_empty_priors_returns_zeros():
     assert ctx.shape == (2, 32)
     assert torch.allclose(ctx, torch.zeros_like(ctx))
 
-
 def test_cross_stage_attention_single_prior():
     csa = CrossStageAttention(d_subject=16, n_heads=4)
     z = torch.randn(2, 16)
     prior = torch.randn(2, 16)
     ctx = csa(z, [prior])
     assert ctx.shape == (2, 16)
-
 
 def test_cross_stage_attention_gradient_flow():
     csa = CrossStageAttention(d_subject=16, n_heads=4)

@@ -18,8 +18,7 @@ from pathlib import Path
 
 import pytest
 
-
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 SWEEP_SH = (
     _WORKTREE_ROOT / "scripts" / "resdec_mhe" / "run_sae_sweep_smaller_m.sh"
 )
@@ -31,13 +30,11 @@ RUN_SAE_TRAIN_PY = (
     / "run_sae_train.py"
 )
 
-
 def _bash() -> str:
     bash_path = shutil.which("bash")
     if bash_path is None:
         pytest.skip("bash not found on PATH")
     return bash_path
-
 
 def test_sweep_shell_script_exists_and_syntax_ok():
     """The smaller-m sweep script must exist and pass ``bash -n``."""
@@ -49,7 +46,6 @@ def test_sweep_shell_script_exists_and_syntax_ok():
     assert result.returncode == 0, (
         f"bash -n failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-
 
 def test_default_grid_resolves_to_180_configs():
     """Default grid: 2 × 2 × 3 × 5 × 3 = 180 configs.
@@ -88,7 +84,6 @@ echo $((${#ARCHITECTURES[@]} * ${#LAYERS[@]} * ${#EXPANSIONS[@]} * ${#K_VALUES[@
     total = int(result.stdout.strip())
     assert total == 180, f"expected 180 configs, got {total}"
 
-
 def test_grid_axes_are_env_overridable():
     """Override ARCHITECTURES, LAYERS, EXPANSIONS, K_VALUES, SEEDS via env."""
     probe = """
@@ -115,7 +110,6 @@ echo "${#ARCHITECTURES[@]} ${#LAYERS[@]} ${#EXPANSIONS[@]} ${#K_VALUES[@]} ${#SE
     counts = result.stdout.strip().split()
     assert counts == ["1", "1", "2", "3", "1"], counts
 
-
 def test_run_dir_template_includes_seed():
     """``OUT_ROOT/<arch>/<layer>/exp{m}_k{K}_seed{S}/`` template is in the script."""
     src = SWEEP_SH.read_text()
@@ -129,7 +123,6 @@ def test_run_dir_template_includes_seed():
         "smaller-m sweep should default OUT_ROOT under stability_smaller_m/ "
         "so it doesn't pollute the canonical sweep outputs"
     )
-
 
 def test_run_sae_train_accepts_expansion_4():
     """run_sae_train.py argparse must accept --expansion 4 (relaxed constraint).

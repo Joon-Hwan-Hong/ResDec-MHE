@@ -45,10 +45,39 @@ import logging
 import sys
 from pathlib import Path
 
+from scipy.stats import norm
+
 logger = logging.getLogger(__name__)
 
 
-_Z_975 = 1.959963984540054  # qnorm(0.975); precise for the SE conversion
+# qnorm(0.975) — self-documenting via scipy.stats.norm.ppf at module load.
+_Z_975: float = float(norm.ppf(0.975))
+
+# Long-form scientific justification for the SE-without-CI choice. We write
+# this to a sibling Markdown file so the JSON itself stays compact (a
+# multi-paragraph string in JSON is awkward for downstream consumers).
+_LONG_NOTE_MD = """\
+# CMI bootstrap bias note
+
+The KSG conditional-MI estimator under bootstrap-with-replacement has a
+well-known upward bias: duplicate points in the resampled set have
+distance 0, which inflates the k-NN counts that the KSG digamma sum is
+computed from. Empirical evidence in our run: bootstrap median is
+~0.28-0.30 nats above observed CMI for every CT (consistent across CTs).
+
+Naive percentile CIs are therefore biased upward and should NOT be
+reported. The Efron 1987 basic-bootstrap reflection (`2*obs - q`)
+OVER-corrects: applied to our data it yields negative-CI bounds for
+multiple CTs (impossible since CMI >= 0). The reflection assumes the
+bootstrap distribution captures variability symmetrically around the
+true value, which fails when bias dominates variance.
+
+We DO NOT report a bias-corrected CI. We report observed CMI + SE
+derived from bootstrap percentile width
+(SE ~ (q_97.5 - q_2.5) / 3.92). Variance estimation survives
+additive location bias. The companion `bias_estimate_nats` field
+flags the limitation.
+"""
 
 
 def main() -> int:
@@ -74,14 +103,10 @@ def main() -> int:
         "n_boot": d.get("n_boot"),
         "n_subjects": d.get("n_subjects"),
         "method": "se_from_percentile_width_normal_approximation",
-        "note": (
-            "KSG-MI bootstrap is upward-biased due to duplicate points under "
-            "resample-with-replacement. We DO NOT report a bias-corrected CI "
-            "(basic-bootstrap reflection over-corrects, producing impossible "
-            "negative-CMI bounds for several CTs). Instead we report observed "
-            "CMI + SE derived from bootstrap percentile width "
-            "(SE ≈ (q_97.5 − q_2.5) / 3.92). Variance estimation survives "
-            "additive location bias. Cite bias_estimate to flag the limitation."
+        "note_short": (
+            "KSG-MI bootstrap is upward-biased; we report observed CMI + SE "
+            "from bootstrap percentile width and flag bias_estimate_nats. "
+            "See cmi_bootstrap_ci_se.md for the full rationale."
         ),
         "per_ct": {},
     }
@@ -94,6 +119,12 @@ def main() -> int:
         # SE from the percentile width assuming approximately Gaussian
         # bootstrap distribution shape. Robust to additive bias.
         se = (q_hi - q_lo) / (2.0 * _Z_975)
+        # Schema-strict: missing n_valid_boots is upstream drift, not "0".
+        if "n_valid_boots" not in v:
+            raise KeyError(
+                f"per_ct[{ct!r}] is missing 'n_valid_boots' — upstream "
+                f"cmi_bootstrap_ci.json schema has drifted; rerun the bootstrap."
+            )
         out["per_ct"][ct] = {
             "observed_cmi": obs,
             "se_from_bootstrap_width": se,
@@ -103,11 +134,14 @@ def main() -> int:
             "naive_percentile_ci_hi": q_hi,
             "naive_percentile_median": boot_median,
             "bias_estimate_nats": bias,
-            "n_valid_boots": v.get("n_valid_boots"),
+            "n_valid_boots": int(v["n_valid_boots"]),
         }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, indent=2))
-    logger.info("Wrote %s (%d CTs)", out_path, len(out["per_ct"]))
+    # Sibling markdown carries the long-form justification.
+    md_path = out_path.with_suffix(".md")
+    md_path.write_text(_LONG_NOTE_MD)
+    logger.info("Wrote %s (%d CTs) + %s", out_path, len(out["per_ct"]), md_path)
 
     print("\nTop 10 CTs by observed CMI (point estimate ± SE from bootstrap width):")
     print("(Naive percentile median shown to flag upward bias.)")

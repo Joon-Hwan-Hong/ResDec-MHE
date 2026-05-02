@@ -59,6 +59,15 @@
 
 set -euo pipefail
 
+# tmux preflight (feedback_long_runs_need_tmux.md): 60 configs × ~2-5 min each
+# = 2-5 hr wall, far past the 30-min threshold. SSH disconnect without tmux
+# kills the run.
+if [ -z "${TMUX:-}" ]; then
+    echo "ERROR: This sweep runs ~2-5 hr and must be in tmux to survive SSH disconnect." >&2
+    echo "  tmux new -s sae_sweep 'bash $0'" >&2
+    exit 1
+fi
+
 WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 ACTIVATIONS_DIR="${ACTIVATIONS_DIR:-outputs/canonical/sae}"
@@ -84,6 +93,11 @@ if [[ "${GPU_INDEX}" -ge "${NUM_GPUS}" ]]; then
     exit 2
 fi
 
+# Sweep grid axes. KEEP IN LOCKSTEP with the Python tuples in
+# ``run_sae_sweep_inline.py:66-69``. Any change to architectures / layers /
+# expansions / k-values MUST also be made in run_sae_sweep_inline.py
+# (B-SS1/B-SI1). The smaller-M variant uses env-driven bash arrays in
+# run_sae_sweep_smaller_m.sh:91-95 which is intentionally a separate sweep.
 ARCHITECTURES=("topk" "batch_topk")
 LAYERS=("attended" "fused")
 EXPANSIONS=(8 16 32)
@@ -125,13 +139,22 @@ for arch in "${ARCHITECTURES[@]}"; do
                     continue
                 fi
 
-                # Per-run log under /tmp; tag includes architecture / layer / k / exp.
+                # Per-run log: co-locate with sweep outputs (B-SS3: /tmp does
+                # not survive reboot and is shared across worktrees). Mirrors
+                # the layout in run_sae_sweep_smaller_m.sh:142-144.
                 log_hash=$(printf '%s' "${run_tag}" | tr '/' '_' | tr -d ' ')
-                log_file="/tmp/sae_gpu${GPU_INDEX}_${log_hash}.log"
+                SWEEP_LOG_DIR="${OUT_ROOT}/_sae_sweep_logs"
+                mkdir -p "${SWEEP_LOG_DIR}"
+                log_file="${SWEEP_LOG_DIR}/sae_gpu${GPU_INDEX}_${log_hash}.log"
 
                 echo "[sweep][gpu${GPU_INDEX}] [${n_total}/${TOTAL_GRID}] RUN ${run_tag} → ${run_dir}"
                 echo "[sweep][gpu${GPU_INDEX}]    log: ${log_file}"
 
+                # B-SS4: Top-level uses ``set -euo pipefail`` (strict). The
+                # per-config uv-run-python invocation is wrapped in
+                # ``set +e`` / ``set -e`` so a SINGLE training failure does
+                # not abort the entire 60-config sweep — failures are
+                # counted in n_failed and the sweep continues.
                 set +e
                 CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" \
                 PYTHONPATH="${WORKTREE_ROOT}" \

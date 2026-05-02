@@ -32,6 +32,11 @@ import torch
 import lightning.pytorch as pl
 
 from src.training.callbacks import BRANCH_NAMES
+from src.training._branch_utils import (
+    BRANCH_PREFIXES,
+    build_branch_param_cache,
+    compute_branch_norms,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,35 +114,19 @@ class GradientModulationCallback(pl.Callback):
     def _build_param_cache(self, model: torch.nn.Module) -> None:
         """Build parameter-to-branch mapping once, reused every call.
 
-        Note: This logic mirrors GradientNormLogger._build_param_cache in callbacks.py.
-        Intentionally duplicated to avoid coupling these two independent callbacks.
+        Delegates to the canonical helper in src.training._branch_utils so
+        both this callback and GradientNormLogger pick up branch-prefix
+        changes (e.g., a new HGT submodule alias) in lockstep.
         """
-        self._branch_params = {name: [] for name in BRANCH_NAMES}
-        for param_name, param in model.named_parameters():
-            for branch_name in BRANCH_NAMES:
-                if branch_name in param_name:
-                    self._branch_params[branch_name].append(param)
-                    break
+        self._branch_params = build_branch_param_cache(
+            model, BRANCH_NAMES, branch_prefixes=BRANCH_PREFIXES,
+        )
 
     def _compute_branch_norms(self, model: torch.nn.Module) -> dict[str, float]:
-        """Compute L2 gradient norm for each encoder branch.
-
-        Note: This logic mirrors GradientNormLogger.compute_branch_norms in callbacks.py.
-        """
+        """Compute L2 gradient norm for each encoder branch."""
         if self._branch_params is None:
             self._build_param_cache(model)
-
-        branch_norms = {}
-        for branch_name, params in self._branch_params.items():
-            grad_params = [p for p in params if p.grad is not None]
-            if grad_params:
-                grad_norms = torch.stack(
-                    [p.grad.data.norm(2) for p in grad_params]
-                )
-                branch_norms[branch_name] = grad_norms.norm(2).item()
-            else:
-                branch_norms[branch_name] = 0.0
-        return branch_norms
+        return compute_branch_norms(self._branch_params)
 
     def on_before_optimizer_step(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule, optimizer,
@@ -241,6 +230,17 @@ class GradientModulationCallback(pl.Callback):
                 if p.grad is not None:
                     saved_grads[id(p)] = p.grad.data.clone()
 
+        if not saved_grads:
+            # Defensive: every parameter had grad=None (e.g., on rank 0 right
+            # after a NaN-skip). The downstream noise computation would
+            # silently no-op on every branch param, so log a debug-level note
+            # for visibility without polluting normal training logs.
+            logger.debug(
+                "GE noise: saved_grads is empty (all parameters have grad=None). "
+                "Skipping GE re-evaluation."
+            )
+            return
+
         # Step 3: Zero all gradients
         # set_to_none=False so p.grad exists for the noise computation below
         # (the noise formula needs g2 = p.grad.data from the re-evaluation pass)
@@ -256,18 +256,37 @@ class GradientModulationCallback(pl.Callback):
         else:
             no_sync_ctx = nullcontext()
 
-        # Get CUDA devices for fork_rng
-        cuda_devices = []
-        if torch.cuda.is_available():
-            cuda_devices = [pl_module.device.index] if pl_module.device.type == 'cuda' else []
+        # Get CUDA devices for fork_rng. Skip when device.index is None
+        # (pre-DDP CPU-only paths), which torch.random.fork_rng rejects
+        # with a ValueError.
+        cuda_devices: list[int] = []
+        if torch.cuda.is_available() and pl_module.device.type == 'cuda':
+            dev_idx = pl_module.device.index
+            if dev_idx is not None:
+                cuda_devices = [dev_idx]
 
         with no_sync_ctx:
-            # Fork RNG to get different dropout mask
+            # Fork RNG to get different dropout mask. Derive the seed
+            # deterministically from (global_seed, global_step, rank) so
+            # GE noise is reproducible across runs while still being
+            # different from the dropout mask used in the primary
+            # forward pass.
             with torch.random.fork_rng(devices=cuda_devices, enabled=True):
-                # Advance RNG state so dropout produces a different mask
-                torch.manual_seed(torch.randint(0, 2**32, (1,)).item())
+                base_seed = int(
+                    pl_module.config.get("experiment", {}).get("seed", 42)
+                )
+                global_step = int(getattr(pl_module.trainer, "global_step", 0))
+                rank = int(getattr(pl_module.trainer, "global_rank", 0))
+                # Salt the seed so the GE re-eval RNG is decoupled from the
+                # main run's RNG schedule but still deterministic.
+                ge_seed = (
+                    base_seed
+                    + global_step * 1_000_003
+                    + rank * 1_000_000_007
+                ) % (2**32 - 1)
+                torch.manual_seed(ge_seed)
                 if cuda_devices:
-                    torch.cuda.manual_seed(torch.randint(0, 2**32, (1,)).item())
+                    torch.cuda.manual_seed(ge_seed)
 
                 # Suppress logging during re-evaluation
                 pl_module._is_ge_reevaluation = True
@@ -281,6 +300,7 @@ class GradientModulationCallback(pl.Callback):
         sqrt2 = math.sqrt(2.0)
         for branch_name, params in self._branch_params.items():
             k_val = k[branch_name]
+            n_noised = 0
             for i, p in enumerate(params):
                 g1 = unscaled_grads[branch_name][i]
                 if g1 is None:
@@ -289,6 +309,15 @@ class GradientModulationCallback(pl.Callback):
                 noise = (g2 - g1) / sqrt2
                 # effective = k * g1 + noise
                 p.grad.data = k_val * g1 + noise
+                n_noised += 1
+            if n_noised == 0:
+                # Branch had no grad-having parameters this step (rare; e.g.,
+                # converged at boundary or all-NaN re-eval). Surface for
+                # diagnostic visibility.
+                logger.debug(
+                    "GE noise: branch %s had 0 grad-having parameters this step.",
+                    branch_name,
+                )
 
         # Step 9: For non-branch params, restore saved gradients
         for p in model.parameters():

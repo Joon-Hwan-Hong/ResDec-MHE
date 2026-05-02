@@ -4,11 +4,29 @@ Experiment management utilities.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from src.utils.hashing import generate_experiment_hash
 from src.utils.config import save_config
+
+
+# Experiment subdirectory layout. Exposed as a module-level constant so that
+# downstream callers (e.g., introspection / cleanup scripts) can iterate over
+# the canonical figure subdirs without re-listing them.
+EXPERIMENT_SUBDIRS: tuple[str, ...] = (
+    "checkpoints",
+    "model",
+    "analysis",
+    "figures/training",
+    "figures/attention",
+    "figures/importance",
+    "figures/prediction",
+    "figures/embedding",
+    "figures/resilience",
+    "preprocessing",
+    "logs/tensorboard",
+)
 
 
 @dataclass
@@ -20,7 +38,11 @@ class Experiment:
     exp_dir: Path
     config: dict[str, Any]
     exp_hash: str
-    created_at: datetime = field(default_factory=datetime.now)
+    # Use UTC for cross-host consistency (matches manifest.py which stores
+    # ``datetime.now(timezone.utc)`` everywhere).
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     @property
     def checkpoints_dir(self) -> Path:
@@ -73,21 +95,7 @@ class ExperimentManager:
         exp_dir = self.base_dir / exp_hash
 
         # Create subdirectories (figure dirs match generate_plots.py categories)
-        subdirs = [
-            "checkpoints",
-            "model",
-            "analysis",
-            "figures/training",
-            "figures/attention",
-            "figures/importance",
-            "figures/prediction",
-            "figures/embedding",
-            "figures/resilience",
-            "preprocessing",
-            "logs/tensorboard",
-        ]
-
-        for subdir in subdirs:
+        for subdir in EXPERIMENT_SUBDIRS:
             (exp_dir / subdir).mkdir(parents=True, exist_ok=True)
 
         # Save config

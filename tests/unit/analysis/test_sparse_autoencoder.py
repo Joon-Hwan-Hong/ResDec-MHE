@@ -38,11 +38,9 @@ from src.analysis.sparse_autoencoder import (
     train_sae_topk,
 )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Synthetic fixtures
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def _make_synthetic_sparse(
     *,
@@ -70,11 +68,9 @@ def _make_synthetic_sparse(
     X = Z @ D.T  # [n_samples, n]
     return X, D
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataclass construction (does NOT need implementation — passes immediately)
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_sae_config_topk_minimal_construction():
     """Smoke test: SAEConfig with TopK fields constructs without error."""
@@ -83,7 +79,6 @@ def test_sae_config_topk_minimal_construction():
     assert cfg.expansion == 16
     assert cfg.k == 8
     assert cfg.decoder_unit_norm is True
-
 
 def test_sae_model_dataclass_holds_arrays():
     """Smoke test: SAEModel can hold the four weight arrays + config."""
@@ -100,7 +95,6 @@ def test_sae_model_dataclass_holds_arrays():
     assert sae.W_dec.shape == (n, m)
     assert sae.config is cfg
 
-
 def test_activation_bundle_dataclass():
     """Smoke test: ActivationBundle holds the expected fields."""
     bundle = ActivationBundle(
@@ -114,11 +108,9 @@ def test_activation_bundle_dataclass():
     assert bundle.activations.shape == (3, 64)
     assert bundle.layer == "attended"
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Edge case tests — k bounds
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_train_sae_topk_raises_when_k_zero():
     """k <= 0 must raise ValueError."""
@@ -126,7 +118,6 @@ def test_train_sae_topk_raises_when_k_zero():
     cfg = SAEConfig(architecture="topk", expansion=2, k=0, n_steps=2, batch_size=8)
     with pytest.raises(ValueError):
         train_sae_topk(X, cfg)
-
 
 def test_train_sae_topk_raises_when_k_exceeds_m():
     """k > m must raise ValueError (m = expansion * n)."""
@@ -136,14 +127,12 @@ def test_train_sae_topk_raises_when_k_exceeds_m():
     with pytest.raises(ValueError):
         train_sae_topk(X, cfg)
 
-
 def test_train_sae_topk_raises_when_input_3d():
     """activations must be 2D ([N, n])."""
     X = np.zeros((4, 31, 8), dtype=np.float32)
     cfg = SAEConfig(architecture="topk", expansion=2, k=2, n_steps=2, batch_size=4)
     with pytest.raises(ValueError):
         train_sae_topk(X, cfg)
-
 
 def test_train_sae_batch_topk_wrong_arch_raises():
     """train_sae_batch_topk requires architecture='batch_topk'."""
@@ -152,7 +141,6 @@ def test_train_sae_batch_topk_wrong_arch_raises():
     with pytest.raises(ValueError):
         train_sae_batch_topk(X, cfg)
 
-
 def test_train_sae_topk_wrong_arch_raises():
     """train_sae_topk requires architecture='topk'."""
     X, _ = _make_synthetic_sparse(n=8, m_true=16, n_samples=64, k=2)
@@ -160,11 +148,9 @@ def test_train_sae_topk_wrong_arch_raises():
     with pytest.raises(ValueError):
         train_sae_topk(X, cfg)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Reconstruction quality on synthetic sparse signal
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 @pytest.mark.parametrize(
     "architecture,fve_threshold",
@@ -211,7 +197,6 @@ def test_train_sae_recovers_synthetic_sparse_signal(architecture, fve_threshold)
         f"{fve_threshold} threshold"
     )
 
-
 def test_train_sae_topk_l0_at_convergence_matches_k():
     """At convergence, mean L0 of TopK SAE equals config.k exactly per sample.
 
@@ -239,7 +224,6 @@ def test_train_sae_topk_l0_at_convergence_matches_k():
         f"TopK L0 mean {metrics['l0_mean']} ≠ k={k}"
     )
 
-
 def test_train_sae_topk_decoder_columns_unit_norm():
     """When config.decoder_unit_norm=True, every W_dec[:, j] has L2 norm 1.0."""
     n, m_true, k = 8, 16, 2
@@ -255,11 +239,9 @@ def test_train_sae_topk_decoder_columns_unit_norm():
         f"[{norms.min():.5f}, {norms.max():.5f}]"
     )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Batch-TopK behaviour
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_train_sae_batch_topk_variable_per_sample_sparsity():
     """Batch-TopK allows per-sample L0 to vary; std(L0) > 0 when samples
@@ -289,11 +271,9 @@ def test_train_sae_batch_topk_variable_per_sample_sparsity():
         f"got l0_std={metrics['l0_std']}"
     )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # evaluate_reconstruction
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_evaluate_reconstruction_returns_well_formed_dict():
     """All five metrics present, types correct, reasonable bounds."""
@@ -313,7 +293,6 @@ def test_evaluate_reconstruction_returns_well_formed_dict():
     assert metrics["l0_std"] >= 0
     assert 0.0 <= metrics["dead_fraction"] <= 1.0
 
-
 def test_evaluate_reconstruction_dead_fraction_in_unit_interval():
     """``dead_fraction`` must be in [0, 1]."""
     # Build a synthetic SAE by hand where all decoder columns are zero
@@ -331,11 +310,9 @@ def test_evaluate_reconstruction_dead_fraction_in_unit_interval():
     metrics = evaluate_reconstruction(sae, X)
     assert 0.0 <= metrics["dead_fraction"] <= 1.0
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # interpret_features
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_interpret_features_flags_dead_features():
     """Hand-built SAE where one feature is fully alive and one is fully dead."""
@@ -379,7 +356,6 @@ def test_interpret_features_flags_dead_features():
     feat0 = reports[0]
     assert "ubiquitous" in feat0["flags"]
 
-
 def test_interpret_features_top_subjects_count():
     """len(report[j]['top_subjects']) <= top_k_subjects for every j."""
     n, m = 4, 4
@@ -409,7 +385,6 @@ def test_interpret_features_top_subjects_count():
     reports = interpret_features(sae, bundle, metadata, top_k_subjects=20)
     for r in reports:
         assert len(r["top_subjects"]) <= 20
-
 
 def test_interpret_features_fused_layer_returns_top_cell_types():
     """When bundle.layer == 'fused', report includes non-empty top_cell_types."""
@@ -448,11 +423,9 @@ def test_interpret_features_fused_layer_returns_top_cell_types():
             assert "projection" in tc
             assert "squared_projection" in tc
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # cross_seed_stability
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_cross_seed_stability_identical_models_yields_full_stability():
     """3 identical SAEModels → stable_fraction == 1.0 and best-match cosine = 1."""
@@ -475,7 +448,6 @@ def test_cross_seed_stability_identical_models_yields_full_stability():
     cm = out["cosine_matrices"]
     for s in range(3):
         assert np.allclose(np.diag(cm[s, s]), 1.0, atol=1e-5)
-
 
 def test_cross_seed_stability_random_models_yield_low_stability():
     """3 i.i.d. random-decoder SAE models in moderate dim → stable_fraction near 0.
@@ -504,7 +476,6 @@ def test_cross_seed_stability_random_models_yield_low_stability():
         f"Random SAEs unexpectedly stable: stable_fraction={out['stable_fraction']}"
     )
 
-
 def test_cross_seed_stability_requires_two_models():
     """Single SAE input must raise ValueError."""
     n, m = 8, 16
@@ -519,11 +490,9 @@ def test_cross_seed_stability_requires_two_models():
     with pytest.raises(ValueError):
         cross_seed_stability([sae], cosine_threshold=0.7)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Aux-loss revival behaviour (Gao 2024)
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_aux_loss_revives_dead_features():
     """With aux_lambda > 0, dead-feature count at end of training is no
@@ -558,7 +527,6 @@ def test_aux_loss_revives_dead_features():
         f"aux={metrics_aux['dead_fraction']:.3f}"
     )
 
-
 def test_decoder_unit_norm_idempotent():
     """A second projection should not change already-unit-norm columns."""
     n, m_true, k = 8, 16, 2
@@ -574,7 +542,6 @@ def test_decoder_unit_norm_idempotent():
     norms_after = np.linalg.norm(W_dec2, axis=0)
     assert np.allclose(norms_before, norms_after, atol=1e-6)
     assert np.allclose(norms_after, 1.0, atol=1e-5)
-
 
 def test_evaluate_reconstruction_with_cached_codes_matches_per_fold():
     """F10: per-fold metrics from cached codes are bit-equivalent to a fresh
@@ -607,7 +574,6 @@ def test_evaluate_reconstruction_with_cached_codes_matches_per_fold():
             f"slice mismatch on {key}: sliced={sliced[key]} "
             f"expected={expected_slice[key]}"
         )
-
 
 def test_cross_seed_stability_off_diagonal_consistent_with_transpose():
     """F3: cosine_matrices[sp, s] == cosine_matrices[s, sp].T (bit-exact).

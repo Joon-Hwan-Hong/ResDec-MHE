@@ -75,15 +75,22 @@ def _bh_fdr(pvals: np.ndarray) -> np.ndarray:
 def _compute_lfc(
     x: np.ndarray, y: np.ndarray, scale: Literal["counts", "log1p", "raw"],
 ) -> float:
-    """Compute log2 fold-change between resilient ``x`` and vulnerable ``y``.
+    """Compute log fold-change between resilient ``x`` and vulnerable ``y``.
 
-    Behavior depends on ``scale``:
-      - ``"counts"``: log2(mean(x)+1) - log2(mean(y)+1). Standard for raw
-        UMI/read counts where many cells = 0.
-      - ``"log1p"``: mean(x) - mean(y). Input already on log1p scale, so
-        difference of means IS the log2 fold-change up to log base.
-      - ``"raw"``: log2(mean(x)) - log2(mean(y)). Input is on linear scale
-        but no zero-inflation expected (e.g., normalized expression).
+    The returned value's log base depends on ``scale``:
+      - ``"counts"`` (log2): log2(mean(x)+1) - log2(mean(y)+1). Standard for
+        raw UMI/read counts where many cells = 0.
+      - ``"log1p"`` (natural log, log_e): mean(x) - mean(y). Input is
+        already on log1p scale (scanpy default uses ``np.log1p``, i.e.
+        natural log), so the difference of means is the LFC in the SAME
+        log base as the input — natural log here, NOT log2. Multiply by
+        ``log2(e) ≈ 1.4427`` if a log2 unit is required for downstream.
+      - ``"raw"`` (log2): log2(mean(x)) - log2(mean(y)). Input is on linear
+        scale but no zero-inflation expected (e.g., normalized expression).
+
+    The result is stored in the DataFrame column ``log2_fold_change``
+    regardless of scale; callers using ``log1p`` input must remember the
+    column unit is natural log, not log2.
     """
     if scale == "counts":
         mx, my = float(x.mean()), float(y.mean())
@@ -94,6 +101,9 @@ def _compute_lfc(
             )
         return float(np.log2(mx + 1.0) - np.log2(my + 1.0))
     if scale == "log1p":
+        # Difference of means on log1p data is LFC in natural log (log_e),
+        # not log2. The column is named ``log2_fold_change`` for backward
+        # compatibility; downstream code must convert if log2 is required.
         return float(x.mean() - y.mean())
     if scale == "raw":
         mx, my = float(x.mean()), float(y.mean())

@@ -20,16 +20,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.conftest import WORKTREE_ROOT
+
 # baselines/mixmil/ is a script dir, not a package. Add to sys.path so we can
 # import results_canonical as a standalone module.
-_MIXMIL_DIR = (
-    Path(__file__).resolve().parents[3] / "baselines" / "mixmil"
-)
+_MIXMIL_DIR = WORKTREE_ROOT / "baselines" / "mixmil"
 if str(_MIXMIL_DIR) not in sys.path:
     sys.path.insert(0, str(_MIXMIL_DIR))
 
-from results_canonical import write_dl_results_csv
-
+from results_canonical import write_dl_results_csv  # noqa: E402
 
 def _make_allfolds_csv(
     results_dir: Path,
@@ -51,7 +50,6 @@ def _make_allfolds_csv(
     df.to_csv(path, index=False)
     return path
 
-
 def _make_fold_predictions_csv(
     results_dir: Path,
     fold: int,
@@ -69,7 +67,6 @@ def _make_fold_predictions_csv(
     path = fold_dir / "predictions.csv"
     df.to_csv(path, index=False)
     return path
-
 
 class TestWriteDLResultsCsv:
 

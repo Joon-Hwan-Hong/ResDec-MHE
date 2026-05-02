@@ -19,6 +19,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -37,12 +41,31 @@ from src.visualization.theme import apply_theme
 logger = logging.getLogger(__name__)
 
 
-def _render_one(json_path: Path, out_dir: Path, label: str) -> list[str]:
+# Floor for the |target - y_init| denominator in the fraction-of-target
+# movement metric. Targets in {relative, absolute} modes can be arbitrarily
+# close to y_init (e.g., a subject already at the cohort centile target);
+# this floor avoids division-by-zero artefacts inflating ``frac`` to ±inf.
+# 1e-9 is well below the smallest meaningful cognition-scale increment.
+_EPS_FRAC_OF_TARGET: float = 1e-9
+
+
+def _render_one(
+    json_path: Path,
+    out_dir: Path,
+    label: str,
+    *,
+    gene_names_npy: Path,
+) -> list[str]:
+    """Render the 3-panel counterfactual figures for one target mode.
+
+    ``gene_names_npy`` is required: it routes the ``data/precomputed/gene_names.npy``
+    path through argparse instead of hardcoding it inside the function body.
+    """
     d = json.loads(json_path.read_text())
     results = d["results"]
     n_features_per_subject = d["n_features_per_subject"]
     n_ct = len(CELL_TYPE_ORDER)
-    gene_names = list(np.load("data/precomputed/gene_names.npy", allow_pickle=True))
+    gene_names = list(np.load(gene_names_npy, allow_pickle=True))
     n_gene = len(gene_names)
 
     # Movement plot
@@ -50,7 +73,9 @@ def _render_one(json_path: Path, out_dir: Path, label: str) -> list[str]:
     y_init = np.array([r["y_init"] for r in results])
     y_cf = np.array([r["y_cf"] for r in results])
     target = np.array([r["target_y"] for r in results])
-    frac = np.abs(y_cf - y_init) / np.maximum(np.abs(target - y_init), 1e-9)
+    frac = np.abs(y_cf - y_init) / np.maximum(
+        np.abs(target - y_init), _EPS_FRAC_OF_TARGET,
+    )
     regime = [r["regime"] for r in results]
     rendered: list[str] = []
     try:
@@ -105,18 +130,42 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--relative-json",
-        default="outputs/canonical/interpretability/counterfactuals_relative/counterfactuals_fold0.json",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/counterfactuals_relative"
+            / "counterfactuals_fold0.json"
+        ),
         help="Path to the relative-mode CF JSON.",
     )
     p.add_argument(
         "--absolute-json",
-        default="outputs/canonical/interpretability/counterfactuals_absolute/counterfactuals_fold0.json",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/counterfactuals_absolute"
+            / "counterfactuals_fold0.json"
+        ),
         help="Path to the absolute-mode CF JSON.",
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/canonical/interpretability/figures/counterfactual",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/figures/counterfactual"
+        ),
         help="Output directory for the rendered figures.",
+    )
+    p.add_argument(
+        "--gene-names-npy",
+        type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed/gene_names.npy",
+        help=(
+            "Path to gene_names.npy (148_607-element object array). "
+            "Routed here from argparse to avoid hardcoding under cwd-fragile "
+            "relative paths."
+        ),
     )
     args = p.parse_args()
 
@@ -134,7 +183,9 @@ def main():
         if not path.exists():
             logger.warning("missing %s", path)
             continue
-        all_rendered.extend(_render_one(path, out_dir, label))
+        all_rendered.extend(
+            _render_one(path, out_dir, label, gene_names_npy=args.gene_names_npy)
+        )
 
     logger.info("rendered %d CF figures: %s", len(all_rendered), all_rendered)
     return 0

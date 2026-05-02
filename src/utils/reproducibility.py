@@ -19,14 +19,27 @@ import numpy as np
 import torch
 
 
-def set_seed(seed: int, deterministic: bool = True, benchmark: bool = False) -> None:
+def set_seed(
+    seed: int,
+    deterministic: bool = True,
+    benchmark: bool = False,
+    allow_nondet: bool = True,
+) -> None:
     """
     Set random seeds for reproducibility across all relevant libraries.
 
     Args:
-        seed: Random seed value
-        deterministic: If True, use deterministic algorithms (slower but reproducible)
-        benchmark: If True, enable cuDNN autotuner (faster but non-deterministic)
+        seed: Random seed value.
+        deterministic: If True, use deterministic algorithms (slower but
+            reproducible).
+        benchmark: If True, enable cuDNN autotuner (faster but
+            non-deterministic).
+        allow_nondet: When ``deterministic=True``, this is forwarded to
+            ``torch.use_deterministic_algorithms(..., warn_only=allow_nondet)``.
+            ``True`` (default) keeps the historical behaviour of warning when
+            an op (e.g., scatter_add in HGT) has no deterministic CUDA path.
+            Set ``False`` for a strict run that errors on the first
+            non-deterministic op.
     """
     # Python random
     random.seed(seed)
@@ -50,11 +63,13 @@ def set_seed(seed: int, deterministic: bool = True, benchmark: bool = False) -> 
         pass
 
     # Deterministic operations.
-    # warn_only=True because scatter_add (used in HGT message passing) has no
-    # deterministic CUDA implementation. Setting warn_only=False would error on
-    # every HGT forward pass. On CPU, scatter ops are deterministic.
+    # ``warn_only=True`` (default) because scatter_add (used in HGT message
+    # passing) has no deterministic CUDA implementation. Setting
+    # warn_only=False would error on every HGT forward pass. On CPU, scatter
+    # ops are deterministic. Callers can flip via ``allow_nondet=False`` for
+    # strict-determinism runs that error on the first non-deterministic op.
     if deterministic:
-        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.use_deterministic_algorithms(True, warn_only=allow_nondet)
         # Required for some operations
         import os
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"

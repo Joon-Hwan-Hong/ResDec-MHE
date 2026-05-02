@@ -4,7 +4,6 @@ import torch.nn as nn
 
 from src.models.resdec_head.hyper_connections import HyperConnection
 
-
 def test_hyper_connection_shape():
     """Multi-stream forward preserves [B, N, d] shape."""
     hc = HyperConnection(d_model=64, n_streams=4)
@@ -12,7 +11,6 @@ def test_hyper_connection_shape():
     sublayer = nn.Linear(64, 64)
     y = hc(streams, sublayer)
     assert y.shape == (4, 4, 64)
-
 
 def test_hyper_connection_identity_A_zero_sublayer():
     """With A = I (default init), B[m]=0 and a zero sublayer, streams pass through unchanged."""
@@ -24,7 +22,6 @@ def test_hyper_connection_identity_A_zero_sublayer():
     # Any sublayer works since its output is zeroed out by B=0.
     y = hc(streams, nn.Identity())
     assert torch.allclose(y, streams, atol=1e-6)
-
 
 def test_hyper_connection_streams_diverge_under_nontrivial_A():
     """After A-matrix mixing with a non-identity A, streams that start identical
@@ -54,7 +51,6 @@ def test_hyper_connection_streams_diverge_under_nontrivial_A():
     )
     assert not all_equal, "Streams did not diverge under non-identity A mixing"
 
-
 def test_hyper_connection_gradient_flow():
     """All learnable params (A, B, alpha) receive gradients, and input gradients flow."""
     hc = HyperConnection(d_model=16, n_streams=3)
@@ -67,14 +63,12 @@ def test_hyper_connection_gradient_flow():
     assert hc.B.grad is not None
     assert hc.alpha.grad is not None
 
-
 def test_hyper_connection_rejects_bad_shape():
     """Passing a 2D tensor (the old signature) should raise a clear error."""
     hc = HyperConnection(d_model=8, n_streams=4)
     bad_input = torch.randn(2, 8)  # [B, d] — the old interface
     with pytest.raises(ValueError, match="\\[B, N, d\\]"):
         hc(bad_input, nn.Identity())
-
 
 def test_hyper_connection_rejects_stream_count_mismatch():
     """Wrong N dimension should raise a clear error."""

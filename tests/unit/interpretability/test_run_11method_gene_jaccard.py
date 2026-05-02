@@ -24,16 +24,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def _import_mod():
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_11method_gene_jaccard as mod,
     )
     return mod
-
 
 def test_jaccard_empty_and_known_values() -> None:
     mod = _import_mod()
@@ -44,7 +41,6 @@ def test_jaccard_empty_and_known_values() -> None:
     assert mod.jaccard({"a", "b"}, {"b", "c"}) == pytest.approx(1.0 / 3.0)
     # Disjoint sets
     assert mod.jaccard({"a"}, {"b"}) == 0.0
-
 
 def test_pairwise_jaccard_matrix_symmetry_and_diagonal() -> None:
     mod = _import_mod()
@@ -68,7 +64,6 @@ def test_pairwise_jaccard_matrix_symmetry_and_diagonal() -> None:
     k = labels.index("M3")
     assert matrix[i, k] == pytest.approx(0.25)
 
-
 def test_multiway_support_counts_and_at_least_buckets() -> None:
     mod = _import_mod()
     sets = {
@@ -88,7 +83,6 @@ def test_multiway_support_counts_and_at_least_buckets() -> None:
     # >=3: none
     assert at_least[3] == 0
 
-
 def test_consensus_genes_filter_and_sort() -> None:
     mod = _import_mod()
     sets = {
@@ -107,12 +101,10 @@ def test_consensus_genes_filter_and_sort() -> None:
     # Threshold above max yields empty
     assert mod.consensus_genes_at_threshold(sets, threshold=99) == []
 
-
 def test_per_ct_to_union_dedups_across_cts() -> None:
     mod = _import_mod()
     per_ct = {"CT_A": {"x", "y"}, "CT_B": {"y", "z"}, "CT_C": {"z"}}
     assert mod.per_ct_to_union(per_ct) == {"x", "y", "z"}
-
 
 def test_captum_loader_filters_by_top_k() -> None:
     mod = _import_mod()
@@ -130,7 +122,6 @@ def test_captum_loader_filters_by_top_k() -> None:
     # The Splatter top-1 from EXP-034 / MEMORY is Splatter × SCN3B — pinned
     assert "SCN3B" in blocks["Splatter"]
 
-
 def test_wasserstein_loader_capped_at_10() -> None:
     mod = _import_mod()
     p = (
@@ -145,7 +136,6 @@ def test_wasserstein_loader_capped_at_10() -> None:
     assert len(blocks) == 31
     # Source caps at 10 → loader truncates to 10 even when caller asks for 99
     assert all(len(s) <= 10 for s in blocks.values())
-
 
 def test_de_wilcoxon_loader_returns_top_k() -> None:
     mod = _import_mod()
@@ -163,7 +153,6 @@ def test_de_wilcoxon_loader_returns_top_k() -> None:
     for ct, s in blocks.items():
         assert len(s) <= 5, ct
 
-
 def test_de_wilcoxon_loader_pins_splatter_top_1() -> None:
     """DE Wilcoxon top-1 for Splatter is ID2 (per EXP-034 test pin)."""
     mod = _import_mod()
@@ -175,7 +164,6 @@ def test_de_wilcoxon_loader_pins_splatter_top_1() -> None:
         pytest.skip("DE Wilcoxon dir missing")
     s = mod._de_per_ct_top_k(de_dir, top_k=1)
     assert s["Splatter"] == {"ID2"}
-
 
 def test_end_to_end_runs(tmp_path: Path) -> None:
     """Smoke test: script runs against canonical inputs and writes outputs."""

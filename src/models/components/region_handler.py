@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.data.constants import REGION_ORDER
+from src.data.constants import REGION_ORDER, SOFTMAX_MASK_LARGE_NEGATIVE
 
 
 class RegionHandler(nn.Module):
@@ -99,7 +99,10 @@ class RegionHandler(nn.Module):
         # masking convention in PathologyStratifiedAttention.
         all_masked = ~region_mask_bool.any(dim=1, keepdim=True)  # [B, 1]
         if all_masked.any():
-            masked_logits = masked_logits.masked_fill(all_masked.expand_as(masked_logits), -1e9)
+            masked_logits = masked_logits.masked_fill(
+                all_masked.expand_as(masked_logits),
+                SOFTMAX_MASK_LARGE_NEGATIVE,
+            )
         # AMP note: region_weights is an nn.Parameter (always float32, not
         # autocasted), and masked_logits inherits float32 from it. With only
         # R=4-6 elements, this softmax is numerically safe in float32.

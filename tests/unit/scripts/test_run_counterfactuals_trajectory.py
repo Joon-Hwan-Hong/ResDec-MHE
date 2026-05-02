@@ -24,8 +24,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 SCRIPT_PATH = (
     _WORKTREE_ROOT
     / "scripts"
@@ -34,18 +33,14 @@ SCRIPT_PATH = (
     / "run_counterfactuals.py"
 )
 
-
 def _import_orchestrator():
     """Import the run_counterfactuals.py module without running main()."""
-    if str(_WORKTREE_ROOT) not in sys.path:
-        sys.path.insert(0, str(_WORKTREE_ROOT))
     spec = importlib.util.spec_from_file_location(
         "run_counterfactuals_for_test", SCRIPT_PATH,
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
 
 def _make_args(record_trajectory: bool):
     """Minimal argparse.Namespace with all fields used by _run_batched/_run_per_subject."""
@@ -61,7 +56,6 @@ def _make_args(record_trajectory: bool):
         lambda_mult=2.0,
         top_k=3,
     )
-
 
 def test_argparse_exposes_record_trajectory_flag():
     """``--record-trajectory`` is parsable and defaults to False."""
@@ -84,7 +78,6 @@ def test_argparse_exposes_record_trajectory_flag():
     assert "--record-trajectory" in src, (
         "run_counterfactuals.py must expose --record-trajectory in argparse"
     )
-
 
 def test_run_batched_includes_trajectory_when_flag_set(monkeypatch):
     """``_run_batched`` adds a 'trajectory' field iff args.record_trajectory."""
@@ -193,7 +186,6 @@ def test_run_batched_includes_trajectory_when_flag_set(monkeypatch):
         assert "trajectory" not in r, (
             "trajectory key must be absent when --record-trajectory not set"
         )
-
 
 def test_run_per_subject_includes_trajectory_when_flag_set(monkeypatch):
     """``_run_per_subject`` adds a 'trajectory' field iff args.record_trajectory."""

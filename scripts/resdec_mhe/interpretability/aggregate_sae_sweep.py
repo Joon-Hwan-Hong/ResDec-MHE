@@ -103,7 +103,8 @@ def gather_sweep(sae_root: Path) -> pd.DataFrame:
                     "l0_mean_full": full["l0_mean"],
                     "dead_fraction_full": full["dead_fraction"],
                     "per_fold_fve_mean": float(np.mean(per_fold_fves)) if per_fold_fves else None,
-                    "per_fold_fve_std": float(np.std(per_fold_fves, ddof=1)) if len(per_fold_fves) > 1 else None,
+                    # ddof=0 (pstdev) — project-wide convention.
+                    "per_fold_fve_std": float(np.std(per_fold_fves, ddof=0)) if len(per_fold_fves) > 1 else None,
                     "cross_fold_stability_ratio": (
                         float(np.mean(per_fold_fves) / max(full["fve"], 1e-12))
                         if per_fold_fves else None
@@ -115,15 +116,20 @@ def gather_sweep(sae_root: Path) -> pd.DataFrame:
 
 
 def select_best_per_arch_layer(df: pd.DataFrame) -> pd.DataFrame:
-    """Best config per (architecture, layer): max FVE under dead<0.5 AND L0/m<0.5; else max FVE."""
+    """Best config per (architecture, layer): max FVE under dead<0.5 AND L0/m<0.5; else max FVE.
+
+    Rows where ``n_input`` is missing (legacy npz without W_dec /
+    stat_fraction_active) propagate NaN through ``l0_fraction`` and fall
+    out of the sane-mask filter — intentional loud failure rather than
+    silently encoding d_fused=64 as a literal.
+    """
     best_rows: list[dict] = []
     for (arch, layer), g in df.groupby(["architecture", "layer"]):
         g = g.copy()
-        # Use per-row n_input read from the SAE npz; falls back to 64 only
-        # when n_input is unavailable for legacy npz files. This avoids
-        # silently encoding d_fused=64 as a literal.
-        n_per_row = g["n_input"].fillna(64).astype(int)
-        g["dict_size"] = g["expansion"].astype(int) * n_per_row
+        # Compute dict_size + l0_fraction here from per-row n_input. NaN
+        # propagates through both columns; the sane-mask drops those rows.
+        n_per_row = g["n_input"].astype(float)  # NaN-preserving cast
+        g["dict_size"] = g["expansion"].astype(float) * n_per_row
         g["l0_fraction"] = g["l0_mean_full"] / g["dict_size"]
         sane = g[(g["dead_fraction_full"] < 0.5) & (g["l0_fraction"] < 0.5)]
         if len(sane):
@@ -159,10 +165,26 @@ def plot_pareto(df: pd.DataFrame, out_path: Path) -> None:
         ax.legend(fontsize=8)
     fig.suptitle(f"SAE sweep: L0 vs FVE Pareto (n_configs={len(df)})", fontsize=11)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    # 600 DPI matches the project-wide paper-grade convention; PDF is
+    # vector and unaffected by DPI.
+    fig.savefig(out_path, dpi=600, bbox_inches="tight")
     pdf_path = out_path.with_suffix(".pdf")
     fig.savefig(pdf_path, bbox_inches="tight")
     plt.close(fig)
+
+
+def _jsonify(o):
+    """Fallback JSON encoder for NumPy scalars/arrays (raises on unknown).
+
+    Mirrors the helper in ``ccc_composite_attribution._jsonify`` so unexpected
+    types (e.g. ``pd.NA``) raise rather than being silently coerced to NaN
+    by ``json.dumps(..., default=float)``.
+    """
+    if isinstance(o, (np.floating, np.integer)):
+        return float(o) if isinstance(o, np.floating) else int(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    raise TypeError(f"Cannot JSON-serialize {type(o)}: {o!r}")
 
 
 def main() -> int:
@@ -200,7 +222,7 @@ def main() -> int:
         "all_configs": df.to_dict(orient="records"),
     }
     Path(args.summary_json).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.summary_json).write_text(json.dumps(summary, indent=2, default=float))
+    Path(args.summary_json).write_text(json.dumps(summary, indent=2, default=_jsonify))
     logger.info("wrote %s + %s", args.summary_json, args.summary_csv)
 
     plot_pareto(df, Path(args.pareto_png))

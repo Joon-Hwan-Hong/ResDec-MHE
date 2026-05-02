@@ -13,7 +13,6 @@ Test coverage includes:
 - Edge cases
 """
 
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -29,35 +28,28 @@ from src.analysis.gene_importance import (
     load_gene_gate_weights_hdf5,
 )
 
-
 # ============================================================================
 # Fixtures
 # ============================================================================
 
-
 @pytest.fixture
 def sample_gene_gate_weights():
     """Sample gene gate weights [n_cell_types, n_genes]."""
-    np.random.seed(42)
     return np.random.rand(N_CELL_TYPES, 100).astype(np.float32)
-
 
 @pytest.fixture
 def sample_gene_names():
     """Sample gene names."""
     return [f"GENE_{i}" for i in range(100)]
 
-
 @pytest.fixture
 def sample_region_pseudobulk():
     """Sample region pseudobulk data."""
-    np.random.seed(42)
     return {
         "PFC": np.random.rand(N_CELL_TYPES, 100).astype(np.float32),
         "AG": np.random.rand(N_CELL_TYPES, 100).astype(np.float32),
         "MTC": np.random.rand(N_CELL_TYPES, 100).astype(np.float32),
     }
-
 
 @pytest.fixture
 def analyzer(sample_gene_gate_weights, sample_gene_names):
@@ -67,11 +59,9 @@ def analyzer(sample_gene_gate_weights, sample_gene_names):
         gene_names=sample_gene_names,
     )
 
-
 # ============================================================================
 # GeneImportanceResult Dataclass Tests
 # ============================================================================
-
 
 class TestGeneImportanceResult:
     """Tests for GeneImportanceResult dataclass."""
@@ -91,11 +81,9 @@ class TestGeneImportanceResult:
         result = GeneImportanceResult(by_celltype=by_celltype, top_genes=top_genes)
         assert result.metadata == {}
 
-
 # ============================================================================
 # GeneImportanceAnalyzer Initialization Tests
 # ============================================================================
-
 
 class TestAnalyzerInit:
     """Tests for GeneImportanceAnalyzer initialization."""
@@ -142,11 +130,9 @@ class TestAnalyzerInit:
                 region_pseudobulk=bad_region_data,
             )
 
-
 # ============================================================================
 # Gene Importance by Cell Type Tests
 # ============================================================================
-
 
 class TestImportanceByCellType:
     """Tests for gene importance by cell type computation."""
@@ -181,11 +167,9 @@ class TestImportanceByCellType:
         assert len(row) == 1
         assert np.isclose(row["weight"].values[0], sample_gene_gate_weights[0, 0])
 
-
 # ============================================================================
 # Top Genes Tests
 # ============================================================================
-
 
 class TestTopGenes:
     """Tests for top genes extraction."""
@@ -217,11 +201,9 @@ class TestTopGenes:
         weights = ct_data["weight"].tolist()
         assert weights == sorted(weights, reverse=True)
 
-
 # ============================================================================
 # Region-Stratified Importance Tests
 # ============================================================================
-
 
 class TestRegionStratified:
     """Tests for region-stratified effective importance."""
@@ -275,39 +257,33 @@ class TestRegionStratified:
             expected = row["gate_weight"] * row["mean_expression"]
             assert np.isclose(row["effective_weight"], expected, atol=1e-6)
 
-
 # ============================================================================
 # Save/Load Tests
 # ============================================================================
 
-
 class TestSaveLoad:
     """Tests for save and load functionality."""
 
-    def test_save_creates_files(self, analyzer):
+    def test_save_creates_files(self, analyzer, tmp_path):
         """save() creates expected files."""
         result = analyzer.analyze()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            saved = analyzer.save(result, tmpdir)
-            assert (Path(tmpdir) / "gene_importance_by_celltype.parquet").exists()
-            assert (Path(tmpdir) / "top_genes_per_celltype.csv").exists()
-            assert (Path(tmpdir) / "gene_gate_weights.h5").exists()
+        saved = analyzer.save(result, tmp_path)
+        assert (tmp_path / "gene_importance_by_celltype.parquet").exists()
+        assert (tmp_path / "top_genes_per_celltype.csv").exists()
+        assert (tmp_path / "gene_gate_weights.h5").exists()
 
-    def test_hdf5_roundtrip(self, analyzer, sample_gene_gate_weights, sample_gene_names):
+    def test_hdf5_roundtrip(self, analyzer, sample_gene_gate_weights, sample_gene_names, tmp_path):
         """HDF5 save/load preserves data."""
         result = analyzer.analyze()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            analyzer.save(result, tmpdir)
-            weights, genes, cell_types = load_gene_gate_weights_hdf5(Path(tmpdir) / "gene_gate_weights.h5")
+        analyzer.save(result, tmp_path)
+        weights, genes, cell_types = load_gene_gate_weights_hdf5(tmp_path / "gene_gate_weights.h5")
 
         np.testing.assert_array_almost_equal(weights, sample_gene_gate_weights)
         assert genes == sample_gene_names
 
-
 # ============================================================================
 # Schema Validation Tests
 # ============================================================================
-
 
 class TestOutputSchemaValidation:
     """Tests validating output DataFrame schemas."""
@@ -337,11 +313,9 @@ class TestOutputSchemaValidation:
         # This test just verifies the data type is correct
         assert np.issubdtype(result.by_celltype["weight"].dtype, np.floating)
 
-
 # ============================================================================
 # Property-Based Tests
 # ============================================================================
-
 
 class TestPropertyBased:
     """Property-based tests using Hypothesis."""
@@ -386,11 +360,9 @@ class TestPropertyBased:
         expected = n_cell_types * min(top_k, n_genes)
         assert len(result.top_genes) == expected
 
-
 # ============================================================================
 # Edge Case Tests
 # ============================================================================
-
 
 class TestEdgeCases:
     """Edge case tests."""
@@ -440,11 +412,9 @@ class TestEdgeCases:
         result = analyzer.analyze()
         assert result.by_region is None or len(result.by_region) == 0
 
-
 # ============================================================================
 # Gene gate HDF5 string decode
 # ============================================================================
-
 
 class TestGeneGateLoadStrAndBytes:
     """Test L1: load_gene_gate_weights_hdf5 handles both bytes and str HDF5 datasets."""
@@ -514,11 +484,9 @@ class TestGeneGateLoadStrAndBytes:
         assert gene_names == [f"GENE{i}" for i in range(n_genes)]
         assert cell_type_names == ["Ast", "Mic", "Oli"]
 
-
 # ============================================================================
 # Differential Attention Analysis Tests
 # ============================================================================
-
 
 class TestDifferentialExpression:
     """Tests for differential expression analysis."""

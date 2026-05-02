@@ -6,6 +6,16 @@ These figures expose the additive structure that ResDec-MHE relies on:
 the TabPFN base accounts for ~42.5% of Var(y) and the residual head adds
 ~4.6% (per outputs/canonical/interpretability/variance_decomposition.json).
 
+Y-target semantics
+------------------
+``val_predictions_best.npz["predictions"]`` is the COMPOSITE
+(``ŷ_tabpfn + f̂_residual``), NOT the residual head output (see
+``src/training/resdec_lightning_module.py:498`` where ``pred = pred + y_tabpfn``
+is applied before persistence). This API therefore takes ``y_composite``
+directly; the f̂_residual contribution is recovered internally as
+``y_composite - y_tabpfn``. Adding ``y_tabpfn`` to ``y_composite`` would
+double-count the TabPFN base (memory rule ``feedback_verify_y_semantics.md``).
+
 Four candidate figures (user picks visually after rendering):
 
 1. ``plot_additive_3panel`` — three sub-panels in one figure: (A) y vs
@@ -48,14 +58,32 @@ from src.visualization.theme import (
 def plot_additive_3panel(
     y_true: np.ndarray,
     y_tabpfn: np.ndarray,
-    y_residual: np.ndarray,
+    y_composite: np.ndarray,
     out_stem: str | Path,
     *,
     figsize: tuple[float, float] = (10.5, 3.5),
 ) -> Path:
-    """Three-panel additive decomposition figure."""
+    """Three-panel additive decomposition figure.
+
+    Parameters
+    ----------
+    y_true
+        Ground-truth cognition (length N).
+    y_tabpfn
+        TabPFN baseline prediction (length N).
+    y_composite
+        ResDec-MHE composite prediction = ``ŷ_tabpfn + f̂_residual``
+        (length N). This is the value persisted as
+        ``val_predictions_best.npz["predictions"]``.
+    out_stem
+        Output path stem (no extension).
+    figsize
+        Figure size in inches.
+    """
     apply_theme()
-    y_composite = y_tabpfn + y_residual
+    # Recover the residual head output by subtraction; the visualization API
+    # takes the COMPOSITE prediction (matches val_predictions_best.npz schema).
+    f_residual = y_composite - y_tabpfn
     fig = plt.figure(figsize=figsize, constrained_layout=False)
     gs = GridSpec(1, 3, figure=fig, wspace=0.35)
 
@@ -91,9 +119,9 @@ def plot_additive_3panel(
     bins_idx = np.digitize(y_tabpfn, tert)
     seq = PALETTES["sequential"](np.linspace(0.15, 0.85, 3))
     bin_labels = ["TabPFN low", "TabPFN mid", "TabPFN high"]
-    bin_edges = np.linspace(y_residual.min(), y_residual.max(), 35)
+    bin_edges = np.linspace(f_residual.min(), f_residual.max(), 35)
     for k in range(3):
-        ax_c.hist(y_residual[bins_idx == k], bins=bin_edges, color=seq[k],
+        ax_c.hist(f_residual[bins_idx == k], bins=bin_edges, color=seq[k],
                   alpha=0.55, label=bin_labels[k], edgecolor="white", linewidth=0.4)
     ax_c.axvline(0, ls="--", color="black", lw=0.6, alpha=0.6)
     ax_c.set_xlabel("f̂_residual")
@@ -173,19 +201,26 @@ def plot_variance_partition_bar(
 
 def plot_per_subject_delta_scatter(
     y_tabpfn: np.ndarray,
-    y_residual: np.ndarray,
+    y_composite: np.ndarray,
     pathology: np.ndarray,
     out_stem: str | Path,
     *,
     pathology_label: str = "Global pathology (gpath)",
     figsize: tuple[float, float] = (5.0, 4.0),
 ) -> Path:
-    """Scatter of f̂_residual vs ŷ_TabPFN, color-coded by pathology covariate."""
+    """Scatter of f̂_residual vs ŷ_TabPFN, color-coded by pathology covariate.
+
+    ``y_composite`` is the ResDec-MHE composite prediction
+    (``ŷ_tabpfn + f̂_residual``); the f̂_residual contribution plotted on the
+    y-axis is recovered as ``y_composite - y_tabpfn``. See module docstring
+    for Y-target semantics.
+    """
     apply_theme()
+    f_residual = y_composite - y_tabpfn
     fig, ax = plt.subplots(figsize=figsize)
     cmap = PALETTES["sequential"]
-    finite = np.isfinite(pathology) & np.isfinite(y_residual) & np.isfinite(y_tabpfn)
-    sc = ax.scatter(y_tabpfn[finite], y_residual[finite], c=pathology[finite],
+    finite = np.isfinite(pathology) & np.isfinite(f_residual) & np.isfinite(y_tabpfn)
+    sc = ax.scatter(y_tabpfn[finite], f_residual[finite], c=pathology[finite],
                     cmap=cmap, s=18, alpha=0.75, edgecolors="white", linewidth=0.4)
     ax.axhline(0, ls="--", color="black", lw=0.6, alpha=0.6)
     cbar = fig.colorbar(sc, ax=ax, fraction=0.045, pad=0.03)
@@ -202,15 +237,20 @@ def plot_per_subject_delta_scatter(
 def plot_residual_histogram_overlay(
     y_true: np.ndarray,
     y_tabpfn: np.ndarray,
-    y_residual: np.ndarray,
+    y_composite: np.ndarray,
     out_stem: str | Path,
     *,
     figsize: tuple[float, float] = (5.0, 3.5),
 ) -> Path:
-    """Overlay: |y - ŷ_TabPFN| (TabPFN-only error) vs |y - ŷ_composite| (with residual head)."""
+    """Overlay: |y - ŷ_TabPFN| (TabPFN-only error) vs |y - ŷ_composite| (with residual head).
+
+    ``y_composite`` is the ResDec-MHE composite prediction loaded directly
+    from ``val_predictions_best.npz["predictions"]``; do NOT add ``y_tabpfn``
+    again. See module docstring for Y-target semantics.
+    """
     apply_theme()
     err_tabpfn = y_true - y_tabpfn
-    err_composite = y_true - (y_tabpfn + y_residual)
+    err_composite = y_true - y_composite
     fig, ax = plt.subplots(figsize=figsize)
     bins = np.linspace(min(err_tabpfn.min(), err_composite.min()),
                        max(err_tabpfn.max(), err_composite.max()), 35)

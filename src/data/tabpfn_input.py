@@ -8,6 +8,7 @@ metadata vector.
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import pandas as pd
@@ -19,9 +20,24 @@ METADATA_FIELDS = [
     "age", "age_missing",
 ]  # total 8 dims
 
-# Reference age stats for z-scoring (cohort-wide; fit once, frozen)
+# Reference age stats for z-scoring (cohort-wide; fit once, frozen).
+# Pass fold-specific train-set stats via age_mean/age_std arg to avoid val
+# leakage — these defaults exist only as a fallback for callers that have
+# no per-fold stats available.
 _AGE_MEAN = 86.0  # ROSMAP cohort approx
 _AGE_STD = 6.5
+
+
+@functools.lru_cache(maxsize=4)
+def _load_meta_df(meta_csv: Path) -> pd.DataFrame:
+    """Cached metadata CSV loader.
+
+    Without caching, ``load_metadata_vector`` re-reads the same CSV
+    once per subject (~516 reads of an identical file in init).
+    Cache key is the path; ``maxsize=4`` accommodates train/val/test
+    + a fallback path during a single process lifetime.
+    """
+    return pd.read_csv(meta_csv)
 
 
 def flatten_pseudobulk(pt_subject: dict) -> torch.Tensor:
@@ -68,7 +84,8 @@ def load_metadata_vector(
     Returns:
         (vector [8], field_names) — vector is float32 on CPU.
     """
-    df = pd.read_csv(meta_csv)
+    # ``Path`` lru_cache key requires hashable input; coerce string paths.
+    df = _load_meta_df(Path(meta_csv))
     row = df.loc[df["ROSMAP_IndividualID"] == subject_id]
     vec = torch.zeros(len(METADATA_FIELDS), dtype=torch.float32)
 

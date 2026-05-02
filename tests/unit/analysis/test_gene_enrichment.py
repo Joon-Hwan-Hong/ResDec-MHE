@@ -31,30 +31,24 @@ from src.analysis.gene_enrichment import (
     DEFAULT_GENE_SET_COLLECTIONS,
 )
 
-
 # ============================================================================
 # Fixtures
 # ============================================================================
-
 
 @pytest.fixture
 def sample_gene_names():
     """20 sample gene names."""
     return [f"GENE_{i}" for i in range(20)]
 
-
 @pytest.fixture
 def sample_cell_type_names():
     """3 sample cell type names."""
     return ["Astrocyte", "Microglia", "Oligodendrocyte"]
 
-
 @pytest.fixture
 def sample_gene_gate_weights():
     """Sample gene gate weights [3 cell_types, 20 genes]."""
-    np.random.seed(42)
     return np.random.rand(3, 20).astype(np.float32)
-
 
 @pytest.fixture
 def sample_network():
@@ -66,14 +60,12 @@ def sample_network():
         "weight": np.random.randn(20),
     })
 
-
 @pytest.fixture
 def sample_decouple_result():
     """Sample return from dc.mt.decouple()."""
     cell_types = ["Astrocyte", "Microglia", "Oligodendrocyte"]
     pathways = ["PathwayA", "PathwayB"]
 
-    np.random.seed(42)
     return {
         "score_ulm": pd.DataFrame(
             np.random.randn(3, 2), index=cell_types, columns=pathways
@@ -89,14 +81,12 @@ def sample_decouple_result():
         ),
     }
 
-
 @pytest.fixture
 def sample_consensus_result():
     """Sample return from dc.mt.consensus()."""
     cell_types = ["Astrocyte", "Microglia", "Oligodendrocyte"]
     pathways = ["PathwayA", "PathwayB"]
 
-    np.random.seed(42)
     cons_scores = pd.DataFrame(
         np.random.randn(3, 2), index=cell_types, columns=pathways
     )
@@ -104,7 +94,6 @@ def sample_consensus_result():
         np.random.rand(3, 2), index=cell_types, columns=pathways
     )
     return cons_scores, cons_pvals
-
 
 @pytest.fixture
 def mock_gseapy_prerank_result():
@@ -124,7 +113,6 @@ def mock_gseapy_prerank_result():
     })
     return result
 
-
 @pytest.fixture
 def analyzer(sample_gene_gate_weights, sample_gene_names, sample_cell_type_names):
     """GeneEnrichmentAnalyzer with mocked collections."""
@@ -135,11 +123,9 @@ def analyzer(sample_gene_gate_weights, sample_gene_names, sample_cell_type_names
         gene_set_collections=["hallmark"],
     )
 
-
 # ============================================================================
 # GeneEnrichmentResult Dataclass Tests
 # ============================================================================
-
 
 class TestGeneEnrichmentResult:
     """Tests for GeneEnrichmentResult dataclass."""
@@ -175,11 +161,9 @@ class TestGeneEnrichmentResult:
         )
         assert result.metadata == {"n_cell_types": 5}
 
-
 # ============================================================================
 # GeneEnrichmentAnalyzer Initialization Tests
 # ============================================================================
-
 
 class TestAnalyzerInit:
     """Tests for GeneEnrichmentAnalyzer initialization."""
@@ -263,11 +247,9 @@ class TestAnalyzerInit:
                 cell_type_names=["A"],  # Too short
             )
 
-
 # ============================================================================
 # Helper Function Tests
 # ============================================================================
-
 
 class TestConvertNetToGseapyDict:
     """Tests for _convert_net_to_gseapy_dict helper."""
@@ -296,11 +278,9 @@ class TestConvertNetToGseapyDict:
         gene_sets = _convert_net_to_gseapy_dict(net)
         assert gene_sets == {}
 
-
 # ============================================================================
 # Decoupler Workflow Tests (Mocked)
 # ============================================================================
-
 
 class TestDecouplerWorkflow:
     """Tests for the decoupler ULM + consensus workflow."""
@@ -439,11 +419,9 @@ class TestDecouplerWorkflow:
         methods = {r["method"] for r in dc_rows}
         assert methods == {"ulm", "mlm"}
 
-
 # ============================================================================
 # GSEA Prerank Workflow Tests (Mocked)
 # ============================================================================
-
 
 class TestGseapyPrerank:
     """Tests for the gseapy prerank workflow."""
@@ -540,11 +518,9 @@ class TestGseapyPrerank:
         assert call_kwargs["no_plot"] is True
         assert call_kwargs["threads"] == 1
 
-
 # ============================================================================
 # Full Analyze Workflow Tests (Mocked)
 # ============================================================================
-
 
 class TestAnalyzeWorkflow:
     """Tests for the full analyze() method."""
@@ -737,11 +713,9 @@ class TestAnalyzeWorkflow:
         collections_in_dc = set(result.decoupler_scores["collection"].unique())
         assert collections_in_dc == {"hallmark", "kegg"}
 
-
 # ============================================================================
 # Save Tests
 # ============================================================================
-
 
 class TestSave:
     """Tests for save method."""
@@ -893,11 +867,9 @@ class TestSave:
         assert "decoupler_scores_parquet" in saved
         assert all(isinstance(v, Path) for v in saved.values())
 
-
 # ============================================================================
 # Convenience Function Tests
 # ============================================================================
-
 
 class TestConvenienceFunction:
     """Tests for compute_gene_enrichment convenience function."""
@@ -968,11 +940,9 @@ class TestConvenienceFunction:
 
         assert (tmp_path / "gene_enrichment_metadata.json").exists()
 
-
 # ============================================================================
 # Edge Cases
 # ============================================================================
-
 
 class TestEdgeCases:
     """Edge case tests."""

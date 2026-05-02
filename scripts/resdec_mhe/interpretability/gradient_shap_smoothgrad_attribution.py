@@ -394,8 +394,9 @@ def _build_comparison(
     for name, arr in method_arrays.items():
         per_ct = np.abs(arr).mean(axis=0)  # [C, G]
         flat_means[name] = per_ct.flatten()
-        # Top-K (ct, gene) pairs.
-        flat_idx = np.argsort(-per_ct.flatten())[:top_k]
+        # Top-K (ct, gene) pairs. kind="stable" so ties break by original
+        # index (matches captum_composite_attribution.summarize convention).
+        flat_idx = np.argsort(-per_ct.flatten(), kind="stable")[:top_k]
         top_pairs = []
         for k in flat_idx:
             c, g = divmod(int(k), per_ct.shape[1])
@@ -412,20 +413,20 @@ def _build_comparison(
         }
 
     # Pairwise Spearman over flattened C × G means.
+    # Upper-triangular only (and diagonal) — full matrix is redundant since
+    # ρ(a, b) == ρ(b, a). Consumer can mirror if symmetric access is needed.
     method_names = list(method_arrays.keys())
     rho_matrix: dict[str, dict[str, float]] = {m: {} for m in method_names}
     for i, mi in enumerate(method_names):
-        for j, mj in enumerate(method_names):
-            if j < i:
-                rho_matrix[mi][mj] = rho_matrix[mj][mi]
-            elif j == i:
-                rho_matrix[mi][mj] = 1.0
-            else:
-                rho_matrix[mi][mj] = _spearman_rank_corr(
-                    flat_means[mi], flat_means[mj],
-                )
+        rho_matrix[mi][mi] = 1.0
+        for j in range(i + 1, len(method_names)):
+            mj = method_names[j]
+            rho_matrix[mi][mj] = _spearman_rank_corr(
+                flat_means[mi], flat_means[mj],
+            )
     return {
         "per_method_top_pairs": summaries,
+        # Upper triangle (i<=j) only — mirror at the consumer if needed.
         "spearman_rho_over_celltype_x_gene_means": rho_matrix,
     }
 
@@ -529,26 +530,53 @@ def main(args: argparse.Namespace) -> int:
         "gradientshap": gs,
         "smoothgrad": sg,
     }
+    ig_loaded = False
+    ig_skip_reason: str | None = None
     if args.ig_npz_path:
         ig_arr = _load_ig_attribution(Path(args.ig_npz_path))
-        if ig_arr is not None:
+        if ig_arr is None:
+            ig_skip_reason = f"file_missing: {args.ig_npz_path}"
+        else:
             # Spearman is computed on the [C, G] mean-|attr| vector — IG can
             # have a different N as long as it covers the same (C, G).
             if ig_arr.shape[1:] == gs.shape[1:]:
                 method_arrays["integrated_gradients"] = ig_arr
+                ig_loaded = True
             else:
+                ig_skip_reason = (
+                    f"shape_mismatch: IG (C,G)={ig_arr.shape[1:]} vs "
+                    f"GS (C,G)={gs.shape[1:]}"
+                )
                 logger.warning(
                     "IG (C, G)=%s != GS (C, G)=%s — skipping IG axis.",
                     ig_arr.shape[1:], gs.shape[1:],
                 )
+    else:
+        ig_skip_reason = "no_ig_npz_path_passed"
 
     comparison = _build_comparison(method_arrays, ct_names, gene_names,
                                    top_k=int(args.top_k))
+    # Stamp ig_loaded explicitly so a consumer notices when the comparison
+    # is 2-way (GS × SG only) rather than the canonical 3-way (with IG).
+    comparison["ig_loaded"] = bool(ig_loaded)
+    comparison["ig_skip_reason"] = ig_skip_reason
+
+    def _provenance_arg_serializer(v: object) -> object:
+        """Best-effort JSON-safe serializer for argparse Namespace values.
+
+        Path → str; primitives pass through; other types fall back to
+        ``str(v)`` so the JSON write always succeeds.
+        """
+        if isinstance(v, Path):
+            return str(v)
+        if isinstance(v, (str, int, float, bool, type(None))):
+            return v
+        return str(v)
+
     comparison["provenance"] = {
         "git_sha": git_sha(_WORKTREE_ROOT),
         "captum_version": captum.__version__,
-        "args": {k: (str(v) if isinstance(v, Path) else v)
-                 for k, v in vars(args).items()},
+        "args": {k: _provenance_arg_serializer(v) for k, v in vars(args).items()},
         "folds_run": folds,
         "wall_time_minutes": round((time.time() - t0) / 60.0, 3),
     }
@@ -568,9 +596,10 @@ def main(args: argparse.Namespace) -> int:
               f"{p['mean_abs_attribution']:.6f}")
     print()
     print("=== Spearman ρ (over [C, G] mean-|attr| vector) ===")
+    # rho_matrix is now upper-triangular (i<=j); skip mi == mj (always 1.0).
     for mi, row in comparison["spearman_rho_over_celltype_x_gene_means"].items():
         for mj, rho in row.items():
-            if mi < mj:
+            if mi != mj:
                 print(f"  {mi:<22s} vs {mj:<22s}  ρ={rho:.4f}")
 
     return 0

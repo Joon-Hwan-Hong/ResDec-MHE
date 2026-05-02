@@ -26,7 +26,6 @@ from src.analysis.resdec_statistical_rigor import (
     paired_wilcoxon,
 )
 
-
 def test_paired_wilcoxon_identical_arrays():
     """Identical arrays → all differences zero → p=1.0 (no evidence of improvement)."""
     r2 = np.array([0.4, 0.5, 0.3, 0.6, 0.45])
@@ -35,7 +34,6 @@ def test_paired_wilcoxon_identical_arrays():
     assert out["n_folds"] == 5
     assert out["median_diff"] == 0.0
 
-
 def test_paired_wilcoxon_clear_improvement():
     """Ours uniformly > baseline → small p-value for 'greater'."""
     baseline = np.array([0.2, 0.3, 0.25, 0.35, 0.28])
@@ -43,7 +41,6 @@ def test_paired_wilcoxon_clear_improvement():
     out = paired_wilcoxon(ours, baseline, alternative="greater")
     assert out["p_value"] < 0.1  # n=5 Wilcoxon limited power but detectable
     assert out["median_diff"] > 0
-
 
 def test_bootstrap_r2_ci_contains_truth():
     """Bootstrap CI on synthetic well-behaved data should contain the sample R²."""
@@ -59,7 +56,6 @@ def test_bootstrap_r2_ci_contains_truth():
     assert out["n_boot"] == 1000
     assert out["conf"] == 0.95
 
-
 def test_bootstrap_r2_ci_tighter_for_larger_n():
     """More subjects → tighter CI."""
     rng = np.random.default_rng(42)
@@ -72,7 +68,6 @@ def test_bootstrap_r2_ci_tighter_for_larger_n():
     width_small = out_small["ci_upper"] - out_small["ci_lower"]
     width_large = out_large["ci_upper"] - out_large["ci_lower"]
     assert width_small > width_large
-
 
 def test_calibration_coverage_well_calibrated():
     """Gaussian residuals with true sigma → coverage ≈ nominal."""
@@ -88,7 +83,6 @@ def test_calibration_coverage_well_calibrated():
     assert abs(out["coverage_at_0.68"] - 0.68) < 0.03
     assert abs(out["coverage_at_0.95"] - 0.95) < 0.02
 
-
 def test_calibration_coverage_overconfident_sigma():
     """Reported sigma too small → empirical coverage < nominal (overconfident)."""
     rng = np.random.default_rng(1)
@@ -100,11 +94,9 @@ def test_calibration_coverage_overconfident_sigma():
     out = calibration_coverage(y_true, y_pred, sigma_reported, nominal=[0.95])
     assert out["coverage_at_0.95"] < 0.95 - 0.05  # meaningfully under-covered
 
-
 # ---------------------------------------------------------------------------
 # I-1: fail loud on non-finite inputs to paired_wilcoxon.
 # ---------------------------------------------------------------------------
-
 
 def test_paired_wilcoxon_raises_on_nan_input():
     ours = np.array([0.4, 0.5, np.nan, 0.6, 0.45])
@@ -112,18 +104,15 @@ def test_paired_wilcoxon_raises_on_nan_input():
     with pytest.raises(ValueError, match="Non-finite"):
         paired_wilcoxon(ours, baseline, alternative="greater")
 
-
 def test_paired_wilcoxon_raises_on_inf_input():
     ours = np.array([0.4, 0.5, 0.3, 0.6, 0.45])
     baseline = np.array([0.3, 0.4, np.inf, 0.5, 0.35])
     with pytest.raises(ValueError, match="Non-finite"):
         paired_wilcoxon(ours, baseline, alternative="greater")
 
-
 # ---------------------------------------------------------------------------
 # M-12: vectorized bootstrap must match the old Python-loop version.
 # ---------------------------------------------------------------------------
-
 
 def test_bootstrap_r2_ci_matches_loop_implementation():
     """Vectorized resampling should match a naive loop at the same seed."""
@@ -150,18 +139,15 @@ def test_bootstrap_r2_ci_matches_loop_implementation():
     assert abs(out["ci_lower"] - lo_loop) < 1e-10
     assert abs(out["ci_upper"] - hi_loop) < 1e-10
 
-
 # ---------------------------------------------------------------------------
 # M-13: filter non-finite / non-positive values robustly.
 # ---------------------------------------------------------------------------
-
 
 def test_bootstrap_r2_ci_filters_nan():
     y = np.array([1.0, 2.0, np.nan, 4.0, 5.0])
     yp = np.array([1.1, 1.9, 3.0, 4.1, 4.9])
     out = bootstrap_r2_ci(y, yp, n_boot=50, seed=0)
     assert out["n"] == 4
-
 
 def test_calibration_coverage_filters_nonpositive_sigma():
     y = np.array([1.0, 2.0, 3.0, 4.0])

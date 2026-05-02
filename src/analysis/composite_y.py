@@ -127,6 +127,8 @@ def load_composite_y_with_sanity_check(
 
     # ── Guard 2: Pearson correlation against metadata target. ──────────
     if metadata_path is not None:
+        # Lazy import: pandas is heavy and only needed when the caller
+        # opts into the metadata correlation guard by passing a path.
         import pandas as pd
 
         meta = pd.read_csv(metadata_path)

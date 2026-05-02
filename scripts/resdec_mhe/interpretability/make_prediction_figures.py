@@ -10,6 +10,10 @@ import logging
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -25,12 +29,21 @@ logger = logging.getLogger(__name__)
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--canonical-dir", default="outputs/canonical/p5_canonical_seed42")
-    p.add_argument("--tabpfn-dir", default="data/canonical")
+    p.add_argument(
+        "--canonical-dir", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42",
+    )
+    p.add_argument(
+        "--tabpfn-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/canonical",
+    )
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument(
-        "--out-dir",
-        default="outputs/canonical/interpretability/figures/prediction",
+        "--out-dir", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/figures/prediction"
+        ),
     )
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO,

@@ -68,8 +68,20 @@ class CounterfactualResult:
         """Deprecated alias: returns ``lambda_best`` for backward compatibility."""
         return self.lambda_best
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, compact: bool = False, top_k: int = 100) -> dict:
+        """Serialise for JSON / disk.
+
+        Args:
+            compact: When True, drop the full per-feature ``perturbation``
+                vector (which can be ~148K floats for the PFC slice) and
+                instead emit ``perturbation_top_k`` containing only the
+                top-K entries by absolute magnitude. Reduces the JSON
+                payload by 99% for typical ResDec attribution runs.
+            top_k: Number of top-magnitude perturbation entries to emit
+                when ``compact=True``. Ignored otherwise.
+        """
+        perturbation = self.x_cf - self.x_init
+        out: dict = {
             "y_init": self.y_init,
             "y_cf": self.y_cf,
             "target_y": self.target_y,
@@ -81,8 +93,19 @@ class CounterfactualResult:
             "lambda_max_attempted": self.lambda_max_attempted,
             "gap": self.gap,
             "trajectory": list(self.trajectory),
-            "perturbation": (self.x_cf - self.x_init).tolist(),
         }
+        if compact:
+            # Top-K by absolute magnitude.
+            import numpy as _np
+            abs_mag = _np.abs(perturbation)
+            order = _np.argsort(-abs_mag)[: int(top_k)]
+            out["perturbation_top_k"] = [
+                {"index": int(i), "delta": float(perturbation[i])}
+                for i in order
+            ]
+        else:
+            out["perturbation"] = perturbation.tolist()
+        return out
 
 
 def find_counterfactual_mode_a_adaptive(

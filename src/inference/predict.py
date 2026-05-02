@@ -32,6 +32,7 @@ from tqdm import tqdm
 from src.data.constants import CELL_TYPE_ORDER, N_REGIONS, REGION_ORDER
 from src.models.full_model import CognitiveResilienceModel, build_model_from_config
 from src.training.lightning_module import CognitiveResilienceLightningModule
+from src.training.utils import make_prototype_batch
 from src.utils.io import save_attention_weights as _io_save_attention_weights
 
 logger = logging.getLogger(__name__)
@@ -283,25 +284,24 @@ class Predictor:
             # We run a dummy forward to trigger this initialization.
             guide_prototype_ok = False
             try:
-                n_ct = model_cfg.n_cell_types
-                n_genes = model_cfg.n_genes
-                n_regions = N_REGIONS
-                n_pathology = model_cfg.pathology_attention.get("n_pathology_features", 3)
-                # Prototype includes cognition to discover all Pyro sample sites.
-                # Actual inference omits cognition (obs=None) to generate predictions
-                # rather than conditioning on observed values.
-                dummy_kwargs = {
-                    "region_pseudobulk": torch.zeros(1, n_regions, n_ct, n_genes),
-                    "region_mask": torch.ones(1, n_regions, dtype=torch.bool),
-                    "cell_data": torch.zeros(0, n_genes),
-                    "cell_offsets": torch.zeros(1, n_ct + 1, dtype=torch.long),
-                    "pathology": torch.zeros(1, n_pathology),
-                    "cognition": torch.zeros(1, 1),
-                }
+                # Delegate to the canonical helper so the prototype shapes
+                # stay in sync with CognitiveResilienceLightningModule.
+                # Inference prototype omits the cell_type_mask and CCC
+                # tensors (the training prototype uses them).
+                dummy_kwargs = make_prototype_batch(
+                    model_cfg,
+                    device=torch.device("cpu"),
+                    include_cell_type_mask=False,
+                    include_ccc=False,
+                )
                 guide(**dummy_kwargs)
                 guide_prototype_ok = True
-            except Exception as e:
-                logger.warning("Guide prototype forward failed: %s. Will attempt param store restoration.", e)
+            except (RuntimeError, KeyError, ValueError, TypeError) as e:
+                logger.exception(
+                    "Guide prototype forward failed (%s). "
+                    "Will attempt param store restoration.",
+                    type(e).__name__,
+                )
 
             # Restore Pyro param store (primary mechanism — guide params live here)
             if "pyro_param_store" in checkpoint:
@@ -319,9 +319,14 @@ class Predictor:
             try:
                 guide.load_state_dict(checkpoint["guide_state_dict"])
                 guide_state_ok = True
-            except Exception as e:
-                # Guide may not be prototyped yet; param store is sufficient
-                logger.warning("Could not load guide state_dict; using param store only: %s", e)
+            except (RuntimeError, KeyError, ValueError, TypeError) as e:
+                # Guide may not be prototyped yet; param store is sufficient.
+                # Use logger.exception to preserve the traceback.
+                logger.exception(
+                    "Could not load guide state_dict (%s); "
+                    "using param store only.",
+                    type(e).__name__,
+                )
 
             # Check if both restoration mechanisms failed
             has_param_store = "pyro_param_store" in checkpoint and len(checkpoint["pyro_param_store"]) > 0

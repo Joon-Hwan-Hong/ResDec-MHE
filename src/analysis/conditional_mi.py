@@ -164,7 +164,11 @@ def _cmi_one_ct(
         and np.array_equal(mask, shared_mask)
     )
     if can_share:
-        Z_c, pinv_Z_c = linear_residualizer  # type: ignore[misc]
+        # ``linear_residualizer`` is non-None here (checked in ``can_share``).
+        # Hoist into a local that isn't Optional so unpacking does not need
+        # ``# type: ignore[misc]``.
+        assert linear_residualizer is not None
+        Z_c, pinv_Z_c = linear_residualizer
         x_resid = _apply_linear_residualizer(xs, Z_c, pinv_Z_c)
     else:
         x_resid = _residualize(xs, zs, regressor, seed=rng_state)

@@ -10,7 +10,6 @@ to ensure consistency across the codebase.
 """
 
 from pathlib import Path
-from typing import Any
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -156,7 +155,8 @@ def validate_cell_type_colors() -> list[str]:
         import warnings
         warnings.warn(
             f"CELL_TYPE_COLORS missing colors for: {missing}. "
-            "These will use fallback gray color."
+            "These will use fallback gray color.",
+            stacklevel=2,
         )
     return missing
 

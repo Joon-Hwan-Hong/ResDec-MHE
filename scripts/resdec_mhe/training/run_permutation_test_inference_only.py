@@ -166,7 +166,24 @@ def run_permutation_test_inference_only(
             perm_records = []
 
     # De-dupe on resume: skip seeds already in the persisted records so an
-    # overlapping --start-perm range doesn't double-count.
+    # overlapping --start-perm range doesn't double-count. Only count records
+    # with a finite mean_r2 as "already done" — perms that produced NaN
+    # (e.g. all-fold drop-out under degenerate shuffle) are recoverable, so
+    # drop them and let the loop below recompute. Mirrors the
+    # successful/failed discrimination in run_permutation_test.py:286-298.
+    valid_records = [
+        r for r in perm_records
+        if np.isfinite(r.get("mean_r2", float("nan")))
+    ]
+    if len(valid_records) != len(perm_records):
+        n_dropped = len(perm_records) - len(valid_records)
+        print(
+            f"Resume mode: dropping {n_dropped} NaN-mean record(s) so they can "
+            f"be recomputed; {len(valid_records)} prior successes preserved.",
+            flush=True,
+        )
+        perm_records = valid_records
+        aggregate_path.write_text(json.dumps(perm_records, indent=2))
     existing_seeds = {r["perm_seed"] for r in perm_records}
 
     t_total = time.time()
@@ -195,6 +212,11 @@ def run_permutation_test_inference_only(
 
     # Build summary using the records that were produced this invocation
     # (matches the schema of outputs/canonical/permutation_test/permutation_summary.json).
+    # Asymmetry: the summary-level statistics (null_mean, null_std, p_value)
+    # filter to finite means only so degenerate NaN perms don't bias the
+    # null distribution. The per-perm list under ``null_mean_r2_per_perm``
+    # below is faithful (includes NaNs) so downstream consumers can see
+    # the raw counts.
     null_means = np.array(
         [r["mean_r2"] for r in perm_records if np.isfinite(r["mean_r2"])],
         dtype=np.float64,

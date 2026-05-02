@@ -67,6 +67,9 @@ def load_tensorboard_scalars(
                     "step": event.step,
                     "tag": tag,
                     "value": event.value,
+                    # ``wall_time`` enables time-axis plots (training_time
+                    # vs metric) for downstream callers; keep it in the
+                    # DataFrame even though no plot in this module uses it.
                     "wall_time": event.wall_time,
                 })
 

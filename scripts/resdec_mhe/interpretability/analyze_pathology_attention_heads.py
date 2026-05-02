@@ -183,12 +183,26 @@ def splatter_deepdive(attn: np.ndarray, ct_names: list[str], sids: np.ndarray,
         df_attn[f"attn_total_{ct.replace(' ', '_')}"] = coatt[ct]
 
     # Pairwise correlations among GABAergic populations.
+    # NaN-safe: drop NaN before np.corrcoef (silently returns NaN otherwise).
+    # Surface n_used + n_dropped as a sibling key
+    # (gabaergic_interneuron_co_attention_n_used) so downstream consumers
+    # keep the bare-float r-value contract while gaining the dropna count.
     coatt_corrs: dict = {}
+    coatt_n: dict = {}
     keys = list(coatt.keys())
     for i, k1 in enumerate(keys):
         for k2 in keys[i + 1:]:
-            r = float(np.corrcoef(coatt[k1], coatt[k2])[0, 1])
-            coatt_corrs[f"{k1}__vs__{k2}"] = r
+            x = np.asarray(coatt[k1], dtype=np.float64)
+            y = np.asarray(coatt[k2], dtype=np.float64)
+            mask = ~(np.isnan(x) | np.isnan(y))
+            n_used = int(mask.sum())
+            n_dropped = int((~mask).sum())
+            pair_key = f"{k1}__vs__{k2}"
+            if n_used < 2:
+                coatt_corrs[pair_key] = None
+            else:
+                coatt_corrs[pair_key] = float(np.corrcoef(x[mask], y[mask])[0, 1])
+            coatt_n[pair_key] = {"n_used": n_used, "n_dropped_nan": n_dropped}
 
     # Join to residual / metadata for biology correlations.
     out: dict = {
@@ -199,6 +213,7 @@ def splatter_deepdive(attn: np.ndarray, ct_names: list[str], sids: np.ndarray,
             "max": float(splatter_total.max()),
         },
         "gabaergic_interneuron_co_attention_pearson_r": coatt_corrs,
+        "gabaergic_interneuron_co_attention_n_used": coatt_n,
     }
 
     if residual_df is not None:
@@ -238,24 +253,36 @@ def head_metadata_correlations(fingerprint: np.ndarray, sids: np.ndarray,
     merged = residual_df.merge(df, on="ROSMAP_IndividualID", how="inner")
     if "apoe_genotype" in merged.columns:
         merged = merged.copy()
+        # Uppercase first so lowercase variants ("e4/e4") still count as 2
+        # (case-sensitive substring count would silently miscount).
         merged["apoe_e4_count"] = merged["apoe_genotype"].astype(str).apply(
-            lambda x: x.count("4")
+            lambda x: x.upper().count("4")
         )
 
     out: dict = {}
     metadata_cols = ("residual", "cogn_global", "apoe_e4_count", "msex",
                      "age_death", "amyloid", "tangles", "braaksc")
+    # Always emit a key per (head, metadata_col) — distinguishing
+    # "missing column", "n_too_small", and "ok" so a consumer cannot
+    # conflate silent skip with no signal.
     for h in range(n_heads):
         head_col = f"head_{h}_total"
         head_corrs: dict = {}
         for col in metadata_cols:
-            if col in merged.columns and merged[col].notna().sum() > 30:
-                sub = merged.dropna(subset=[head_col, col])
-                head_corrs[col] = {
-                    "pearson_r": float(sub[head_col].corr(sub[col])),
-                    "spearman_rho": float(sub[head_col].corr(sub[col], method="spearman")),
-                    "n": int(len(sub)),
-                }
+            if col not in merged.columns:
+                head_corrs[col] = {"status": "missing_column"}
+                continue
+            n_nonnull = int(merged[col].notna().sum())
+            if n_nonnull <= 30:
+                head_corrs[col] = {"status": "n_too_small", "n_nonnull": n_nonnull}
+                continue
+            sub = merged.dropna(subset=[head_col, col])
+            head_corrs[col] = {
+                "status": "ok",
+                "pearson_r": float(sub[head_col].corr(sub[col])),
+                "spearman_rho": float(sub[head_col].corr(sub[col], method="spearman")),
+                "n": int(len(sub)),
+            }
         out[f"head_{h}"] = head_corrs
     return out
 
@@ -363,8 +390,15 @@ def main(args: argparse.Namespace) -> int:
     print(f"  splatter_attn_total: mean={splatter['splatter_attn_total_stats']['mean']:.4f}  "
           f"std={splatter['splatter_attn_total_stats']['std']:.4f}")
     print("  GABAergic interneuron co-attention pearson r:")
+    n_used_dict = splatter.get("gabaergic_interneuron_co_attention_n_used", {})
     for k, v in splatter["gabaergic_interneuron_co_attention_pearson_r"].items():
-        print(f"    {k}: {v:+.4f}")
+        nu = n_used_dict.get(k, {})
+        n_used = nu.get("n_used", "?")
+        n_dropped = nu.get("n_dropped_nan", "?")
+        if v is None:
+            print(f"    {k}: r=undef (n_used={n_used}, n_dropped={n_dropped})")
+        else:
+            print(f"    {k}: {v:+.4f} (n_used={n_used}, n_dropped={n_dropped})")
     if residual_df is not None:
         for k in ("splatter_attn_vs_resilience_residual",
                   "splatter_attn_vs_cognition",

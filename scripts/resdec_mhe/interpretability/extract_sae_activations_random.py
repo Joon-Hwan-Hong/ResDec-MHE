@@ -79,8 +79,14 @@ sys.path.insert(0, str(_WORKTREE_ROOT))
 logger = logging.getLogger(__name__)
 
 
-def _enumerate_all_subjects(loaders):
-    """Yield batches from every loader (train + val) so all 516 subjects are covered once."""
+def _chain_loaders(loaders):
+    """Yield batches from every loader (train + val) so all 516 subjects are covered once.
+
+    Functionally equivalent to ``itertools.chain.from_iterable`` over the
+    non-None loaders; kept as a helper to keep the call site explicit
+    about None-safety. Renamed from ``_enumerate_all_subjects`` because
+    "enumerate" implied dedup/indexing semantics it did not provide.
+    """
     for loader in loaders:
         if loader is None:
             continue
@@ -203,17 +209,18 @@ def main() -> int:
         metadata_path = _WORKTREE_ROOT / metadata_path
     metadata_csv = pd.read_csv(metadata_path)
 
-    fold_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
-    OmegaConf.set_struct(fold_cfg, False)
-    fold_cfg.data.fold = int(args.fold)
+    # Mutate cfg directly (struct mode already off above) — the prior
+    # OmegaConf.to_container round-trip would resolve interpolations away,
+    # baking in any ${...} references. Direct mutation preserves them.
+    cfg.data.fold = int(args.fold)
     # Override DataLoader batch size for forward pass; safe to be larger than
     # training since this is no-grad.
-    fold_cfg.data.dataloader.batch_size = int(args.batch_size)
+    cfg.data.dataloader.batch_size = int(args.batch_size)
 
     dm = CognitiveResilienceDataModule(
-        config=fold_cfg, metadata=metadata_csv, splits=splits,
+        config=cfg, metadata=metadata_csv, splits=splits,
         fold_idx=int(args.fold),
-        precomputed_dir=fold_cfg.data.precomputed_dir,
+        precomputed_dir=cfg.data.precomputed_dir,
         adata=None,
     )
     dm.setup(stage="fit")
@@ -236,8 +243,16 @@ def main() -> int:
 
     loaders = [dm.train_dataloader(), dm.val_dataloader()]
 
+    # NOTE on forward path: the canonical CognitiveResilienceModel exposes
+    # both ``forward_encoder_only`` (returns {"attended", "attention_weights"})
+    # and ``forward(..., return_embeddings=True)`` (returns prediction +
+    # embeddings={"attended", "fused"}). We use the FULL forward here so
+    # both ``attended`` and ``fused`` activations are captured in a single
+    # pass — forward_encoder_only does not return ``fused``. The wasted
+    # head-output compute is minimal and the full forward exercises the
+    # same allocator pool as the trained-extract path.
     with torch.no_grad():
-        for batch in _enumerate_all_subjects(loaders):
+        for batch in _chain_loaders(loaders):
             batch_d = {
                 k: (v.to(torch_device) if torch.is_tensor(v) else v)
                 for k, v in batch.items()
@@ -276,7 +291,8 @@ def main() -> int:
     sids_arr = np.array([str(s) for s in sids], dtype=object)
     is_val_arr = np.array(is_val, dtype=bool)
     fold_indices_arr = np.full(len(sids), int(args.fold), dtype=np.int64)
-    logger.info("Forward complete: %d subjects (val=%d)", len(sids), int(is_val_arr.sum()))
+    # is_val_arr.dtype is bool → sum() already returns an int; no cast needed.
+    logger.info("Forward complete: %d subjects (val=%d)", len(sids), is_val_arr.sum())
 
     # ─────────────────────────────────────────────────────────────────────
     # Persist per-layer .npz at the random_encoder out_dir.

@@ -14,19 +14,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 from scripts.resdec_mhe.interpretability import (  # noqa: E402
     run_patient_stratification_crosslink as mod,
 )
 
-
 # =============================================================================
 # apoe_e4_dose
 # =============================================================================
-
 
 class TestApoeE4Dose:
 
@@ -60,11 +56,9 @@ class TestApoeE4Dose:
     def test_string_unparseable_is_none(self):
         assert mod.apoe_e4_dose("garbage") is None
 
-
 # =============================================================================
 # load_ccc_outliers
 # =============================================================================
-
 
 class TestLoadCccOutliers:
     """Round-trip a synthetic threshold_sensitivity.json structure."""
@@ -109,11 +103,9 @@ class TestLoadCccOutliers:
         with pytest.raises(FileNotFoundError):
             mod.load_ccc_outliers(tmp_path / "nope.json", tau=0.01)
 
-
 # =============================================================================
 # fit_residual_gmm
 # =============================================================================
-
 
 class TestFitResidualGmm:
 
@@ -163,11 +155,9 @@ class TestFitResidualGmm:
                 n_components=2,
             )
 
-
 # =============================================================================
 # pair_test
 # =============================================================================
-
 
 class TestPairTest:
 
@@ -201,11 +191,9 @@ class TestPairTest:
         assert res["n_dropped"] == 2
         assert res["n_used"] == 4
 
-
 # =============================================================================
 # bh_fdr
 # =============================================================================
-
 
 class TestBhFdr:
 
@@ -222,11 +210,9 @@ class TestBhFdr:
         with pytest.raises(ValueError):
             mod.bh_fdr([0.5, 1.5])
 
-
 # =============================================================================
 # End-to-end smoke (canonical artefacts on disk)
 # =============================================================================
-
 
 class TestEndToEnd:
     """One full subprocess invocation to verify the orchestrator runs and

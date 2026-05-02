@@ -15,6 +15,15 @@
 #   SEEDS="42 67 21 2000 426" bash scripts/resdec_mhe/training/run_seed_variation.sh
 set -euo pipefail
 
+# tmux preflight (feedback_long_runs_need_tmux.md): default 4 seeds × ~1-2 hr
+# per seed = 4-8 hr wall, far above the 30-min threshold. Bare SSH without tmux
+# loses the session on disconnect (CF v3 lost ~6 hr to this 2026-04-24).
+if [ -z "${TMUX:-}" ]; then
+    echo "ERROR: This driver runs 4-8 hr and must be in tmux to survive SSH disconnect." >&2
+    echo "  tmux new -s seed_variation 'bash $0'" >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 

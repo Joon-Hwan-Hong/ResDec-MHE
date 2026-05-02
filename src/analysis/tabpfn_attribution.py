@@ -166,14 +166,15 @@ def _compute_attributions(
 
 def attribute_tabpfn_fold(
     fold_idx: int,
-    precomputed_dir: Path = Path("data/precomputed"),
-    meta_csv: Path = Path("data/metadata_ROSMAP/metadata.csv"),
-    splits_path: Path = Path("outputs/splits.json"),
-    top_k_dir: Path = Path("data/canonical"),
+    precomputed_dir: Path,
+    meta_csv: Path,
+    splits_path: Path,
+    top_k_dir: Path,
     n_val_subjects: int | None = None,
     device: str = "cuda",
     method: str = "feature_ablation",
     seed: int = 42,
+    tabpfn_model_cache_dir: Path | str | None = None,
 ) -> dict:
     """Run TabPFN attribution for a single fold.
 
@@ -194,6 +195,11 @@ def attribute_tabpfn_fold(
         method: Attribution method. Only ``"feature_ablation"`` is currently
             implemented — see module docstring for rationale.
         seed: TabPFN ``random_state``.
+        tabpfn_model_cache_dir: Override for the TabPFN model cache. If
+            ``None``, the existing ``TABPFN_MODEL_CACHE_DIR`` env var is
+            used; if neither is set, an explicit error is raised. No
+            host-specific default is hardcoded — set the env var or pass
+            this kwarg explicitly.
 
     Returns:
         Dict with keys:
@@ -212,10 +218,14 @@ def attribute_tabpfn_fold(
             "See module docstring for why IG is not used."
         )
 
-    os.environ.setdefault(
-        "TABPFN_MODEL_CACHE_DIR",
-        "/host/milan/tank/Joon/__external_programs/tabpfn",
-    )
+    if tabpfn_model_cache_dir is not None:
+        os.environ["TABPFN_MODEL_CACHE_DIR"] = str(tabpfn_model_cache_dir)
+    elif "TABPFN_MODEL_CACHE_DIR" not in os.environ:
+        raise RuntimeError(
+            "TABPFN_MODEL_CACHE_DIR is not set. Either export it in the "
+            "environment or pass tabpfn_model_cache_dir=... to "
+            "attribute_tabpfn_fold(). No host-specific default is hardcoded."
+        )
 
     splits = load_splits(splits_path)
     fold_split = splits["folds"][fold_idx]

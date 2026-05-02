@@ -51,7 +51,6 @@ import argparse
 import gc
 import json
 import logging
-import re
 import sys
 from pathlib import Path
 
@@ -84,6 +83,7 @@ from src.data.constants import (
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits
 from src.training.resdec_lightning_module import ResDecLightningModule
+from src.utils.provenance import pick_max_r2_ckpt
 
 # LIANA columns where "higher = more important" (no sign flip needed for
 # correlation). Rank-percentile columns (magnitude_rank / specificity_rank) are
@@ -91,22 +91,19 @@ from src.training.resdec_lightning_module import ResDecLightningModule
 HIGHER_IS_BETTER_LIANA_COLS: frozenset[str] = frozenset({"lrscore", "lr_means"})
 
 logger = logging.getLogger(__name__)
-_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
 
 
-def _pick_max_r2_ckpt(ckpt_dir: Path) -> Path:
-    best: tuple[Path, float] | None = None
-    for p in ckpt_dir.glob("best-*.ckpt"):
-        m = _BEST_CKPT_RE.match(p.name)
-        if not m:
-            logger.debug("Skipping non-standard ckpt name: %s", p.name)
-            continue
-        r2 = float(m.group(2))
-        if best is None or r2 > best[1]:
-            best = (p, r2)
-    if best is None:
-        raise FileNotFoundError(f"No best-*.ckpt files in {ckpt_dir}")
-    return best[0]
+def _idx_to_name(idx: int, names: tuple[str, ...] | list[str], prefix: str) -> str:
+    """Map index → name; fall back to ``{prefix}_{idx}`` when out of range.
+
+    Single source of truth for the three near-identical lambda blocks that
+    used to map source_ct_idx / target_ct_idx / edge_type to their display
+    names.
+    """
+    i = int(idx)
+    if 0 <= i < len(names):
+        return names[i]
+    return f"{prefix}_{i}"
 
 
 def _move_batch(b: dict, device: torch.device) -> dict:
@@ -134,7 +131,7 @@ def analyze_one_fold(
     cfg.data.fold = int(fold)
 
     fold_dir = Path(args.pred_root) / f"fold{fold}"
-    ckpt_path = _pick_max_r2_ckpt(fold_dir / "checkpoints")
+    ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
     logger.info("fold %d: loading %s", fold, ckpt_path.name)
 
     splits = load_splits(str(args.splits_path))
@@ -206,6 +203,8 @@ def analyze_one_fold(
             pair_df["weighted_sum"] = pair_df["mean_attention"] * pair_df["n_edges"]
             pair_frames.append(pair_df)
 
+        # Batches are disjoint by val-loader contract; the cross-fold dedup
+        # at `set().union(*[fr["val_subject_ids"] ...])` is defensive only.
         val_subject_ids.extend(list(batch["subject_ids"]))
 
     # Cross-batch per-edge-type mean (edge-weighted).
@@ -228,14 +227,16 @@ def analyze_one_fold(
         )
         pair_agg["mean_attention"] = pair_agg["weighted_sum"] / pair_agg["n_edges"]
         pair_agg["fold"] = fold
+        # Use _idx_to_name helper instead of three near-identical lambda blocks
+        # (single source of truth for the bounds-check + fallback name format).
         pair_agg["source_ct"] = pair_agg["source_ct_idx"].map(
-            lambda i: CELL_TYPE_ORDER[int(i)] if 0 <= int(i) < len(CELL_TYPE_ORDER) else f"ct_{i}"
+            lambda i: _idx_to_name(i, CELL_TYPE_ORDER, "ct")
         )
         pair_agg["target_ct"] = pair_agg["target_ct_idx"].map(
-            lambda i: CELL_TYPE_ORDER[int(i)] if 0 <= int(i) < len(CELL_TYPE_ORDER) else f"ct_{i}"
+            lambda i: _idx_to_name(i, CELL_TYPE_ORDER, "ct")
         )
         pair_agg["edge_type_name"] = pair_agg["edge_type"].map(
-            lambda i: ALL_EDGE_TYPES[int(i)] if 0 <= int(i) < len(ALL_EDGE_TYPES) else f"et_{i}"
+            lambda i: _idx_to_name(i, ALL_EDGE_TYPES, "et")
         )
     else:
         pair_agg = pd.DataFrame(
@@ -342,13 +343,15 @@ def main(args: argparse.Namespace) -> int:
     logger.info("Wrote %s (%d rows)", abl_csv, len(abl_df))
 
     # Per-edge-type aggregates across folds (mean R² delta).
+    # std uses ddof=0 (pstdev) — project-wide convention matching canonical
+    # N=10 perm summary + statistics.pstdev in aggregate_step_d/e.
     abl_summary = (
         abl_df.groupby(["edge_type_idx", "edge_type_name", "edge_type_display"], as_index=False)
         .agg(
             mean_baseline_r2=("baseline_r2", "mean"),
             mean_ablated_r2=("ablated_r2", "mean"),
             mean_r2_delta=("r2_delta", "mean"),
-            std_r2_delta=("r2_delta", "std"),
+            std_r2_delta=("r2_delta", lambda x: float(x.std(ddof=0))),
             total_edges_ablated=("n_edges_ablated", "sum"),
         )
         .sort_values("mean_r2_delta", ascending=False)
@@ -494,9 +497,24 @@ def main(args: argparse.Namespace) -> int:
 
 
 def _jsonify(o):
-    """Fallback encoder for NumPy scalars and arrays."""
-    if isinstance(o, (np.floating, np.integer)):
-        return float(o) if isinstance(o, np.floating) else int(o)
+    """Fallback encoder for NumPy scalars and arrays.
+
+    Converts NaN/Inf to ``None`` explicitly (strict consumers reject the
+    bare ``NaN`` token; not standard JSON). The single-fold edge case
+    (``--n-folds 1``) produces NaN std_r2_delta which would otherwise hit
+    this path and emit ``NaN``.
+    """
+    if isinstance(o, np.floating):
+        x = float(o)
+        if np.isnan(x) or np.isinf(x):
+            return None
+        return x
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, float):
+        if np.isnan(o) or np.isinf(o):
+            return None
+        return o
     if isinstance(o, np.ndarray):
         return o.tolist()
     raise TypeError(f"Cannot JSON-serialize {type(o)}: {o!r}")
@@ -516,6 +534,10 @@ if __name__ == "__main__":
         choices=["magnitude_rank", "specificity_rank", "lrscore", "lr_means"],
         help="LIANA column to correlate against. 'magnitude_rank' / "
              "'specificity_rank' are percentile ranks (lower = better); "
-             "'lrscore' / 'lr_means' are magnitude-style (higher = better).",
+             "'lrscore' / 'lr_means' are magnitude-style (higher = better). "
+             "Reported pearson_r/spearman_rho are sign-aligned to 'higher "
+             "importance' direction — rank columns are sign-flipped "
+             "internally, so a positive r/rho means 'our model agrees with "
+             "LIANA' regardless of which column is selected.",
     )
     sys.exit(main(p.parse_args()))

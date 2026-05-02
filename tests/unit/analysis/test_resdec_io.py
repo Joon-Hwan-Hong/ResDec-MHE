@@ -23,7 +23,6 @@ from src.analysis.resdec_io import (
     load_fold_predictions,
 )
 
-
 def _write_fold_npz(
     pred_root,
     tabpfn_dir,
@@ -54,7 +53,6 @@ def _write_fold_npz(
         sigma_tabpfn=np.asarray(sigma_tabpfn, dtype=np.float64),
     )
 
-
 def test_load_fold_predictions_schema(tmp_path):
     """Mock npz with expected keys → returns DataFrame with expected columns."""
     pred_root = tmp_path / "pred"
@@ -82,7 +80,6 @@ def test_load_fold_predictions_schema(tmp_path):
     # fold column populated
     assert (df["fold"] == 0).all()
 
-
 def test_load_fold_predictions_raises_on_missing_predictions(tmp_path):
     pred_root = tmp_path / "pred"
     tabpfn_dir = tmp_path / "tabpfn"
@@ -97,7 +94,6 @@ def test_load_fold_predictions_raises_on_missing_predictions(tmp_path):
     )
     with pytest.raises(FileNotFoundError, match="per-fold predictions"):
         load_fold_predictions(pred_root, tabpfn_dir, fold=0)
-
 
 def test_load_fold_predictions_raises_on_ytrue_mismatch(tmp_path):
     pred_root = tmp_path / "pred"
@@ -122,7 +118,6 @@ def test_load_fold_predictions_raises_on_ytrue_mismatch(tmp_path):
     with pytest.raises(RuntimeError, match="y_true mismatch"):
         load_fold_predictions(pred_root, tabpfn_dir, fold=0)
 
-
 def test_load_all_folds_concatenates(tmp_path):
     pred_root = tmp_path / "pred"
     tabpfn_dir = tmp_path / "tabpfn"
@@ -137,7 +132,6 @@ def test_load_all_folds_concatenates(tmp_path):
     df = load_all_folds(pred_root, tabpfn_dir, n_folds=3)
     assert len(df) == 12  # 3 folds × 4 subjects
     assert set(df["fold"].unique()) == {0, 1, 2}
-
 
 def test_compute_per_fold_r2_ours_agrees_with_sklearn(tmp_path):
     """Per-fold R² matches sklearn.metrics.r2_score within float precision."""
@@ -166,7 +160,6 @@ def test_compute_per_fold_r2_ours_agrees_with_sklearn(tmp_path):
         expected = r2_score(sub["y_true"].to_numpy(), sub["y_composite"].to_numpy())
         assert r2s[f] == pytest.approx(expected, abs=1e-12)
 
-
 def test_compute_per_fold_r2_ours_raises_on_missing_fold():
     df = pd.DataFrame({
         "fold": [0, 0, 1, 1],
@@ -177,13 +170,11 @@ def test_compute_per_fold_r2_ours_raises_on_missing_fold():
     with pytest.raises(RuntimeError, match="fold 2"):
         compute_per_fold_r2_ours(df, n_folds=3)
 
-
 def test_compute_per_fold_r2_tabpfn_missing_npz_raises(tmp_path):
     tabpfn_dir = tmp_path / "tabpfn"
     tabpfn_dir.mkdir()
     with pytest.raises(FileNotFoundError, match="TabPFN-2.6 standalone baseline"):
         compute_per_fold_r2_tabpfn(tabpfn_dir, n_folds=5)
-
 
 def test_compute_per_fold_r2_tabpfn_agrees_with_sklearn(tmp_path):
     tabpfn_dir = tmp_path / "tabpfn"

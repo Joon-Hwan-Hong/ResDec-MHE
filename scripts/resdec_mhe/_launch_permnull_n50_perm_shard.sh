@@ -14,7 +14,9 @@ fi
 WT="${WT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$WT"
 
-OUT_BASE=outputs/canonical/permutation_test_n50_full
+# Allow env override so re-runs (e.g. N=50 v2) write to a distinct directory
+# rather than colliding with the original.
+OUT_BASE="${OUT_BASE:-outputs/canonical/permutation_test_n50_full}"
 mkdir -p "$OUT_BASE/shard_a" "$OUT_BASE/shard_b"
 
 LOG="$WT/$OUT_BASE/master.log"

@@ -63,6 +63,11 @@ from src.utils.provenance import git_sha  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# Sweep grid axes. KEEP IN LOCKSTEP with the bash arrays in
+# ``run_sae_sweep.sh:87-90`` (canonical 60-config sweep). The smaller-M
+# variant (``run_sae_sweep_smaller_m.sh:91-95``) drives its own axes via
+# env-var read into bash arrays. Any change to ARCHITECTURES / LAYERS /
+# EXPANSIONS / K_VALUES MUST also be made in run_sae_sweep.sh (B-SI1/B-SS1).
 ARCHITECTURES = ("topk", "batch_topk")
 LAYERS = ("attended", "fused")
 EXPANSIONS = (8, 16, 32)
@@ -232,6 +237,19 @@ def main() -> int:
             f"--gpu-index ({args.gpu_index}) must be < --num-gpus ({args.num_gpus})"
         )
 
+    # GPU-assignment invariant: --gpu-index / --num-gpus only control which
+    # CONFIGS this shard runs (`idx % num_gpus == gpu_index`). The actual
+    # physical GPU is determined by the parent process's CUDA_VISIBLE_DEVICES
+    # mask. Recommended pattern (from run_sae_sweep.sh launch comments):
+    #   tmux new -s sae_g0
+    #   CUDA_VISIBLE_DEVICES=0 GPU_INDEX=0 NUM_GPUS=2 \
+    #     uv run python scripts/resdec_mhe/run_sae_sweep_inline.py
+    #   tmux new -s sae_g1
+    #   CUDA_VISIBLE_DEVICES=1 GPU_INDEX=1 NUM_GPUS=2 \
+    #     uv run python scripts/resdec_mhe/run_sae_sweep_inline.py
+    # Each shell sees its physical GPU as logical 0; the in-process torch
+    # ops below default to that single visible device.
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
@@ -295,6 +313,11 @@ def main() -> int:
                         else:
                             n_skip += 1
                     except Exception as exc:  # noqa: BLE001
+                        # Deliberately broad: a single config failure must not
+                        # abort the rest of the sweep — per-config exceptions
+                        # are logged with full traceback (logger.exception)
+                        # and the sweep continues. Mirrors the set +e/-e
+                        # toggle in run_sae_sweep.sh:135-154.
                         n_fail += 1
                         logger.exception(
                             "config %s/%s/exp%d_k%d failed: %s",

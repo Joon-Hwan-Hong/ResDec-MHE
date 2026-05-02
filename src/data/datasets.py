@@ -108,6 +108,7 @@ def _validate_no_nan_columns(
     subject_ids: list,
     columns: list[str],
     column_type: str,
+    allow_missing: bool = False,
 ) -> None:
     """Validate that specified columns have no NaN for included subjects.
 
@@ -116,6 +117,11 @@ def _validate_no_nan_columns(
         subject_ids: List of subject IDs to check.
         columns: Column names to validate.
         column_type: Label for error messages (e.g., "target", "pathology").
+        allow_missing: If True, missing columns degrade to a warning. If
+            False (default), missing non-target columns raise ValueError —
+            this catches typos (e.g., ``"gpath"`` → ``"pgath"``) before
+            they silently zero an entire feature. ``column_type="target"``
+            always raises regardless of this flag.
     """
     for col in columns:
         if col not in metadata.columns:
@@ -125,10 +131,18 @@ def _validate_no_nan_columns(
                     f"Target column '{col}' not found in metadata. "
                     f"Available columns: {available}"
                 )
+            if not allow_missing:
+                raise ValueError(
+                    f"{column_type} column '{col}' not found in metadata. "
+                    f"This is most likely a typo and would silently zero "
+                    f"the entire feature. Available columns: {available}. "
+                    f"To opt into the silent-zero behaviour, set "
+                    f"data.allow_missing_pathology=True in the config."
+                )
             warnings.warn(
                 f"{column_type} column '{col}' not found in metadata. "
-                f"Values will default to 0.0 for all subjects. "
-                f"Available columns: {available}",
+                f"Values will default to 0.0 for all subjects "
+                f"(allow_missing=True). Available columns: {available}",
                 UserWarning,
                 stacklevel=3,
             )
@@ -182,6 +196,7 @@ class CognitiveResilienceDataset(Dataset):
         meta_csv: Path | None = None,
         age_mean: float | None = None,
         age_std: float | None = None,
+        allow_missing_pathology: bool = False,
     ):
         """
         Initialize dataset.
@@ -231,7 +246,13 @@ class CognitiveResilienceDataset(Dataset):
         self.subject_column = subject_column
         self.target_column = target_column
         self.region_column = region_column
-        self.pathology_columns = pathology_columns or ["gpath", "amylsqrt", "tangsqrt"]
+        # Distinguish None (use default) from [] (caller explicitly opts out
+        # of pathology columns). See PrecomputedDataset for the same fix.
+        self.pathology_columns = (
+            ["gpath", "amylsqrt", "tangsqrt"]
+            if pathology_columns is None
+            else list(pathology_columns)
+        )
 
         self.cell_type_order = cell_type_order or CELL_TYPE_ORDER
         self.n_cell_types = len(self.cell_type_order)
@@ -240,6 +261,9 @@ class CognitiveResilienceDataset(Dataset):
         self.max_cells_per_type = max_cells_per_type
         self.min_cells_threshold = min_cells_threshold
         self.max_missing_subject_fraction = max_missing_subject_fraction
+        # Default False so a typo in pathology_columns errors loudly instead
+        # of silently zeroing the entire feature.
+        self.allow_missing_pathology = allow_missing_pathology
 
         self.transform = transform
 
@@ -345,6 +369,7 @@ class CognitiveResilienceDataset(Dataset):
         _validate_no_nan_columns(
             self.metadata, self.subject_ids,
             self.pathology_columns, "pathology",
+            allow_missing=self.allow_missing_pathology,
         )
 
         # Pre-extract phenotypes to numpy arrays for O(1) __getitem__ access.
@@ -765,6 +790,7 @@ class PrecomputedDataset(Dataset):
         meta_csv: Path | None = None,
         age_mean: float | None = None,
         age_std: float | None = None,
+        allow_missing_pathology: bool = False,
     ):
         """
         Initialize from precomputed .pt features (loaded into RAM).
@@ -799,11 +825,21 @@ class PrecomputedDataset(Dataset):
         self.metadata = metadata.set_index(subject_column) if subject_column in metadata.columns else metadata
 
         self.target_column = target_column
-        self.pathology_columns = pathology_columns or ["gpath", "amylsqrt", "tangsqrt"]
+        # Distinguish None (use default) from [] (caller explicitly opts out
+        # of pathology columns). The original ``or`` fallback collapsed both
+        # to the default, which broke explicit opt-out tests.
+        self.pathology_columns = (
+            ["gpath", "amylsqrt", "tangsqrt"]
+            if pathology_columns is None
+            else list(pathology_columns)
+        )
         self.max_missing_subject_fraction = max_missing_subject_fraction
         self.meta_csv = Path(meta_csv) if meta_csv is not None else None
         self.age_mean = age_mean
         self.age_std = age_std
+        # Default False so a typo in pathology_columns errors loudly instead
+        # of silently zeroing the entire feature.
+        self.allow_missing_pathology = allow_missing_pathology
 
         # Single-pass load + validate: loads each .pt file exactly once,
         # detecting cell_type_order, filtering degenerate subjects, and
@@ -965,6 +1001,12 @@ class PrecomputedDataset(Dataset):
                             if sid not in self.metadata.index:
                                 continue
 
+                            # Safe: .pt files are produced by
+                            # save_precomputed_features() in this module.
+                            # weights_only=False is required because the
+                            # files contain dict-of-tensor structures
+                            # (cell_type_order list, available_regions list)
+                            # alongside state_dict-style tensors.
                             pt_data = torch.load(
                                 feature_file, weights_only=False, mmap=True,
                             )
@@ -1051,9 +1093,13 @@ class PrecomputedDataset(Dataset):
                         if ddp_active and rank == 0:
                             self._prefault_cache(cache)
 
-                    except Exception as exc:
+                    except (OSError, RuntimeError, KeyError, ValueError) as exc:
+                        # Narrow except: deliberately catches load failures
+                        # so the all_reduce + barrier broadcast (below) can
+                        # propagate them across DDP ranks without deadlock.
+                        # KeyboardInterrupt / SystemExit propagate normally.
                         load_error = exc
-                        logger.error("Rank %d: loading failed: %s", rank, exc)
+                        logger.exception("Rank %d: loading failed", rank)
 
                 # DDP deadlock prevention: use all_reduce to check if any
                 # rank failed before the barrier. Without this, a failed rank
@@ -1211,12 +1257,29 @@ class PrecomputedDataset(Dataset):
         """Copy feature files to /dev/shm for fast DDP loading.
 
         Rank 0 copies files; other ranks wait at a barrier.
-        Returns the /dev/shm cache directory path.
+        Returns the /dev/shm cache directory path. On platforms without
+        ``/dev/shm`` (macOS, Windows), this is a no-op that returns the
+        original feature_dir — DDP loading falls back to direct disk reads.
         """
         import shutil
         import torch.distributed as dist
 
-        shm_dir = Path("/dev/shm") / f"precomputed_{self.feature_dir.name}"
+        shm_root = Path("/dev/shm")
+        if not shm_root.exists():
+            logger.info(
+                "/dev/shm not present (non-Linux platform); falling back to "
+                "direct disk DDP loading."
+            )
+            resolved_no_op = [str(self.feature_dir)]
+            try:
+                dist.broadcast_object_list(resolved_no_op, src=0)
+            except RuntimeError:
+                # If the process group isn't initialised (single-rank), no
+                # broadcast is needed.
+                pass
+            return self.feature_dir
+
+        shm_dir = shm_root / f"precomputed_{self.feature_dir.name}"
 
         if rank == 0:
             # Check if cache is valid (exists and has at least as many files)
@@ -1331,6 +1394,10 @@ class PrecomputedDataset(Dataset):
                 pt_path = feature_dir / f"{sid}.pt"
                 if not pt_path.exists():
                     continue
+                # Safe: .pt files are produced by save_precomputed_features()
+                # in this module; weights_only=False is required because they
+                # contain dict-of-tensor structures (cell_type_order list,
+                # available_regions list) alongside state_dict-style tensors.
                 pt_data = torch.load(pt_path, weights_only=False, mmap=use_mmap)
                 entry: dict[str, Any] = {
                     "pseudobulk": pt_data["pseudobulk"],
@@ -1445,6 +1512,7 @@ class PrecomputedDataset(Dataset):
         _validate_no_nan_columns(
             self.metadata, self.subject_ids,
             self.pathology_columns, "pathology",
+            allow_missing=getattr(self, "allow_missing_pathology", False),
         )
 
     def get_gene_names(self) -> list[str] | None:
@@ -1460,8 +1528,15 @@ class PrecomputedDataset(Dataset):
                 # Safe here: .npy files are self-generated by save_precomputed_features().
                 names = np.load(gene_names_path, allow_pickle=True)
                 return [str(n) for n in names]
-            except Exception as e:
-                warnings.warn(f"Could not load gene names from {gene_names_path}: {e}")
+            except (OSError, ValueError, EOFError) as e:
+                # Narrow except: allow_pickle=True can raise ValueError for
+                # incompatible pickles, EOFError for truncated files. The
+                # caller treats None as "no gene names" so corrupt sidecars
+                # degrade gracefully.
+                warnings.warn(
+                    f"Could not load gene names from {gene_names_path}: {e}",
+                    stacklevel=2,
+                )
         return None
 
     def get_cell_type_names(self) -> list[str]:

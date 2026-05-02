@@ -31,7 +31,11 @@ from scipy import stats
 
 # Cell type ordering taken from
 # outputs/canonical/interpretability/pathology_attention_summary.json
+# (verified at runtime against summary['cell_type_names_used']).
 SPLATTER_CT_INDEX = 30
+# Head 1 is the constitutive Splatter head per F3 audit
+# (~0.123 attention to Splatter, 3.8x uniform baseline). The four heads
+# are 0..3; head 1 is the one being investigated for cell-count modulation.
 HEAD1_INDEX = 1
 
 
@@ -70,15 +74,39 @@ def quartile_summary(x: np.ndarray) -> dict:
         "q3": float(np.percentile(x, 75)),
         "max": float(np.max(x)),
         "mean": float(np.mean(x)),
-        "std": float(np.std(x, ddof=1)) if len(x) > 1 else 0.0,
+        # ddof=0 (population/pstdev) — project-wide convention.
+        "std": float(np.std(x, ddof=0)) if len(x) > 1 else 0.0,
     }
 
 
 def correlations(x: np.ndarray, y: np.ndarray) -> dict:
-    spearman = stats.spearmanr(x, y)
-    pearson = stats.pearsonr(x, y)
+    """Spearman + Pearson on (x, y), NaN-safe.
+
+    Drops pairs where either side is NaN (scipy.stats.spearmanr / pearsonr
+    silently return NaN otherwise). Surfaces ``n_dropped_nan`` so a
+    consumer can distinguish "no signal" from "data missing".
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = ~(np.isnan(x) | np.isnan(y))
+    n_used = int(mask.sum())
+    n_dropped = int((~mask).sum())
+    if n_used < 2:
+        return {
+            "n": n_used,
+            "n_dropped_nan": n_dropped,
+            "spearman_rho": float("nan"),
+            "spearman_p": float("nan"),
+            "pearson_r": float("nan"),
+            "pearson_p": float("nan"),
+        }
+    x_clean = x[mask]
+    y_clean = y[mask]
+    spearman = stats.spearmanr(x_clean, y_clean)
+    pearson = stats.pearsonr(x_clean, y_clean)
     return {
-        "n": int(len(x)),
+        "n": n_used,
+        "n_dropped_nan": n_dropped,
         "spearman_rho": float(spearman.statistic),
         "spearman_p": float(spearman.pvalue),
         "pearson_r": float(pearson.statistic),
@@ -99,9 +127,21 @@ def main() -> None:
         )
 
     # --- Load features ---
-    features = pd.read_csv(args.features_csv)
+    # Type-hint the schema at load time so subsequent .astype() casts in
+    # the alignment loop are no-ops.
+    features = pd.read_csv(
+        args.features_csv,
+        dtype={
+            "subject": str,
+            "n_splatter_cells_pfc": float,
+            "n_splatter_cells_total": float,
+            "residual": float,
+        },
+    )
     # n_splatter_cells_pfc is NaN when subject_id is sampled from non-PFC region;
     # in that case fall back to the total count (PFC is the modeled region).
+    # Both columns may still have NaN; n_cells will then carry NaN through and
+    # be dropped by the NaN-safe `correlations()`.
     cells_pfc = features["n_splatter_cells_pfc"].astype(float)
     cells_total = features["n_splatter_cells_total"].astype(float)
     n_cells = cells_pfc.where(~cells_pfc.isna(), cells_total).to_numpy()
@@ -122,11 +162,16 @@ def main() -> None:
     aligned_residual = []
     aligned_subjects = []
     aligned_present_pfc = []
+    # NaN-safe boolean: fillna(False) before astype(bool) — bool(nan) is
+    # True in numpy, which would silently mis-classify subjects.
+    splatter_present = (
+        features["splatter_present_in_pfc"].fillna(False).astype(bool).to_numpy()
+    )
     for sid, n, resid, present in zip(
         feat_subject_ids,
         n_cells,
         features["residual"].to_numpy(),
-        features["splatter_present_in_pfc"].astype(bool).to_numpy(),
+        splatter_present,
     ):
         if sid not in attn_index:
             continue
@@ -172,24 +217,35 @@ def main() -> None:
                     float(aligned_n_cells[mask].max()),
                 ],
                 "head1_splatter_attn_mean": float(aligned_attn[mask].mean()),
-                "head1_splatter_attn_std": float(aligned_attn[mask].std(ddof=1))
+                # ddof=0 (pstdev) — project-wide convention.
+                "head1_splatter_attn_std": float(aligned_attn[mask].std(ddof=0))
                 if mask.sum() > 1
                 else 0.0,
             }
         )
 
     # --- Verdict logic ---
+    # NaN-aware: if any of the four p-values is NaN (e.g. from a NaN-only
+    # column or a too-small clean subset), surface "INCONCLUSIVE" rather
+    # than defaulting to "CONSTITUTIVE" (NaN < 0.05 evaluates False, which
+    # would silently produce the wrong verdict).
     p_threshold = 0.05
-    is_significant_either = (
-        all_corr["spearman_p"] < p_threshold
-        or all_corr["pearson_p"] < p_threshold
-        or log_corr["spearman_p"] < p_threshold
-        or log_corr["pearson_p"] < p_threshold
-    )
-    if is_significant_either:
+    p_values = [
+        all_corr["spearman_p"],
+        all_corr["pearson_p"],
+        log_corr["spearman_p"],
+        log_corr["pearson_p"],
+    ]
+    if any(p is None or (isinstance(p, float) and np.isnan(p)) for p in p_values):
+        verdict = (
+            "INCONCLUSIVE — at least one correlation p-value is undefined "
+            "(NaN inputs after dropna). Check upstream features.csv / "
+            "attention.npz for missing data."
+        )
+    elif any(p < p_threshold for p in p_values):
         verdict = (
             "Head-1 Splatter attention IS subject-modulated by Splatter cell count "
-            f"(min p across tests = {min(all_corr['spearman_p'], all_corr['pearson_p'], log_corr['spearman_p'], log_corr['pearson_p']):.4g})."
+            f"(min p across tests = {min(p_values):.4g})."
         )
     else:
         verdict = (

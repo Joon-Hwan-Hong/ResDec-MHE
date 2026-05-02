@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 from src.models.resdec_head.tabm_wrapper import TabMWrapper
 
-
 def test_tabm_wrapper_shape():
     sub = nn.Linear(32, 32)
     tabm = TabMWrapper(submodule=sub, d_in=32, k=8)
@@ -11,7 +10,6 @@ def test_tabm_wrapper_shape():
     mean, std = tabm(x)
     assert mean.shape == (4, 32)
     assert std.shape == (4, 32)
-
 
 def test_tabm_members_diverge():
     """Different k members produce different intermediate outputs."""
@@ -26,7 +24,6 @@ def test_tabm_members_diverge():
     _, std = tabm(x)
     assert std.abs().max() > 1e-3
 
-
 def test_tabm_gradient_flow():
     sub = nn.Linear(8, 8)
     tabm = TabMWrapper(submodule=sub, d_in=8, k=3)
@@ -37,7 +34,6 @@ def test_tabm_gradient_flow():
     assert tabm.s.grad is not None
     assert tabm.r.grad is not None
 
-
 def test_tabm_wrapper_output_mismatch_raises():
     """Submodule whose output dim != d_out raises a clear RuntimeError."""
     sub = nn.Linear(16, 8)  # 16 in, 8 out
@@ -45,7 +41,6 @@ def test_tabm_wrapper_output_mismatch_raises():
     x = torch.randn(2, 16)
     with pytest.raises(RuntimeError, match="expected submodule output dim 16"):
         tabm(x)
-
 
 def test_tabm_wrapper_asymmetric_dims():
     """Explicit d_in != d_out works when submodule is compatible."""

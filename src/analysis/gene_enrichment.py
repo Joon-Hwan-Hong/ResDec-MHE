@@ -429,7 +429,11 @@ class GeneEnrichmentAnalyzer:
                     verbose=False,
                     threads=1,
                 )
-            except Exception as e:
+            except (ValueError, IndexError, RuntimeError, KeyError) as e:
+                # Narrow except: gseapy.prerank raises ValueError for empty
+                # rankings, IndexError for all-zero genes, and RuntimeError
+                # for various network/cache failures. KeyboardInterrupt and
+                # SystemExit propagate normally.
                 logger.warning(
                     "gseapy prerank failed for cell type '%s', "
                     "collection '%s': %s",

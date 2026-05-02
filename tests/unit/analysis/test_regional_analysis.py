@@ -13,43 +13,33 @@ from src.analysis.regional_analysis import (
     compute_regional_analysis,
 )
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
 
-
 @pytest.fixture
 def sample_region_attention():
     """Sample region attention weights [n_subjects, n_regions, n_cell_types]."""
-    np.random.seed(42)
     return np.random.rand(20, 4, 8)  # 20 subjects, 4 regions, 8 cell types
-
 
 @pytest.fixture
 def sample_region_attention_2d():
     """Sample aggregated region attention weights [n_subjects, n_regions]."""
-    np.random.seed(42)
     return np.random.rand(20, 4)
-
 
 @pytest.fixture
 def sample_region_weights():
     """Sample learned region weights [n_regions]."""
     return np.array([0.3, 0.25, 0.25, 0.2])
 
-
 @pytest.fixture
 def sample_gene_gate_weights():
     """Sample gene gate weights [n_cell_types, n_genes]."""
-    np.random.seed(42)
     return np.random.rand(8, 100)
-
 
 @pytest.fixture
 def sample_region_pseudobulk():
     """Sample mean pseudobulk per region."""
-    np.random.seed(42)
     return {
         "DLPFC": np.random.rand(8, 100),
         "PCC": np.random.rand(8, 100),
@@ -57,29 +47,24 @@ def sample_region_pseudobulk():
         "MT": np.random.rand(8, 100),
     }
 
-
 @pytest.fixture
 def sample_region_names():
     """Sample region names."""
     return ["DLPFC", "PCC", "AC", "MT"]
-
 
 @pytest.fixture
 def sample_cell_type_names():
     """Sample cell type names."""
     return ["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"]
 
-
 @pytest.fixture
 def sample_gene_names():
     """Sample gene names."""
     return [f"gene_{i}" for i in range(100)]
 
-
 # =============================================================================
 # RegionalAnalyzer Tests
 # =============================================================================
-
 
 class TestRegionalAnalyzerInit:
     """Test RegionalAnalyzer initialization."""
@@ -131,7 +116,6 @@ class TestRegionalAnalyzerInit:
 
         assert analyzer.region_attention is not None
         assert analyzer.region_weights is None
-
 
 class TestRegionalAnalyzerAnalyze:
     """Test RegionalAnalyzer.analyze()."""
@@ -298,7 +282,6 @@ class TestRegionalAnalyzerAnalyze:
         assert result.metadata["has_attention_data"] is True
         assert result.metadata["has_region_weights"] is True
 
-
 class TestRegionalAnalyzerSave:
     """Test RegionalAnalyzer.save()."""
 
@@ -389,11 +372,9 @@ class TestRegionalAnalyzerSave:
         assert output_dir.exists()
         assert len(saved_files) > 0
 
-
 # =============================================================================
 # Convenience Function Tests
 # =============================================================================
-
 
 class TestComputeRegionalAnalysis:
     """Test compute_regional_analysis convenience function."""
@@ -453,11 +434,9 @@ class TestComputeRegionalAnalysis:
         assert result.region_contribution is not None
         assert result.gene_importance is not None
 
-
 # =============================================================================
 # Edge Cases
 # =============================================================================
-
 
 class TestRegionalAnalysisGuard:
     """Test the guard condition in run_analysis.py."""
@@ -473,7 +452,6 @@ class TestRegionalAnalysisGuard:
             "Regional analysis guard must check for actual extracted data, "
             "not just learned weights"
         )
-
 
 class TestRegionalAnalysisEdgeCases:
     """Test edge cases and error handling."""
@@ -524,11 +502,9 @@ class TestRegionalAnalysisEdgeCases:
         # Gene importance should still be None (no regions to process)
         assert result.gene_importance is None or len(result.gene_importance) == 0
 
-
 # =============================================================================
 # Property-Based Tests
 # =============================================================================
-
 
 class TestRegionalAnalysisProperties:
     """Property-based tests using Hypothesis."""
@@ -582,11 +558,9 @@ class TestRegionalAnalysisProperties:
         total = result.region_contribution["normalized_weight"].sum()
         assert abs(total - 1.0) < 1e-6
 
-
 # =============================================================================
 # Schema Validation Tests
 # =============================================================================
-
 
 class TestRegionalAnalysisSchema:
     """Test output DataFrame schemas."""
@@ -659,11 +633,9 @@ class TestRegionalAnalysisSchema:
         assert np.issubdtype(df["mean_expression"].dtype, np.floating)
         assert np.issubdtype(df["effective_weight"].dtype, np.floating)
 
-
 # =============================================================================
 # Round-Trip Tests
 # =============================================================================
-
 
 class TestRegionalAnalysisRoundTrip:
     """Test save and load round-trips."""
@@ -713,11 +685,9 @@ class TestRegionalAnalysisRoundTrip:
             check_dtype=False,  # CSV may change dtypes
         )
 
-
 # =============================================================================
 # _compute_per_subject_attention Tests (I10)
 # =============================================================================
-
 
 class TestComputePerSubjectAttention:
     """Test _compute_per_subject_attention method."""

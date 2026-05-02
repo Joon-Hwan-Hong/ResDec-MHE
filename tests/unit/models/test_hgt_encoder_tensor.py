@@ -5,7 +5,6 @@ import torch
 
 from src.data.constants import N_CELL_TYPES, N_EDGE_TYPES
 
-
 @pytest.fixture
 def encoder_config():
     """Standard encoder configuration."""
@@ -21,12 +20,10 @@ def encoder_config():
         "dropout": 0.0,
     }
 
-
 @pytest.fixture
 def encoder(encoder_config):
     from src.models.branches.hgt_encoder_tensor import HGTEncoderTensor
     return HGTEncoderTensor(**encoder_config)
-
 
 @pytest.fixture
 def sample_batch(encoder_config):
@@ -46,7 +43,6 @@ def sample_batch(encoder_config):
     edge_type = torch.cat(type_parts)
     edge_attr = torch.rand(B * edges_per_sample, 1)
     return x, edge_index, edge_type, edge_attr
-
 
 class TestHGTEncoderTensorInit:
     """Test initialization."""
@@ -92,7 +88,6 @@ class TestHGTEncoderTensorInit:
             HGTEncoderTensor(0, 32, 32, 2, 1, 4, 2)
         with pytest.raises(ValueError, match="must be divisible by"):
             HGTEncoderTensor(32, 31, 32, 4, 1, 4, 2)
-
 
 class TestHGTEncoderTensorForward:
     """Test forward pass."""
@@ -198,7 +193,6 @@ class TestHGTEncoderTensorForward:
         loss = out.sum()
         loss.backward()
         assert x.grad is not None
-
 
 class TestHGTEncoderTensorFlatEdges:
     """Test HGTEncoderTensor with flat (non-padded) edge format."""

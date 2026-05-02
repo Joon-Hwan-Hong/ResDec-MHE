@@ -12,21 +12,15 @@ Behavioural contract under test:
 """
 from __future__ import annotations
 
-import matplotlib
-
-matplotlib.use("Agg")
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
 from src.visualization.prediction_plots import plot_predicted_vs_actual
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
-
 
 @pytest.fixture
 def sample_xy() -> dict[str, np.ndarray]:
@@ -37,7 +31,6 @@ def sample_xy() -> dict[str, np.ndarray]:
     predicted_mean = actual + rng.normal(size=n) * 0.5
     return {"actual": actual, "predicted_mean": predicted_mean}
 
-
 @pytest.fixture
 def sample_categorical(sample_xy):
     """Two-class color array + palette dict."""
@@ -47,17 +40,14 @@ def sample_categorical(sample_xy):
     palette = {"F": "#E76A7B", "M": "#189584"}
     return {"color_by": classes, "palette": palette, "label": "Sex"}
 
-
 @pytest.fixture(autouse=True)
 def _close_figures():
     yield
     plt.close("all")
 
-
 # =============================================================================
 # Backward compatibility — no new kwargs
 # =============================================================================
-
 
 def test_basic_call_returns_figure(sample_xy):
     fig = plot_predicted_vs_actual(
@@ -65,7 +55,6 @@ def test_basic_call_returns_figure(sample_xy):
         actual=sample_xy["actual"],
     )
     assert isinstance(fig, plt.Figure)
-
 
 def test_basic_call_has_metrics_annotation(sample_xy):
     fig = plot_predicted_vs_actual(
@@ -78,7 +67,6 @@ def test_basic_call_has_metrics_annotation(sample_xy):
     assert "MAE" in text_content
     assert "R" in text_content  # mathtext "R²" or "R^2"
 
-
 def test_basic_call_has_identity_and_fit_lines(sample_xy):
     fig = plot_predicted_vs_actual(
         predicted_mean=sample_xy["predicted_mean"],
@@ -87,7 +75,6 @@ def test_basic_call_has_identity_and_fit_lines(sample_xy):
     ax = fig.get_axes()[0]
     # identity + fit, both as Line2D
     assert len(ax.lines) >= 2
-
 
 def test_basic_call_scatter_count_matches_n(sample_xy):
     fig = plot_predicted_vs_actual(
@@ -99,7 +86,6 @@ def test_basic_call_scatter_count_matches_n(sample_xy):
     n_pts = sum(c.get_offsets().shape[0] for c in ax.collections if hasattr(c, "get_offsets"))
     assert n_pts == sample_xy["actual"].shape[0]
 
-
 def test_basic_call_axes_labels(sample_xy):
     fig = plot_predicted_vs_actual(
         predicted_mean=sample_xy["predicted_mean"],
@@ -109,11 +95,9 @@ def test_basic_call_axes_labels(sample_xy):
     assert "Actual" in ax.get_xlabel()
     assert "Predicted" in ax.get_ylabel()
 
-
 # =============================================================================
 # add_marginals=True — KDE marginal panels
 # =============================================================================
-
 
 def test_marginals_creates_three_or_four_axes(sample_xy):
     """Main axis + top KDE + right KDE (corner spacer optional)."""
@@ -124,7 +108,6 @@ def test_marginals_creates_three_or_four_axes(sample_xy):
     )
     # Expect at least 3 axes (main + top + right). 4 if a corner spacer is created.
     assert len(fig.get_axes()) >= 3
-
 
 def test_marginals_main_axis_still_has_metrics(sample_xy):
     fig = plot_predicted_vs_actual(
@@ -142,11 +125,9 @@ def test_marginals_main_axis_still_has_metrics(sample_xy):
     assert "RMSE" in text_content
     assert "MAE" in text_content
 
-
 # =============================================================================
 # color_by — per-category coloring + legend
 # =============================================================================
-
 
 def test_color_by_adds_legend_label(sample_xy, sample_categorical):
     fig = plot_predicted_vs_actual(
@@ -167,7 +148,6 @@ def test_color_by_adds_legend_label(sample_xy, sample_categorical):
     # category labels should appear in the legend
     assert "F" in legend_str or "M" in legend_str
 
-
 def test_color_by_uses_more_than_one_color(sample_xy, sample_categorical):
     fig = plot_predicted_vs_actual(
         predicted_mean=sample_xy["predicted_mean"],
@@ -187,7 +167,6 @@ def test_color_by_uses_more_than_one_color(sample_xy, sample_categorical):
     ]
     assert len(scatter_collections) >= 2
 
-
 def test_color_by_with_marginals_combined(sample_xy, sample_categorical):
     fig = plot_predicted_vs_actual(
         predicted_mean=sample_xy["predicted_mean"],
@@ -199,7 +178,6 @@ def test_color_by_with_marginals_combined(sample_xy, sample_categorical):
     )
     assert isinstance(fig, plt.Figure)
     assert len(fig.get_axes()) >= 3
-
 
 def test_color_by_save_path_writes_file(tmp_path, sample_xy, sample_categorical):
     out = tmp_path / "fig_color_by.png"

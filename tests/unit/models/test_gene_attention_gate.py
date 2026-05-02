@@ -19,7 +19,6 @@ import torch
 
 from src.data.constants import N_CELL_TYPES
 
-
 # =============================================================================
 # FIXTURES
 # =============================================================================
@@ -30,13 +29,11 @@ def small_gate():
     from src.models.components.gene_attention_gate import GeneAttentionGate
     return GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1.0)
 
-
 @pytest.fixture
 def production_gate():
     """Production-sized gate (31 cell types, 3000 genes)."""
     from src.models.components.gene_attention_gate import GeneAttentionGate
     return GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=3000)
-
 
 # =============================================================================
 # 1. INITIALIZATION TESTS
@@ -63,7 +60,6 @@ class TestInitialization:
         """Non-uniform initialization should have small random values."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        torch.manual_seed(42)
         gate = GeneAttentionGate(n_cell_types=5, n_genes=10, init_uniform=False)
         assert not torch.allclose(gate.gate_logits, torch.zeros(5, 10))
         assert gate.gate_logits.abs().max() < 0.1  # Small initialization
@@ -97,19 +93,18 @@ class TestInitialization:
             GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=0)
 
     def test_rejects_zero_temperature(self):
-        """Should reject temperature=0."""
+        """Should reject temperature=0 (below the 0.05 floor)."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        with pytest.raises(ValueError, match="temperature must be positive"):
+        with pytest.raises(ValueError, match=r"temperature must be >= 0\.05"):
             GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=100, temperature=0)
 
     def test_rejects_negative_temperature(self):
         """Should reject negative temperature."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        with pytest.raises(ValueError, match="temperature must be positive"):
+        with pytest.raises(ValueError, match=r"temperature must be >= 0\.05"):
             GeneAttentionGate(n_cell_types=N_CELL_TYPES, n_genes=100, temperature=-1.0)
-
 
 # =============================================================================
 # 2. FORWARD PASS TESTS
@@ -171,7 +166,6 @@ class TestForwardPass:
         x = torch.randn(0, 5, 10)
         output = small_gate(x)
         assert output.shape == (0, 5, 10)
-
 
 # =============================================================================
 # 3. WEIGHT PROPERTIES TESTS
@@ -250,7 +244,6 @@ class TestWeightProperties:
         weights = gate.get_gate_weights()
         assert (weights > 0).all()
 
-
 # =============================================================================
 # 4. TEMPERATURE TESTS
 # =============================================================================
@@ -301,11 +294,11 @@ class TestTemperature:
         assert gate.temperature == 2.0
 
     def test_temperature_setter_rejects_zero(self):
-        """Temperature setter should reject zero."""
+        """Temperature setter should reject zero (below the 0.05 floor)."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=5, n_genes=10)
-        with pytest.raises(ValueError, match="temperature must be positive"):
+        with pytest.raises(ValueError, match=r"temperature must be >= 0\.05"):
             gate.temperature = 0
 
     def test_temperature_setter_rejects_negative(self):
@@ -313,16 +306,17 @@ class TestTemperature:
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         gate = GeneAttentionGate(n_cell_types=5, n_genes=10)
-        with pytest.raises(ValueError, match="temperature must be positive"):
+        with pytest.raises(ValueError, match=r"temperature must be >= 0\.05"):
             gate.temperature = -1.0
 
-    def test_temperature_floor_applied(self):
-        """Very small temperature should be floored to 0.05."""
+    def test_temperature_floor_rejects_below_min(self):
+        """Very small temperature is now rejected (was: silently floored to
+        0.05). The previous ``max(value, 0.05)`` clamp made caller intent
+        invisible — the contract was tightened to error explicitly."""
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
-        gate = GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1e-6)
-        assert gate.temperature == pytest.approx(0.05)
-
+        with pytest.raises(ValueError, match=r"temperature must be >= 0\.05"):
+            GeneAttentionGate(n_cell_types=5, n_genes=10, temperature=1e-6)
 
 # =============================================================================
 # 5. GRADIENT TESTS
@@ -383,7 +377,6 @@ class TestGradients:
         loss.backward()
 
         assert x.grad is not None
-
 
 # =============================================================================
 # 6. INTERPRETABILITY TESTS
@@ -453,7 +446,6 @@ class TestInterpretability:
         for ct_idx in range(2):
             assert len(top_genes[ct_idx]) == 5
 
-
 class TestGetTopGenesEdgeCases:
     """Tests for get_top_genes_per_cell_type with k<=0."""
 
@@ -472,7 +464,6 @@ class TestGetTopGenesEdgeCases:
         gate = GeneAttentionGate(n_cell_types=3, n_genes=50)
         with pytest.raises(RuntimeError):
             gate.get_top_genes_per_cell_type(k=-1)
-
 
 # =============================================================================
 # 7. EDGE CASES TESTS
@@ -546,7 +537,6 @@ class TestEdgeCases:
 
         assert not torch.isnan(output).any()
         assert not torch.isinf(output).any()
-
 
 # =============================================================================
 # 8. NUMERICAL STABILITY TESTS
@@ -640,7 +630,6 @@ class TestNumericalStability:
         # so weights are always float32 regardless of logit dtype.
         assert weights.dtype == torch.float32, "Gate weights should stay float32 for precision"
 
-
 # =============================================================================
 # 9. DETERMINISM TESTS
 # =============================================================================
@@ -669,7 +658,13 @@ class TestDeterminism:
         assert torch.equal(weights1, weights2)
 
     def test_seeded_initialization_reproducible(self):
-        """Seeded initialization should be reproducible."""
+        """Seeded initialization should be reproducible.
+
+        Explicit per-call seed: tests that re-seeding to the same value
+        before each gate construction produces bit-identical params. The
+        autouse fixture only seeds once at test start; we need to seed
+        between the two gates.
+        """
         from src.models.components.gene_attention_gate import GeneAttentionGate
 
         torch.manual_seed(42)
@@ -679,7 +674,6 @@ class TestDeterminism:
         gate2 = GeneAttentionGate(n_cell_types=5, n_genes=10, init_uniform=False)
 
         assert torch.equal(gate1.gate_logits, gate2.gate_logits)
-
 
 # =============================================================================
 # 10. DEVICE TESTS

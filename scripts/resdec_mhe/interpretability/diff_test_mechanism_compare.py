@@ -25,20 +25,52 @@ logger = logging.getLogger(__name__)
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    with open(path) as f:
+    # Resolve to absolute so a relative path is taken from cwd loudly rather
+    # than silently against the worktree root.
+    path = Path(path).resolve()
+    with path.open() as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
 def _post_step_records(records: list[dict]) -> list[dict]:
-    return [r for r in records if r.get("phase") == "post_step"]
+    """Filter for ``phase == "post_step"`` records.
+
+    Asserts the filter result is non-empty so a future schema rename
+    (``post_step`` → ``post_train_batch_end`` etc.) fails loudly instead
+    of silently returning [], which would emit "no divergence detected"
+    instead of failing.
+    """
+    post = [r for r in records if r.get("phase") == "post_step"]
+    assert post, (
+        f"No post_step records found in trajectory ({len(records)} total "
+        "records walked). Check that diff_test_mechanism_probe still emits "
+        "phase='post_step' — schema may have drifted."
+    )
+    return post
 
 
-def _epsilon_diff(a: float, b: float, eps: float = 1e-3) -> bool:
+# Per-signal divergence epsilons. Each is set just above the expected
+# floor for that signal so we surface meaningful divergences while
+# ignoring fp32-precision-floor noise:
+#   _EPS_LOSS    = 1e-3  — bf16 forward loss precision floor (~1e-4 in
+#                          practice; 10x headroom).
+#   _EPS_ATTN    = 1e-6  — fp32 attention softmax output precision floor.
+#   _EPS_PRED    = 1e-5  — head's residual prediction (fp32) precision.
+#   _EPS_GRADNRM = 1e-4  — bf16 backward grad-norm noise floor (10x looser
+#                          than forward because bf16 backward kernels are
+#                          intentionally non-deterministic at this scale).
+_EPS_LOSS: float = 1e-3
+_EPS_ATTN: float = 1e-6
+_EPS_PRED: float = 1e-5
+_EPS_GRADNRM: float = 1e-4
+
+
+def _epsilon_diff(a: float, b: float, eps: float = _EPS_LOSS) -> bool:
     return abs(a - b) > eps
 
 
 def _find_first_divergence(
-    canon: list[dict], diff: list[dict], eps_loss: float = 1e-3
+    canon: list[dict], diff: list[dict], eps_loss: float = _EPS_LOSS,
 ) -> dict[str, Any]:
     """Walk both trajectories step-by-step, find first divergence by signal."""
     n = min(len(canon), len(diff))
@@ -86,7 +118,7 @@ def _find_first_divergence(
             out["first_step_attn_mean_diff"] is None
             and ax.get("present") and bx.get("present")
             and "mean" in ax and "mean" in bx
-            and _epsilon_diff(float(ax["mean"]), float(bx["mean"]), 1e-6)
+            and _epsilon_diff(float(ax["mean"]), float(bx["mean"]), _EPS_ATTN)
         ):
             out["first_step_attn_mean_diff"] = {
                 "step": i,
@@ -98,7 +130,7 @@ def _find_first_divergence(
         if (
             out["first_step_pred_mean_diff"] is None
             and "mean" in ap and "mean" in bp
-            and _epsilon_diff(float(ap["mean"]), float(bp["mean"]), 1e-5)
+            and _epsilon_diff(float(ap["mean"]), float(bp["mean"]), _EPS_PRED)
         ):
             out["first_step_pred_mean_diff"] = {
                 "step": i,
@@ -110,7 +142,7 @@ def _find_first_divergence(
         if (
             out["first_step_grad_norm_encoder_diff"] is None
             and a_gn is not None and b_gn is not None
-            and _epsilon_diff(float(a_gn), float(b_gn), 1e-4)
+            and _epsilon_diff(float(a_gn), float(b_gn), _EPS_GRADNRM)
         ):
             out["first_step_grad_norm_encoder_diff"] = {
                 "step": i,
@@ -316,9 +348,11 @@ def _interpret_mechanism(
     # context such that SDPA backward (which is explicitly non-deterministic per
     # the FlashAttention warning) takes a different reduction order.
     if pre_rng == 1 or (post_rng is not None and post_rng <= 1):
-        hypothesis = "H2 (RNG state advance from no_grad block) — most likely"
+        hypothesis_id = "H2"
+        hypothesis_label = "H2 (RNG state advance from no_grad block) — most likely"
     elif s1_attended_max is not None and s1_attended_max > 0.0:
-        hypothesis = "H3 (bf16 numerical drift) — most likely"
+        hypothesis_id = "H3"
+        hypothesis_label = "H3 (bf16 numerical drift) — most likely"
     elif (
         s1_attended_max is not None and s1_attended_max == 0.0
         and (post_rng is None)
@@ -330,16 +364,23 @@ def _interpret_mechanism(
         # diff_test config's only ADDITIONAL gpu work is the no_grad einsum +
         # softmax block, which alters allocator pool / kernel-launch context
         # in a way that changes which non-deterministic backward path is taken.
-        hypothesis = (
+        hypothesis_id = "H1_H4"
+        hypothesis_label = (
             "H1/H4 (non-deterministic SDPA backward + GPU state side-channel "
             "from no_grad block) — most likely"
         )
     elif param_div is not None and param_div > 1:
-        hypothesis = "H1 / H4 (kernel heuristic / allocator drift) — possible"
+        hypothesis_id = "H1_H4_possible"
+        hypothesis_label = "H1 / H4 (kernel heuristic / allocator drift) — possible"
     else:
-        hypothesis = "Unclear from this trajectory; need longer run or finer probe"
+        hypothesis_id = "unclear"
+        hypothesis_label = "Unclear from this trajectory; need longer run or finer probe"
 
-    return {"likely_hypothesis": hypothesis, "evidence_notes": notes}
+    return {
+        "likely_hypothesis_id": hypothesis_id,
+        "likely_hypothesis": hypothesis_label,
+        "evidence_notes": notes,
+    }
 
 
 def main(args: argparse.Namespace) -> None:

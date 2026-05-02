@@ -21,10 +21,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 @pytest.fixture
 def synthetic_well_calibrated() -> dict:
@@ -41,7 +38,6 @@ def synthetic_well_calibrated() -> dict:
         "is_ad": rng.uniform(size=n) < 0.3,
     }
 
-
 @pytest.fixture
 def synthetic_overconfident() -> dict:
     """Sigma too small (0.5) but residual~N(0,1) -> empirical < nominal."""
@@ -57,7 +53,6 @@ def synthetic_overconfident() -> dict:
         "is_ad": np.zeros(n, dtype=bool),
     }
 
-
 def _build_data(d: dict):
     from scripts.resdec_mhe.interpretability.make_calibration_figure import (
         CalibrationData,
@@ -71,7 +66,6 @@ def _build_data(d: dict):
         sigma=d["sigma"],
         is_ad=d["is_ad"],
     )
-
 
 def test_compute_calibration_metrics_well_calibrated(synthetic_well_calibrated):
     """Well-calibrated Gaussian -> empirical coverage matches nominal +-0.05."""
@@ -109,7 +103,6 @@ def test_compute_calibration_metrics_well_calibrated(synthetic_well_calibrated):
     for label, rec in metrics["per_sigma_quartile_residual"].items():
         assert {"n", "mean_abs_residual", "median_abs_residual", "mean_sigma"} <= rec.keys()
 
-
 def test_compute_calibration_metrics_overconfident(synthetic_overconfident):
     """Over-confident sigma -> empirical coverage < nominal."""
     from scripts.resdec_mhe.interpretability.make_calibration_figure import (
@@ -125,7 +118,6 @@ def test_compute_calibration_metrics_overconfident(synthetic_overconfident):
         assert emp < p, f"Expected over-confident empirical < nominal at p={p}; got {emp}"
     # PIT KS should reject uniformity.
     assert metrics["pit_ks_pvalue"] < 0.05
-
 
 def test_load_calibration_data_canonical():
     """End-to-end load against canonical artifacts (skip if missing)."""
@@ -149,12 +141,11 @@ def test_load_calibration_data_canonical():
     assert data.sigma.min() > 0.0
     assert data.is_ad.dtype == bool
 
-
 def test_make_figure_returns_4_axes(synthetic_well_calibrated):
-    """make_figure returns a Figure with at least 4 axes (the 4 panels)."""
-    import matplotlib
+    """make_figure returns a Figure with at least 4 axes (the 4 panels).
 
-    matplotlib.use("Agg")
+    Agg backend is set globally in tests/conftest.py.
+    """
     import matplotlib.pyplot as plt
 
     from scripts.resdec_mhe.interpretability.make_calibration_figure import (
@@ -168,7 +159,6 @@ def test_make_figure_returns_4_axes(synthetic_well_calibrated):
         assert len(fig.axes) >= 4
     finally:
         plt.close(fig)
-
 
 def test_main_smoke(tmp_path: Path):
     """End-to-end smoke test: script runs and writes PNG/PDF/JSON."""

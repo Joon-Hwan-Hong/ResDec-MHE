@@ -136,7 +136,16 @@ class KLAnnealedELBO(TraceMeanField_ELBO):
             # Handle auxiliary sites in the guide (same as parent)
             for name, guide_site in guide_trace.nodes.items():
                 if guide_site["type"] == "sample" and name not in model_trace.nodes:
-                    assert guide_site["infer"].get("is_auxiliary")
+                    if not guide_site["infer"].get("is_auxiliary"):
+                        # Use a hard error rather than ``assert`` so the check
+                        # survives ``python -O`` (which strips assert
+                        # statements).
+                        raise RuntimeError(
+                            f"Guide-only site {name!r} must be marked "
+                            f"is_auxiliary=True (sites that exist in the "
+                            f"guide trace but not the model trace are "
+                            f"auxiliary by definition)."
+                        )
                     if is_validation_enabled():
                         check_fully_reparametrized(guide_site)
                     entropy_term = guide_site["score_parts"].entropy_term

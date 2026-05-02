@@ -21,6 +21,10 @@ import logging
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -42,22 +46,37 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--wasserstein-json",
-        default="outputs/canonical/interpretability/distributional_resilience/"
-        "wasserstein_per_celltype_pseudobulk.json",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/distributional_resilience"
+            / "wasserstein_per_celltype_pseudobulk.json"
+        ),
     )
     p.add_argument(
         "--stability-json",
-        default="outputs/canonical/interpretability/distributional_resilience/"
-        "stability_selection_pseudobulk.json",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/distributional_resilience"
+            / "stability_selection_pseudobulk.json"
+        ),
     )
     p.add_argument(
         "--de-concordance-csv",
-        default="outputs/canonical/interpretability/"
-        "de_wilcoxon_vs_deseq2_topK.csv",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/de_wilcoxon_vs_deseq2_topK.csv"
+        ),
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/canonical/interpretability/figures/distributional",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/figures/distributional"
+        ),
     )
     args = p.parse_args()
 

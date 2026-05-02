@@ -21,7 +21,6 @@ from src.models.fusion.cross_attention_fusion import (
 )
 from src.models.fusion.normalized_concat_fusion import NormalizedConcatFusionLayer
 
-
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -30,7 +29,6 @@ def layer():
         d_embed=64, d_fused=64, n_cell_types=N_CELL_TYPES, n_heads=4, dropout=0.0,
     )
 
-
 @pytest.fixture
 def branch_inputs():
     B = 4
@@ -38,7 +36,6 @@ def branch_inputs():
         torch.randn(B, N_CELL_TYPES, 64),  # hgt_emb
         torch.randn(B, N_CELL_TYPES, 64),  # cell_emb
     )
-
 
 # ── 1. Initialization ───────────────────────────────────────────────────────
 
@@ -81,7 +78,6 @@ class TestInitialization:
         with pytest.raises(ValueError, match="divisible by n_heads"):
             PairwiseCrossAttention(d_model=64, n_heads=5)
 
-
 # ── 2. Forward Pass ─────────────────────────────────────────────────────────
 
 class TestForwardPass:
@@ -120,7 +116,6 @@ class TestForwardPass:
         with pytest.raises(ValueError, match="3D"):
             layer(torch.randn(4, 64), torch.randn(4, 31, 64))
 
-
 # ── 3. Scale Invariance ─────────────────────────────────────────────────────
 
 class TestScaleInvariance:
@@ -139,7 +134,6 @@ class TestScaleInvariance:
         # With attention (scale-invariant), ratio should be much less.
         ratio = out_scaled.norm() / out_normal.norm()
         assert ratio < 5.0, f"Output scaled by {ratio:.1f}x — not scale-invariant"
-
 
 # ── 4. B2 Branch Weights ────────────────────────────────────────────────────
 
@@ -167,7 +161,6 @@ class TestBranchWeights:
         d = layer.get_branch_weight_dict()
         for v in d.values():
             assert v.shape == (N_CELL_TYPES,)
-
 
 # ── 5. Attention Maps ───────────────────────────────────────────────────────
 
@@ -198,7 +191,6 @@ class TestAttentionMaps:
         result = layer(hgt, ct)
         assert isinstance(result, torch.Tensor)  # Not a tuple
 
-
 # ── 6. Gradient Flow ────────────────────────────────────────────────────────
 
 class TestGradientFlow:
@@ -222,7 +214,6 @@ class TestGradientFlow:
 
         assert layer.branch_weight_logits.grad is not None
         assert layer.branch_weight_logits.grad.norm() > 0
-
 
 # ── 7. n_pma_seeds > 1 ──────────────────────────────────────────────────────
 
@@ -248,7 +239,6 @@ class TestPmaSeeds:
 
         out = layer(hgt, ct)
         assert out.shape == (2, N_CELL_TYPES, 64)
-
 
 # ── 8. Attention Modes (CrossFuse, Blend) ────────────────────────────────────
 
@@ -303,7 +293,6 @@ class TestAttentionModes:
     def test_invalid_mode_raises(self):
         with pytest.raises(ValueError, match="mode must be"):
             PairwiseCrossAttention(d_model=64, n_heads=4, mode="invalid")
-
 
 # ── 9. NormalizedConcatFusionLayer ───────────────────────────────────────────
 

@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 
 
 def main(args: argparse.Namespace) -> None:
+    """Train one fold of ResDec-MHE.
+
+    Config mutation: ``OmegaConf.set_struct(cfg, False)`` is called below to
+    permit CLI-driven overrides such as ``--reg-weight`` (which writes into
+    ``cfg.training.attention_regularization.weight``) and ``--metadata-path``
+    (which writes ``cfg.data.metadata_path``). Without struct-mode-off these
+    would raise on missing-key access.
+    """
     # ------------------------------------------------------------------ #
     # Config loading (default + phase override)                          #
     # ------------------------------------------------------------------ #
@@ -112,8 +120,11 @@ def main(args: argparse.Namespace) -> None:
         )
         if not embeddings_npz.exists():
             raise FileNotFoundError(
-                f"Cached embeddings not found: {embeddings_npz}. Run "
-                f"scripts/resdec_mhe/precompute_encoder_embeddings.py first."
+                f"Cached embeddings not found: {embeddings_npz}. The cached-"
+                f"embeddings path expects an .npz produced by a precompute "
+                f"step; see src/data/embedding_dataset.py for the expected "
+                f"schema. To run end-to-end without a cache, set "
+                f"data.use_cached_embeddings=false (canonical default)."
             )
         dl_cfg = cfg.data.get("dataloader", {}) or {}
         batch_size = int(dl_cfg.get("batch_size", 500))
@@ -246,17 +257,26 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    # Anchor defaults to the worktree root so callers in arbitrary cwds get
+    # consistent paths (mirrors run_clinical_baseline.py:54-65).
+    REPO_ROOT = Path(__file__).resolve().parents[3]
     p = argparse.ArgumentParser(description="ResDec-MHE training entry")
-    p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml",
+    p.add_argument("--config", default=str(REPO_ROOT / "configs/resdec_mhe/canonical.yaml"),
                    help="Phase override YAML (merged on top of configs/default.yaml).")
     p.add_argument("--fold", type=int, default=0, help="CV fold index (0-indexed).")
     p.add_argument("--max-epochs", type=int, default=None,
                    help="Override cfg.training.max_epochs for smoke runs.")
     p.add_argument("--seed", type=int, default=None,
                    help="Override cfg.experiment.seed (e.g. 43 for sanity rerun).")
-    p.add_argument("--output-dir", default="outputs/canonical/p5_phase1",
-                   help="Root output directory; a fold<N>/ subdir is created for artifacts.")
-    p.add_argument("--splits-path", default="outputs/splits.json",
+    # Default tracks the canonical run dir name in configs/resdec_mhe/canonical.yaml
+    # (run_name: "p5_phase2_tabpfn_residual"); old default p5_phase1 was stale.
+    # B-T2: aligned with `run_name` in canonical config.
+    p.add_argument(
+        "--output-dir",
+        default=str(REPO_ROOT / "outputs/canonical/p5_phase2_tabpfn_residual"),
+        help="Root output directory; a fold<N>/ subdir is created for artifacts.",
+    )
+    p.add_argument("--splits-path", default=str(REPO_ROOT / "outputs/splits.json"),
                    help="Path to 5-fold splits JSON.")
     p.add_argument("--precomputed-dir", default=None,
                    help="Override cfg.data.precomputed_dir (optional).")

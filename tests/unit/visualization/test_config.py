@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import matplotlib
-matplotlib.use("Agg")  # Non-interactive backend for testing
-
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
@@ -30,11 +27,9 @@ from src.visualization.config import (
     validate_cell_type_colors,
 )
 
-
 # =============================================================================
 # Constants Tests
 # =============================================================================
-
 
 class TestConfigConstants:
     """Test configuration constants."""
@@ -65,11 +60,9 @@ class TestConfigConstants:
         assert len(EDGE_TYPE_COLORS) > 0
         assert all(c.startswith("#") for c in EDGE_TYPE_COLORS.values())
 
-
 # =============================================================================
 # Colormap Tests
 # =============================================================================
-
 
 class TestColormaps:
     """Test colormap creation functions."""
@@ -127,11 +120,9 @@ class TestColormaps:
         register_colormaps()
         register_colormaps()  # Call twice to test idempotency
 
-
 # =============================================================================
 # Color Getter Tests
 # =============================================================================
-
 
 class TestColorGetters:
     """Test color getter functions."""
@@ -169,11 +160,9 @@ class TestColorGetters:
         display = get_edge_type_display_name("Unknown_Type")
         assert display == "Unknown_Type"  # Returns input as fallback
 
-
 # =============================================================================
 # Style Setup Tests
 # =============================================================================
-
 
 class TestStyleSetup:
     """Test style setup functions."""
@@ -199,11 +188,9 @@ class TestStyleSetup:
         setup_matplotlib_defaults()
         assert plt.rcParams["savefig.dpi"] == FIGURE_DPI
 
-
 # =============================================================================
 # Figure Saving Tests
 # =============================================================================
-
 
 class TestSaveFigure:
     """Test figure saving function."""
@@ -275,11 +262,9 @@ class TestSaveFigure:
         assert path2.stat().st_size > 0, "Second save should produce non-empty file"
         plt.close(fig)
 
-
 # =============================================================================
 # Utility Function Tests
 # =============================================================================
-
 
 class TestUtilityFunctions:
     """Test utility functions."""
@@ -307,11 +292,9 @@ class TestUtilityFunctions:
         # Function should return list (possibly empty)
         assert isinstance(missing, list)
 
-
 # =============================================================================
 # Integration Tests
 # =============================================================================
-
 
 class TestConfigIntegration:
     """Integration tests for config module."""
@@ -352,11 +335,9 @@ class TestConfigIntegration:
         assert path.exists()
         plt.close(fig)
 
-
 # =============================================================================
 # Cleanup
 # =============================================================================
-
 
 @pytest.fixture(autouse=True)
 def cleanup():

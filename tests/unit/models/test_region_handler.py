@@ -17,7 +17,6 @@ import torch
 
 from src.data.constants import N_CELL_TYPES, N_REGIONS
 
-
 # =============================================================================
 # FIXTURES
 # =============================================================================
@@ -27,7 +26,6 @@ def small_handler():
     """Small handler for fast tests."""
     from src.models.components.region_handler import RegionHandler
     return RegionHandler(d_model=32, n_regions=N_REGIONS)
-
 
 @pytest.fixture
 def handler_with_known_weights():
@@ -39,7 +37,6 @@ def handler_with_known_weights():
     with torch.no_grad():
         handler.region_weights.copy_(torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
     return handler
-
 
 # =============================================================================
 # 1. INITIALIZATION TESTS
@@ -126,7 +123,6 @@ class TestInitialization:
         repr_str = handler.extra_repr()
         assert "d_model=128" in repr_str
         assert "n_regions=6" in repr_str
-
 
 # =============================================================================
 # 2. FORWARD PASS TESTS
@@ -318,7 +314,6 @@ class TestForwardPass:
         pooled, region_context, _ = handler(x, region_mask)
         assert pooled.shape == (2, N_CELL_TYPES, 32)
 
-
 # =============================================================================
 # 3. GRADIENT FLOW TESTS
 # =============================================================================
@@ -415,7 +410,6 @@ class TestGradientFlow:
         # All gradients should be non-zero with different input values
         assert not torch.allclose(grad, torch.zeros_like(grad))
 
-
 # =============================================================================
 # 4. INTERPRETABILITY TESTS
 # =============================================================================
@@ -480,7 +474,6 @@ class TestInterpretability:
         importance = handler.get_region_importance_dict()
         assert len(importance) == 3
         assert abs(sum(importance.values()) - 1.0) < 1e-5
-
 
 # =============================================================================
 # 5. EDGE CASES AND NUMERICAL STABILITY
@@ -548,7 +541,6 @@ class TestEdgeCases:
         # Weighted mean of identical values = that value
         assert torch.allclose(pooled, single_region.squeeze(1), atol=1e-6)
 
-
 # =============================================================================
 # 6. DETERMINISM TESTS
 # =============================================================================
@@ -560,7 +552,6 @@ class TestDeterminism:
         """Same input should produce same output."""
         from src.models.components.region_handler import RegionHandler
 
-        torch.manual_seed(42)
         handler = RegionHandler(d_model=32, n_regions=N_REGIONS)
 
         x = torch.randn(2, N_REGIONS, N_CELL_TYPES, 32)
@@ -588,7 +579,6 @@ class TestDeterminism:
 
         assert torch.allclose(pooled_train, pooled_eval)
         assert torch.allclose(context_train, context_eval)
-
 
 # =============================================================================
 # 7. ALL-MASKED REGIONS TESTS

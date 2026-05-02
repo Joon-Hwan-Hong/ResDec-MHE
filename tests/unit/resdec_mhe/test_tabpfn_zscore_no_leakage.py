@@ -23,7 +23,6 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helper-level tests: verify the shared apply_zscore_train_only is leakage-free.
 # ---------------------------------------------------------------------------
@@ -54,7 +53,6 @@ def test_apply_zscore_train_only_stats():
         "likely pooled stats, not train-only"
     )
 
-
 def test_apply_zscore_train_only_reproducibility_second_rng():
     """Second RNG seed sanity check on train-only stats (same contract)."""
     from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
@@ -72,7 +70,6 @@ def test_apply_zscore_train_only_reproducibility_second_rng():
         "likely pooled stats, not train-only"
     )
 
-
 def test_apply_zscore_preserves_input_shape_and_dtype():
     """The helper must not change shape; dtype must stay float32."""
     from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
@@ -86,7 +83,6 @@ def test_apply_zscore_preserves_input_shape_and_dtype():
     assert X_val_s.shape == X_val.shape
     assert X_train_s.dtype == np.float32
     assert X_val_s.dtype == np.float32
-
 
 def test_apply_zscore_does_not_mutate_inputs():
     """Inputs must not be modified in place; outputs are fresh arrays."""
@@ -103,7 +99,6 @@ def test_apply_zscore_does_not_mutate_inputs():
     assert np.array_equal(X_train, X_train_orig), "X_train was mutated"
     assert np.array_equal(X_val, X_val_orig), "X_val was mutated"
 
-
 def test_apply_zscore_handles_zero_variance_feature():
     """sklearn StandardScaler must NOT divide-by-zero on constant features."""
     from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
@@ -119,7 +114,6 @@ def test_apply_zscore_handles_zero_variance_feature():
     assert np.all(np.isfinite(X_train_s))
     assert np.all(np.isfinite(X_val_s))
     assert np.allclose(X_train_s[:, 1], 0.0, atol=1e-6)
-
 
 # ---------------------------------------------------------------------------
 # CLI-default backward compatibility: when --zscore is omitted, default=False.
@@ -141,16 +135,13 @@ def _parse_oof_cli(argv: list[str]):
     p.add_argument("--zscore", action="store_true", default=False)
     return p.parse_args(argv)
 
-
 def test_zscore_cli_defaults_to_false_when_omitted():
     args = _parse_oof_cli(argv=[])
     assert args.zscore is False
 
-
 def test_zscore_cli_enabled_when_passed():
     args = _parse_oof_cli(argv=["--zscore"])
     assert args.zscore is True
-
 
 # ---------------------------------------------------------------------------
 # End-to-end: when --zscore is absent, behavior must be identical to before
@@ -160,6 +151,7 @@ def test_zscore_cli_enabled_when_passed():
 @pytest.mark.parametrize("zscore_on", [True, False])
 def test_main_oof_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     """Verify X passed to regressor.fit is z-scored iff --zscore is set."""
+    from scripts.resdec_mhe.tabpfn import _helpers
     from scripts.resdec_mhe.tabpfn import compute_oof as compute_tabpfn_oof
 
     n_train = 20
@@ -207,7 +199,7 @@ def test_main_oof_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     mock_instance.fit.side_effect = fit_capture
     mock_instance.predict.side_effect = predict_full
     mock_cls.return_value = mock_instance
-    monkeypatch.setattr(compute_tabpfn_oof, "TabPFNRegressor", mock_cls)
+    monkeypatch.setattr(_helpers, "TabPFNRegressor", mock_cls)
 
     # Provide top-k JSON
     top_k_dir = tmp_path / "topk"
@@ -229,6 +221,7 @@ def test_main_oof_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     a.top_k = top_k
     a.n_inner_folds = 2
     a.seed = 42
+    a.feature_set = "A"  # default OOF feature-set (post-CC6 parity)
     a.ignore_pretraining_limits = False
     a.zscore = zscore_on
 
@@ -256,10 +249,10 @@ def test_main_oof_zscore_behavior(monkeypatch, tmp_path, zscore_on):
                 "(far from original 100) — something unexpectedly transformed X"
             )
 
-
 @pytest.mark.parametrize("zscore_on", [True, False])
 def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     """Verify X passed to outer regressor.fit is z-scored iff --zscore is set."""
+    from scripts.resdec_mhe.tabpfn import _helpers
     from scripts.resdec_mhe.tabpfn import compute_outer as compute_tabpfn_outer
 
     n_train = 16
@@ -317,7 +310,7 @@ def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     mock_instance.fit.side_effect = fit_capture
     mock_instance.predict.side_effect = predict_full
     mock_cls.return_value = mock_instance
-    monkeypatch.setattr(compute_tabpfn_outer, "TabPFNRegressor", mock_cls)
+    monkeypatch.setattr(_helpers, "TabPFNRegressor", mock_cls)
 
     top_k_dir = tmp_path / "topk"
     top_k_dir.mkdir()
@@ -335,6 +328,7 @@ def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
     a.metadata_csv = "dummy.csv"
     a.top_k_dir = str(top_k_dir)
     a.output_dir = str(output_dir)
+    a.csv_output_dir = str(tmp_path / "csv")  # post-CC7 outer CSV write target
     a.top_k = top_k
     a.feature_set = "A"
     a.seed = 42
@@ -374,7 +368,6 @@ def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
             f"zscore off but predict() saw mean={X_pred.mean():.3f}"
         )
 
-
 # ---------------------------------------------------------------------------
 # Combinability: --zscore and --ignore-pretraining-limits are orthogonal.
 # Each must reach its own sink (scaler vs TabPFNRegressor kwarg) when set,
@@ -387,6 +380,7 @@ def test_main_outer_zscore_behavior(monkeypatch, tmp_path, zscore_on):
 )
 def test_oof_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
     """--zscore and --ignore-pretraining-limits are orthogonal in OOF main()."""
+    from scripts.resdec_mhe.tabpfn import _helpers
     from scripts.resdec_mhe.tabpfn import compute_oof as compute_tabpfn_oof
 
     n_train = 20
@@ -431,7 +425,7 @@ def test_oof_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
     mock_instance.fit.side_effect = fit_capture
     mock_instance.predict.side_effect = predict_full
     mock_cls.return_value = mock_instance
-    monkeypatch.setattr(compute_tabpfn_oof, "TabPFNRegressor", mock_cls)
+    monkeypatch.setattr(_helpers, "TabPFNRegressor", mock_cls)
 
     top_k_dir = tmp_path / "topk"
     top_k_dir.mkdir()
@@ -452,6 +446,7 @@ def test_oof_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
     a.top_k = top_k
     a.n_inner_folds = 2
     a.seed = 42
+    a.feature_set = "A"  # default OOF feature-set (post-CC6 parity)
     a.ignore_pretraining_limits = ignore_on
     a.zscore = zscore_on
 
@@ -483,13 +478,13 @@ def test_oof_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
             f"{call.kwargs}"
         )
 
-
 @pytest.mark.parametrize(
     "zscore_on,ignore_on",
     [(True, True), (True, False), (False, True)],
 )
 def test_outer_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
     """--zscore and --ignore-pretraining-limits are orthogonal in outer main()."""
+    from scripts.resdec_mhe.tabpfn import _helpers
     from scripts.resdec_mhe.tabpfn import compute_outer as compute_tabpfn_outer
 
     n_train = 16
@@ -537,7 +532,7 @@ def test_outer_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
     mock_instance.fit.side_effect = fit_capture
     mock_instance.predict.side_effect = predict_full
     mock_cls.return_value = mock_instance
-    monkeypatch.setattr(compute_tabpfn_outer, "TabPFNRegressor", mock_cls)
+    monkeypatch.setattr(_helpers, "TabPFNRegressor", mock_cls)
 
     top_k_dir = tmp_path / "topk"
     top_k_dir.mkdir()
@@ -555,6 +550,7 @@ def test_outer_flags_coexist(monkeypatch, tmp_path, zscore_on, ignore_on):
     a.metadata_csv = "dummy.csv"
     a.top_k_dir = str(top_k_dir)
     a.output_dir = str(output_dir)
+    a.csv_output_dir = str(tmp_path / "csv")  # post-CC7 outer CSV write target
     a.top_k = top_k
     a.feature_set = "A"
     a.seed = 42

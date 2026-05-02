@@ -289,30 +289,54 @@ def _run_one_fold_smoke(
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument(
-        "--pred-root", default="outputs/canonical/p5_canonical_seed42",
+        "--config", type=Path,
+        default=_WORKTREE_ROOT / "configs/resdec_mhe/canonical.yaml",
+    )
+    p.add_argument(
+        "--pred-root", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42",
         help="Per-fold checkpoint root; expects fold0/checkpoints/ etc.",
     )
-    p.add_argument("--tabpfn-dir", default="data/canonical")
-    p.add_argument("--splits-path", default="outputs/splits.json")
+    p.add_argument(
+        "--tabpfn-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/canonical",
+    )
+    p.add_argument(
+        "--splits-path", type=Path,
+        default=_WORKTREE_ROOT / "outputs/splits.json",
+    )
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument("--n-cell-types", type=int, default=31)
     p.add_argument(
-        "--out-dir",
-        default="outputs/canonical/interpretability/lmo_zero_out",
+        "--out-dir", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/lmo_zero_out"
+        ),
     )
     p.add_argument(
-        "--coverage-json",
-        default="outputs/canonical/interpretability/ct_coverage_full_cohort.json",
+        "--coverage-json", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/ct_coverage_full_cohort.json"
+        ),
     )
     p.add_argument(
-        "--loco-json",
-        default="outputs/canonical/interpretability/loco_zero_out/loco_per_celltype.json",
+        "--loco-json", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/loco_zero_out"
+            / "loco_per_celltype.json"
+        ),
     )
     p.add_argument(
-        "--captum-summary-json",
-        default="outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json",
+        "--captum-summary-json", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/captum_ig"
+            / "composite_attribution_summary.json"
+        ),
     )
     p.add_argument(
         "--ks", default="2,3,5,10",
@@ -343,7 +367,7 @@ def main():
     device = torch.device(args.device)
 
     cfg = OmegaConf.merge(
-        OmegaConf.load("configs/default.yaml"),
+        OmegaConf.load(_WORKTREE_ROOT / "configs/default.yaml"),
         OmegaConf.load(args.config),
     )
     OmegaConf.set_struct(cfg, False)

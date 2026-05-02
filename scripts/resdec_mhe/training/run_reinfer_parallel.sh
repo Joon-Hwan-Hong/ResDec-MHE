@@ -17,7 +17,12 @@
 #   OUTROOT=outputs/canonical/<your_run> bash scripts/resdec_mhe/training/run_reinfer_parallel.sh
 set -euo pipefail
 
-ROOT="/host/milan/tank/Joon/proj_ml_snrna/.worktrees/redesign-resdec-h3"
+# Resolve repo root from this script's location (scripts/resdec_mhe/training/<script>.sh
+# -> repo root is three levels up). Allows env override for unusual layouts.
+# Fixes B-RP1: prior literal /host/.../redesign-resdec-h3 referenced a
+# DELETED worktree (verified 2026-04-23 per memory file).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 CONFIG="${CONFIG:-configs/resdec_mhe/canonical.yaml}"
 OUTROOT="${OUTROOT:-outputs/canonical/p5_phase2_residual}"
 TABPFN_DIR="${TABPFN_DIR:-data/canonical}"

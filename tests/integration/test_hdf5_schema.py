@@ -8,7 +8,6 @@ Tests that the Phase 6 HDF5 changes work correctly:
 4. Nested attention groups (hgt_attention, pma_attention)
 """
 
-import tempfile
 from pathlib import Path
 
 import h5py
@@ -18,32 +17,26 @@ import pytest
 from src.data.constants import CELL_TYPE_ORDER
 from src.inference.extract_attention import aggregate_hgt_attention
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 @pytest.fixture
 def n_samples() -> int:
     return 10
 
-
 @pytest.fixture
 def n_layers() -> int:
     return 3
-
 
 @pytest.fixture
 def n_heads() -> int:
     return 4
 
-
 @pytest.fixture
 def cell_type_names() -> list[str]:
     """Cell type names including long ones."""
     return list(CELL_TYPE_ORDER)
-
 
 @pytest.fixture
 def long_cell_type_names() -> list[str]:
@@ -55,7 +48,6 @@ def long_cell_type_names() -> list[str]:
         "Another_medium_length_cell_type_name",
     ]
 
-
 @pytest.fixture
 def synthetic_hgt_attention(n_samples, n_layers, n_heads):
     """Generate synthetic HGT attention in the model's output format.
@@ -63,7 +55,6 @@ def synthetic_hgt_attention(n_samples, n_layers, n_heads):
     Returns: list[list[dict]] where each sample has a list of per-layer dicts
              mapping edge_type -> [n_edges, n_heads]
     """
-    np.random.seed(42)
     edge_types = [
         ("Microglia", "Secreted_Signaling", "Astrocyte"),
         ("Neuron", "ECM_Receptor", "Oligodendrocyte"),
@@ -85,11 +76,9 @@ def synthetic_hgt_attention(n_samples, n_layers, n_heads):
 
     return hgt_attention
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Schema Version Tests
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 class TestSchemaVersion:
     """Test HDF5 schema version consistency."""
@@ -126,42 +115,39 @@ class TestSchemaVersion:
         np.testing.assert_allclose(result["mean_by_edge_type"], expected_mean, rtol=1e-5)
         np.testing.assert_allclose(result["std_by_edge_type"], expected_std, rtol=1e-5)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Variable-Length String Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 class TestVariableLengthStrings:
     """Test variable-length string encoding preserves long names."""
 
-    def test_long_strings_preserved_in_hdf5(self, long_cell_type_names):
+    def test_long_strings_preserved_in_hdf5(self, long_cell_type_names, tmp_path):
         """Test that long cell type names are preserved without truncation."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "test_strings.h5"
+        path = tmp_path / "test_strings.h5"
 
-            # Write with variable-length strings
-            vlen_str = h5py.special_dtype(vlen=str)
-            with h5py.File(path, "w") as f:
-                f.create_dataset(
-                    "cell_type_names",
-                    data=np.array(long_cell_type_names, dtype=object),
-                    dtype=vlen_str
-                )
+        # Write with variable-length strings
+        vlen_str = h5py.special_dtype(vlen=str)
+        with h5py.File(path, "w") as f:
+            f.create_dataset(
+                "cell_type_names",
+                data=np.array(long_cell_type_names, dtype=object),
+                dtype=vlen_str
+            )
 
-            # Read back
-            with h5py.File(path, "r") as f:
-                loaded = [
-                    n.decode() if isinstance(n, bytes) else n
-                    for n in f["cell_type_names"][:]
-                ]
+        # Read back
+        with h5py.File(path, "r") as f:
+            loaded = [
+                n.decode() if isinstance(n, bytes) else n
+                for n in f["cell_type_names"][:]
+            ]
 
-            # All names should match exactly
-            assert loaded == long_cell_type_names
+        # All names should match exactly
+        assert loaded == long_cell_type_names
 
-            # Verify the long name is fully preserved
-            assert len(loaded[1]) > 64  # Was over 64 chars
-            assert loaded[1] == long_cell_type_names[1]
+        # Verify the long name is fully preserved
+        assert len(loaded[1]) > 64  # Was over 64 chars
+        assert loaded[1] == long_cell_type_names[1]
 
     def test_fixed_length_would_truncate(self, long_cell_type_names):
         """Verify that S64 encoding would truncate long names (documenting why we changed)."""
@@ -178,66 +164,63 @@ class TestVariableLengthStrings:
         assert len(decoded[1]) <= 64
         assert decoded[1] != long_cell_type_names[1]
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # HGT Attention Storage Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 class TestHGTAttentionStorage:
     """Test HGT attention storage with per-sample summaries."""
 
-    def test_hdf5_roundtrip_with_per_sample(self, synthetic_hgt_attention, n_heads):
+    def test_hdf5_roundtrip_with_per_sample(self, synthetic_hgt_attention, n_heads, tmp_path):
         """Test that HGT attention with per-sample data survives HDF5 roundtrip."""
         result = aggregate_hgt_attention(synthetic_hgt_attention, include_per_sample=True)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "test_hgt.h5"
+        path = tmp_path / "test_hgt.h5"
 
-            # Write
-            vlen_str = h5py.special_dtype(vlen=str)
-            with h5py.File(path, "w") as f:
-                f.attrs["schema_version"] = "2.0"
+        # Write
+        vlen_str = h5py.special_dtype(vlen=str)
+        with h5py.File(path, "w") as f:
+            f.attrs["schema_version"] = "2.0"
 
-                hgt_group = f.create_group("hgt_attention")
-                hgt_group.attrs["n_samples"] = result["n_samples"]
-                hgt_group.attrs["n_layers"] = result["n_layers"]
+            hgt_group = f.create_group("hgt_attention")
+            hgt_group.attrs["n_samples"] = result["n_samples"]
+            hgt_group.attrs["n_layers"] = result["n_layers"]
 
-                # Edge type names — converted from tuple-keyed edge_type_ids
-                hgt_group.create_dataset(
-                    "edge_type_names",
-                    data=np.array(["|".join(et) for et in result["edge_type_ids"]], dtype=object),
-                    dtype=vlen_str
-                )
+            # Edge type names — converted from tuple-keyed edge_type_ids
+            hgt_group.create_dataset(
+                "edge_type_names",
+                data=np.array(["|".join(et) for et in result["edge_type_ids"]], dtype=object),
+                dtype=vlen_str
+            )
 
-                # Aggregated
-                agg_group = hgt_group.create_group("aggregated")
-                agg_group.create_dataset("mean_by_edge_type", data=result["mean_by_edge_type"])
-                agg_group.create_dataset("std_by_edge_type", data=result["std_by_edge_type"])
+            # Aggregated
+            agg_group = hgt_group.create_group("aggregated")
+            agg_group.create_dataset("mean_by_edge_type", data=result["mean_by_edge_type"])
+            agg_group.create_dataset("std_by_edge_type", data=result["std_by_edge_type"])
 
-                # Per-sample
-                if result["per_sample"] is not None:
-                    ps_group = hgt_group.create_group("per_sample")
-                    ps_group.create_dataset("attention", data=result["per_sample"])
+            # Per-sample
+            if result["per_sample"] is not None:
+                ps_group = hgt_group.create_group("per_sample")
+                ps_group.create_dataset("attention", data=result["per_sample"])
 
-            # Read
-            with h5py.File(path, "r") as f:
-                assert f.attrs["schema_version"] == "2.0"
+        # Read
+        with h5py.File(path, "r") as f:
+            assert f.attrs["schema_version"] == "2.0"
 
-                hgt = f["hgt_attention"]
-                assert hgt.attrs["n_samples"] == result["n_samples"]
-                assert hgt.attrs["n_layers"] == result["n_layers"]
+            hgt = f["hgt_attention"]
+            assert hgt.attrs["n_samples"] == result["n_samples"]
+            assert hgt.attrs["n_layers"] == result["n_layers"]
 
-                # Check aggregated
-                np.testing.assert_allclose(
-                    hgt["aggregated"]["mean_by_edge_type"][:],
-                    result["mean_by_edge_type"]
-                )
+            # Check aggregated
+            np.testing.assert_allclose(
+                hgt["aggregated"]["mean_by_edge_type"][:],
+                result["mean_by_edge_type"]
+            )
 
-                # Check per-sample
-                assert "per_sample" in hgt
-                loaded_per_sample = hgt["per_sample"]["attention"][:]
-                np.testing.assert_allclose(loaded_per_sample, result["per_sample"])
+            # Check per-sample
+            assert "per_sample" in hgt
+            loaded_per_sample = hgt["per_sample"]["attention"][:]
+            np.testing.assert_allclose(loaded_per_sample, result["per_sample"])
 
     def test_per_sample_shape_is_correct(self, synthetic_hgt_attention, n_heads):
         """Test that per_sample has correct shape [n_samples, n_edge_types, n_layers, n_heads]."""
@@ -250,11 +233,9 @@ class TestHGTAttentionStorage:
 
         assert per_sample.shape == (n_samples, n_edge_types, n_layers, n_heads)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Empty/Edge Case Tests
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 class TestEdgeCases:
     """Test edge cases in HGT attention aggregation."""
@@ -305,16 +286,14 @@ class TestEdgeCases:
         for i in range(1, n_samples, 2):  # Odd samples
             assert np.all(np.isnan(per_sample[i, et2_idx, :, :]))
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Save/Load Round-Trip Tests with Unpacking
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 class TestSaveLoadRoundTrip:
     """Test save → load → unpack round-trip for HGT and PMA data."""
 
-    def test_hgt_roundtrip_with_unpack(self, synthetic_hgt_attention, n_heads):
+    def test_hgt_roundtrip_with_unpack(self, synthetic_hgt_attention, n_heads, tmp_path):
         """Save HGT via io.save_attention_weights, load, then unpack_hgt_for_ccc."""
         from src.utils.io import save_attention_weights, load_attention_weights, unpack_hgt_for_ccc
 
@@ -322,50 +301,48 @@ class TestSaveLoadRoundTrip:
         # Convert tuple-keyed edge_type_ids to pipe-separated names for HDF5 storage layer.
         hgt_agg["edge_type_names"] = ["|".join(et) for et in hgt_agg["edge_type_ids"]]
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "attention_weights.h5"
+        path = tmp_path / "attention_weights.h5"
 
-            save_attention_weights(
-                path=path,
-                gene_gate=np.random.rand(8, 100).astype(np.float32),
-                hgt_attention=hgt_agg,
-                subject_ids=[f"S{i}" for i in range(len(synthetic_hgt_attention))],
-                cell_type_names=["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"],
-            )
+        save_attention_weights(
+            path=path,
+            gene_gate=np.random.rand(8, 100).astype(np.float32),
+            hgt_attention=hgt_agg,
+            subject_ids=[f"S{i}" for i in range(len(synthetic_hgt_attention))],
+            cell_type_names=["Ast", "Mic", "Oli", "OPC", "Exc", "Inh", "End", "Per"],
+        )
 
-            loaded = load_attention_weights(path)
-            assert "hgt_attention" in loaded
-            assert isinstance(loaded["hgt_attention"], dict)
+        loaded = load_attention_weights(path)
+        assert "hgt_attention" in loaded
+        assert isinstance(loaded["hgt_attention"], dict)
 
-            # Unpack for CCC
-            scores, metadata_df, names = unpack_hgt_for_ccc(loaded["hgt_attention"])
-            assert scores is not None
-            assert metadata_df is not None
-            assert names is not None
-            assert len(names) == len(hgt_agg["edge_type_names"])
-            assert "source" in metadata_df.columns
-            assert "target" in metadata_df.columns
-            assert "edge_type" in metadata_df.columns
+        # Unpack for CCC
+        scores, metadata_df, names = unpack_hgt_for_ccc(loaded["hgt_attention"])
+        assert scores is not None
+        assert metadata_df is not None
+        assert names is not None
+        assert len(names) == len(hgt_agg["edge_type_names"])
+        assert "source" in metadata_df.columns
+        assert "target" in metadata_df.columns
+        assert "edge_type" in metadata_df.columns
 
-            # Scores should be 2D [n_samples, n_edge_types] since per_sample was stored
-            assert scores.ndim == 2
-            assert scores.shape[0] == len(synthetic_hgt_attention)
-            assert scores.shape[1] == len(names)
+        # Scores should be 2D [n_samples, n_edge_types] since per_sample was stored
+        assert scores.ndim == 2
+        assert scores.shape[0] == len(synthetic_hgt_attention)
+        assert scores.shape[1] == len(names)
 
-            # Verify edge name parsing follows PyG convention (src|edge_type|dst)
-            # Fixture uses ("Microglia", "Secreted_Signaling", "Astrocyte") etc.
-            first_name = names[0]  # e.g. "Microglia|Secreted_Signaling|Astrocyte"
-            parts = first_name.split("|")
-            first_row = metadata_df.iloc[0]
-            assert first_row["source"] == parts[0]      # source = first part
-            assert first_row["edge_type"] == parts[1]    # edge_type = middle part
-            assert first_row["target"] == parts[2]       # target = last part
+        # Verify edge name parsing follows PyG convention (src|edge_type|dst)
+        # Fixture uses ("Microglia", "Secreted_Signaling", "Astrocyte") etc.
+        first_name = names[0]  # e.g. "Microglia|Secreted_Signaling|Astrocyte"
+        parts = first_name.split("|")
+        first_row = metadata_df.iloc[0]
+        assert first_row["source"] == parts[0]      # source = first part
+        assert first_row["edge_type"] == parts[1]    # edge_type = middle part
+        assert first_row["target"] == parts[2]       # target = last part
 
-    def test_pma_roundtrip_with_unpack(self):
+    def test_pma_roundtrip_with_unpack(self, tmp_path):
         """Save PMA via io.save_attention_weights, load, then unpack_pma_attention."""
         from src.utils.io import save_attention_weights, load_attention_weights, unpack_pma_attention
 
-        np.random.seed(42)
         n_subjects = 10
         n_heads = 4
         n_seeds = 1
@@ -378,143 +355,131 @@ class TestSaveLoadRoundTrip:
             for _ in ct_names
         ]
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "attention_weights.h5"
+        path = tmp_path / "attention_weights.h5"
 
-            save_attention_weights(
-                path=path,
-                pma_attention=pma_list,
-                cell_type_names=ct_names,
-            )
+        save_attention_weights(
+            path=path,
+            pma_attention=pma_list,
+            cell_type_names=ct_names,
+        )
 
-            loaded = load_attention_weights(path)
-            assert "pma_attention" in loaded
-            assert isinstance(loaded["pma_attention"], dict)
+        loaded = load_attention_weights(path)
+        assert "pma_attention" in loaded
+        assert isinstance(loaded["pma_attention"], dict)
 
-            # Unpack to 3D
-            pma_3d = unpack_pma_attention(loaded["pma_attention"], ct_names)
-            assert pma_3d is not None
-            assert pma_3d.shape == (n_subjects, len(ct_names), max_cells)
+        # Unpack to 3D
+        pma_3d = unpack_pma_attention(loaded["pma_attention"], ct_names)
+        assert pma_3d is not None
+        assert pma_3d.shape == (n_subjects, len(ct_names), max_cells)
 
-    def test_backward_compat_flat_file(self):
+    def test_backward_compat_flat_file(self, tmp_path):
         """Flat HDF5 without nested groups should still load correctly."""
         from src.utils.io import load_attention_weights
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "flat_attention.h5"
+        path = tmp_path / "flat_attention.h5"
 
-            with h5py.File(path, "w") as f:
-                f.attrs["schema_version"] = "2.0"
-                f.create_dataset("gene_gate", data=np.random.rand(8, 100))
-                f.create_dataset("pathology_attention", data=np.random.rand(20, 4, 8))
-                f.attrs["cell_type_names"] = ["A", "B", "C"]
+        with h5py.File(path, "w") as f:
+            f.attrs["schema_version"] = "2.0"
+            f.create_dataset("gene_gate", data=np.random.rand(8, 100))
+            f.create_dataset("pathology_attention", data=np.random.rand(20, 4, 8))
+            f.attrs["cell_type_names"] = ["A", "B", "C"]
 
-            loaded = load_attention_weights(path)
-            assert "gene_gate" in loaded
-            assert loaded["gene_gate"].shape == (8, 100)
-            assert "pathology_attention" in loaded
-            assert loaded["pathology_attention"].shape == (20, 4, 8)
-            assert "metadata" in loaded
+        loaded = load_attention_weights(path)
+        assert "gene_gate" in loaded
+        assert loaded["gene_gate"].shape == (8, 100)
+        assert "pathology_attention" in loaded
+        assert loaded["pathology_attention"].shape == (20, 4, 8)
+        assert "metadata" in loaded
 
-    def test_gene_gate_weights_alias(self):
+    def test_gene_gate_weights_alias(self, tmp_path):
         """gene_gate_weights key should be aliased to gene_gate."""
         from src.utils.io import load_attention_weights
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "alias_test.h5"
+        path = tmp_path / "alias_test.h5"
 
-            with h5py.File(path, "w") as f:
-                f.create_dataset("gene_gate_weights", data=np.random.rand(8, 100))
+        with h5py.File(path, "w") as f:
+            f.create_dataset("gene_gate_weights", data=np.random.rand(8, 100))
 
-            loaded = load_attention_weights(path)
-            assert "gene_gate" in loaded
-            assert loaded["gene_gate"].shape == (8, 100)
+        loaded = load_attention_weights(path)
+        assert "gene_gate" in loaded
+        assert loaded["gene_gate"].shape == (8, 100)
 
-    def test_region_pseudobulk_roundtrip(self):
+    def test_region_pseudobulk_roundtrip(self, tmp_path):
         """region_pseudobulk survives save/load round-trip."""
         from src.utils.io import save_attention_weights, load_attention_weights
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "region_pb.h5"
-            gene_gate = np.random.rand(8, 100).astype(np.float32)
-            region_pb = np.random.rand(6, 8, 100).astype(np.float32)
+        path = tmp_path / "region_pb.h5"
+        gene_gate = np.random.rand(8, 100).astype(np.float32)
+        region_pb = np.random.rand(6, 8, 100).astype(np.float32)
 
-            save_attention_weights(
-                path=path,
-                gene_gate=gene_gate,
-                region_pseudobulk=region_pb,
-            )
+        save_attention_weights(
+            path=path,
+            gene_gate=gene_gate,
+            region_pseudobulk=region_pb,
+        )
 
-            loaded = load_attention_weights(path)
-            assert "region_pseudobulk" in loaded
-            np.testing.assert_array_almost_equal(
-                loaded["region_pseudobulk"], region_pb
-            )
-            assert loaded["region_pseudobulk"].shape == (6, 8, 100)
-
+        loaded = load_attention_weights(path)
+        assert "region_pseudobulk" in loaded
+        np.testing.assert_array_almost_equal(
+            loaded["region_pseudobulk"], region_pb
+        )
+        assert loaded["region_pseudobulk"].shape == (6, 8, 100)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Region Attention Round-Trip Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 class TestRegionAttentionRoundTrip:
     """Test region_attention save/load round-trip (Finding 2)."""
 
-    def test_region_attention_roundtrip(self):
+    def test_region_attention_roundtrip(self, tmp_path):
         """region_attention survives save/load round-trip."""
         from src.utils.io import save_attention_weights, load_attention_weights
 
-        np.random.seed(42)
         n_subjects = 10
         n_regions = 6
         region_attention = np.random.rand(n_subjects, n_regions).astype(np.float32)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "attention_weights.h5"
+        path = tmp_path / "attention_weights.h5"
 
-            save_attention_weights(
-                path=path,
-                gene_gate=np.random.rand(8, 100).astype(np.float32),
-                region_attention=region_attention,
-            )
+        save_attention_weights(
+            path=path,
+            gene_gate=np.random.rand(8, 100).astype(np.float32),
+            region_attention=region_attention,
+        )
 
-            loaded = load_attention_weights(path)
-            assert "region_attention" in loaded
-            np.testing.assert_array_almost_equal(
-                loaded["region_attention"], region_attention
-            )
-            assert loaded["region_attention"].shape == (n_subjects, n_regions)
+        loaded = load_attention_weights(path)
+        assert "region_attention" in loaded
+        np.testing.assert_array_almost_equal(
+            loaded["region_attention"], region_attention
+        )
+        assert loaded["region_attention"].shape == (n_subjects, n_regions)
 
-    def test_region_attention_shape_attr(self):
+    def test_region_attention_shape_attr(self, tmp_path):
         """region_attention should have shape attribute in HDF5."""
         from src.utils.io import save_attention_weights
 
-        np.random.seed(42)
         region_attention = np.random.rand(10, 6).astype(np.float32)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "attention_weights.h5"
-            save_attention_weights(
-                path=path,
-                gene_gate=np.random.rand(8, 100).astype(np.float32),
-                region_attention=region_attention,
-            )
+        path = tmp_path / "attention_weights.h5"
+        save_attention_weights(
+            path=path,
+            gene_gate=np.random.rand(8, 100).astype(np.float32),
+            region_attention=region_attention,
+        )
 
-            with h5py.File(path, "r") as f:
-                assert "region_attention" in f
-                assert "shape" in f["region_attention"].attrs
-
+        with h5py.File(path, "r") as f:
+            assert "region_attention" in f
+            assert "shape" in f["region_attention"].attrs
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cell Barcodes Round-Trip Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 class TestCellBarcodesRoundTrip:
     """Test cell_barcodes save/load round-trip (Finding 5)."""
 
-    def test_cell_barcodes_roundtrip(self):
+    def test_cell_barcodes_roundtrip(self, tmp_path):
         """cell_barcodes survives save/load round-trip."""
         from src.utils.io import save_attention_weights, load_attention_weights
 
@@ -524,50 +489,48 @@ class TestCellBarcodesRoundTrip:
             [["barcode_1_0_a"], ["barcode_1_1_a", "barcode_1_1_b"], []],
         ]
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "attention_weights.h5"
-            save_attention_weights(
-                path=path,
-                gene_gate=np.random.rand(3, 50).astype(np.float32),
-                cell_barcodes=cell_barcodes,
-            )
+        path = tmp_path / "attention_weights.h5"
+        save_attention_weights(
+            path=path,
+            gene_gate=np.random.rand(3, 50).astype(np.float32),
+            cell_barcodes=cell_barcodes,
+        )
 
-            loaded = load_attention_weights(path)
-            assert "cell_barcodes" in loaded
-            bc_group = loaded["cell_barcodes"]
+        loaded = load_attention_weights(path)
+        assert "cell_barcodes" in loaded
+        bc_group = loaded["cell_barcodes"]
 
-            # Check key "0_0" has the correct barcodes
-            assert "0_0" in bc_group
-            loaded_barcodes = bc_group["0_0"]
-            # May be bytes from HDF5, decode if needed
-            decoded = [b.decode("utf-8") if isinstance(b, bytes) else str(b) for b in loaded_barcodes]
-            assert decoded == ["barcode_0_0_a", "barcode_0_0_b"]
+        # Check key "0_0" has the correct barcodes
+        assert "0_0" in bc_group
+        loaded_barcodes = bc_group["0_0"]
+        # May be bytes from HDF5, decode if needed
+        decoded = [b.decode("utf-8") if isinstance(b, bytes) else str(b) for b in loaded_barcodes]
+        assert decoded == ["barcode_0_0_a", "barcode_0_0_b"]
 
-            # Check key "0_2" has 3 barcodes
-            assert "0_2" in bc_group
-            loaded_02 = bc_group["0_2"]
-            decoded_02 = [b.decode("utf-8") if isinstance(b, bytes) else str(b) for b in loaded_02]
-            assert len(decoded_02) == 3
+        # Check key "0_2" has 3 barcodes
+        assert "0_2" in bc_group
+        loaded_02 = bc_group["0_2"]
+        decoded_02 = [b.decode("utf-8") if isinstance(b, bytes) else str(b) for b in loaded_02]
+        assert len(decoded_02) == 3
 
-    def test_empty_barcodes_not_stored(self):
+    def test_empty_barcodes_not_stored(self, tmp_path):
         """Empty barcode lists should not create datasets."""
         from src.utils.io import save_attention_weights, load_attention_weights
 
         # Subject 0 ct 0: has barcodes, ct 1: empty
         cell_barcodes = [[["bc1", "bc2"], []], [["bc3"], ["bc4"]]]
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "attention_weights.h5"
-            save_attention_weights(
-                path=path,
-                gene_gate=np.random.rand(2, 50).astype(np.float32),
-                cell_barcodes=cell_barcodes,
-            )
+        path = tmp_path / "attention_weights.h5"
+        save_attention_weights(
+            path=path,
+            gene_gate=np.random.rand(2, 50).astype(np.float32),
+            cell_barcodes=cell_barcodes,
+        )
 
-            loaded = load_attention_weights(path)
-            bc_group = loaded["cell_barcodes"]
+        loaded = load_attention_weights(path)
+        bc_group = loaded["cell_barcodes"]
 
-            # "0_1" should not be stored (empty)
-            assert "0_1" not in bc_group
-            # "0_0" should exist
-            assert "0_0" in bc_group
+        # "0_1" should not be stored (empty)
+        assert "0_1" not in bc_group
+        # "0_0" should exist
+        assert "0_0" in bc_group

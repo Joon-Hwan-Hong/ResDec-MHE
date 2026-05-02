@@ -44,7 +44,11 @@ from src.training.resdec_lightning_module import ResDecLightningModule
 
 logger = logging.getLogger(__name__)
 
-_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
+# Allow optional sign on the R² value so degenerate folds with negative
+# val/r2 (Lightning serializes as e.g. ``best-3--0.0521.ckpt``) match the
+# pattern instead of falling through to FileNotFoundError. The leading sign
+# is captured implicitly via ``-?``.
+_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(-?\d+\.\d+)\.ckpt$")
 
 
 def _pick_max_r2_ckpt(ckpt_dir: Path) -> tuple[Path, int, float]:
@@ -73,6 +77,16 @@ def main(args: argparse.Namespace) -> None:
     OmegaConf.set_struct(cfg, False)
     cfg.model.head.type = "deterministic"
     cfg.data.fold = int(args.fold)
+
+    # Optional CLI overrides for permutation tests / learning-curve runs that
+    # need to swap in shuffled-labels metadata + TabPFN caches without
+    # editing the config file. Mirrors the same overrides on train.py:268-275.
+    if args.metadata_path is not None:
+        cfg.data.metadata_path = args.metadata_path
+    if args.tabpfn_oof_dir is not None:
+        cfg.data.tabpfn_oof_dir = args.tabpfn_oof_dir
+    if args.tabpfn_outer_dir is not None:
+        cfg.data.tabpfn_outer_dir = args.tabpfn_outer_dir
 
     pl.seed_everything(int(cfg.experiment.seed), workers=True)
     torch.set_float32_matmul_precision("high")
@@ -104,12 +118,12 @@ def main(args: argparse.Namespace) -> None:
         precomputed_dir=precomputed_dir,
         adata=None,
     )
-    # CognitiveResilienceDataModule.setup only creates _val_ds under stage="fit"
-    # or stage is None. trainer.validate() passes stage="validate" which hits
-    # neither branch, so _val_ds would stay None and val_dataloader() returns
-    # None. Call setup("fit") explicitly to materialize both _train_ds and
-    # _val_ds (train is cheap — index-only, no data copy — per the datamodule's
-    # own comment at src/data/datamodule.py:99-103).
+    # CognitiveResilienceDataModule.setup only creates _val_ds under
+    # stage="fit" / stage is None — trainer.validate() passes stage="validate"
+    # which hits neither branch, leaving _val_ds=None. Call setup("fit")
+    # explicitly to materialise val_dataloader (train is cheap: index-only).
+    # TODO: upstream into CognitiveResilienceDataModule.setup so future
+    # callers don't need to know this gotcha.
     dm.setup(stage="fit")
 
     model = ResDecLightningModule.load_from_checkpoint(
@@ -121,29 +135,42 @@ def main(args: argparse.Namespace) -> None:
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    trainer = pl.Trainer(
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        devices=1,
-        logger=False,
-        enable_checkpointing=False,
-        enable_progress_bar=False,
-        precision=str(cfg.training.get("precision", "bf16-mixed")),
-        default_root_dir=str(tmp_dir),
-    )
-    val_results = trainer.validate(model, datamodule=dm, verbose=True)
-    logger.info("fold %d: VAL_RESULTS_BEST=%s", args.fold, val_results)
-
-    tmp_npz = tmp_dir / "val_predictions_final.npz"
     final_best_npz = fold_dir / "val_predictions_best.npz"
-    if not tmp_npz.exists():
-        raise FileNotFoundError(
-            f"Expected prediction dump not found at {tmp_npz}. The Lightning "
-            f"module writes it via trainer.log_dir — check default_root_dir."
+    try:
+        trainer = pl.Trainer(
+            accelerator="gpu" if torch.cuda.is_available() else "cpu",
+            devices=1,
+            logger=False,
+            enable_checkpointing=False,
+            enable_progress_bar=False,
+            precision=str(cfg.training.get("precision", "bf16-mixed")),
+            default_root_dir=str(tmp_dir),
         )
-    if final_best_npz.exists():
-        final_best_npz.unlink()
-    tmp_npz.rename(final_best_npz)
-    shutil.rmtree(tmp_dir)
+        val_results = trainer.validate(model, datamodule=dm, verbose=True)
+        logger.info("fold %d: VAL_RESULTS_BEST=%s", args.fold, val_results)
+
+        tmp_npz = tmp_dir / "val_predictions_final.npz"
+        if not tmp_npz.exists():
+            raise FileNotFoundError(
+                f"Expected prediction dump not found at {tmp_npz}. The Lightning "
+                f"module writes it via trainer.log_dir — check default_root_dir."
+            )
+        if final_best_npz.exists():
+            final_best_npz.unlink()
+        tmp_npz.rename(final_best_npz)
+    finally:
+        # Always attempt cleanup so a failure during validate / rename does
+        # not leave reinfer_tmp/ orphaned. shutil.rmtree may itself fail under
+        # disk-pressure / permission edge cases — log + continue rather than
+        # mask the original exception.
+        if tmp_dir.exists():
+            try:
+                shutil.rmtree(tmp_dir)
+            except OSError as cleanup_exc:
+                logger.warning(
+                    "fold %d: failed to remove tmp dir %s: %s",
+                    args.fold, tmp_dir, cleanup_exc,
+                )
 
     summary = {
         "fold": args.fold,
@@ -166,4 +193,18 @@ if __name__ == "__main__":
     p.add_argument("--output-dir", default="outputs/canonical/p5_phase2_residual")
     p.add_argument("--splits-path", default="outputs/splits.json")
     p.add_argument("--precomputed-dir", default=None)
+    p.add_argument(
+        "--metadata-path", default=None,
+        help="Override cfg.data.metadata_path (the directory holding "
+             "metadata.csv). Use for permutation tests that need a "
+             "shuffled-labels metadata copy.",
+    )
+    p.add_argument(
+        "--tabpfn-oof-dir", default=None,
+        help="Override cfg.data.tabpfn_oof_dir (per-fold OOF cache).",
+    )
+    p.add_argument(
+        "--tabpfn-outer-dir", default=None,
+        help="Override cfg.data.tabpfn_outer_dir (per-fold outer cache).",
+    )
     main(p.parse_args())

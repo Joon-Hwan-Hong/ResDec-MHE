@@ -11,7 +11,6 @@ from src.analysis.cell_heterogeneity import (
     compute_cell_heterogeneity,
 )
 
-
 @pytest.fixture
 def sample_data():
     """Create sample PMA attention data."""
@@ -26,7 +25,6 @@ def sample_data():
         "subject_ids": [f"subj_{i}" for i in range(n_subjects)],
     }
 
-
 class TestCellHeterogeneityResult:
     """Test the result dataclass."""
 
@@ -40,7 +38,6 @@ class TestCellHeterogeneityResult:
         assert isinstance(result.high_attention_cells, pd.DataFrame)
         assert isinstance(result.all_scores, pd.DataFrame)
         assert isinstance(result.metadata, dict)
-
 
 class TestCellHeterogeneityAnalyzer:
     """Test the analyzer class."""
@@ -142,7 +139,6 @@ class TestCellHeterogeneityAnalyzer:
         assert "sparse_type" not in result.summary["cell_type"].values
         assert "full_type" in result.summary["cell_type"].values
 
-
 class TestAnalyzerDirectUsage:
     """Test using CellHeterogeneityAnalyzer directly (replaces legacy wrapper)."""
 
@@ -170,7 +166,6 @@ class TestAnalyzerDirectUsage:
         )
         result = analyzer.analyze()
         assert isinstance(result.summary, pd.DataFrame)
-
 
 class TestComputeConvenience:
     """Test the convenience function."""

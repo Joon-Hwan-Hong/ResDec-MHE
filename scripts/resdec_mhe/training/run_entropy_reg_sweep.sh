@@ -17,6 +17,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# tmux preflight (feedback_long_runs_need_tmux.md): full sweep is ~5 hr
+# 2-GPU. Smoke mode (SMOKE=1) is ~2 min and is exempt below.
+if [[ "${SMOKE:-0}" != "1" ]] && [ -z "${TMUX:-}" ]; then
+    echo "ERROR: This sweep runs ~5 hr and must be in tmux to survive SSH disconnect." >&2
+    echo "  tmux new -s entropy_reg_sweep 'bash $0'" >&2
+    echo "  (or set SMOKE=1 for a 2-min plumbing check that bypasses this guard)" >&2
+    exit 1
+fi
+
 WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../" && pwd)"
 cd "$WORKTREE_ROOT"
 
@@ -24,13 +33,16 @@ OUT_ROOT="${OUT_ROOT:-outputs/canonical/p5_entropy_reg}"
 LAMBDAS=(0 0.001 0.01 0.1 1.0)
 FOLDS=(0 1 2 3 4)
 
+# EXTRA_FLAGS as bash array (B-ER3: was a string subjected to word-splitting;
+# any value containing spaces would have broken). Empty array expands to
+# nothing in the call site below.
+declare -a EXTRA_FLAGS=()
+
 if [[ "${SMOKE:-0}" == "1" ]]; then
     LAMBDAS=(0.01)
     FOLDS=(0)
-    EXTRA_FLAGS="--max-epochs 1"
+    EXTRA_FLAGS=(--max-epochs 1)
     echo "[entropy_reg_sweep] SMOKE mode: λ=0.01, fold=0, max-epochs=1"
-else
-    EXTRA_FLAGS=""
 fi
 
 mkdir -p "$OUT_ROOT/logs"
@@ -53,7 +65,7 @@ launch_one() {
             --fold "$fold" \
             --reg-weight "$lam" \
             --output-dir "$out_dir" \
-            $EXTRA_FLAGS \
+            "${EXTRA_FLAGS[@]}" \
             > "$log" 2>&1 &
     if [[ "$gpu" == "0" ]]; then
         PIDS_GPU0+=("$!")
@@ -84,6 +96,10 @@ wait_gpu() {
 for lam in "${LAMBDAS[@]}"; do
     # Process folds in pairs so at most ONE job runs per GPU at any time.
     # Pairs: (0,1), (2,3), (4,) — last fold in odd-count case waits alone.
+    # B-ER2: With 5 folds the fifth runs solo on GPU 0 while GPU 1 sits idle
+    # (~25 min lost per λ × 5 λs ≈ 2hr). Acceptable for this one-shot 25-cell
+    # sweep — a true worker-pool refactor would centralise this with the
+    # similar pattern in run_5fold_parallel.sh; deferred until reused.
     n="${#FOLDS[@]}"
     for (( i=0; i<n; i+=2 )); do
         f0="${FOLDS[$i]}"

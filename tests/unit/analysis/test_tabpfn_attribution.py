@@ -1,5 +1,8 @@
 """Tests for src/analysis/tabpfn_attribution.py (Captum IG on TabPFN)."""
 
+import os
+from pathlib import Path
+
 import pytest
 import numpy as np
 
@@ -10,11 +13,9 @@ from src.analysis.tabpfn_attribution import (
     N_CT,
 )
 
-
 # ---------------------------------------------------------------------------
 # hydrate_feature_indices — pure Python, fast, always run
 # ---------------------------------------------------------------------------
-
 
 def test_hydrate_indices_basic():
     df = hydrate_feature_indices([0, 4785, 9570, 148334])
@@ -33,7 +34,6 @@ def test_hydrate_indices_basic():
     assert df.iloc[3]["ct_id"] == 30
     assert df.iloc[3]["gene_id"] == 4784
 
-
 def test_hydrate_indices_columns_and_schema():
     df = hydrate_feature_indices([17, 2_500])
     # Must have exactly these three columns
@@ -44,19 +44,16 @@ def test_hydrate_indices_columns_and_schema():
     # Round-trip: ct * 4785 + gene == feature_idx
     assert (df["ct_id"] * N_GENES + df["gene_id"] == df["feature_idx"]).all()
 
-
 def test_hydrate_indices_empty():
     df = hydrate_feature_indices([])
     assert len(df) == 0
     # Schema still correct
     assert list(df.columns) == ["feature_idx", "ct_id", "gene_id"]
 
-
 # ---------------------------------------------------------------------------
 # End-to-end smoke — fits TabPFN on fold 0, runs attribution on 3 val subjects.
 # Marked slow + cuda: skipped in default runs, run explicitly with `-m slow`.
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.slow
 @pytest.mark.cuda
@@ -65,7 +62,22 @@ def test_attribute_tabpfn_fold0_smoke():
 
     Asserts shapes, schema, and that top-attribution records are well-formed.
     """
-    result = attribute_tabpfn_fold(fold_idx=0, n_val_subjects=3, device="cuda:1")
+    cache_dir = os.environ.get("TABPFN_MODEL_CACHE_DIR")
+    if not cache_dir:
+        pytest.skip(
+            "TABPFN_MODEL_CACHE_DIR env var not set — required after the "
+            "host-specific default was removed in the 2026-05-02 review."
+        )
+    result = attribute_tabpfn_fold(
+        fold_idx=0,
+        precomputed_dir=Path("data/precomputed"),
+        meta_csv=Path("data/metadata_ROSMAP/metadata.csv"),
+        splits_path=Path("outputs/splits.json"),
+        top_k_dir=Path("data/canonical"),
+        tabpfn_model_cache_dir=Path(cache_dir),
+        n_val_subjects=3,
+        device="cuda:1",
+    )
     # Shapes
     assert result["attributions"].shape == (3, 2000)
     assert result["mean_abs_attrib"].shape == (2000,)

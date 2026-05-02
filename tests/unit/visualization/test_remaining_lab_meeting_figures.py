@@ -13,16 +13,9 @@ import json
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def _write_synthetic_perm_summary(path: Path) -> None:
     payload = {
@@ -39,7 +32,6 @@ def _write_synthetic_perm_summary(path: Path) -> None:
         "z_under_null": 8.73,
     }
     path.write_text(json.dumps(payload))
-
 
 def _write_synthetic_statistical_rigor(path: Path) -> None:
     payload = {
@@ -59,7 +51,6 @@ def _write_synthetic_statistical_rigor(path: Path) -> None:
         },
     }
     path.write_text(json.dumps(payload))
-
 
 def _write_synthetic_seed_variation(path: Path) -> None:
     payload = {
@@ -99,7 +90,6 @@ def _write_synthetic_seed_variation(path: Path) -> None:
     }
     path.write_text(json.dumps(payload))
 
-
 def _write_synthetic_baseline_table(path: Path) -> None:
     rows = [
         "model,display_name,n_folds,r2_mean,r2_std",
@@ -112,7 +102,6 @@ def _write_synthetic_baseline_table(path: Path) -> None:
         "p5_canonical_seed42,ResDec-MHE (canonical),5,0.4436,0.0996",
     ]
     path.write_text("\n".join(rows) + "\n")
-
 
 @pytest.fixture
 def synthetic_inputs(tmp_path: Path) -> dict[str, Path]:
@@ -137,12 +126,10 @@ def synthetic_inputs(tmp_path: Path) -> dict[str, Path]:
         "out_dir": out_dir,
     }
 
-
 def test_orchestrator_module_imports():
     from scripts.resdec_mhe.interpretability import (  # noqa: F401
         make_remaining_lab_meeting_figures as orch,
     )
-
 
 def test_all_three_figures_written(synthetic_inputs):
     from scripts.resdec_mhe.interpretability import (
@@ -175,7 +162,6 @@ def test_all_three_figures_written(synthetic_inputs):
             f"{png} too small ({size_kb:.1f} KB); expected > 50 KB"
         )
 
-
 def test_slot4_3_has_three_panels(synthetic_inputs):
     from scripts.resdec_mhe.interpretability import (
         make_remaining_lab_meeting_figures as orch,
@@ -190,7 +176,6 @@ def test_slot4_3_has_three_panels(synthetic_inputs):
     # 3-panel composite via make_panel
     assert len(fig.axes) >= 3, f"expected 3+ axes, got {len(fig.axes)}"
 
-
 def test_S1_per_fold_strip_single_panel(synthetic_inputs):
     from scripts.resdec_mhe.interpretability import (
         make_remaining_lab_meeting_figures as orch,
@@ -200,7 +185,6 @@ def test_S1_per_fold_strip_single_panel(synthetic_inputs):
         statistical_rigor=synthetic_inputs["rigor"],
     )
     assert len(fig.axes) == 1, f"expected single axes, got {len(fig.axes)}"
-
 
 def test_S8_published_marker_single_panel(synthetic_inputs):
     from scripts.resdec_mhe.interpretability import (

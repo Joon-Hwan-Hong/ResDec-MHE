@@ -14,11 +14,9 @@ import torch
 from src.data.constants import N_CELL_TYPES
 from src.models.branches.cell_transformer import CellTransformer
 
-
 # ============================================================================
 # Helpers
 # ============================================================================
-
 
 def _padded_to_flat(cells_padded, cell_mask):
     """Convert padded 4D cells tensor to flat format for testing.
@@ -51,7 +49,6 @@ def _padded_to_flat(cells_padded, cell_mask):
         cell_data = torch.empty(0, n_genes)
     return cell_data, cell_offsets
 
-
 def _make_flat_data(batch_size, n_cell_types, cells_per_type, n_genes):
     """Create flat cell_data + cell_offsets from scratch.
 
@@ -83,11 +80,9 @@ def _make_flat_data(batch_size, n_cell_types, cells_per_type, n_genes):
 
     return cell_data, cell_offsets
 
-
 # ============================================================================
 # Fixtures
 # ============================================================================
-
 
 @pytest.fixture
 def transformer_config():
@@ -103,7 +98,6 @@ def transformer_config():
         "dropout": 0.1,
     }
 
-
 @pytest.fixture
 def small_config():
     """Small configuration for faster tests."""
@@ -118,18 +112,15 @@ def small_config():
         "dropout": 0.0,
     }
 
-
 @pytest.fixture
 def transformer(transformer_config):
     """Standard CellTransformer instance."""
     return CellTransformer(**transformer_config)
 
-
 @pytest.fixture
 def small_transformer(small_config):
     """Small CellTransformer for faster tests."""
     return CellTransformer(**small_config)
-
 
 @pytest.fixture
 def sample_data(small_config):
@@ -150,11 +141,9 @@ def sample_data(small_config):
     cell_data, cell_offsets = _padded_to_flat(cells_padded, cell_mask)
     return cell_data, cell_offsets
 
-
 # ============================================================================
 # Basic Functionality Tests
 # ============================================================================
-
 
 class TestBasicFunctionality:
     """Test basic transformer operations."""
@@ -207,12 +196,9 @@ class TestBasicFunctionality:
             embeddings, _ = small_transformer(cell_data, cell_offsets)
             assert embeddings.shape[0] == batch_size
 
-
-
 # ============================================================================
 # Attention Tests
 # ============================================================================
-
 
 class TestAttention:
     """Test attention weight extraction."""
@@ -256,11 +242,9 @@ class TestAttention:
         assert attention.shape[2] == small_config["n_heads"]
         assert attention.shape[3] == small_config["n_pma_seeds"]
 
-
 # ============================================================================
 # Gradient Flow Tests
 # ============================================================================
-
 
 class TestGradientFlow:
     """Test gradient flow through the transformer."""
@@ -296,11 +280,9 @@ class TestGradientFlow:
                     break
         assert has_grad
 
-
 # ============================================================================
 # Edge Cases and Error Handling Tests
 # ============================================================================
-
 
 class TestEdgeCases:
     """Test edge cases and error handling."""
@@ -329,11 +311,9 @@ class TestEdgeCases:
         embeddings, _ = transformer(cell_data, cell_offsets)
         assert embeddings.shape == (2, 1, 32)
 
-
 # ============================================================================
 # Numerical Stability Tests
 # ============================================================================
-
 
 class TestNumericalStability:
     """Test numerical stability."""
@@ -390,11 +370,9 @@ class TestNumericalStability:
         embeddings, _ = small_transformer(cell_data, cell_offsets)
         assert torch.isfinite(embeddings).all()
 
-
 # ============================================================================
 # Determinism Tests
 # ============================================================================
-
 
 class TestDeterminism:
     """Test deterministic behavior."""
@@ -430,11 +408,9 @@ class TestDeterminism:
 
         assert not torch.allclose(out_train, out_eval, atol=1e-6)
 
-
 # ============================================================================
 # Extra Repr Test
 # ============================================================================
-
 
 class TestExtraRepr:
     """Test string representation."""
@@ -445,11 +421,9 @@ class TestExtraRepr:
         assert str(small_config["n_genes"]) in repr_str
         assert str(small_config["n_cell_types"]) in repr_str
 
-
 # ============================================================================
 # T2: Divergent Cell Counts In Batch
 # ============================================================================
-
 
 class TestDivergentCellCountsInBatch:
     """T2: Test behavior when samples have divergent cell availability per type."""
@@ -523,7 +497,6 @@ class TestDivergentCellCountsInBatch:
     def test_gradients_flow_through_mixed_count_batch(self, divergent_transformer, divergent_config):
         """Gradients flow to cell_data even when one sample has empty cell types."""
         B, C, G = 2, divergent_config["n_cell_types"], divergent_config["n_genes"]
-        torch.manual_seed(42)
 
         cell_data, cell_offsets = _make_flat_data(B, C, 10, G)
         cell_data.requires_grad = True
@@ -536,11 +509,9 @@ class TestDivergentCellCountsInBatch:
         assert cell_data.grad is not None
         assert cell_data.grad.abs().sum() > 0
 
-
 # ============================================================================
 # T3: NaN Input Handling
 # ============================================================================
-
 
 class TestNaNInputHandling:
     """T3: Test NaN in cell_data input through CellTransformer."""
@@ -573,11 +544,9 @@ class TestNaNInputHandling:
         embeddings, _ = nan_transformer(cell_data, cell_offsets)
         assert torch.isnan(embeddings).any(), "Expected NaN propagation from valid-position NaN"
 
-
 # ============================================================================
 # Forward with flat input tests (formerly TestCellTransformerFlatInput)
 # ============================================================================
-
 
 class TestCellTransformerFlatInput:
     """Test forward() with flat cell representation."""
@@ -627,11 +596,9 @@ class TestCellTransformerFlatInput:
         assert cell_data.grad is not None
         assert not torch.all(cell_data.grad == 0)
 
-
 # ============================================================================
 # Task 5: Cell-type conditioning in CellTransformer
 # ============================================================================
-
 
 class TestCellTransformerCellTypeConditioning:
     """Tests for cell-type-conditioned inducing points in CellTransformer."""
@@ -655,7 +622,6 @@ class TestCellTransformerCellTypeConditioning:
 
     def test_forward_with_conditioning(self):
         """forward() should pass ct_idx to SetTransformerEncoder."""
-        torch.manual_seed(42)
         ct = CellTransformer(
             n_genes=100, n_cell_types=4, d_model=64, n_heads=4,
             n_isab_layers=1, n_inducing=8,
@@ -670,7 +636,6 @@ class TestCellTransformerCellTypeConditioning:
 
     def test_forward_with_conditioning_flat(self):
         """forward() with flat representation should also pass ct_idx."""
-        torch.manual_seed(42)
         ct = CellTransformer(
             n_genes=100, n_cell_types=4, d_model=64, n_heads=4,
             n_isab_layers=1, n_inducing=8,
@@ -689,11 +654,9 @@ class TestCellTransformerCellTypeConditioning:
         emb, _ = ct(cell_data, offsets)
         assert emb.shape == (2, 4, 64)
 
-
 # ============================================================================
 # Gene Attention Gate Integration Tests
 # ============================================================================
-
 
 class TestGeneAttentionGateIntegration:
     """Test GeneAttentionGate integration in CellTransformer."""
@@ -714,7 +677,6 @@ class TestGeneAttentionGateIntegration:
 
     def test_gene_gate_changes_output(self, gate_config):
         """Gene gate should alter output compared to uniform gating."""
-        torch.manual_seed(42)
         ct = CellTransformer(**gate_config)
         ct.eval()
 
@@ -778,11 +740,9 @@ class TestGeneAttentionGateIntegration:
         with pytest.raises(ValueError):
             ct.gene_gate_temperature = -1.0
 
-
 # ============================================================================
 # P1.3a: max_cells computation must be numerically identical to .item() path
 # ============================================================================
-
 
 class TestMaxCellsComputationP13a:
     """P1.3a: Verify the dynamo-friendly max_cells computation is bit-identical.

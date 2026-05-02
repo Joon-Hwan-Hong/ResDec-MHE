@@ -15,10 +15,8 @@ import torch
 
 from src.analysis.pseudobulk_io import load_pseudobulk_matrix
 
-
 def _write_subject(tmp_dir: Path, sid: str, pb: np.ndarray) -> None:
     torch.save({"pseudobulk": torch.from_numpy(pb)}, tmp_dir / f"{sid}.pt")
-
 
 def test_load_pseudobulk_matrix_parallel_matches_serial(tmp_path: Path):
     rng = np.random.default_rng(0)
@@ -33,7 +31,6 @@ def test_load_pseudobulk_matrix_parallel_matches_serial(tmp_path: Path):
     assert serial.shape == (10, 3, 5)
     np.testing.assert_array_equal(serial, parallel)
 
-
 def test_load_pseudobulk_matrix_missing_subject_fills_nan(tmp_path: Path):
     rng = np.random.default_rng(0)
     sids = [f"R{i:04d}" for i in range(4)]
@@ -45,7 +42,6 @@ def test_load_pseudobulk_matrix_missing_subject_fills_nan(tmp_path: Path):
     assert out.shape == (4, 2, 3)
     assert np.isnan(out[3]).all()
     assert np.isfinite(out[:3]).all()
-
 
 def test_load_pseudobulk_matrix_no_files_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError):

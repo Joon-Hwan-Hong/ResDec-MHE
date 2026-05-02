@@ -11,6 +11,10 @@ import logging
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -31,11 +35,19 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
         "--ccc-edge-csv",
-        default="outputs/canonical/interpretability/ccc/ccc_edge_attention.csv",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/ccc/ccc_edge_attention.csv"
+        ),
     )
     p.add_argument(
         "--out-dir",
-        default="outputs/canonical/interpretability/figures/architecture",
+        type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/figures/architecture"
+        ),
     )
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO,

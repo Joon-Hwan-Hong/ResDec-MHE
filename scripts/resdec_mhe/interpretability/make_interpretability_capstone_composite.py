@@ -32,6 +32,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -208,37 +212,110 @@ def _draw_sae_feature_distribution(ax: plt.Axes, data: dict) -> None:
     fmt_axes(ax)
 
 
-def _draw_permutation_null(ax: plt.Axes, data: dict) -> None:
-    """Render the permutation null distribution + canonical marker (Panel D)."""
-    null_vals = np.asarray(data["null_mean_r2_per_perm"], dtype=float)
-    # Lab-meeting unified-R² choice: use pooled bootstrap point (0.4493) instead
-    # of per-fold mean (0.4436) so the canonical line matches what the scatter
-    # in slot 4.1/4.2 shows. See note in make_remaining_lab_meeting_figures.py
-    # _draw_panel_A_permutation. Single number throughout the deck.
-    canonical = 0.4493
-    null_mean = float(data.get("null_mean", null_vals.mean()))
-    null_std = float(data.get("null_std", null_vals.std(ddof=0)))
-    z = float(data.get("z_under_null", (canonical - null_mean) / max(null_std, 1e-9)))
+def _load_canonical_pooled_r2(stat_rigor_path: Path) -> float:
+    """Load the canonical pooled-bootstrap point R² (single source of truth).
+
+    Reads ``bootstrap_r2_ci.point_r2`` from
+    ``outputs/canonical/interpretability/statistical_rigor.json``.
+    Falls back to 0.4493 (the historic lab-meeting display value) if the
+    file is missing, but logs a warning so stale literals are visible.
+    """
+    if not stat_rigor_path.exists():
+        logger.warning(
+            "statistical_rigor.json not found at %s; falling back to 0.4493 "
+            "lab-meeting display literal. Re-generate the file to remove this "
+            "warning.", stat_rigor_path,
+        )
+        return 0.4493
+    payload = json.loads(stat_rigor_path.read_text())
+    return float(payload["bootstrap_r2_ci"]["point_r2"])
+
+
+def _draw_permutation_null(
+    ax: plt.Axes, data: dict, *, canonical_r2: float,
+) -> None:
+    """Render the permutation null distribution + canonical marker (Panel D).
+
+    Lab-meeting unified-R² choice: ``canonical_r2`` is the pooled bootstrap
+    point estimate (loaded from ``statistical_rigor.json``), which matches
+    what the scatter in slot 4.1/4.2 shows. The per-fold mean R²=0.4436 is
+    < 0.01 R² different — within fold variance — and the pooled value is
+    used so a single number runs throughout the deck.
+
+    Tolerates schemas missing ``null_mean_r2_per_perm`` (e.g., the N=50
+    canonical aggregate prior to the post-CC1 fix): when the array is
+    absent or empty, draws a Gaussian density around ``null_mean`` ± ``null_std``
+    instead of a histogram and annotates the panel with a "summary-only"
+    notice rather than silently producing an empty bar.
+    """
+    null_vals_raw = data.get("null_mean_r2_per_perm")
+    null_vals = (
+        np.asarray(null_vals_raw, dtype=float)
+        if null_vals_raw is not None and len(null_vals_raw) > 0
+        else np.zeros(0, dtype=float)
+    )
+    have_array = null_vals.size > 0
+
+    null_mean = float(
+        data.get("null_mean", null_vals.mean() if have_array else float("nan"))
+    )
+    null_std = float(
+        data.get("null_std", null_vals.std(ddof=0) if have_array else float("nan"))
+    )
+    z = float(
+        data.get(
+            "z_under_null",
+            (canonical_r2 - null_mean) / max(null_std, 1e-9)
+            if have_array else float("nan"),
+        )
+    )
     p_one = float(data.get("p_value_one_sided", float("nan")))
 
     palette = list(PALETTES["categorical"])
     null_color = palette[7]   # tab10 gray
     canonical_color = palette[0]  # tab10 blue
+    n_perms = int(data.get("n_permutations", null_vals.size))
 
-    n_bins = max(5, min(8, len(null_vals)))
-    ax.hist(
-        null_vals, bins=n_bins,
-        color=null_color, edgecolor="white", linewidth=0.6,
-        label=f"Permutation null (N={len(null_vals)})",
-    )
+    if have_array:
+        n_bins = max(5, min(8, len(null_vals)))
+        ax.hist(
+            null_vals, bins=n_bins,
+            color=null_color, edgecolor="white", linewidth=0.6,
+            label=f"Permutation null (N={len(null_vals)})",
+        )
+    else:
+        # Schema-fallback path: draw a Gaussian density around (null_mean, null_std)
+        # so the panel still conveys the null distribution visually. Annotate
+        # so the reader knows raw per-perm draws were not in the source JSON.
+        if np.isfinite(null_mean) and np.isfinite(null_std) and null_std > 0:
+            x_lo = null_mean - 4.0 * null_std
+            x_hi = max(null_mean + 4.0 * null_std, canonical_r2 + 0.05)
+            xs = np.linspace(x_lo, x_hi, 200)
+            density = (
+                np.exp(-0.5 * ((xs - null_mean) / null_std) ** 2)
+                / (null_std * np.sqrt(2.0 * np.pi))
+            )
+            ax.fill_between(
+                xs, density, color=null_color, alpha=0.5, edgecolor="white",
+                linewidth=0.6,
+                label=f"Permutation null (Gaussian, N={n_perms})",
+            )
+            ax.set_ylim(bottom=0)
+        ax.text(
+            0.5, 0.4,
+            "summary-only\n(raw perm R² not in source)",
+            transform=ax.transAxes,
+            ha="center", va="center",
+            fontsize=6, style="italic", color="#666666",
+        )
     # Mean +/- std band
     ax.axvline(null_mean, color="#444444", linestyle=":", linewidth=0.8,
                label=f"null mean = {null_mean:.3f}")
     ax.axvspan(null_mean - null_std, null_mean + null_std,
                color="#bbbbbb", alpha=0.3, zorder=0)
     # Canonical marker
-    ax.axvline(canonical, color=canonical_color, linestyle="-", linewidth=1.6,
-               label=f"canonical $R^2$ = {canonical:.4f}")
+    ax.axvline(canonical_r2, color=canonical_color, linestyle="-", linewidth=1.6,
+               label=f"canonical $R^2$ = {canonical_r2:.4f}")
     # Annotation text in the corner with z + p
     ax.text(
         0.98, 0.98,
@@ -265,16 +342,20 @@ def build_figure(
     wasserstein_path: Path,
     xref_path: Path,
     permutation_path: Path,
+    statistical_rigor_path: Path,
     figsize: tuple[float, float] = (12.0, 8.0),
 ) -> Figure:
     """Load all inputs and build the 2x2 composite figure.
 
-    Returns the matplotlib Figure (not yet saved).
+    Returns the matplotlib Figure (not yet saved). The canonical R² used
+    in Panel D is loaded from ``statistical_rigor_path`` (single source of
+    truth, see ``_load_canonical_pooled_r2``).
     """
     consensus = json.loads(Path(consensus_path).read_text())
     wasserstein = json.loads(Path(wasserstein_path).read_text())
     xref = json.loads(Path(xref_path).read_text())
     perm = json.loads(Path(permutation_path).read_text())
+    canonical_r2 = _load_canonical_pooled_r2(Path(statistical_rigor_path))
 
     panels = [
         {
@@ -290,7 +371,10 @@ def build_figure(
             "title": "SAE relaxed-interpretable feature CT distribution",
         },
         {
-            "draw": (lambda ax, d=perm: _draw_permutation_null(ax, d)),
+            "draw": (
+                lambda ax, d=perm, c=canonical_r2:
+                _draw_permutation_null(ax, d, canonical_r2=c)
+            ),
             "title": "Permutation null distribution (full-pipeline shuffle)",
         },
     ]
@@ -329,6 +413,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Permutation null summary (Panel D).",
     )
     p.add_argument(
+        "--statistical-rigor",
+        default="outputs/canonical/interpretability/statistical_rigor.json",
+        help=(
+            "Canonical pooled-bootstrap point R² source (Panel D). "
+            "Reads bootstrap_r2_ci.point_r2 — single source of truth so "
+            "the lab-meeting deck stays in sync if the canonical model "
+            "retrains."
+        ),
+    )
+    p.add_argument(
         "--out-dir",
         default="outputs/canonical/interpretability/figures/composite",
         help="Output directory; figure stem is fig_interpretability_capstone.",
@@ -354,6 +448,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         wasserstein_path=Path(args.wasserstein_json),
         xref_path=Path(args.xref_json),
         permutation_path=Path(args.permutation_summary),
+        statistical_rigor_path=Path(args.statistical_rigor),
         figsize=figsize,
     )
     out_stem = out_dir / "fig_interpretability_capstone"

@@ -25,16 +25,17 @@ from src.training.resdec_lightning_module import (
     DEFAULT_SIGMA_EPS,
     ResDecLightningModule,
 )
+from tests.conftest import _build_canonical_batch
 
 
 # ---------------------------------------------------------------------------- #
 # Fixtures: minimal config + tiny batch generator                               #
 # ---------------------------------------------------------------------------- #
 @pytest.fixture
-def cfg():
+def cfg(default_config_path):
     """Minimal config — same shape as the smoke-test fixture in
     test_resdec_lightning_module.py (deterministic head, resdec_head section)."""
-    base = OmegaConf.load("configs/default.yaml")
+    base = OmegaConf.load(default_config_path)
     OmegaConf.set_struct(base, False)
     OmegaConf.set_struct(base.model, False)
     base.model.n_genes = 4785
@@ -47,36 +48,13 @@ def cfg():
 
 
 def _make_dummy_batch(B: int = 4) -> dict[str, Any]:
-    """Produce a minimal batch the encoder can accept — same shape fixture used
-    in test_resdec_lightning_module.py's test_module_forward_dummy_batch."""
-    N_CT, N_GENES, N_REGIONS = 31, 4785, 6
-    cells_per_ct = 10
-    cells_per_subject = cells_per_ct * N_CT
-
-    region_mask = torch.zeros(B, N_REGIONS, dtype=torch.bool)
-    region_mask[:, 0] = True
-
-    offsets_per_subj = torch.arange(
-        0, cells_per_subject + 1, cells_per_ct, dtype=torch.long,
+    """Produce a minimal batch via the shared canonical builder — includes
+    ``subject_ids`` for the aug-U TabPFN train-map injection path.
+    """
+    return _build_canonical_batch(
+        batch_size=B, n_genes=4785, cells_per_ct=10, edges_per_subj=0,
+        include_subject_ids=True,
     )
-    subj_offsets = torch.arange(B, dtype=torch.long) * cells_per_subject
-    cell_offsets = subj_offsets.unsqueeze(1) + offsets_per_subj.unsqueeze(0)
-
-    batch = {
-        "region_pseudobulk": torch.randn(B, N_REGIONS, N_CT, N_GENES),
-        "region_mask": region_mask,
-        "ccc_edge_index": torch.zeros(2, 0, dtype=torch.long),
-        "ccc_edge_type": torch.zeros(0, dtype=torch.long),
-        "ccc_edge_attr": torch.zeros(0, 1),
-        "cell_type_mask": torch.ones(B, N_CT, dtype=torch.bool),
-        "cell_data": torch.randn(B * cells_per_subject, N_GENES),
-        "cell_offsets": cell_offsets,
-        "pathology": torch.randn(B, 3),
-        "cognition": torch.randn(B, 1),
-        "subject_ids": [f"sid_{i:03d}" for i in range(B)],
-    }
-    return batch
-
 
 def _enable_tabpfn_with(
     mod: ResDecLightningModule,
@@ -93,7 +71,6 @@ def _enable_tabpfn_with(
     }
     mod.tabpfn_val_map = dict(mod.tabpfn_train_map)  # not used in these tests
     mod._tabpfn_enabled = True
-
 
 # ---------------------------------------------------------------------------- #
 # I4: new edge-case tests                                                       #
@@ -184,7 +161,6 @@ def test_sigma_weight_stability_sigma_near_zero(cfg):
         "Weighted-mean normalization is not preventing single-subject blow-up."
     )
 
-
 def test_sigma_weight_constant_sigma_reduces_to_uniform(cfg):
     """With all σ = const, the weighted-mean aux loss must equal the plain MSE
     (up to fp tolerance). This is the sanity check that weighted-mean is the
@@ -232,7 +208,6 @@ def test_sigma_weight_constant_sigma_reduces_to_uniform(cfg):
         f"constant-σ weighted mean != uniform mean: "
         f"weighted={L_aux2_weighted.item():.6g} uniform={L_aux2_uniform.item():.6g}"
     )
-
 
 def test_use_sigma_weighting_false_is_plain_mse(cfg):
     """With ``use_sigma_weighting=False``, L_aux2 must match
@@ -298,7 +273,6 @@ def test_use_sigma_weighting_false_is_plain_mse(cfg):
         f"expected={expected_total.item():.6g}"
     )
 
-
 def test_tabpfn_disabled_fallback(cfg):
     """When TabPFN caches are NOT loaded (no cfg.data.tabpfn_*_dir), the
     training_step must fall back to plain MSE against cognition without
@@ -330,7 +304,6 @@ def test_tabpfn_disabled_fallback(cfg):
         f"fallback loss != plain MSE(pred, cognition): "
         f"loss={loss.item():.6g} expected={expected.item():.6g}"
     )
-
 
 # ---------------------------------------------------------------------------- #
 # Canonical n_stages=1 regression + aux_lambdas length mismatch                 #
@@ -366,7 +339,6 @@ def test_n_stages_1_skips_sigma_weighting(cfg):
         f"n_stages=1 loss != (1 + λ_1)·MSE(stage_1, residual): "
         f"loss={loss.item():.6g} expected={L_expected.item():.6g}"
     )
-
 
 @pytest.mark.parametrize(
     "n_stages,bad_lambdas",

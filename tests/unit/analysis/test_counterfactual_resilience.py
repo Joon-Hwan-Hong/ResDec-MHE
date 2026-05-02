@@ -10,7 +10,6 @@ from src.analysis.counterfactual_resilience import (
     find_counterfactual_mode_a_adaptive_batch,
 )
 
-
 def _linear_model(w: np.ndarray, b: float = 0.0):
     """Return (f, grad_f) for f(x) = w·x + b."""
     def f(x: np.ndarray) -> float:
@@ -19,11 +18,9 @@ def _linear_model(w: np.ndarray, b: float = 0.0):
         return w.astype(np.float64)
     return f, grad_f
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Mode-A adaptive doubling (Wachter 2017 literal preferred algorithm)
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_mode_a_adaptive_reaches_target_on_linear_model():
     """With adaptive doubling, target is reached on a simple linear model."""
@@ -40,7 +37,6 @@ def test_mode_a_adaptive_reaches_target_on_linear_model():
     )
     assert result.success
     assert abs(result.y_cf - target) <= 1e-2
-
 
 def test_mode_a_adaptive_returns_best_effort_when_unreachable():
     """If no λ reaches target within budget, returns best CF with success=False."""
@@ -59,7 +55,6 @@ def test_mode_a_adaptive_returns_best_effort_when_unreachable():
     assert isinstance(result, CounterfactualResult)
     # And lambda_used should be the max attempted
     assert result.lambda_used == pytest.approx(10.0) or result.lambda_used >= 1.0
-
 
 def test_mode_a_combined_f_and_grad_equivalent_to_separate():
     """Mode-A with f_and_grad must match Mode-A with separate f/grad_f.
@@ -93,7 +88,6 @@ def test_mode_a_combined_f_and_grad_equivalent_to_separate():
     assert r_separate.n_steps_used == r_combined.n_steps_used
     np.testing.assert_allclose(r_separate.x_cf, r_combined.x_cf, rtol=1e-9, atol=1e-12)
 
-
 def test_mode_a_records_lambda_used():
     """The result must report which λ value was the final (successful or max) attempt."""
     w = np.array([1.0, 1.0])
@@ -108,11 +102,9 @@ def test_mode_a_records_lambda_used():
     assert hasattr(result, "lambda_used")
     assert result.lambda_used >= 0.01
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # P1.4 — caching of (y_init, g_init) across λ doublings
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_mode_a_caches_initial_y_and_grad_across_lambda_doublings():
     """f_and_grad(x_init) must be invoked exactly once even with many λ doublings.
@@ -152,12 +144,10 @@ def test_mode_a_caches_initial_y_and_grad_across_lambda_doublings():
     assert isinstance(result, CounterfactualResult)
     assert result.success is False
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # P2.1 / P2.2 — new fields: lambda_best, lambda_max_attempted, gap, trajectory,
 # and lambda_used backward-compat alias
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_result_exposes_lambda_best_and_lambda_max_attempted():
     """``lambda_best`` is the λ of the closest/converging attempt; ``lambda_max_attempted``
@@ -178,7 +168,6 @@ def test_result_exposes_lambda_best_and_lambda_max_attempted():
     assert result.lambda_best >= 0.01
     assert result.lambda_max_attempted >= result.lambda_best
 
-
 def test_result_lambda_used_is_alias_for_lambda_best():
     """Backward-compat: ``lambda_used`` reads ``lambda_best``."""
     w = np.array([1.0, 1.0])
@@ -191,7 +180,6 @@ def test_result_lambda_used_is_alias_for_lambda_best():
         lambda_start=0.01, lambda_max=100.0,
     )
     assert result.lambda_used == result.lambda_best
-
 
 def test_result_exposes_gap():
     """``gap = abs(y_cf - target_y)`` so callers don't recompute."""
@@ -206,7 +194,6 @@ def test_result_exposes_gap():
     )
     assert hasattr(result, "gap")
     assert result.gap == pytest.approx(abs(result.y_cf - result.target_y), abs=1e-12)
-
 
 def test_result_trajectory_recorded_when_requested():
     """When ``record_trajectory=True``, result.trajectory has one entry per λ."""
@@ -228,7 +215,6 @@ def test_result_trajectory_recorded_when_requested():
     assert lam0 == pytest.approx(1e-3)
     assert isinstance(res0, float)
 
-
 def test_result_trajectory_default_empty():
     """Without ``record_trajectory=True``, trajectory is an empty list."""
     w = np.array([1.0])
@@ -242,11 +228,9 @@ def test_result_trajectory_default_empty():
     )
     assert result.trajectory == []
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # P1.2 — batched API ``find_counterfactual_mode_a_adaptive_batch``
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def _linear_batch_model(W: np.ndarray, b: np.ndarray | None = None):
     """Return f_and_grad_batch(X) for f_i(x) = W[i]·x + b[i]."""
@@ -263,7 +247,6 @@ def _linear_batch_model(W: np.ndarray, b: np.ndarray | None = None):
         g = W.copy()                          # [B, n], constant in x
         return y, g
     return f_and_grad_batch
-
 
 def test_batch_api_matches_per_subject_on_linear_model():
     """Batched API produces results numerically identical (to tolerance) with
@@ -309,7 +292,6 @@ def test_batch_api_matches_per_subject_on_linear_model():
         # Same lambda_best when both converge
         if ref.success and b_res.success:
             assert b_res.lambda_best == pytest.approx(ref.lambda_best)
-
 
 def test_batch_api_ragged_stop_freezes_converged_subject():
     """Subject that converges quickly must not be updated further once done.
@@ -357,7 +339,6 @@ def test_batch_api_ragged_stop_freezes_converged_subject():
     # Subject 1 must NOT have converged (gradient too weak).
     assert results[1].success is False
 
-
 def test_batch_api_returns_per_subject_lambda_max_attempted_and_gap():
     """Each per-subject result has lambda_best, lambda_max_attempted, gap fields."""
     rng = np.random.default_rng(1)
@@ -380,7 +361,6 @@ def test_batch_api_returns_per_subject_lambda_max_attempted_and_gap():
         assert r.gap == pytest.approx(abs(r.y_cf - r.target_y), abs=1e-12)
         assert r.lambda_max_attempted >= r.lambda_best
 
-
 def test_batch_api_records_trajectory_per_subject_when_requested():
     """``record_trajectory=True`` populates per-subject trajectories of (λ, residual)."""
     W = np.array([[0.01], [0.02]])  # both weak → multiple doublings
@@ -399,7 +379,6 @@ def test_batch_api_records_trajectory_per_subject_when_requested():
         lam0, res0 = r.trajectory[0]
         assert lam0 == pytest.approx(1e-3)
         assert isinstance(res0, float)
-
 
 def test_batch_api_input_shape_validation():
     """Mismatched batch dims raise."""

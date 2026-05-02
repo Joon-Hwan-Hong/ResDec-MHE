@@ -13,11 +13,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import xgboost as xgb
 
-# Ensure the worktree root is on sys.path so `src.data.tabpfn_input` resolves
-# from this worktree (uv run adds the main-repo path, which may lack newer
-# modules introduced in this branch).
+# Ensure the worktree root is on sys.path so the modules imported below
+# (`src.data.enriched_features`, `src.data.feature_loaders`, `src.data.splits`)
+# resolve from THIS worktree. `uv run` adds the main-repo path, which may
+# lack newer modules introduced in this branch.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.data.enriched_features import (
@@ -29,15 +29,18 @@ from src.data.enriched_features import (
 from src.data.feature_loaders import load_flat_features, load_targets
 from src.data.splits import load_splits
 
+# Shared helpers for TabPFN compute scripts (CC4: previously duplicated across
+# compute_top_k_features.py / compute_oof.py / compute_outer.py).
+from scripts.resdec_mhe.tabpfn._helpers import (
+    DEFAULT_XGB_LEARNING_RATE,
+    DEFAULT_XGB_MAX_DEPTH,
+    DEFAULT_XGB_N_ESTIMATORS,
+    build_xgb_regressor,
+    filter_usable_subjects,
+    top_k_filename,
+)
+
 logger = logging.getLogger(__name__)
-
-
-def _output_filename(output_dir: Path, top_k: int, fold_idx: int, feature_set: str) -> Path:
-    """Distinct filename per feature set. The ``A`` default keeps the original
-    ``top_{k}_features_fold{f}.json`` layout for backwards compatibility."""
-    if feature_set == "A":
-        return output_dir / f"top_{top_k}_features_fold{fold_idx}.json"
-    return output_dir / f"top_{top_k}_features_fold{fold_idx}_{feature_set}.json"
 
 
 def main(args):
@@ -72,15 +75,8 @@ def main(args):
 
     for fold_idx, fold_split in enumerate(splits["folds"]):
         n_train_raw = len(fold_split["train"])
-        train_ids = [
-            s for s in fold_split["train"] if s in features and s in targets
-        ]
-        dropped_no_feat = sum(
-            1 for s in fold_split["train"] if s not in features
-        )
-        dropped_no_tgt = sum(
-            1 for s in fold_split["train"]
-            if s in features and s not in targets
+        train_ids, dropped_no_feat, dropped_no_tgt = filter_usable_subjects(
+            fold_split["train"], features, targets,
         )
         logger.info(
             "fold %d: train subjects usable=%d/%d "
@@ -91,16 +87,18 @@ def main(args):
         X_train = np.stack([features[s] for s in train_ids])
         y_train = np.array([targets[s] for s in train_ids], dtype=np.float32)
 
-        reg = xgb.XGBRegressor(
-            n_estimators=200, max_depth=6, learning_rate=0.1,
-            n_jobs=-1, tree_method="hist",
-            random_state=args.seed,
+        reg = build_xgb_regressor(
+            n_estimators=args.xgb_n_estimators,
+            max_depth=args.xgb_max_depth,
+            learning_rate=args.xgb_learning_rate,
+            n_jobs=-1,
+            seed=args.seed,
         )
         reg.fit(X_train, y_train)
         imp = reg.feature_importances_
         top_k_idx = np.argsort(imp)[::-1][: args.top_k].tolist()
 
-        out_path = _output_filename(output_dir, args.top_k, fold_idx, args.feature_set)
+        out_path = top_k_filename(output_dir, args.top_k, fold_idx, args.feature_set)
         out_path.write_text(json.dumps({
             "fold": fold_idx,
             "top_k": args.top_k,
@@ -116,11 +114,17 @@ def main(args):
 
 
 if __name__ == "__main__":
+    # Anchor defaults to the worktree root so callers in arbitrary cwds get
+    # consistent paths (mirrors run_clinical_baseline.py:54-65).
+    REPO_ROOT = Path(__file__).resolve().parents[3]
     p = argparse.ArgumentParser()
-    p.add_argument("--splits-path", default="outputs/splits.json")
-    p.add_argument("--precomputed-dir", default="data/precomputed")
-    p.add_argument("--metadata-csv", default="data/metadata_ROSMAP/metadata.csv")
-    p.add_argument("--output-dir", default="data/canonical")
+    p.add_argument("--splits-path", default=str(REPO_ROOT / "outputs/splits.json"))
+    p.add_argument("--precomputed-dir", default=str(REPO_ROOT / "data/precomputed"))
+    p.add_argument(
+        "--metadata-csv",
+        default=str(REPO_ROOT / "data/metadata_ROSMAP/metadata.csv"),
+    )
+    p.add_argument("--output-dir", default=str(REPO_ROOT / "data/canonical"))
     p.add_argument("--top-k", type=int, default=2000)
     p.add_argument(
         "--feature-set",
@@ -133,4 +137,16 @@ if __name__ == "__main__":
         ),
     )
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--xgb-n-estimators", type=int, default=DEFAULT_XGB_N_ESTIMATORS,
+        help=f"XGBoost n_estimators (default: {DEFAULT_XGB_N_ESTIMATORS}).",
+    )
+    p.add_argument(
+        "--xgb-max-depth", type=int, default=DEFAULT_XGB_MAX_DEPTH,
+        help=f"XGBoost max_depth (default: {DEFAULT_XGB_MAX_DEPTH}).",
+    )
+    p.add_argument(
+        "--xgb-learning-rate", type=float, default=DEFAULT_XGB_LEARNING_RATE,
+        help=f"XGBoost learning_rate (default: {DEFAULT_XGB_LEARNING_RATE}).",
+    )
     main(p.parse_args())

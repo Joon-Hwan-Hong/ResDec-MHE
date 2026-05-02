@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def test_make_step_d_5fold_runs(tmp_path: Path) -> None:
     summary_path = (
@@ -47,10 +46,8 @@ def test_make_step_d_5fold_runs(tmp_path: Path) -> None:
     assert png.is_file() and png.stat().st_size > 1000, png
     assert pdf.is_file() and pdf.stat().st_size > 1000, pdf
 
-
 def test_collect_per_fold_rates_round_trip(tmp_path: Path) -> None:
     """Synthetic 1-fold summary still parses; rates are a 1-element list."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import make_step_d_5fold_figure as mod  # noqa: E402
 
     fake_summary = {
@@ -99,13 +96,11 @@ def test_collect_per_fold_rates_round_trip(tmp_path: Path) -> None:
         assert "resilient" in rates[panel_key] and "vulnerable" in rates[panel_key]
         assert len(rates[panel_key]["resilient"]) == 1
 
-
 def test_make_figure_returns_figure() -> None:
-    """make_figure(summary) returns a matplotlib Figure with 4 axes."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
-    import matplotlib
+    """make_figure(summary) returns a matplotlib Figure with 4 axes.
 
-    matplotlib.use("Agg")
+    Agg backend is set globally in tests/conftest.py.
+    """
     import matplotlib.pyplot as plt
     from scripts.resdec_mhe.interpretability import make_step_d_5fold_figure as mod  # noqa: E402
 

@@ -16,6 +16,38 @@ from omegaconf.errors import (
 )
 
 
+# Exception types raised when navigating an OmegaConf node with missing or
+# unresolvable keys. Centralised so the cross-field validation blocks below
+# share a single ``except`` tuple instead of repeating the same five names.
+_CONFIG_NAV_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    KeyError,
+    TypeError,
+    ConfigKeyError,
+    ConfigAttributeError,
+    MissingMandatoryValue,
+    InterpolationKeyError,
+    InterpolationResolutionError,
+)
+
+
+def _safe_get(config: Any, dotpath: str, default: Any = None) -> Any:
+    """Walk ``config`` along a dotted path and return the value or ``default``.
+
+    Returns ``default`` when any segment is missing / unresolvable. Centralises
+    the try/except pattern used by ``validate_config``'s cross-field checks.
+    """
+    node = config
+    try:
+        for key in dotpath.split("."):
+            if isinstance(node, dict):
+                node = node[key]
+            else:
+                node = getattr(node, key)
+        return node
+    except _CONFIG_NAV_EXCEPTIONS:
+        return default
+
+
 def load_config(
     path: str | Path,
     overrides: dict[str, Any] | list[str] | None = None,

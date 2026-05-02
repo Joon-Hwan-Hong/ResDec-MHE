@@ -12,7 +12,6 @@ import torch
 
 from src.data.constants import N_CELL_TYPES
 
-
 class TestInitialization:
     """Tests for FusionLayer initialization."""
 
@@ -41,7 +40,6 @@ class TestInitialization:
         layer = FusionLayer(d_embed=64, d_fused=128, n_cell_types=N_CELL_TYPES)
 
         assert layer.n_cell_types == N_CELL_TYPES
-
 
 class TestForwardPass:
     """Tests for FusionLayer forward pass."""
@@ -90,7 +88,6 @@ class TestForwardPass:
 
         assert torch.allclose(mean, torch.zeros_like(mean), atol=1e-5)
         assert torch.allclose(var, torch.ones_like(var), atol=1e-1)
-
 
 class TestGradientFlow:
     """Tests for gradient flow through FusionLayer."""
@@ -160,7 +157,6 @@ class TestGradientFlow:
             alt = layer(*modified)
             assert not torch.allclose(base, alt, atol=1e-6), f"Branch {i} doesn't affect output"
 
-
 class TestValidation:
     """Tests for input validation."""
 
@@ -227,7 +223,6 @@ class TestValidation:
         # Wrong number of cell types
         with pytest.raises(ValueError, match=f"Expected {N_CELL_TYPES} cell types"):
             layer(torch.randn(2, 20, 32), torch.randn(2, 20, 32))
-
 
 class TestExtraRepr:
     """Tests for extra_repr method."""

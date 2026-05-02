@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.data.tabpfn_input import flatten_pseudobulk
+from src.data.tabpfn_input import _load_meta_df, flatten_pseudobulk
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,9 @@ def load_targets(
     Logs: total requested, found-with-non-null-target, not-in-metadata, null-target.
     """
     subject_ids = list(subject_ids)
-    df = pd.read_csv(meta_csv)
+    # Use shared cached loader: avoids re-reading the same CSV on every
+    # ``load_targets`` call (tabpfn_input._load_meta_df has lru_cache).
+    df = _load_meta_df(Path(meta_csv))
     wanted = set(subject_ids)
     df = df[df[id_col].isin(wanted)]
 
@@ -93,7 +95,9 @@ def compute_age_stats_from_training(
 
     Used by FiLM metadata loader for per-fold z-scoring (avoids val-set leakage).
     """
-    df = pd.read_csv(meta_csv)
+    # Use shared cached loader so age stats computation does not re-read
+    # the same CSV when the rest of the pipeline already loaded it.
+    df = _load_meta_df(Path(meta_csv))
     wanted = set(train_subject_ids)
     df = df[df["ROSMAP_IndividualID"].isin(wanted)]
     ages = df["age_death"].dropna().values

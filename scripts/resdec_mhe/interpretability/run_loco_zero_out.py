@@ -103,23 +103,39 @@ def _load_tabpfn_outer_map(tabpfn_dir: Path, fold: int) -> dict[str, float]:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--config", default="configs/resdec_mhe/canonical.yaml")
     p.add_argument(
-        "--canonical-dir", default="outputs/canonical/p5_canonical_seed42",
+        "--config", type=Path,
+        default=_WORKTREE_ROOT / "configs/resdec_mhe/canonical.yaml",
     )
-    p.add_argument("--tabpfn-dir", default="data/canonical")
-    p.add_argument("--splits-path", default="outputs/splits.json")
+    p.add_argument(
+        "--canonical-dir", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42",
+    )
+    p.add_argument(
+        "--tabpfn-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/canonical",
+    )
+    p.add_argument(
+        "--splits-path", type=Path,
+        default=_WORKTREE_ROOT / "outputs/splits.json",
+    )
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument("--n-cell-types", type=int, default=31)
     p.add_argument("--device", default="cuda:0")
     p.add_argument(
-        "--out-dir",
-        default="outputs/canonical/interpretability/loco_zero_out",
+        "--out-dir", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/loco_zero_out"
+        ),
     )
     p.add_argument(
-        "--cell-type-names-source",
-        default="outputs/canonical/interpretability/captum_ig/"
-        "composite_attribution_summary.json",
+        "--cell-type-names-source", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/captum_ig"
+            / "composite_attribution_summary.json"
+        ),
     )
     args = p.parse_args()
 
@@ -132,7 +148,7 @@ def main():
     device = torch.device(args.device)
 
     cfg = OmegaConf.merge(
-        OmegaConf.load("configs/default.yaml"),
+        OmegaConf.load(_WORKTREE_ROOT / "configs/default.yaml"),
         OmegaConf.load(args.config),
     )
     OmegaConf.set_struct(cfg, False)

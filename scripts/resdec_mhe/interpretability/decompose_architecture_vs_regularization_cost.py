@@ -95,12 +95,14 @@ def _read_diff_test_per_fold(diff_test_root: Path) -> list[float]:
 
 
 def _summarize(values: list[float]) -> dict[str, Any]:
-    """Compute mean, std (ddof=1), median, 25/75 quantiles + raw per_fold list."""
+    """Compute mean, std (ddof=0, pstdev convention), median, 25/75 quantiles
+    + raw per_fold list. ddof=0 matches the project-wide convention.
+    """
     arr = np.asarray(values, dtype=float)
     return {
         "per_fold": [float(v) for v in values],
         "mean": float(arr.mean()),
-        "std": float(arr.std(ddof=1)),
+        "std": float(arr.std(ddof=0)),
         "median": float(np.median(arr)),
         "q25": float(np.quantile(arr, 0.25)),
         "q75": float(np.quantile(arr, 0.75)),
@@ -123,15 +125,28 @@ def _paired_diff_block(
     diff = a_arr - b_arr
     summary = _summarize([float(v) for v in diff])
     # Run Wilcoxon on (b - a) so that "less" tests b − a < 0 ⇔ a > b.
-    try:
-        result = wilcoxon(b_arr - a_arr, alternative=wilcoxon_alternative)
-        summary["wilcoxon_W"] = float(result.statistic)
-        summary["wilcoxon_p_one_sided"] = float(result.pvalue)
-    except ValueError as exc:
-        # Wilcoxon raises if all differences are zero; surface it explicitly.
-        logger.warning("Wilcoxon failed: %s", exc)
+    # Surface a `wilcoxon_status` flag distinguishing failure modes so a
+    # consumer can tell "all_zero_diffs" apart from "exception" or "ok".
+    if np.all(np.isnan(diff)):
         summary["wilcoxon_W"] = float("nan")
         summary["wilcoxon_p_one_sided"] = float("nan")
+        summary["wilcoxon_status"] = "all_nan"
+    elif np.allclose(diff, 0.0):
+        summary["wilcoxon_W"] = float("nan")
+        summary["wilcoxon_p_one_sided"] = float("nan")
+        summary["wilcoxon_status"] = "all_zero_diffs"
+    else:
+        try:
+            result = wilcoxon(b_arr - a_arr, alternative=wilcoxon_alternative)
+            summary["wilcoxon_W"] = float(result.statistic)
+            summary["wilcoxon_p_one_sided"] = float(result.pvalue)
+            summary["wilcoxon_status"] = "ok"
+        except ValueError as exc:
+            logger.warning("Wilcoxon failed: %s", exc)
+            summary["wilcoxon_W"] = float("nan")
+            summary["wilcoxon_p_one_sided"] = float("nan")
+            summary["wilcoxon_status"] = "exception"
+            summary["wilcoxon_exception"] = str(exc)
     summary["wilcoxon_alternative"] = wilcoxon_alternative
     summary["wilcoxon_note"] = (
         "alternative='less' is applied to (b - a); equivalent to one-sided "
@@ -150,13 +165,21 @@ def _build_interpretation(
     reg_cost: dict[str, Any],
     diff_test_cost: dict[str, Any],
 ) -> str:
-    arch_explains_diff = (
-        abs(arch_cost["mean"] - diff_test_cost["mean"]) <= max(
-            arch_cost["std"], diff_test_cost["std"]
-        )
-    )
+    # NaN-safe verdict: if any std/mean is NaN (small/empty sample), the
+    # max(NaN, x) propagates NaN and the abs(...) <= NaN comparison evaluates
+    # False — emit a third "stat_undefined" verdict instead of silently
+    # defaulting to "does NOT fully explain".
+    arch_std = arch_cost["std"]
+    dt_std = diff_test_cost["std"]
+    if np.isnan(arch_std) or np.isnan(dt_std) or np.isnan(arch_cost["mean"]) or np.isnan(diff_test_cost["mean"]):
+        verdict_phrase = "verdict undefined (NaN in mean or std)"
+        cmp_op = "?"
+    else:
+        arch_explains_diff = abs(arch_cost["mean"] - diff_test_cost["mean"]) <= max(arch_std, dt_std)
+        verdict_phrase = "fully explains" if arch_explains_diff else "does NOT fully explain"
+        cmp_op = "<=" if arch_explains_diff else ">"
     return (
-        f"Canonical R² (mean ± std, ddof=1): {canonical_mean:.4f} ± "
+        f"Canonical R² (mean ± std, ddof=0): {canonical_mean:.4f} ± "
         f"{canonical_std:.4f}. Sweep λ=0 R²: {sweep_l0_mean:.4f}. Sweep λ=1.0 "
         f"R²: {sweep_lmax_mean:.4f}. Diff-test R²: {diff_test_mean:.4f}. "
         f"Architecture cost (canonical − sweep λ=0, paired per-fold): "
@@ -169,9 +192,8 @@ def _build_interpretation(
         f"Diff-test cost (canonical − diff-test, paired): "
         f"{diff_test_cost['mean']:.4f} ± {diff_test_cost['std']:.4f}, "
         f"Wilcoxon p_one_sided={diff_test_cost['wilcoxon_p_one_sided']:.4g}. "
-        f"Architecture cost {'fully' if arch_explains_diff else 'does NOT fully'} "
-        f"explains the canonical-vs-diff-test gap (|Δarch − Δdiff_test| "
-        f"{'≤' if arch_explains_diff else '>'} max(σ_arch, σ_diff_test))."
+        f"Architecture cost {verdict_phrase} the canonical-vs-diff-test gap "
+        f"(|Δarch − Δdiff_test| {cmp_op} max(σ_arch, σ_diff_test))."
     )
 
 

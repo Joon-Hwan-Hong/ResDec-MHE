@@ -16,19 +16,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 from scripts.resdec_mhe.interpretability import (  # noqa: E402
     run_sex_disparity_attribution as mod,
 )
 
-
 # =============================================================================
 # Per-subject aggregation
 # =============================================================================
-
 
 class TestPerSubjectCTMagnitude:
     """``per_subject_ct_magnitude`` returns mean(|attr|) over genes per CT."""
@@ -55,7 +51,6 @@ class TestPerSubjectCTMagnitude:
         with pytest.raises(ValueError, match="3D"):
             mod.per_subject_ct_magnitude(np.zeros((4, 5)))
 
-
 class TestPerSubjectPairMagnitude:
     """``per_subject_pair_magnitude`` indexes specific (CT, gene) pairs."""
 
@@ -79,11 +74,9 @@ class TestPerSubjectPairMagnitude:
         out = mod.per_subject_pair_magnitude(attr, [])
         assert out.shape == (4, 0)
 
-
 # =============================================================================
 # Ranking helpers
 # =============================================================================
-
 
 class TestRankTopCTPerSex:
     """``rank_top_ct_per_sex`` selects the top-N CTs by per-sex mean."""
@@ -124,7 +117,6 @@ class TestRankTopCTPerSex:
                 ct_names=["A", "B"],  # wrong length
             )
 
-
 class TestRankTopGenesPerCTPerSex:
     """``rank_top_genes_per_ct_per_sex`` ranks genes within each CT and sex."""
 
@@ -145,11 +137,9 @@ class TestRankTopGenesPerCTPerSex:
         assert m0["gene"] == "g3"
         assert f0["rank"] == 1
 
-
 # =============================================================================
 # Wilcoxon + BH-FDR
 # =============================================================================
-
 
 class TestWilcoxonPerCT:
     """``wilcoxon_per_ct`` returns p / q / means; q is BH-adjusted."""
@@ -191,7 +181,6 @@ class TestWilcoxonPerCT:
         for ct in ct_names:
             assert out[ct]["q_value"] >= out[ct]["p_value"] - 1e-12
 
-
 class TestWilcoxonPerPair:
     """``wilcoxon_per_pair`` mirrors ``wilcoxon_per_ct`` for (CT, gene) pairs."""
 
@@ -209,11 +198,9 @@ class TestWilcoxonPerPair:
         # Second pair has no signal → p should NOT be very small.
         assert out[1]["p_value"] > 0.01
 
-
 # =============================================================================
 # Spearman
 # =============================================================================
-
 
 class TestSpearmanResidualVsCTPerSex:
     """``spearman_residual_vs_ct_per_sex`` returns sex-split rho/p tables."""
@@ -241,11 +228,9 @@ class TestSpearmanResidualVsCTPerSex:
         assert out["female"] == []
         assert out["male"] == []
 
-
 # =============================================================================
 # Top-K cohort pairs
 # =============================================================================
-
 
 class TestTopKPairsOverall:
     """``topk_pairs_overall`` returns the top-K (CT, gene) by cohort mean |attr|."""
@@ -265,11 +250,9 @@ class TestTopKPairsOverall:
         assert out[1][2] == "CT1"
         assert out[1][3] == "g2"
 
-
 # =============================================================================
 # Classifier heuristic
 # =============================================================================
-
 
 class TestClassifyExplanation:
     """``classify_explanation`` picks one of (a) / (b) / (a+c) given inputs."""
@@ -359,11 +342,9 @@ class TestClassifyExplanation:
         )
         assert "(a)" in out and "noise" in out
 
-
 # =============================================================================
 # Per-fold R² by sex
 # =============================================================================
-
 
 class TestPerFoldR2BySex:
     """``per_fold_r2_by_sex`` computes per-fold R² over each sex slice."""
@@ -404,11 +385,9 @@ class TestPerFoldR2BySex:
         # n=2 < 3 → NaN for that fold.
         assert not np.isfinite(out["female"]["per_fold_r2"][0])
 
-
 # =============================================================================
 # End-to-end smoke test (synthetic)
 # =============================================================================
-
 
 def _write_synthetic_inputs(tmp_path: Path, n_ct: int = 4, n_genes: int = 6) -> dict:
     """Build a tiny self-consistent fixture: attributions, predictions, metadata,
@@ -496,7 +475,6 @@ def _write_synthetic_inputs(tmp_path: Path, n_ct: int = 4, n_genes: int = 6) -> 
         "n_genes": n_genes,
         "n_folds": n_folds,
     }
-
 
 def test_end_to_end_synthetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run ``main()`` on a synthetic fixture; verify JSON/MD/figure exist and

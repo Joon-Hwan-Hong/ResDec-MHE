@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 import types
 from pathlib import Path
@@ -57,28 +56,13 @@ if not (_WORKTREE_ROOT / "src").is_dir():
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.attention_attribution import attnlrp_softmax
-from src.utils.provenance import git_sha
+from src.utils.provenance import git_sha, pick_max_r2_ckpt
 from src.data.constants import CELL_TYPE_ORDER, N_REGIONS, PFC_REGION_IDX
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits
 from src.training.resdec_lightning_module import ResDecLightningModule
 
 logger = logging.getLogger(__name__)
-_BEST_CKPT_RE = re.compile(r"^best-(\d+)-(\d+\.\d+)\.ckpt$")
-
-
-def _pick_max_r2_ckpt(ckpt_dir: Path) -> Path:
-    best: tuple[Path, float] | None = None
-    for p in ckpt_dir.glob("best-*.ckpt"):
-        m = _BEST_CKPT_RE.match(p.name)
-        if not m:
-            continue
-        r2 = float(m.group(2))
-        if best is None or r2 > best[1]:
-            best = (p, r2)
-    if best is None:
-        raise FileNotFoundError(f"No best-*.ckpt files in {ckpt_dir}")
-    return best[0]
 
 
 def _patch_pathology_attention_for_grad(pa_module: torch.nn.Module) -> None:
@@ -221,7 +205,7 @@ def attribute_one_fold(args: argparse.Namespace, fold: int,
     cfg.data.fold = int(fold)
 
     fold_dir = Path(args.pred_root) / f"fold{fold}"
-    ckpt_path = _pick_max_r2_ckpt(fold_dir / "checkpoints")
+    ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
     logger.info("fold %d: loading %s", fold, ckpt_path.name)
 
     splits = load_splits(str(args.splits_path))

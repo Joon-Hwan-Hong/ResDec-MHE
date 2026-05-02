@@ -4,6 +4,7 @@ Shared statistical utility functions.
 Provides common statistical computations used across training and analysis modules:
 - Calibration error metrics for uncertainty quantification
 - Gini coefficient for heterogeneity analysis
+- CRPS (Continuous Ranked Probability Score) for Gaussian predictions
 """
 
 from __future__ import annotations
@@ -12,8 +13,35 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from scipy.special import erf as _scipy_erf
 
 from src.data.constants import EPSILON_DIVISION
+
+
+def crps_gaussian(
+    mean: np.ndarray,
+    std: np.ndarray,
+    target: np.ndarray,
+) -> float:
+    """Compute mean CRPS for Gaussian predictions.
+
+    CRPS(N(μ,σ), y) = σ * [z·(2Φ(z) - 1) + 2φ(z) - 1/√π]
+    where z = (y - μ) / σ. Lower is better; CRPS = 0 iff prediction is a
+    delta at the truth.
+
+    Args:
+        mean: Predicted means.
+        std: Predicted standard deviations (>= 0).
+        target: Ground truth values.
+
+    Returns:
+        Mean CRPS across all samples (scalar Python float).
+    """
+    z = (target - mean) / (std + EPSILON_DIVISION)
+    cdf_z = 0.5 * (1.0 + _scipy_erf(z / np.sqrt(2.0)))
+    pdf_z = np.exp(-0.5 * z ** 2) / np.sqrt(2.0 * np.pi)
+    crps = std * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z - 1.0 / np.sqrt(np.pi))
+    return float(np.mean(crps))
 
 
 # Standard Gaussian calibration levels (expected coverage at 1σ, 2σ, 3σ)
@@ -161,8 +189,10 @@ def gini_coefficient(values: np.ndarray) -> float:
     if total == 0:
         return 0.0
 
+    # No EPSILON in the denominator: the early return above guarantees
+    # ``total > 0``, so ``n * total > 0``.
     index = np.arange(1, n + 1)
-    return float(((2 * index - n - 1) * values).sum() / (n * total + EPSILON_DIVISION))
+    return float(((2 * index - n - 1) * values).sum() / (n * total))
 
 
 def cohens_d(

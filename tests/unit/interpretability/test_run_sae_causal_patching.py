@@ -30,8 +30,7 @@ import numpy as np
 import pytest
 import torch
 
-
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 SCRIPT_PATH = (
     _WORKTREE_ROOT
     / "scripts"
@@ -40,19 +39,15 @@ SCRIPT_PATH = (
     / "run_sae_causal_patching.py"
 )
 
-
 @pytest.fixture(scope="module")
 def script_module():
     """Import the orchestrator module without running ``main()``."""
-    if str(_WORKTREE_ROOT) not in sys.path:
-        sys.path.insert(0, str(_WORKTREE_ROOT))
     spec = importlib.util.spec_from_file_location(
         "run_sae_causal_patching_for_test", SCRIPT_PATH,
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
 
 @pytest.fixture(scope="module")
 def tiny_sae(tmp_path_factory):
@@ -108,11 +103,9 @@ def tiny_sae(tmp_path_factory):
     save_sae_model(sae, out_dir / "sae_model.npz")
     return sae, out_dir
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Argparse smoke
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_argparse_defaults_match_canonical_artifacts(script_module):
     """``main()`` argparse exposes the canonical-artifact paths as defaults."""
@@ -135,11 +128,9 @@ def test_argparse_defaults_match_canonical_artifacts(script_module):
     assert "batch_topk/fused/exp32_k64_seed0" in ns.sae_dir
     assert "activations_fused_all_folds.npz" in ns.fused_activations_npz
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # load_sae_from_dir — including legacy l1_lambda filtering
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_load_sae_from_dir_round_trip(script_module, tiny_sae):
     """Persisted SAE re-loads with matching W_enc / W_dec / config."""
@@ -156,7 +147,6 @@ def test_load_sae_from_dir_round_trip(script_module, tiny_sae):
     assert loaded.config.k == 4
     # batch_topk path includes a threshold field.
     assert "threshold" in loaded.activation_stats
-
 
 def test_load_sae_from_dir_filters_legacy_l1_lambda(script_module, tmp_path):
     """An npz containing legacy ``l1_lambda`` config key still loads cleanly."""
@@ -190,16 +180,13 @@ def test_load_sae_from_dir_filters_legacy_l1_lambda(script_module, tmp_path):
     loaded = script_module.load_sae_from_dir(tmp_path)
     assert loaded.config.architecture == "batch_topk"
 
-
 def test_load_sae_from_dir_missing_npz_raises(script_module, tmp_path):
     with pytest.raises(FileNotFoundError):
         script_module.load_sae_from_dir(tmp_path)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # patch_fused_with_sae — math correctness
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_patch_fused_zero_matches_decoder_decomposition(script_module, tiny_sae):
     """Patching feature j to 0 changes x_hat by exactly -h[:, j] * W_dec[:, j].
@@ -231,7 +218,6 @@ def test_patch_fused_zero_matches_decoder_decomposition(script_module, tiny_sae)
     )
     np.testing.assert_allclose(patched_flat, expected, atol=1e-5)
 
-
 def test_patch_fused_does_not_modify_input(script_module, tiny_sae):
     sae, _ = tiny_sae
     fused = torch.randn(2, 5, 8)
@@ -242,7 +228,6 @@ def test_patch_fused_does_not_modify_input(script_module, tiny_sae):
     assert torch.allclose(fused, fused_clone), \
         "patch_fused_with_sae must not modify its input tensor"
 
-
 def test_patch_fused_preserves_shape_dtype_device(script_module, tiny_sae):
     sae, _ = tiny_sae
     fused = torch.randn(3, 4, 8, dtype=torch.float32)
@@ -252,7 +237,6 @@ def test_patch_fused_preserves_shape_dtype_device(script_module, tiny_sae):
     assert out.shape == fused.shape
     assert out.dtype == fused.dtype
     assert out.device == fused.device
-
 
 def test_patch_fused_no_patch_round_trip_close(script_module, tiny_sae):
     """``feature_idx=None`` => SAE round-trip; should be close to input."""
@@ -270,14 +254,12 @@ def test_patch_fused_no_patch_round_trip_close(script_module, tiny_sae):
     )
     assert torch.allclose(out, out2)
 
-
 def test_patch_fused_3d_shape_required(script_module, tiny_sae):
     sae, _ = tiny_sae
     with pytest.raises(ValueError, match="3D"):
         script_module.patch_fused_with_sae(
             torch.randn(8), sae, feature_idx=0, patch_value=0.0,
         )
-
 
 def test_patch_fused_patch_value_required_when_feature_idx_given(
     script_module, tiny_sae,
@@ -288,11 +270,9 @@ def test_patch_fused_patch_value_required_when_feature_idx_given(
             torch.randn(1, 1, 8), sae, feature_idx=0, patch_value=None,
         )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # compute_feature_percentiles
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_compute_feature_percentiles_returns_canonical_keys(
     script_module, tiny_sae, tmp_path,
@@ -311,7 +291,6 @@ def test_compute_feature_percentiles_returns_canonical_keys(
     assert stats["n_total"] == 50 * 5
     assert 0.0 <= stats["fraction_active"] <= 1.0
 
-
 def test_compute_feature_percentiles_p1_le_p99(script_module, tiny_sae, tmp_path):
     sae, _ = tiny_sae
     rng = np.random.default_rng(1)
@@ -323,7 +302,6 @@ def test_compute_feature_percentiles_p1_le_p99(script_module, tiny_sae, tmp_path
     )
     assert stats["p1"] <= stats["p99"]
 
-
 def test_compute_feature_percentiles_rejects_2d(script_module, tiny_sae, tmp_path):
     sae, _ = tiny_sae
     npz_path = tmp_path / "wrong_shape.npz"
@@ -331,11 +309,9 @@ def test_compute_feature_percentiles_rejects_2d(script_module, tiny_sae, tmp_pat
     with pytest.raises(ValueError, match="3D"):
         script_module.compute_feature_percentiles(npz_path, sae, feature_idx=0)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # select_random_controls
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def test_select_random_controls_distinct_and_excludes_target(
     script_module, tiny_sae,
@@ -349,7 +325,6 @@ def test_select_random_controls_distinct_and_excludes_target(
     assert len(set(out.tolist())) == 5
     assert 4 not in out.tolist()
 
-
 def test_select_random_controls_skips_dead_features(script_module, tiny_sae):
     """``is_dead`` features must NOT appear among the random controls."""
     sae, _ = tiny_sae
@@ -361,7 +336,6 @@ def test_select_random_controls_skips_dead_features(script_module, tiny_sae):
     assert 1 not in out.tolist()
     assert 15 not in out.tolist()
 
-
 def test_select_random_controls_overrequest_raises(script_module, tiny_sae):
     sae, _ = tiny_sae
     rng = np.random.default_rng(0)
@@ -370,11 +344,9 @@ def test_select_random_controls_overrequest_raises(script_module, tiny_sae):
             sae, target_feature_idx=0, n_random=999, rng=rng,
         )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # _render_markdown — interpretation branch coverage
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 def _summary_skeleton(splatter_dr2: float, random_dr2: float) -> dict:
     """Build a minimal-but-complete summary dict for markdown rendering."""
@@ -412,7 +384,6 @@ def _summary_skeleton(splatter_dr2: float, random_dr2: float) -> dict:
         },
     }
 
-
 def _summary_with_random_std(
     splatter_dr2: float, random_dr2: float, random_std: float,
 ) -> dict:
@@ -420,7 +391,6 @@ def _summary_with_random_std(
     s = _summary_skeleton(splatter_dr2=splatter_dr2, random_dr2=random_dr2)
     s["summary_statistics"]["random_saturate_delta_r2_std"] = random_std
     return s
-
 
 def test_render_markdown_causal_branch(script_module):
     """All three criteria pass (Δ > 2× random AND > random SD AND ≥ 1 % R²).
@@ -434,7 +404,6 @@ def test_render_markdown_causal_branch(script_module):
     assert "**Causal**" in md
     assert "PASS" in md  # at least one criterion line says PASS
 
-
 def test_render_markdown_correlated_only_branch(script_module):
     """Splatter Δ ≤ random mean — correlated-only verdict."""
     summary = _summary_with_random_std(
@@ -444,7 +413,6 @@ def test_render_markdown_correlated_only_branch(script_module):
     assert "Correlated-only" in md or "correlated-only" in md.lower()
     # And the FAIL annotation should appear for at least one criterion.
     assert "FAIL" in md
-
 
 def test_render_markdown_inconclusive_branch(script_module):
     """Splatter Δ > 2× random mean but < 1 % canonical R² → inconclusive."""
@@ -456,7 +424,6 @@ def test_render_markdown_inconclusive_branch(script_module):
     )
     md = script_module._render_markdown(summary)
     assert "Inconclusive" in md or "inconclusive" in md.lower()
-
 
 def test_render_markdown_includes_canonical_metadata(script_module):
     """The MD report names the SAE config and the canonical Splatter feature."""

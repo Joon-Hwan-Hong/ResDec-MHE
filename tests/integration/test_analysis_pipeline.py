@@ -9,7 +9,6 @@ Tests that analysis modules work together end-to-end:
 Uses synthetic data to avoid dependency on real experiment outputs.
 """
 
-import tempfile
 from pathlib import Path
 
 import h5py
@@ -19,37 +18,30 @@ import pytest
 
 from src.data.constants import CELL_TYPE_ORDER
 
-
 # Fixtures for synthetic data generation
 @pytest.fixture
 def n_subjects() -> int:
     return 30
 
-
 @pytest.fixture
 def n_cell_types() -> int:
     return len(CELL_TYPE_ORDER)
-
 
 @pytest.fixture
 def n_heads() -> int:
     return 4
 
-
 @pytest.fixture
 def embed_dim() -> int:
     return 64
-
 
 @pytest.fixture
 def max_cells_per_type() -> int:
     return 100
 
-
 @pytest.fixture
 def synthetic_attention(n_subjects, n_heads, n_cell_types):
     """Generate synthetic attention weights [n_subjects, n_heads, n_cell_types]."""
-    np.random.seed(42)
     # Attention weights sum to 1 across cell types for each subject and head
     attention = np.zeros((n_subjects, n_heads, n_cell_types))
     for i in range(n_subjects):
@@ -57,11 +49,9 @@ def synthetic_attention(n_subjects, n_heads, n_cell_types):
             attention[i, h] = np.random.dirichlet(np.ones(n_cell_types))
     return attention.astype(np.float32)
 
-
 @pytest.fixture
 def synthetic_pma_attention(n_subjects, n_cell_types, max_cells_per_type):
     """Generate synthetic PMA attention weights for cell heterogeneity."""
-    np.random.seed(42)
     # PMA attention: [n_subjects, n_cell_types, max_cells]
     # Use softmax-like distribution within each cell type
     raw = np.random.exponential(scale=1.0, size=(n_subjects, n_cell_types, max_cells_per_type))
@@ -69,18 +59,14 @@ def synthetic_pma_attention(n_subjects, n_cell_types, max_cells_per_type):
     pma = raw / raw.sum(axis=2, keepdims=True)
     return pma.astype(np.float32)
 
-
 @pytest.fixture
 def synthetic_embeddings(n_subjects, embed_dim):
     """Generate synthetic subject embeddings [n_subjects, embed_dim]."""
-    np.random.seed(42)
     return np.random.randn(n_subjects, embed_dim).astype(np.float32)
-
 
 @pytest.fixture
 def synthetic_phenotypes(n_subjects):
     """Generate synthetic pathology and cognition scores."""
-    np.random.seed(42)
     # Pathology: continuous 0-1 with some high values
     pathology = np.random.beta(2, 5, size=n_subjects)
     # Make some subjects high pathology
@@ -92,7 +78,6 @@ def synthetic_phenotypes(n_subjects):
 
     return pathology.astype(np.float32), cognition.astype(np.float32)
 
-
 @pytest.fixture
 def synthetic_covariates(n_subjects, synthetic_phenotypes):
     """Generate synthetic covariates DataFrame."""
@@ -102,14 +87,12 @@ def synthetic_covariates(n_subjects, synthetic_phenotypes):
         "cognition": cognition,
     })
 
-
 @pytest.fixture
 def synthetic_region_labels(n_subjects):
     """Generate synthetic region labels with guaranteed sufficient subjects per region."""
     # Ensure each region has at least 10 subjects for high pathology to work
     regions = ["PFC"] * 10 + ["EC"] * 10 + ["HIP"] * 10
     return np.array(regions)
-
 
 class TestResilienceAnalysisPipeline:
     """Integration tests for resilience signature analysis pipeline."""
@@ -119,6 +102,7 @@ class TestResilienceAnalysisPipeline:
         synthetic_attention,
         synthetic_phenotypes,
         n_cell_types,
+        tmp_path,
     ):
         """Test complete pipeline: analyze → save → load."""
         from src.analysis.resilience_signatures import (
@@ -149,22 +133,21 @@ class TestResilienceAnalysisPipeline:
         assert result.permutation_null is not None
 
         # Save and reload
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            analyzer.save(result, output_dir)
+        output_dir = tmp_path
+        analyzer.save(result, output_dir)
 
-            # Verify files created
-            assert (output_dir / "resilience_signature.parquet").exists()
-            assert (output_dir / "resilience_signature.csv").exists()
-            assert (output_dir / "signature_pvalues.parquet").exists()
-            assert (output_dir / "group_statistics.parquet").exists()
-            assert (output_dir / "resilience_permutation_null.h5").exists()
+        # Verify files created
+        assert (output_dir / "resilience_signature.parquet").exists()
+        assert (output_dir / "resilience_signature.csv").exists()
+        assert (output_dir / "signature_pvalues.parquet").exists()
+        assert (output_dir / "group_statistics.parquet").exists()
+        assert (output_dir / "resilience_permutation_null.h5").exists()
 
-            # Verify HDF5 contents
-            with h5py.File(output_dir / "resilience_permutation_null.h5", "r") as f:
-                assert "null_distribution" in f
-                assert f["null_distribution"].shape[0] == 100  # n_permutations
-                assert f["null_distribution"].shape[1] == n_cell_types
+        # Verify HDF5 contents
+        with h5py.File(output_dir / "resilience_permutation_null.h5", "r") as f:
+            assert "null_distribution" in f
+            assert f["null_distribution"].shape[0] == 100  # n_permutations
+            assert f["null_distribution"].shape[1] == n_cell_types
 
     def test_pipeline_with_regional_analysis(
         self,
@@ -207,7 +190,6 @@ class TestResilienceAnalysisPipeline:
         pathology, cognition = synthetic_phenotypes
 
         # Ablation needs embeddings [n_subjects, n_cell_types, embed_dim]
-        np.random.seed(42)
         embeddings_3d = np.random.randn(n_subjects, n_cell_types, 64).astype(np.float32)
 
         analyzer = ResilienceSignatureAnalyzer(
@@ -238,6 +220,7 @@ class TestResilienceAnalysisPipeline:
         synthetic_region_labels,
         n_subjects,
         n_cell_types,
+        tmp_path,
     ):
         """Test complete pipeline with both regional analysis and ablation."""
         from src.analysis.resilience_signatures import ResilienceSignatureAnalyzer
@@ -245,7 +228,6 @@ class TestResilienceAnalysisPipeline:
         pathology, cognition = synthetic_phenotypes
 
         # Ablation needs embeddings [n_subjects, n_cell_types, embed_dim]
-        np.random.seed(42)
         embeddings_3d = np.random.randn(n_subjects, n_cell_types, 64).astype(np.float32)
 
         analyzer = ResilienceSignatureAnalyzer(
@@ -273,23 +255,21 @@ class TestResilienceAnalysisPipeline:
         assert result.ablation_comparison is not None
 
         # Save and verify files
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            analyzer.save(result, output_dir)
+        output_dir = tmp_path
+        analyzer.save(result, output_dir)
 
-            # Core files should always exist
-            expected_files = [
-                "resilience_signature.parquet",
-                "signature_pvalues.parquet",
-                "group_statistics.parquet",
-                "ablation_importance.parquet",
-                "ablation_comparison.parquet",
-                "resilience_permutation_null.h5",
-            ]
+        # Core files should always exist
+        expected_files = [
+            "resilience_signature.parquet",
+            "signature_pvalues.parquet",
+            "group_statistics.parquet",
+            "ablation_importance.parquet",
+            "ablation_comparison.parquet",
+            "resilience_permutation_null.h5",
+        ]
 
-            for fname in expected_files:
-                assert (output_dir / fname).exists(), f"Missing: {fname}"
-
+        for fname in expected_files:
+            assert (output_dir / fname).exists(), f"Missing: {fname}"
 
 @pytest.mark.filterwarnings("ignore:n_jobs value 1 overridden to 1 by setting random_state:UserWarning")
 @pytest.mark.filterwarnings("ignore:The TBB threading layer requires TBB version:numba.core.errors.NumbaWarning")
@@ -328,6 +308,7 @@ class TestEmbeddingAnalysisPipeline:
         self,
         synthetic_embeddings,
         synthetic_covariates,
+        tmp_path,
     ):
         """Test that outputs are saved correctly."""
         from src.analysis.embedding_analysis import EmbeddingAnalyzer
@@ -343,14 +324,13 @@ class TestEmbeddingAnalysisPipeline:
             run_linear_probes=True,
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            analyzer.save(result, output_dir)
+        output_dir = tmp_path
+        analyzer.save(result, output_dir)
 
-            # Check key files exist (embedding analyzer saves parquet/csv files, not HDF5)
-            assert (output_dir / "umap_projection.parquet").exists()
-            assert (output_dir / "cluster_assignments.parquet").exists()
-            assert (output_dir / "similarity_matrix.parquet").exists()
+        # Check key files exist (embedding analyzer saves parquet/csv files, not HDF5)
+        assert (output_dir / "umap_projection.parquet").exists()
+        assert (output_dir / "cluster_assignments.parquet").exists()
+        assert (output_dir / "similarity_matrix.parquet").exists()
 
     def test_pipeline_with_batch_effect_analysis(
         self,
@@ -375,7 +355,6 @@ class TestEmbeddingAnalysisPipeline:
         assert result.batch_effect_metrics is not None
         # Check that batch_silhouette is in the metrics (stored as row, not column)
         assert "batch_silhouette" in result.batch_effect_metrics["metric"].values
-
 
 class TestCellHeterogeneityPipeline:
     """Integration tests for cell heterogeneity analysis pipeline."""
@@ -467,39 +446,36 @@ class TestCellHeterogeneityPipeline:
         assert high_attention_df["donor_age"].notna().any()
         assert all_scores_df["donor_age"].notna().any()
 
-    def test_pma_attention_loading(self, synthetic_pma_attention, n_cell_types):
+    def test_pma_attention_loading(self, synthetic_pma_attention, n_cell_types, tmp_path):
         """Test PMA attention can be saved and loaded from HDF5."""
         from scripts.analysis.run_cell_heterogeneity import load_pma_attention
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            h5_path = Path(tmpdir) / "attention_weights.h5"
+        h5_path = tmp_path / "attention_weights.h5"
 
-            # Save synthetic attention
-            with h5py.File(h5_path, "w") as f:
-                f.create_dataset("pma_attention", data=synthetic_pma_attention)
-                f.attrs["cell_type_names"] = list(CELL_TYPE_ORDER)
+        # Save synthetic attention
+        with h5py.File(h5_path, "w") as f:
+            f.create_dataset("pma_attention", data=synthetic_pma_attention)
+            f.attrs["cell_type_names"] = list(CELL_TYPE_ORDER)
 
-            # Load and verify
-            loaded = load_pma_attention(h5_path)
+        # Load and verify
+        loaded = load_pma_attention(h5_path)
 
-            assert "pma_attention" in loaded
-            assert loaded["pma_attention"].shape == synthetic_pma_attention.shape
-            assert "cell_type_names" in loaded
-            np.testing.assert_array_almost_equal(
-                loaded["pma_attention"],
-                synthetic_pma_attention
-            )
-
+        assert "pma_attention" in loaded
+        assert loaded["pma_attention"].shape == synthetic_pma_attention.shape
+        assert "cell_type_names" in loaded
+        np.testing.assert_array_almost_equal(
+            loaded["pma_attention"],
+            synthetic_pma_attention
+        )
 
 class TestCCCWithHGTData:
     """Integration tests for CCC analyzer with HGT attention data."""
 
-    def test_hgt_save_load_unpack_to_ccc(self):
+    def test_hgt_save_load_unpack_to_ccc(self, tmp_path):
         """End-to-end: save HGT HDF5 → load → unpack → CCC analyzer → non-zero results."""
         from src.utils.io import save_attention_weights, load_attention_weights, unpack_hgt_for_ccc
         from src.analysis.ccc_importance import CCCImportanceAnalyzer
 
-        np.random.seed(42)
         n_samples = 10
         n_edge_types = 5
         n_heads = 4
@@ -522,42 +498,40 @@ class TestCCCWithHGTData:
             "n_layers": 3,
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "attention_weights.h5"
+        path = tmp_path / "attention_weights.h5"
 
-            # Save
-            save_attention_weights(path=path, hgt_attention=hgt_dict)
+        # Save
+        save_attention_weights(path=path, hgt_attention=hgt_dict)
 
-            # Load
-            loaded = load_attention_weights(path)
-            hgt_raw = loaded.get("hgt_attention")
-            assert hgt_raw is not None
+        # Load
+        loaded = load_attention_weights(path)
+        hgt_raw = loaded.get("hgt_attention")
+        assert hgt_raw is not None
 
-            # Unpack
-            scores, edge_metadata, names = unpack_hgt_for_ccc(hgt_raw)
-            assert scores is not None
-            assert edge_metadata is not None
-            assert scores.shape == (n_samples, n_edge_types)
+        # Unpack
+        scores, edge_metadata, names = unpack_hgt_for_ccc(hgt_raw)
+        assert scores is not None
+        assert edge_metadata is not None
+        assert scores.shape == (n_samples, n_edge_types)
 
-            # Verify PyG convention parsing (src|edge_type|dst)
-            # First edge type: "Ast|Secreted_Signaling|Mic"
-            assert edge_metadata.iloc[0]["source"] == "Ast"
-            assert edge_metadata.iloc[0]["edge_type"] == "Secreted_Signaling"
-            assert edge_metadata.iloc[0]["target"] == "Mic"
+        # Verify PyG convention parsing (src|edge_type|dst)
+        # First edge type: "Ast|Secreted_Signaling|Mic"
+        assert edge_metadata.iloc[0]["source"] == "Ast"
+        assert edge_metadata.iloc[0]["edge_type"] == "Secreted_Signaling"
+        assert edge_metadata.iloc[0]["target"] == "Mic"
 
-            # Pass to CCC analyzer
-            analyzer = CCCImportanceAnalyzer(
-                edge_attention_scores=scores,
-                edge_metadata=edge_metadata,
-            )
-            result = analyzer.analyze()
+        # Pass to CCC analyzer
+        analyzer = CCCImportanceAnalyzer(
+            edge_attention_scores=scores,
+            edge_metadata=edge_metadata,
+        )
+        result = analyzer.analyze()
 
-            # Verify non-zero results
-            assert len(result.edge_importance) == n_edge_types
-            assert result.edge_importance["mean_attention"].sum() > 0
-            assert len(result.top_interactions) > 0
-            assert result.top_interactions["mean_attention"].iloc[0] > 0
-
+        # Verify non-zero results
+        assert len(result.edge_importance) == n_edge_types
+        assert result.edge_importance["mean_attention"].sum() > 0
+        assert len(result.top_interactions) > 0
+        assert result.top_interactions["mean_attention"].iloc[0] > 0
 
 @pytest.mark.filterwarnings("ignore:n_jobs value 1 overridden to 1 by setting random_state:UserWarning")
 class TestCrossModuleIntegration:
@@ -608,6 +582,7 @@ class TestCrossModuleIntegration:
         synthetic_attention,
         synthetic_embeddings,
         synthetic_phenotypes,
+        tmp_path,
     ):
         """Test that all analysis outputs can be saved to shared directory."""
         from src.analysis.resilience_signatures import ResilienceSignatureAnalyzer
@@ -615,26 +590,25 @@ class TestCrossModuleIntegration:
 
         pathology, cognition = synthetic_phenotypes
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
+        output_dir = tmp_path
 
-            # Run and save resilience analysis
-            resilience_analyzer = ResilienceSignatureAnalyzer(
-                attention=synthetic_attention,
-                pathology_scores=pathology,
-                cognition_scores=cognition,
-                cell_type_names=list(CELL_TYPE_ORDER),
-            )
-            resilience_result = resilience_analyzer.analyze(n_permutations=0)
-            resilience_analyzer.save(resilience_result, output_dir / "resilience")
+        # Run and save resilience analysis
+        resilience_analyzer = ResilienceSignatureAnalyzer(
+            attention=synthetic_attention,
+            pathology_scores=pathology,
+            cognition_scores=cognition,
+            cell_type_names=list(CELL_TYPE_ORDER),
+        )
+        resilience_result = resilience_analyzer.analyze(n_permutations=0)
+        resilience_analyzer.save(resilience_result, output_dir / "resilience")
 
-            # Run and save embedding analysis
-            embedding_analyzer = EmbeddingAnalyzer(
-                embeddings=synthetic_embeddings,
-            )
-            embedding_result = embedding_analyzer.analyze(run_umap=True)
-            embedding_analyzer.save(embedding_result, output_dir / "embeddings")
+        # Run and save embedding analysis
+        embedding_analyzer = EmbeddingAnalyzer(
+            embeddings=synthetic_embeddings,
+        )
+        embedding_result = embedding_analyzer.analyze(run_umap=True)
+        embedding_analyzer.save(embedding_result, output_dir / "embeddings")
 
-            # Verify both saved without conflict
-            assert (output_dir / "resilience" / "resilience_signature.parquet").exists()
-            assert (output_dir / "embeddings" / "umap_projection.parquet").exists()
+        # Verify both saved without conflict
+        assert (output_dir / "resilience" / "resilience_signature.parquet").exists()
+        assert (output_dir / "embeddings" / "umap_projection.parquet").exists()

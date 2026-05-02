@@ -62,13 +62,46 @@ from src.visualization.theme import apply_theme
 logger = logging.getLogger(__name__)
 
 
-CANONICAL_R2 = 0.4436211705207825  # from paper_baseline_table.csv (p5_canonical_seed42)
-
 # --- Module constants ---
+# Canonical R² is loaded from outputs/canonical/interpretability/paper_baseline_table.csv
+# (row model="p5_canonical_seed42", column "r2_mean"). The literal default
+# below is a last-resort fallback used only when the CSV is missing — kept
+# so unit tests that pass canonical_r2 explicitly do not break, but the CLI
+# loads the live value via _load_canonical_r2_from_csv().
+_CANONICAL_R2_CSV_FALLBACK = 0.4436211705207825
 N_FOLDS = 5
 TOP_N_PAIRS_HEATMAP = 30
 R2_VISUAL_LOWER_CLIP = -1.5
 NOMINAL_COVERAGE_LEVELS = (0.5, 0.68, 0.8, 0.95)
+
+
+def _load_canonical_r2_from_csv(
+    baseline_table_path: Path,
+    model_key: str = "p5_canonical_seed42",
+) -> float:
+    """Load canonical mean R² from the paper baseline CSV (single source of truth).
+
+    Reads the row with ``model == model_key`` from the canonical baseline
+    table. Falls back to ``_CANONICAL_R2_CSV_FALLBACK`` if the file is
+    missing or the row is absent (and logs a warning).
+    """
+    if not baseline_table_path.exists():
+        logger.warning(
+            "Canonical baseline table missing at %s; falling back to "
+            "literal CANONICAL_R2 = %.16f. Re-generate the table to remove "
+            "this warning.", baseline_table_path, _CANONICAL_R2_CSV_FALLBACK,
+        )
+        return _CANONICAL_R2_CSV_FALLBACK
+    df = pd.read_csv(baseline_table_path)
+    matches = df[df["model"] == model_key]
+    if matches.empty:
+        logger.warning(
+            "Canonical baseline row '%s' missing in %s; falling back to "
+            "literal CANONICAL_R2 = %.16f.",
+            model_key, baseline_table_path, _CANONICAL_R2_CSV_FALLBACK,
+        )
+        return _CANONICAL_R2_CSV_FALLBACK
+    return float(matches.iloc[0]["r2_mean"])
 
 
 # Per-family prefix stripping for subgroup label display.
@@ -136,14 +169,16 @@ _apply_paper_style()
 # ---------------------------------------------------------------------------
 
 
-# Baselines vs ours: group detection is display-name based so the figure
-# can be re-generated without a code change if new rows are appended to the
-# baseline table.
-_OURS_MODEL_TOKENS: tuple[str, ...] = ("p5_",)
+# Baselines vs ours: group detection is by model-key prefix so the figure
+# can be re-generated without a code change when new ResDec-MHE
+# variants/ablations are appended to the baseline table. Constants are
+# kept module-level for unit testability.
+_OURS_MODEL_PREFIX: str = "p5_"
 
 
 def _is_ours_row(model: str) -> bool:
-    return any(model.startswith(tok) for tok in _OURS_MODEL_TOKENS)
+    """Return True if ``model`` belongs to the ResDec-MHE / canonical family."""
+    return model.startswith(_OURS_MODEL_PREFIX)
 
 
 _CANONICAL_MODEL_KEY: str = "p5_canonical_seed42"
@@ -196,7 +231,7 @@ def _filter_table_for_mode(
 
 def make_fig1_ablation_bar(
     table: pd.DataFrame | None,
-    canonical_r2: float = CANONICAL_R2,
+    canonical_r2: float = _CANONICAL_R2_CSV_FALLBACK,
     mode: str = "all",
     title_override: str | None = None,
 ) -> plt.Figure:
@@ -624,7 +659,7 @@ _SUBGROUP_FAMILIES: tuple[tuple[str, str, list[str]], ...] = (
 
 def make_fig5_subgroup_r2(
     metrics: dict | None,
-    canonical_r2: float = CANONICAL_R2,
+    canonical_r2: float = _CANONICAL_R2_CSV_FALLBACK,
     *,
     min_subgroup_n: int = 10,
 ) -> plt.Figure:
@@ -1192,31 +1227,66 @@ def _safe_splatter_lamp5_corr(summary_path: Path) -> float | None:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--baseline-table", type=Path,
-                   default=Path("outputs/canonical/interpretability/paper_baseline_table.csv"))
-    p.add_argument("--captum-summary", type=Path,
-                   default=Path("outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json"))
-    p.add_argument("--head-analysis", type=Path,
-                   default=Path("outputs/canonical/interpretability/head_analysis_summary.json"))
-    p.add_argument("--splatter-deepdive", type=Path,
-                   default=Path("outputs/canonical/interpretability/splatter_deepdive_summary.json"))
-    p.add_argument("--subgroup-metrics", type=Path,
-                   default=Path("outputs/canonical/interpretability/subgroup_metrics.json"))
-    p.add_argument("--statistical-rigor", type=Path,
-                   default=Path("outputs/canonical/interpretability/statistical_rigor.json"))
-    p.add_argument("--residual-csv", type=Path,
-                   default=Path("outputs/canonical/interpretability/residual_per_subject.csv"))
-    p.add_argument("--pred-root", type=Path,
-                   default=Path("outputs/canonical/p5_canonical_seed42"))
-    p.add_argument("--ablation-root", type=Path,
-                   default=Path("outputs/canonical"),
-                   help="Parent dir containing p5_ablation_topk_{1000,4000} subdirs")
-    p.add_argument("--tabpfn-dir", type=Path, default=Path("data/canonical"))
-    p.add_argument("--out-dir", type=Path,
-                   default=Path("outputs/canonical/interpretability/figures"))
+    p.add_argument(
+        "--baseline-table", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/interpretability/paper_baseline_table.csv",
+    )
+    p.add_argument(
+        "--captum-summary", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/captum_ig/composite_attribution_summary.json"
+        ),
+    )
+    p.add_argument(
+        "--head-analysis", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/interpretability/head_analysis_summary.json",
+    )
+    p.add_argument(
+        "--splatter-deepdive", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/splatter_deepdive_summary.json"
+        ),
+    )
+    p.add_argument(
+        "--subgroup-metrics", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/interpretability/subgroup_metrics.json",
+    )
+    p.add_argument(
+        "--statistical-rigor", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/interpretability/statistical_rigor.json",
+    )
+    p.add_argument(
+        "--residual-csv", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/interpretability/residual_per_subject.csv",
+    )
+    p.add_argument(
+        "--pred-root", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42",
+    )
+    p.add_argument(
+        "--ablation-root", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical",
+        help="Parent dir containing p5_ablation_topk_{1000,4000} subdirs",
+    )
+    p.add_argument(
+        "--tabpfn-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/canonical",
+    )
+    p.add_argument(
+        "--out-dir", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/interpretability/figures",
+    )
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--figure-format", nargs="+", default=["png"])
-    p.add_argument("--canonical-r2", type=float, default=CANONICAL_R2)
+    p.add_argument(
+        "--canonical-r2", type=float, default=None,
+        help=(
+            "Canonical mean R²; if omitted, loaded from --baseline-table "
+            "row model='p5_canonical_seed42' (single source of truth)."
+        ),
+    )
     p.add_argument("--n-folds", type=int, default=N_FOLDS)
     return p.parse_args(argv)
 
@@ -1246,6 +1316,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     # Note: _apply_paper_style() runs at module import so tests also render
     # with paper-style rcParams. Re-running it here would be a no-op.
+
+    # Resolve canonical R² from baseline table when not explicitly overridden.
+    if args.canonical_r2 is None:
+        args.canonical_r2 = _load_canonical_r2_from_csv(args.baseline_table)
+        logger.info("loaded canonical_r2 = %.6f from %s",
+                    args.canonical_r2, args.baseline_table)
 
     # --- Fig 1: ablation bar ---
     fig1_paths: list[Path] = []

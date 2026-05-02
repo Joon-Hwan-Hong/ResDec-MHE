@@ -13,13 +13,14 @@ Current model output format (HGTEncoderTensor):
 from __future__ import annotations
 
 import logging
+import warnings
 
 import numpy as np
 import torch
 
-logger = logging.getLogger(__name__)
+from src.data.constants import N_CELL_TYPES
 
-N_CELL_TYPES = 31
+logger = logging.getLogger(__name__)
 
 
 def split_batch_attention_by_subject(
@@ -140,8 +141,6 @@ def aggregate_hgt_attention(
 
     # Collect per-sample, per-edge-type, per-layer mean attention
     # Shape: [n_samples, n_edge_types, n_layers, n_heads]
-    import warnings
-
     per_sample_array = np.full((n_samples, len(edge_type_ids), n_layers, n_heads), np.nan)
 
     for s_idx, subject_attn in enumerate(per_subject_attention):

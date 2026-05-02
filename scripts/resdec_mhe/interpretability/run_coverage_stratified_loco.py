@@ -709,19 +709,31 @@ def make_figure(
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
-        "--config", default="configs/resdec_mhe/canonical.yaml",
+        "--config", type=Path,
+        default=_WORKTREE_ROOT / "configs/resdec_mhe/canonical.yaml",
     )
     p.add_argument(
-        "--canonical-dir", default="outputs/canonical/p5_canonical_seed42",
-    )
-    p.add_argument("--tabpfn-dir", default="data/canonical")
-    p.add_argument("--splits-path", default="outputs/splits.json")
-    p.add_argument(
-        "--precomputed-dir", default="data/precomputed",
+        "--canonical-dir", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42",
     )
     p.add_argument(
-        "--coverage-json",
-        default="outputs/canonical/interpretability/ct_coverage_full_cohort.json",
+        "--tabpfn-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/canonical",
+    )
+    p.add_argument(
+        "--splits-path", type=Path,
+        default=_WORKTREE_ROOT / "outputs/splits.json",
+    )
+    p.add_argument(
+        "--precomputed-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed",
+    )
+    p.add_argument(
+        "--coverage-json", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/ct_coverage_full_cohort.json"
+        ),
     )
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument("--n-cell-types", type=int, default=31)
@@ -732,16 +744,17 @@ def main() -> int:
     )
     p.add_argument("--device", default="cuda:1")
     p.add_argument(
-        "--out-data-dir",
-        default="outputs/canonical/interpretability",
+        "--out-data-dir", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/interpretability",
         help="Directory for coverage_stratified_loco.{json,md} (note: no "
              "subfolder, mirrors EXP-013 LOCO output style).",
     )
     p.add_argument(
-        "--out-fig-dir",
+        "--out-fig-dir", type=Path,
         default=(
-            "outputs/canonical/interpretability/figures/"
-            "coverage_stratified_loco"
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/figures"
+            / "coverage_stratified_loco"
         ),
     )
     p.add_argument(
@@ -776,7 +789,7 @@ def main() -> int:
     )
 
     cfg = OmegaConf.merge(
-        OmegaConf.load("configs/default.yaml"),
+        OmegaConf.load(_WORKTREE_ROOT / "configs/default.yaml"),
         OmegaConf.load(args.config),
     )
     OmegaConf.set_struct(cfg, False)

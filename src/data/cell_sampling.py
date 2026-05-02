@@ -187,25 +187,47 @@ class CellSampler:
 
         result_arr = np.concatenate(sampled_parts) if sampled_parts else np.array([], dtype=np.int64)
         result = result_arr[:self.max_cells_per_type]
+        # Surface any shortfall > 10 % at debug level so non-uniform
+        # information gradients across subjects are visible to anyone
+        # tracing why a model treats two samples differently.
         if len(result) < 0.9 * self.max_cells_per_type:
             logger.debug(
                 "Stratified sampling returned %d/%d cells (%.0f%%) — "
-                "strata too small for full allocation",
+                "strata too small for full allocation. Per-subject cell "
+                "count varies; downstream padding handles the variable "
+                "length but the model sees fewer cells from this subject.",
                 len(result), self.max_cells_per_type,
                 100 * len(result) / self.max_cells_per_type,
             )
         return result
+
+    # Default candidate columns for importance sampling, tried in order. The
+    # explicit list documents the assumed scanpy QC convention; a caller can
+    # override via the cell_sampling.importance_score_columns config knob if
+    # needed.
+    DEFAULT_IMPORTANCE_COLUMNS: tuple[str, ...] = (
+        "importance_score",
+        "n_genes",
+    )
 
     def _importance_sample(
         self,
         adata: AnnData,
         indices: np.ndarray,
         mask: np.ndarray,
+        importance_columns: tuple[str, ...] | None = None,
     ) -> np.ndarray:
         """
         Importance sampling based on cell-level scores.
 
         Can use QC metrics, expression of marker genes, etc.
+
+        Args:
+            adata: Per-subject AnnData.
+            indices: Pre-derived positional indices for the cell type.
+            mask: Boolean mask on adata.obs picking out the cell type.
+            importance_columns: Override of the default candidate column list.
+                If ``None``, uses :attr:`DEFAULT_IMPORTANCE_COLUMNS`.
         """
         # Derive indices from mask to guarantee alignment between mask and indices.
         # This prevents silent bugs if the caller ever passes non-aligned arguments.
@@ -217,19 +239,38 @@ class CellSampler:
             )
         indices = derived_indices
 
-        # Check for importance scores
-        if "importance_score" in adata.obs.columns:
-            scores = adata.obs.loc[mask, "importance_score"].values
-        elif "n_genes" in adata.obs.columns:
-            # Use number of expressed genes as proxy for quality
-            scores = adata.obs.loc[mask, "n_genes"].values
-        else:
-            # Fall back to random
+        # Pick the first available candidate column.
+        candidates = importance_columns or self.DEFAULT_IMPORTANCE_COLUMNS
+        scores = None
+        for col in candidates:
+            if col in adata.obs.columns:
+                scores = adata.obs.loc[mask, col].values
+                break
+        if scores is None:
+            logger.debug(
+                "Importance sampling: none of %s in adata.obs; "
+                "falling back to random sample.",
+                candidates,
+            )
             return self._random_sample(indices)
 
-        # Guard against NaN in user-provided importance_score column
+        # Guard against NaN: fill with column median so non-NaN cells keep
+        # their importance signal instead of dropping to a flat random sample.
         if np.isnan(scores).any():
-            return self._random_sample(indices)
+            n_nan = int(np.isnan(scores).sum())
+            finite = scores[~np.isnan(scores)]
+            if finite.size == 0:
+                logger.debug(
+                    "Importance sampling: column has all-NaN values; "
+                    "falling back to random sample."
+                )
+                return self._random_sample(indices)
+            median = float(np.median(finite))
+            scores = np.where(np.isnan(scores), median, scores)
+            logger.debug(
+                "Importance sampling: filled %d NaN scores with median (%.3g).",
+                n_nan, median,
+            )
 
         # Convert to probabilities (higher score = higher probability)
         scores = scores - scores.min() + EPSILON_POSITIVE_FLOOR  # Ensure positive

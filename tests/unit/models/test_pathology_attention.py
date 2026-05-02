@@ -14,7 +14,6 @@ import torch
 
 from src.data.constants import N_CELL_TYPES
 
-
 class TestInitialization:
     """Tests for PathologyStratifiedAttention initialization."""
 
@@ -98,7 +97,6 @@ class TestInitialization:
         assert attn.out_proj.in_features == 64
         assert attn.out_proj.out_features == 64
 
-
 class TestForwardPass:
     """Tests for PathologyStratifiedAttention forward pass."""
 
@@ -181,7 +179,6 @@ class TestForwardPass:
 
         assert torch.all(weights >= 0)
 
-
 class TestPathologyBias:
     """Tests for pathology-dependent additive attention bias."""
 
@@ -224,7 +221,6 @@ class TestPathologyBias:
         from src.models.fusion.pathology_attention import PathologyStratifiedAttention
 
         # Create with known seed for reproducibility
-        torch.manual_seed(42)
         attn = PathologyStratifiedAttention(d_fused=64, d_cond=32, n_heads=4, n_cell_types=N_CELL_TYPES)
         attn.eval()
 
@@ -239,7 +235,6 @@ class TestPathologyBias:
 
         # Attended outputs should differ
         assert not torch.allclose(attended1, attended2)
-
 
 class TestGradientFlow:
     """Tests for gradient flow through PathologyStratifiedAttention."""
@@ -310,7 +305,6 @@ class TestGradientFlow:
         for name, param in attn.named_parameters():
             assert param.grad is not None, f"No gradient for {name}"
             assert not torch.all(param.grad == 0), f"Zero gradient for {name}"
-
 
 class TestValidation:
     """Tests for input validation."""
@@ -451,7 +445,6 @@ class TestValidation:
         with pytest.raises(ValueError, match="Batch size mismatch"):
             attn(cell_type_embs, path_emb)
 
-
 class TestExtraRepr:
     """Tests for extra_repr method."""
 
@@ -472,7 +465,6 @@ class TestExtraRepr:
         assert "d_cond=64" in str_repr
         assert "n_heads=8" in str_repr
         assert f"n_cell_types={N_CELL_TYPES}" in str_repr
-
 
 class TestAMPSoftmaxPromotion:
     """Manual softmax must promote to float32 under AMP for numerical stability."""
@@ -498,7 +490,6 @@ class TestAMPSoftmaxPromotion:
         assert torch.allclose(attn_sums, torch.ones_like(attn_sums), atol=0.05), \
             f"Attention sums should be ~1.0, got {attn_sums}"
         assert not torch.isnan(attn_weights).any(), "Attention weights contain NaN"
-
 
 class TestCellTypeMasking:
     """PA-G1/G2/G3: Tests for cell_type_mask masking behavior."""
@@ -619,7 +610,6 @@ class TestCellTypeMasking:
 
         assert not torch.allclose(attended_no_mask, attended_masked, atol=1e-6)
 
-
 class TestComputeAttentionWithGrad:
     """Flag-gated path that keeps attention in the autograd graph."""
 
@@ -691,7 +681,6 @@ class TestComputeAttentionWithGrad:
         with torch.no_grad():
             grad_att, _ = attn(cell_embs, path_emb)
         torch.testing.assert_close(canonical_att, grad_att, atol=1e-4, rtol=1e-4)
-
 
 class TestNoGradBlockSkippedDuringTraining:
     """§31.7 fix: when `return_attention_weights=False` and

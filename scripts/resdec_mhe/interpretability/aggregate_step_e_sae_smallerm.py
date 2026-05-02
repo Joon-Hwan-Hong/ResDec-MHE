@@ -128,15 +128,18 @@ def main():
 
         def _ms(field):
             vs = [r[field] for r in seed_rows]
-            return float(statistics.mean(vs)), float(statistics.pstdev(vs)) if len(vs) > 1 else 0.0
+            sd = float(statistics.pstdev(vs)) if len(vs) > 1 else 0.0
+            return float(statistics.mean(vs)), sd
 
         n_int_m, n_int_s = _ms("n_interpretable")
         spl_dom_m, spl_dom_s = _ms("n_splatter_dominant")
         spl_dom_max_m, spl_dom_max_s = _ms("splatter_max_dominance")
         fve_m, fve_s = _ms("fve")
         l0_m, l0_s = _ms("l0_mean")
-        dead_m, _ = _ms("dead_fraction")
-        max_cd_m, _ = _ms("max_ct_dominance_overall")
+        # Surface dead_fraction_std + max_ct_dominance_overall_std so seed
+        # dispersion is visible at the same level as the means.
+        dead_m, dead_s = _ms("dead_fraction")
+        max_cd_m, max_cd_s = _ms("max_ct_dominance_overall")
 
         grouped_summary.append({
             "architecture": key[0],
@@ -150,10 +153,15 @@ def main():
             "n_splatter_dominant_mean": round(spl_dom_m, 2),
             "n_splatter_dominant_std": round(spl_dom_s, 2),
             "splatter_max_dominance_mean": round(spl_dom_max_m, 4),
+            "splatter_max_dominance_std": round(spl_dom_max_s, 4),
             "max_ct_dominance_overall_mean": round(max_cd_m, 4),
+            "max_ct_dominance_overall_std": round(max_cd_s, 4),
             "fve_mean": round(fve_m, 4),
+            "fve_std": round(fve_s, 4),
             "l0_mean_mean": round(l0_m, 1),
+            "l0_mean_std": round(l0_s, 1),
             "dead_fraction_mean": round(dead_m, 4),
+            "dead_fraction_std": round(dead_s, 4),
         })
 
     out_json = ROOT / "aggregate_summary.json"

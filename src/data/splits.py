@@ -38,8 +38,8 @@ def create_stratification_variable(
     Returns:
         Series with stratification labels (e.g., "low_high", "medium_medium")
     """
-    import warnings
-
+    # ``warnings`` is imported at module level (top of file); no inner
+    # import needed here.
     metadata = metadata.copy()
 
     # Validate stratification columns have no NaN — pd.qcut silently
@@ -78,6 +78,7 @@ def create_stratification_variable(
                 f"({type(e).__name__}: {e}), falling back to "
                 f"median split (2 bins). This may reduce stratification granularity.",
                 UserWarning,
+                stacklevel=2,
             )
             median = values.median()
             return pd.Series(

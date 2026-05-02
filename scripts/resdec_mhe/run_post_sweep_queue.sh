@@ -25,6 +25,11 @@ cd "$WORKTREE_ROOT"
 PYTHONPATH=. export PYTHONPATH
 
 GATE_GPU="${GATE_GPU:-0}"
+# Threshold below which the GPU is considered "free" enough to launch the
+# next job. 2000 MB is intentionally permissive — large idle GPU drivers
+# can hover at ~1500 MB; a stricter ceiling would block on benign overhead.
+# Tighten via MAX_USED_MB env var if the host runs other long-lived GPU
+# processes (B-PQ2: documented threshold rationale).
 MAX_USED_MB="${MAX_USED_MB:-2000}"
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"
 
@@ -33,6 +38,10 @@ log_event() {
 }
 
 wait_for_tmux_done() {
+    # Poll-wait for a tmux session to terminate. ``tmux has-session`` is
+    # event-driven on the kernel side but tmux's own ``wait-for`` requires a
+    # named lock (which the upstream sweep doesn't drop). 30s is a
+    # conservative interval; the wait can run for hours.
     local session="$1"
     log_event "Waiting for tmux session '$session' to terminate..."
     local n=0
@@ -47,6 +56,11 @@ wait_for_tmux_done() {
 }
 
 wait_until_gpu_free() {
+    # nvidia-smi has no clean event API for "memory drops below X", so this
+    # loop polls every 30s. Polling cost is negligible vs the multi-minute
+    # to multi-hour waits the queue services. A more aggressive interval
+    # (e.g. 5s) would tighten responsiveness but offers little practical
+    # value here (B-PQ1).
     local gpu="$1"
     local max_mb="$2"
     log_event "Waiting for GPU $gpu to drop below ${max_mb} MB used..."

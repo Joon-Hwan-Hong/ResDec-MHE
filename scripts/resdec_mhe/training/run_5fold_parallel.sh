@@ -19,6 +19,15 @@
 #   RUN_REINFER=0 bash scripts/resdec_mhe/training/run_5fold_parallel.sh
 set -euo pipefail
 
+# tmux preflight (feedback_long_runs_need_tmux.md): 5-fold ResDec-MHE on 2 GPUs
+# is ~1-2 hr; with RUN_REINFER=1 it climbs to 1.5-2.5 hr — past the 30-min
+# threshold. SSH disconnect without tmux kills the run.
+if [ -z "${TMUX:-}" ]; then
+    echo "ERROR: This driver runs 1-2.5 hr and must be in tmux to survive SSH disconnect." >&2
+    echo "  tmux new -s resdec_5fold 'bash $0'" >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 CONFIG="${CONFIG:-configs/resdec_mhe/canonical.yaml}"
@@ -43,6 +52,11 @@ echo "Using GPUs: ${GPUS[*]} (N=$N_GPUS_EFF)"
 
 mkdir -p "$OUTROOT"
 
+# Track per-fold failures so the outer script can propagate non-zero exit if
+# any fold failed. Without this counter the summary heredoc would run on
+# degenerate input and the script would return 0.
+N_FAILED=0
+
 # Walk folds in batches of N_GPUS_EFF
 idx=0
 while (( idx < ${#FOLDS[@]} )); do
@@ -54,6 +68,15 @@ while (( idx < ${#FOLDS[@]} )); do
         gpu=${GPUS[$g]}
         out="$OUTROOT/fold${fold}"
         mkdir -p "$out"
+        # Skip-on-success resume: if the per-fold summary.json already exists,
+        # the fold completed successfully on a prior run. Mirrors the same
+        # idempotency contract in run_diff_test_5fold.sh:14-19.
+        summary="$out/summary.json"
+        if [[ -f "$summary" ]]; then
+            echo "[$(date '+%H:%M:%S')] fold $fold already done — skipping"
+            idx=$((idx + 1))
+            continue
+        fi
         echo "[$(date '+%H:%M:%S')] fold $fold -> GPU $gpu"
         CMD=(CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/resdec_mhe/training/train.py
              --config "$CONFIG"
@@ -76,6 +99,7 @@ while (( idx < ${#FOLDS[@]} )); do
             echo "[$(date '+%H:%M:%S')] done ${DESCR[$i]}"
         else
             echo "[$(date '+%H:%M:%S')] FAILED ${DESCR[$i]}"
+            N_FAILED=$((N_FAILED + 1))
         fi
     done
 done
@@ -124,3 +148,10 @@ if len(results) >= 2:
         vals = [r[key] for r in results]
         print(f"  {label:10s}: {np.mean(vals):+.4f} ± {np.std(vals):.4f}")
 PY
+
+# Propagate per-fold failure count as the script's exit code so callers
+# (run_seed_variation.sh + CI invocations) see non-zero on partial failure.
+if (( N_FAILED > 0 )); then
+    echo "$N_FAILED fold(s) failed during training" >&2
+    exit 1
+fi

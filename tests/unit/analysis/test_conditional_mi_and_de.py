@@ -8,9 +8,7 @@ import pytest
 from src.analysis.conditional_mi import conditional_mi_per_celltype
 from src.analysis.de_resilience import _bh_fdr, wilcoxon_de
 
-
 # ---------- BH-FDR --------------------------------------------------------
-
 
 def test_bh_fdr_monotone_in_input():
     p = np.array([0.001, 0.01, 0.05, 0.1, 0.5])
@@ -18,7 +16,6 @@ def test_bh_fdr_monotone_in_input():
     assert (adj <= 1.0).all()
     # Adjusted p should be >= original.
     assert (adj >= p).all()
-
 
 def test_bh_fdr_alldistinct_simple_case():
     # 5 p-values, BH adjusted.
@@ -31,9 +28,7 @@ def test_bh_fdr_alldistinct_simple_case():
     assert adj[0] == pytest.approx(0.05, abs=0.01)
     assert (adj <= 1.0).all()
 
-
 # ---------- wilcoxon_de --------------------------------------------------
-
 
 def test_wilcoxon_de_recovers_planted_signal():
     rng = np.random.default_rng(0)
@@ -50,7 +45,6 @@ def test_wilcoxon_de_recovers_planted_signal():
     assert "gene_5" in sig_genes
     assert "gene_15" in sig_genes
 
-
 def test_wilcoxon_de_columns():
     rng = np.random.default_rng(0)
     expr = rng.normal(size=(40, 5))
@@ -63,7 +57,6 @@ def test_wilcoxon_de_columns():
     assert expected_cols.issubset(df.columns)
     assert len(df) == 5
 
-
 def test_wilcoxon_de_method_label():
     rng = np.random.default_rng(0)
     expr = rng.normal(size=(20, 3))
@@ -71,9 +64,7 @@ def test_wilcoxon_de_method_label():
     df = wilcoxon_de(expr, is_res)
     assert (df["method"] == "wilcoxon").all()
 
-
 # ---------- conditional_mi -----------------------------------------------
-
 
 def test_cmi_emits_one_entry_per_cell_type():
     rng = np.random.default_rng(0)
@@ -84,7 +75,6 @@ def test_cmi_emits_one_entry_per_cell_type():
     z = rng.normal(size=(n, 2))
     out = conditional_mi_per_celltype(expr, y, z)
     assert len(out["per_cell_type"]) == n_ct
-
 
 def test_cmi_delta_drops_when_signal_is_in_pathology():
     """If Y depends only on Z, residualizing Z out of X should largely kill MI(X, Y)."""
@@ -99,7 +89,6 @@ def test_cmi_delta_drops_when_signal_is_in_pathology():
     # Conditional MI should be substantially (≥ 50%) smaller than unconditional
     # when the only X→Y dependence flows through Z.
     assert entry["conditional_mi_given_pathology"] < 0.5 * entry["unconditional_mi"]
-
 
 def test_cmi_n_jobs_parallel_matches_serial():
     """Parallel KSG (n_jobs>1) must yield identical per-CT MI to n_jobs=1.
@@ -122,7 +111,6 @@ def test_cmi_n_jobs_parallel_matches_serial():
         assert a["conditional_mi_given_pathology"] == pytest.approx(b["conditional_mi_given_pathology"])
         assert a["n_used"] == b["n_used"]
 
-
 def test_cmi_handles_nan_subjects():
     rng = np.random.default_rng(0)
     n = 100
@@ -133,7 +121,6 @@ def test_cmi_handles_nan_subjects():
     out = conditional_mi_per_celltype(expr, y, z)
     assert out["per_cell_type"][0]["n_used"] == 90  # 100 - 10 NaN
     assert out["per_cell_type"][1]["n_used"] == 100  # CT 1 unaffected
-
 
 def test_cmi_linear_residualizer_matches_sklearn_linear_regression():
     """F1: hat-matrix-based linear residualization is bit-equivalent to
@@ -164,7 +151,6 @@ def test_cmi_linear_residualizer_matches_sklearn_linear_regression():
     fast_resid = _apply_linear_residualizer(X, Z_c, pinv_Z_c)
 
     np.testing.assert_allclose(sklearn_resid, fast_resid, rtol=1e-12, atol=1e-10)
-
 
 def test_cmi_serial_matches_threading_numerically():
     """F2: threading backend yields identical numerics to serial path.

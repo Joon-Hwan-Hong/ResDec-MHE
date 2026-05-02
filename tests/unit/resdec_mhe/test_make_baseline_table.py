@@ -24,16 +24,12 @@ import pandas as pd
 import pytest
 from sklearn.metrics import r2_score
 
-
 # Standard-import the script as a module. Requires scripts/__init__.py and
 # scripts/resdec_mhe/__init__.py + scripts/resdec_mhe/interpretability/__init__.py
 # to exist in the worktree.
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 from scripts.resdec_mhe.interpretability import make_baseline_table as mod
-
 
 def _write_summary_json(path: Path, per_fold_r2s: list[float]) -> None:
     """Write a minimal best_vs_tabpfn_summary.json with the given per-fold R²s."""
@@ -65,7 +61,6 @@ def _write_summary_json(path: Path, per_fold_r2s: list[float]) -> None:
         "tabpfn_dir": "data/canonical",
     }))
 
-
 # ---------------------------------------------------------------------------
 # Summary-JSON parsing
 # ---------------------------------------------------------------------------
@@ -84,12 +79,10 @@ def test_parse_summary_json_extracts_all_five_metrics(tmp_path: Path) -> None:
         metrics["mae"], [0.70, 0.71, 0.72, 0.73, 0.74], rtol=0, atol=1e-9,
     )
 
-
 def test_parse_summary_json_missing_file_returns_none(tmp_path: Path) -> None:
     """A missing summary JSON should return None (not raise)."""
     out = mod.parse_summary_json(tmp_path / "does_not_exist.json")
     assert out is None
-
 
 def test_parse_summary_json_malformed_returns_none(tmp_path: Path) -> None:
     """A malformed JSON should return None (caller logs WARNING)."""
@@ -97,7 +90,6 @@ def test_parse_summary_json_malformed_returns_none(tmp_path: Path) -> None:
     bad.write_text("{not valid json]}")
     out = mod.parse_summary_json(bad)
     assert out is None
-
 
 # ---------------------------------------------------------------------------
 # Ablation discovery
@@ -130,7 +122,6 @@ def test_discover_ablations_picks_up_all_p5_dirs(tmp_path: Path) -> None:
     assert "p5_ablation_no_film" not in found_names
     assert "unrelated_dir" not in found_names
 
-
 # ---------------------------------------------------------------------------
 # Classical baseline CSV parsing
 # ---------------------------------------------------------------------------
@@ -156,7 +147,6 @@ def _write_classical_csv(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(path, index=False)
 
-
 def test_parse_classical_csv_one_row_per_model_featureset(tmp_path: Path) -> None:
     """Classical CSV parser → one row per (model, feature_set) with all metrics."""
     csv_path = tmp_path / "classical.csv"
@@ -179,12 +169,10 @@ def test_parse_classical_csv_one_row_per_model_featureset(tmp_path: Path) -> Non
             assert len(r["metrics"][k]) == 5
             assert all(math.isfinite(v) for v in r["metrics"][k])
 
-
 def test_parse_classical_csv_missing_returns_empty(tmp_path: Path) -> None:
     """Missing classical CSV → empty list, not crash."""
     rows = mod.parse_classical_csv(tmp_path / "does_not_exist.csv")
     assert rows == []
-
 
 # ---------------------------------------------------------------------------
 # DL baseline CSV parsing (cloudpred/gpio/perceiver_io)
@@ -207,7 +195,6 @@ def _write_dl_baseline_csv(path: Path, folds_one_indexed: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(path, index=False)
 
-
 def test_parse_dl_baseline_csv_five_folds(tmp_path: Path) -> None:
     """DL baseline → one dict with 5 per-fold metric arrays."""
     csv_path = tmp_path / "results.csv"
@@ -218,11 +205,9 @@ def test_parse_dl_baseline_csv_five_folds(tmp_path: Path) -> None:
     for k in ("r2", "mae", "rmse", "pearson_r", "spearman_rho"):
         assert len(out[k]) == 5
 
-
 def test_parse_dl_baseline_csv_missing_returns_none(tmp_path: Path) -> None:
     out = mod.parse_dl_baseline_csv(tmp_path / "missing.csv")
     assert out is None
-
 
 # ---------------------------------------------------------------------------
 # Aggregation
@@ -245,7 +230,6 @@ def test_summarise_row_computes_mean_std() -> None:
     # Constant metrics have std 0.
     assert math.isclose(s["mae_std"], 0.0)
 
-
 def test_summarise_row_empty_returns_nans() -> None:
     """summarise_row on empty metrics → all NaN, n_folds=0."""
     metrics = {k: [] for k in ("r2", "mae", "rmse", "pearson_r", "spearman_rho")}
@@ -253,7 +237,6 @@ def test_summarise_row_empty_returns_nans() -> None:
     assert s["n_folds"] == 0
     assert math.isnan(s["r2_mean"])
     assert math.isnan(s["r2_std"])
-
 
 # ---------------------------------------------------------------------------
 # TabPFN standalone parsing
@@ -292,7 +275,6 @@ def test_parse_tabpfn_standalone_computes_r2_from_npz(tmp_path: Path) -> None:
     assert all(math.isfinite(v) for v in metrics["pearson_r"])
     assert all(math.isfinite(v) for v in metrics["spearman_rho"])
 
-
 def test_parse_tabpfn_standalone_missing_fold_returns_none(tmp_path: Path) -> None:
     """Any missing outer-fold npz → None (entire row dropped)."""
     # Only write 3 of the 5 expected folds.
@@ -306,7 +288,6 @@ def test_parse_tabpfn_standalone_missing_fold_returns_none(tmp_path: Path) -> No
         )
     out = mod.parse_tabpfn_standalone(tmp_path, n_folds=5)
     assert out is None
-
 
 # ---------------------------------------------------------------------------
 # Sort order for the markdown render
@@ -348,7 +329,6 @@ def test_sort_for_md_places_ours_at_bottom_and_nan_last() -> None:
     # Ours row at the bottom.
     assert sorted_rows[-1]["model"] == "p5_canonical_seed42"
 
-
 # ---------------------------------------------------------------------------
 # _fmt_pair formatting rules
 # ---------------------------------------------------------------------------
@@ -365,7 +345,6 @@ def test_fmt_pair_handles_nan_and_size_one() -> None:
     assert mod._fmt_pair(0.286, 0.0) == "0.2860"
     # NaN std only → mean-only (current-encoder-alone reference).
     assert mod._fmt_pair(0.286, float("nan")) == "0.2860"
-
 
 # ---------------------------------------------------------------------------
 # End-to-end row assembly with missing ablations
@@ -402,7 +381,6 @@ def test_ablation_row_falls_back_to_per_fold_npz(tmp_path: Path) -> None:
     # r2 = [0.1, 0.2, 0.3, 0.4, 0.5] → mean 0.3.
     assert math.isclose(r["r2_mean"], 0.3)
     assert "val_predictions_best.npz" in r["source_path"]
-
 
 def test_missing_ablation_produces_nan_row_with_pending_note(tmp_path: Path) -> None:
     """A requested ablation dir that doesn't exist → NaN row + 'pending' note."""

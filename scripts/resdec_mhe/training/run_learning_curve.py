@@ -31,9 +31,16 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
 
+# Repo root. ``parents[3]`` resolves to the worktree root from
+# ``scripts/resdec_mhe/training/run_learning_curve.py``: the four parents are
+# (training, resdec_mhe, scripts, <worktree-root>). Mirrors the same pattern
+# in run_permutation_test.py + run_clinical_baseline.py:54.
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TARGET = "cogn_global"
 DEFAULT_ID_COL = "ROSMAP_IndividualID"
+# Top-K feature count used by compute_top_k_features.py + downstream TabPFN
+# OOF / outer compute. Mirrors the same constant in run_permutation_test.py.
+TOP_K = 2000
 
 
 def generate_subsampled_metadata(
@@ -62,7 +69,6 @@ def generate_subsampled_metadata(
 
     # Collect all unique training subject IDs across folds.
     df_out = df.copy()
-    df_out["__original_target__"] = df_out[target_col]
     # Global set of subjects that are used as TRAIN in ANY fold:
     train_in_any_fold: dict[str, set[int]] = {}
     val_in_any_fold: set[str] = set()
@@ -96,8 +102,6 @@ def generate_subsampled_metadata(
     drop_mask = ~sid_col_str.isin(kept_globally) & ~sid_col_str.isin(val_in_any_fold)
     df_out.loc[drop_mask, target_col] = np.nan
 
-    # Drop helper col, write.
-    df_out = df_out.drop(columns=["__original_target__"])
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df_out.to_csv(out_csv, index=False)
     return {
@@ -109,17 +113,31 @@ def generate_subsampled_metadata(
 
 
 def run_step(cmd: list, log_handle, step_name: str) -> float:
+    """Run cmd as subprocess; tee output to log_handle; return elapsed seconds.
+
+    Mirrors the run_step contract in run_permutation_test.py: uses
+    ``subprocess.run(check=True)`` + ``CalledProcessError`` rather than the
+    earlier ``returncode != 0`` branch — equivalent behavior, single style.
+    """
     log_handle.write(f"\n=== {step_name} === @ {time.strftime('%H:%M:%S')}\n")
     log_handle.write(f"$ {' '.join(str(c) for c in cmd)}\n")
     log_handle.flush()
     t0 = time.time()
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
-    result = subprocess.run(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=env)
+    try:
+        subprocess.run(
+            cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=env, check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        elapsed = time.time() - t0
+        log_handle.write(
+            f"=== {step_name} FAILED in {elapsed:.1f}s, exit {exc.returncode} ===\n"
+        )
+        log_handle.flush()
+        raise RuntimeError(f"{step_name} failed (see log); cmd: {cmd}") from exc
     elapsed = time.time() - t0
-    log_handle.write(f"=== {step_name} done in {elapsed:.1f}s, exit {result.returncode} ===\n")
+    log_handle.write(f"=== {step_name} done in {elapsed:.1f}s ===\n")
     log_handle.flush()
-    if result.returncode != 0:
-        raise RuntimeError(f"{step_name} failed (exit {result.returncode}); cmd: {cmd}")
     return elapsed
 
 
@@ -143,10 +161,17 @@ def run_train_folds_parallel(
                 f"\n=== train fold {f} on GPU {g} === @ {time.strftime('%H:%M:%S')}\n"
             )
             log_handle.flush()
-            env = {
-                **os.environ, "PYTHONPATH": str(ROOT),
-                "CUDA_VISIBLE_DEVICES": str(g),
-            }
+            # Fixes B-LC1: CUDA_VISIBLE_DEVICES is ABSOLUTE in a fresh
+            # subprocess.Popen — overrides any parent mask. In shard mode
+            # (parent has e.g. CUDA_VISIBLE_DEVICES=1 to pin a single physical
+            # GPU, len(gpus)==1), setting it to "0" in the child would force
+            # the child onto physical GPU 0, fighting whatever else is
+            # running there. Only override when len(gpus) > 1. Mirrors the
+            # guard in run_permutation_test.py:119-121 added in commit
+            # 9a45b5d after N=50 perm null lost 27/50 perms to this bug.
+            env = {**os.environ, "PYTHONPATH": str(ROOT)}
+            if len(gpus) > 1:
+                env["CUDA_VISIBLE_DEVICES"] = str(g)
             p = subprocess.Popen(
                 cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=env,
             )
@@ -196,7 +221,7 @@ def run_one_N(
             "--precomputed-dir", str(precomputed_dir),
             "--metadata-csv", str(shuffled_csv),
             "--output-dir", str(topk_dir),
-            "--top-k", "2000",
+            "--top-k", str(TOP_K),
             "--feature-set", "A",
         ], log, "top-k features")
 
@@ -209,7 +234,7 @@ def run_one_N(
             "--metadata-csv", str(shuffled_csv),
             "--top-k-dir", str(topk_dir),
             "--output-dir", str(tabpfn_dir),
-            "--top-k", "2000",
+            "--top-k", str(TOP_K),
         ], log, "tabpfn OOF")
 
         run_step([
@@ -220,7 +245,7 @@ def run_one_N(
             "--metadata-csv", str(shuffled_csv),
             "--top-k-dir", str(topk_dir),
             "--output-dir", str(tabpfn_dir),
-            "--top-k", "2000",
+            "--top-k", str(TOP_K),
             "--feature-set", "A",
         ], log, "tabpfn outer")
 
@@ -337,6 +362,14 @@ def main():
             }
             if not any(r.get("N") == 516 for r in results):
                 results.append(canon_entry)
+    else:
+        print(
+            f"WARNING: --canonical-r2-json {canon_path} not found. The "
+            "learning-curve aggregate will lack the N=516 anchor point. "
+            "Pass --canonical-r2-json explicitly or rerun the canonical "
+            "pipeline to populate the default path.",
+            flush=True,
+        )
 
     # Resolve seed list: --rng-seeds (multi) overrides --rng-seed (single).
     multi_seed = args.rng_seeds is not None

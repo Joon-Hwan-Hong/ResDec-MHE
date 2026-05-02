@@ -4,6 +4,33 @@ Shared test fixtures for cognitive resilience model tests.
 
 import sys
 import types
+from pathlib import Path
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Worktree Root + sys.path bootstrap
+# ─────────────────────────────────────────────────────────────────────────────
+# Single authoritative worktree root constant. All tests should resolve paths
+# from this rather than computing parents[N] indices in each test file.
+WORKTREE_ROOT: Path = Path(__file__).resolve().parent.parent
+
+# Ensure worktree root is on sys.path so every test can `from src...` /
+# `from scripts...` regardless of pytest's invocation cwd. Eliminates the
+# repeated `if str(_WORKTREE_ROOT) not in sys.path: sys.path.insert(...)`
+# boilerplate previously copy-pasted across 28+ test files.
+if str(WORKTREE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKTREE_ROOT))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Matplotlib Agg Backend (headless test runs)
+# ─────────────────────────────────────────────────────────────────────────────
+# All visualization tests need a non-interactive backend. Set before pyplot
+# is imported anywhere in the suite. Centralised here so per-file `import
+# matplotlib; matplotlib.use("Agg")` blocks (24+ duplicates) become unneeded.
+import matplotlib  # noqa: E402
+
+matplotlib.use("Agg")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Torchvision Mock (broken C extension workaround)
@@ -49,7 +76,6 @@ if "torchvision" not in sys.modules:
 import pytest
 import torch
 import numpy as np
-from pathlib import Path
 
 from src.data.constants import CELL_TYPE_ORDER, ALL_EDGE_TYPES, sanitize_key, N_CELL_TYPES, N_REGIONS
 
@@ -237,16 +263,152 @@ def dummy_edge_attr(n_cell_types):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def project_root():
-    """Get project root directory."""
-    return Path(__file__).parent.parent
+@pytest.fixture(scope="session")
+def worktree_root() -> Path:
+    """Single authoritative worktree root for path resolution.
+
+    Resolves to the parent of tests/. Use this anywhere a test needs to
+    reference configs/, data/, scripts/, etc. — never compute
+    `Path(__file__).resolve().parents[N]` per test.
+    """
+    return WORKTREE_ROOT
 
 
 @pytest.fixture
-def test_data_dir(project_root):
+def project_root(worktree_root) -> Path:
+    """Alias for worktree_root (legacy fixture name).
+
+    Prefer `worktree_root` for new tests.
+    """
+    return worktree_root
+
+
+@pytest.fixture
+def test_data_dir(worktree_root) -> Path:
     """Get test data directory."""
-    return project_root / "tests" / "data"
+    return worktree_root / "tests" / "data"
+
+
+@pytest.fixture(scope="session")
+def default_config_path(worktree_root) -> Path:
+    """Path to configs/default.yaml resolved from the worktree root.
+
+    Tests previously used the literal `OmegaConf.load("configs/default.yaml")`
+    pattern, which only works when pytest is invoked from the worktree root.
+    """
+    return worktree_root / "configs" / "default.yaml"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Canonical Dummy Batch Factory
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _build_canonical_batch(
+    batch_size: int = 2,
+    n_genes: int = 4785,
+    n_ct: int = N_CELL_TYPES,
+    n_regions: int = N_REGIONS,
+    cells_per_ct: int = 10,
+    edges_per_subj: int = 50,
+    device: torch.device | str | None = None,
+    seed: int = 0,
+    include_subject_ids: bool = False,
+    pfc_only: bool = True,
+) -> dict:
+    """Construct a minimal batch matching the model's input contract.
+
+    Replaces 4 duplicate `_make_dummy_batch` / `_build_dummy_train_batch`
+    helpers across:
+        - tests/unit/models/test_full_model_cf_split.py
+        - tests/unit/models/resdec_head/test_encoder_integration.py
+        - tests/unit/training/test_resdec_lightning_module.py
+        - tests/unit/training/test_resdec_lightning_module_aug_u.py
+
+    Parameters
+    ----------
+    batch_size:
+        Number of subjects in the batch.
+    n_genes:
+        Number of genes (HVG + L-R). Default 4785 matches canonical config.
+    n_ct:
+        Number of cell types. Default 31 from CELL_TYPE_ORDER.
+    n_regions:
+        Number of brain regions. Default 6 from N_REGIONS.
+    cells_per_ct:
+        Number of cells per cell type per subject (uniform).
+    edges_per_subj:
+        Number of CCC edges emitted per subject.
+    device:
+        Device on which output tensors live.
+    seed:
+        RNG seed for reproducible batch construction.
+    include_subject_ids:
+        If True, include `subject_ids: list[str]` field (used by aug-U tests).
+    pfc_only:
+        If True, region_mask is PFC-only [True, False, ..., False]; if False,
+        all regions are flagged.
+    """
+    if device is None:
+        device = torch.device("cpu")
+    rng = torch.Generator(device="cpu").manual_seed(seed)
+
+    region_mask = torch.zeros(batch_size, n_regions, dtype=torch.bool)
+    region_mask[:, 0] = True
+    if not pfc_only:
+        region_mask[:, :] = True
+
+    region_pseudobulk = torch.randn(
+        batch_size, n_regions, n_ct, n_genes, generator=rng,
+    )
+    region_pseudobulk = region_pseudobulk * region_mask.float().unsqueeze(-1).unsqueeze(-1)
+
+    total_edges = batch_size * edges_per_subj
+    if total_edges > 0:
+        ccc_edge_index = torch.randint(0, n_ct, (2, total_edges), generator=rng)
+        ccc_edge_type = torch.randint(0, 5, (total_edges,), generator=rng)
+        ccc_edge_attr = torch.rand(total_edges, 1, generator=rng)
+    else:
+        ccc_edge_index = torch.zeros(2, 0, dtype=torch.long)
+        ccc_edge_type = torch.zeros(0, dtype=torch.long)
+        ccc_edge_attr = torch.zeros(0, 1)
+
+    cells_per_subject = cells_per_ct * n_ct
+    total_cells = batch_size * cells_per_subject
+    cell_data = torch.randn(total_cells, n_genes, generator=rng)
+    offsets_per_subj = torch.arange(
+        0, cells_per_subject + 1, cells_per_ct, dtype=torch.long,
+    )
+    subj_offsets = torch.arange(batch_size, dtype=torch.long) * cells_per_subject
+    cell_offsets = subj_offsets.unsqueeze(1) + offsets_per_subj.unsqueeze(0)
+
+    batch = {
+        "region_pseudobulk": region_pseudobulk.to(device),
+        "region_mask": region_mask.to(device),
+        "ccc_edge_index": ccc_edge_index.to(device),
+        "ccc_edge_type": ccc_edge_type.to(device),
+        "ccc_edge_attr": ccc_edge_attr.to(device),
+        "cell_type_mask": torch.ones(batch_size, n_ct, dtype=torch.bool).to(device),
+        "cell_data": cell_data.to(device),
+        "cell_offsets": cell_offsets.to(device),
+        "pathology": torch.randn(batch_size, 3, generator=rng).to(device),
+        "cognition": torch.randn(batch_size, 1, generator=rng).to(device),
+    }
+    if include_subject_ids:
+        batch["subject_ids"] = [f"sid_{i:03d}" for i in range(batch_size)]
+    return batch
+
+
+@pytest.fixture
+def make_canonical_batch():
+    """Factory fixture: returns the canonical batch builder.
+
+    Usage::
+
+        def test_X(make_canonical_batch):
+            batch = make_canonical_batch(batch_size=2, n_genes=64)
+    """
+    return _build_canonical_batch
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,6 +431,24 @@ def set_random_seeds(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+@pytest.fixture(autouse=True)
+def close_matplotlib_figures():
+    """Close all matplotlib figures after each test.
+
+    Visualization tests previously each defined their own autouse fixture
+    (`@pytest.fixture(autouse=True) def cleanup(): yield; plt.close("all")`).
+    Centralised here so the cleanup happens for every test in the suite — no
+    fixture leakage if a non-vis test accidentally creates a figure.
+    """
+    yield
+    try:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+    except Exception:
+        # plt may not have been imported in this test process; benign.
+        pass
 
 
 @pytest.fixture(autouse=True)

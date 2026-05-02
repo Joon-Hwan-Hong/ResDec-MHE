@@ -21,6 +21,10 @@ import logging
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -29,6 +33,7 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
+from src.data.constants import CELL_TYPE_ORDER
 from src.visualization.attribution_plots import (
     plot_attribution_stability_heatmap,
     plot_captum_de_concordance,
@@ -72,24 +77,31 @@ def _load_tabpfn_subj_to_pred(tabpfn_dir: Path, n_folds: int = 5) -> dict:
     return out
 
 
-def _load_ct_names(captum_summary_path: Path) -> list[str] | None:
+def _load_ct_names() -> list[str]:
     """Return axis-aligned cell-type names (index-ordered).
 
     Uses ``src.data.constants.CELL_TYPE_ORDER`` (same convention as the
     pseudobulk loader, model forward, and all per-CT indexing elsewhere).
     The captum summary's ``cell_types_ranked_by_total_attribution`` is
-    ranked by attribution magnitude, NOT by index — wrong for axis-
-    aligned labeling of per-CT plots.
+    ranked by attribution magnitude, NOT by index — wrong for axis-aligned
+    labeling of per-CT plots.
     """
-    del captum_summary_path  # unused; kept for backward compat
-    from src.data.constants import CELL_TYPE_ORDER
     return list(CELL_TYPE_ORDER)
 
 
-def _load_gene_names(captum_summary_path: Path) -> list[str] | None:
-    p = Path("data/precomputed/gene_names.npy")
-    if p.exists():
-        return list(np.load(p, allow_pickle=True))
+def _load_gene_names(
+    captum_summary_path: Path, gene_names_npy: Path,
+) -> list[str] | None:
+    """Resolve the 148_607-element gene-name vector.
+
+    Order of resolution:
+        1. ``gene_names_npy`` (preferred — single canonical artefact);
+        2. ``gene_names`` / ``genes`` field in the captum summary JSON
+           (backward compat for older runs).
+    Returns ``None`` if neither source is available.
+    """
+    if gene_names_npy.exists():
+        return list(np.load(gene_names_npy, allow_pickle=True))
     if captum_summary_path.exists():
         s = json.loads(captum_summary_path.read_text())
         return s.get("gene_names") or s.get("genes")
@@ -98,24 +110,49 @@ def _load_gene_names(captum_summary_path: Path) -> list[str] | None:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--canonical-dir", default="outputs/canonical/p5_canonical_seed42")
     p.add_argument(
-        "--captum-npz",
-        default="outputs/canonical/interpretability/captum_ig/composite_attributions.npz",
+        "--canonical-dir", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/p5_canonical_seed42",
     )
     p.add_argument(
-        "--residual-csv",
-        default="outputs/canonical/interpretability/residual_per_subject.csv",
+        "--captum-npz", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/captum_ig"
+            / "composite_attributions.npz"
+        ),
     )
-    p.add_argument("--tabpfn-dir", default="data/canonical")
     p.add_argument(
-        "--out-dir", default="outputs/canonical/interpretability/figures/attribution",
+        "--residual-csv", type=Path,
+        default=_WORKTREE_ROOT / "outputs/canonical/interpretability/residual_per_subject.csv",
     )
     p.add_argument(
-        "--de-dir",
-        default="outputs/canonical/interpretability/de_resilient_vs_vulnerable",
+        "--tabpfn-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/canonical",
+    )
+    p.add_argument(
+        "--out-dir", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/figures/attribution"
+        ),
+    )
+    p.add_argument(
+        "--de-dir", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/de_resilient_vs_vulnerable"
+        ),
         help="Directory with per-CT DE CSVs (CT_00_de.csv … CT_NN_de.csv); "
              "used for the Captum-vs-DE concordance plot.",
+    )
+    p.add_argument(
+        "--gene-names-npy", type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed/gene_names.npy",
+        help=(
+            "Path to gene_names.npy (148_607-element object array). Routed "
+            "via argparse to avoid hardcoded relative paths in script body."
+        ),
     )
     p.add_argument("--example-subject", default=None)
     p.add_argument("--n-folds", type=int, default=5)
@@ -137,8 +174,8 @@ def main():
     )
     captum_npz = Path(args.captum_npz)
     captum_summary = captum_npz.parent / "composite_attribution_summary.json"
-    ct_names = _load_ct_names(captum_summary)
-    gene_names = _load_gene_names(captum_summary)
+    ct_names = _load_ct_names()
+    gene_names = _load_gene_names(captum_summary, args.gene_names_npy)
     captum_data = (
         {k: np.load(captum_npz, allow_pickle=True)[k]
          for k in np.load(captum_npz, allow_pickle=True).files}

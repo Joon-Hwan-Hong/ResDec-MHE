@@ -12,23 +12,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-if str(_WORKTREE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def test_orchestrator_module_imports():
     """The orchestrator must be importable."""
     from scripts.resdec_mhe.interpretability import (  # noqa: F401
         make_lab_meeting_architecture_figures as orch,
     )
-
 
 def test_both_figures_written(tmp_path: Path):
     """Smoke: orchestrator writes both figures (PNG + PDF), > 50 KB each."""
@@ -54,7 +46,6 @@ def test_both_figures_written(tmp_path: Path):
             f"{png} too small ({size_kb:.1f} KB); expected > 50 KB"
         )
 
-
 def test_slot3_4_fusion_stack_is_single_panel():
     """Slot 3.4 fusion-stack figure should be a single-axes block diagram."""
     from scripts.resdec_mhe.interpretability import (
@@ -63,7 +54,6 @@ def test_slot3_4_fusion_stack_is_single_panel():
 
     fig = orch.build_slot3_4_fusion_stack()
     assert len(fig.axes) >= 1
-
 
 def test_slot3_full_architecture_hybrid_is_diagram():
     """Slot 3.1-3.3 hybrid full architecture figure should be a diagram."""

@@ -136,8 +136,13 @@ def wilcoxon_two_groups(
     mean_a = float(a_finite.mean())
     mean_b = float(b_finite.mean())
     log2_fc = float(np.log2((np.abs(mean_a) + eps) / (np.abs(mean_b) + eps)))
-    if mean_a < 0 < mean_b:
-        log2_fc = -log2_fc  # sign-aware for attribution magnitudes
+    # Sign-aware flip when the means straddle zero (attribution magnitudes).
+    # Both directions must trigger the flip:
+    #   - a<0<b: a is "vulnerable" attribution, b is "resilient" attribution.
+    #   - b<0<a: same logic with sides swapped.
+    # Mirrors the vectorised path at lines 246-247 of this file.
+    if (mean_a < 0 < mean_b) or (mean_b < 0 < mean_a):
+        log2_fc = -log2_fc
     return u, p, log2_fc
 
 
@@ -713,8 +718,10 @@ def main() -> int:
     is_k2 = cluster_labels == 2
     n_k0 = int(is_k0.sum())
     n_k2 = int(is_k2.sum())
-    if n_k0 != 55 or n_k2 != 60:
-        logger.warning("Unexpected cluster sizes — proceeding with k0=%d k2=%d", n_k0, n_k2)
+    # The expected-size warning at this point is unreachable: the prior
+    # `raise RuntimeError(...)` block at lines 710-714 has already aborted on
+    # any size mismatch with the reference JSON. Removed (dead scaffolding).
+    logger.info("k0=%d, k2=%d (matched reference JSON)", n_k0, n_k2)
 
     # --- 2. Load per-subject pseudobulk + cell counts ------------------------
     subject_ids = df_res["ROSMAP_IndividualID"].astype(str).tolist()

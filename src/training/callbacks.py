@@ -25,6 +25,13 @@ from omegaconf import OmegaConf
 from lightning.pytorch.callbacks import EarlyStopping
 
 from src.data.constants import EPSILON_DIVISION
+from src.training._branch_utils import (
+    BRANCH_PREFIXES,
+    build_branch_param_cache,
+)
+from src.training._branch_utils import (
+    compute_branch_norms as _compute_branch_norms,
+)
 from src.utils.hashing import hash_config
 from src.utils.reproducibility import get_rng_states, set_rng_states
 
@@ -82,11 +89,10 @@ class MinEpochEarlyStopping(EarlyStopping):
         super().on_train_epoch_end(trainer, pl_module)
 
     def __repr__(self) -> str:
-        return (
-            f"MinEpochEarlyStopping(min_epochs={self.min_epochs}, "
-            f"monitor='{self.monitor}', patience={self.patience}, "
-            f"min_delta={self.min_delta}, mode='{self.mode}')"
-        )
+        # Forward to super().__repr__() so any future EarlyStopping kwargs
+        # (e.g., new strict / divergence_threshold options) appear without
+        # needing to update this method in lockstep.
+        return f"MinEpoch{super().__repr__()}[min_epochs={self.min_epochs}]"
 
 
 class TemperatureAnnealing(pl.Callback):
@@ -229,22 +235,15 @@ class GradientNormLogger(pl.Callback):
         self._branch_params: dict[str, list[torch.nn.Parameter]] | None = None
 
     # Maps branch name → list of param name prefixes that belong to that branch.
-    # hgt_gene_gate and hgt_input_proj live at the model level but are logically
-    # part of the HGT encoder branch.
-    _BRANCH_PREFIXES: dict[str, tuple[str, ...]] = {
-        "hgt_encoder": ("hgt_encoder", "hgt_gene_gate", "hgt_input_proj"),
-        "cell_transformer": ("cell_transformer",),
-    }
+    # Aliased to the canonical table in src.training._branch_utils (single
+    # source of truth for both this callback and GradientModulationCallback).
+    _BRANCH_PREFIXES = BRANCH_PREFIXES
 
     def _build_param_cache(self, model: torch.nn.Module) -> None:
         """Build parameter-to-branch mapping once, reused every call."""
-        self._branch_params = {name: [] for name in BRANCH_NAMES}
-        for param_name, param in model.named_parameters():
-            for branch_name in BRANCH_NAMES:
-                prefixes = self._BRANCH_PREFIXES.get(branch_name, (branch_name,))
-                if any(prefix in param_name for prefix in prefixes):
-                    self._branch_params[branch_name].append(param)
-                    break
+        self._branch_params = build_branch_param_cache(
+            model, BRANCH_NAMES, branch_prefixes=self._BRANCH_PREFIXES,
+        )
 
     def compute_branch_norms(self, model: torch.nn.Module) -> dict[str, float]:
         """
@@ -258,23 +257,7 @@ class GradientNormLogger(pl.Callback):
         """
         if self._branch_params is None:
             self._build_param_cache(model)
-
-        branch_norms = {}
-        for branch_name, params in self._branch_params.items():
-            grad_params = [p for p in params if p.grad is not None]
-            if grad_params:
-                # Under bf16-mixed and 32-true, p.grad contains unscaled gradients
-                # (no GradScaler). Under 16-mixed (float16), Lightning uses GradScaler
-                # and p.grad here contains SCALED gradients — logged norms would
-                # include the scale factor.
-                # Stack per-param norms and reduce in 2 ops instead of N.
-                grad_norms = torch.stack(
-                    [p.grad.data.norm(2) for p in grad_params]
-                )
-                branch_norms[branch_name] = grad_norms.norm(2).item()
-            else:
-                branch_norms[branch_name] = 0.0
-        return branch_norms
+        return _compute_branch_norms(self._branch_params)
 
     @staticmethod
     def compute_norm_ratio(norms: dict[str, float]) -> float:
@@ -374,19 +357,23 @@ class KLAnnealingCallback(pl.Callback):
     """
     Anneal KL divergence weight during Bayesian SVI training.
 
-    Ramps kl_weight from alpha_min to 1.0 over warmup_epochs using a linear
-    schedule. This allows the model to learn the data distribution before
-    prior regularization reaches full strength.
+    Ramps kl_weight from alpha_min to 1.0 over warmup_epochs. This allows
+    the model to learn the data distribution before prior regularization
+    reaches full strength.
 
     Schedule:
-    - Epochs [0, warmup_epochs): linear ramp from alpha_min to 1.0
+    - Epochs [0, warmup_epochs): ramp from alpha_min to 1.0 ("linear" or "cosine")
     - Epochs >= warmup_epochs: kl_weight = 1.0
 
     Args:
         alpha_min: Floor KL weight (>0 to maintain minimal regularization)
         warmup_epochs: Number of epochs to ramp from alpha_min to 1.0
-        schedule: Annealing schedule type (currently only "linear")
+        schedule: Annealing schedule type. ``"linear"`` (default) is a
+            straight ramp; ``"cosine"`` uses a half-cosine that starts and
+            ends gently.
     """
+
+    VALID_SCHEDULES = ("linear", "cosine")
 
     def __init__(
         self,
@@ -397,6 +384,10 @@ class KLAnnealingCallback(pl.Callback):
         super().__init__()
         if alpha_min < 0:
             raise ValueError(f"alpha_min must be >= 0, got {alpha_min}")
+        if schedule not in self.VALID_SCHEDULES:
+            raise ValueError(
+                f"Unknown schedule '{schedule}', must be one of {self.VALID_SCHEDULES}"
+            )
         self.alpha_min = alpha_min
         self.warmup_epochs = warmup_epochs
         self.schedule = schedule
@@ -415,8 +406,15 @@ class KLAnnealingCallback(pl.Callback):
         if self.warmup_epochs <= 0:
             return 1.0
         progress = epoch / self.warmup_epochs
-        # Linear ramp: alpha_min at epoch 0, 1.0 at epoch warmup_epochs
-        return self.alpha_min + progress * (1.0 - self.alpha_min)
+        if self.schedule == "linear":
+            # Linear ramp: alpha_min at epoch 0, 1.0 at epoch warmup_epochs
+            return self.alpha_min + progress * (1.0 - self.alpha_min)
+        if self.schedule == "cosine":
+            # Half-cosine ramp from alpha_min to 1.0 (slow start and end).
+            cosine_factor = 0.5 * (1.0 - math.cos(math.pi * progress))
+            return self.alpha_min + cosine_factor * (1.0 - self.alpha_min)
+        # Should be unreachable due to __init__ validation
+        raise ValueError(f"Unknown schedule: {self.schedule}")
 
     def on_train_epoch_start(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule,
@@ -569,13 +567,29 @@ class ResilienceModelCheckpoint(pl.Callback):
                 # and break the identity link with the optimizer.
                 # Tested against Pyro 1.8.x–1.9.x — store._params and store._param_to_name
                 # are private but no public API preserves tensor identity with optimizer.
-                _TESTED_PYRO_VERSIONS = ("1.8", "1.9")
-                pyro_version = ".".join(pyro.__version__.split(".")[:2])
-                if pyro_version not in _TESTED_PYRO_VERSIONS:
-                    logger.warning(
-                        "Pyro param store re-sync uses private APIs tested on Pyro %s. "
-                        "Current version: %s. Verify store._params/_param_to_name.",
-                        ", ".join(_TESTED_PYRO_VERSIONS), pyro.__version__,
+                # Compare numerically via packaging.version (prefix-string compare
+                # is fragile across dev tags like "1.9.0+dev0" or major versions
+                # ("2.0" lexically equals "1.9", which is wrong here).
+                _MIN_PYRO = "1.8"
+                _MAX_PYRO_EXCL = "2.0"  # exclusive upper bound: 2.x not tested
+                from packaging.version import parse as _parse_version
+                _ver = _parse_version(pyro.__version__)
+                if not (
+                    _parse_version(_MIN_PYRO)
+                    <= _ver
+                    < _parse_version(_MAX_PYRO_EXCL)
+                ):
+                    # Hard fail rather than continue and silently corrupt the
+                    # param store on an incompatible Pyro version.
+                    raise RuntimeError(
+                        f"Pyro param store re-sync uses private APIs "
+                        f"(store._params / store._param_to_name) tested on "
+                        f"Pyro {_MIN_PYRO}.x–1.9.x. Current version: "
+                        f"{pyro.__version__}. Refusing to proceed: a future "
+                        f"Pyro release may rename these attributes and "
+                        f"silently corrupt the variational posterior. To "
+                        f"unblock: verify the private API is unchanged and "
+                        f"update _MIN_PYRO/_MAX_PYRO_EXCL in callbacks.py."
                     )
                 guide = pl_module.guide
 
@@ -664,6 +678,15 @@ class SerialCompilationWarmup(pl.Callback):
         # Pull a real batch from the train dataloader so compilation sees
         # actual shapes (batch_size, edge counts, cell counts). This prevents
         # recompilation on the first training step which would desync ranks.
+        #
+        # Side effect: ``next(iter(dl))`` advances the train DataLoader's
+        # RNG by one batch. With ``shuffle=True`` and persistent workers,
+        # this means the warmup batch is consumed BEFORE training starts —
+        # the first training epoch sees a different shuffle than it would
+        # in a no-compile-warmup run. Reproducibility-conscious callers
+        # should disable this callback (only fires when
+        # use_torch_compile=True AND world_size > 1) when bit-identical
+        # epoch-1 batch order matters for cross-run comparisons.
         import inspect
         dl = trainer.train_dataloader
         real_batch = next(iter(dl))

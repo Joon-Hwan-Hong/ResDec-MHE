@@ -54,12 +54,21 @@
 #   cd /host/milan/tank/Joon/proj_ml_snrna/.worktrees/refinement-two
 #   CUDA_VISIBLE_DEVICES=0 bash scripts/resdec_mhe/run_sae_sweep_smaller_m.sh
 
-# set -euo pipefail with intentional set +e / set -e around the per-config
-# uv run python (lines further down) so a single training failure does not
-# abort the entire 180-config sweep — the surrounding mkdir/printf/tr ops
-# are checked but per-run failures are counted in n_failed and the sweep
-# continues.
+# Top-level shell uses ``set -euo pipefail`` (strict). The per-config
+# uv-run-python invocation below is wrapped in ``set +e`` / ``set -e``
+# (lines 149/168) so a SINGLE training failure does not abort the entire
+# 180-config sweep — surrounding mkdir / printf / tr ops are checked
+# strictly, while per-run failures are counted in n_failed and the sweep
+# continues. (B-SM2: clarify that top-level is ``-e``, not ``-uo``.)
 set -euo pipefail
+
+# tmux preflight (feedback_long_runs_need_tmux.md): 180 configs × ~2-5 min
+# each = 6-15 hr wall, an order of magnitude past the 30-min threshold.
+if [ -z "${TMUX:-}" ]; then
+    echo "ERROR: This sweep runs ~6-15 hr and must be in tmux to survive SSH disconnect." >&2
+    echo "  tmux new -s sae_smaller_m 'bash $0'" >&2
+    exit 1
+fi
 
 WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 

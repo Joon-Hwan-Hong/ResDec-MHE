@@ -46,6 +46,7 @@ from src.models.resdec_head.resdec_mhe_head import (
     ResDecMHEHead,
 )
 from src.training.losses import mse_loss
+from src.training.utils import build_cosine_warmup_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -133,11 +134,22 @@ class ResDecLightningModule(pl.LightningModule):
         self._n_stages = n_stages
         self._aux_lambdas: tuple[float, ...] = tuple(float(x) for x in aux_lambdas)
         if n_stages == 1 and self._aux_lambdas[0] != 0.0:
+            # For n_stages=1 the residual MSE on stage 1's output IS the same
+            # tensor as L_main (a single composer stage has no sibling
+            # residual). The aux_lambdas[0] knob therefore acts as a
+            # re-weighting factor on the same MSE term, intentionally —
+            # the canonical config sets it to 1.0 so the effective MSE
+            # weight is (1 + λ_1) = 2.0, not 1.0. This is documented
+            # behaviour, not a bug; the warning exists to flag the
+            # re-weighting to anyone tuning the loss without realising
+            # L_aux_1 isn't a separate residual term at n_stages=1.
             logger.warning(
-                "n_stages=1 with aux_lambdas[0]=%.3f: L_aux_1 is identical to L_main "
-                "(double-weights MSE). Set aux_lambdas=[0.0] to disable, or keep as-is "
-                "for the canonical config.",
-                self._aux_lambdas[0],
+                "n_stages=1 with aux_lambdas[0]=%.3f: L_aux_1 is identical to "
+                "L_main (the same MSE term). Effective MSE weight is "
+                "(1 + λ_1) = %.3f. This is intentional re-weighting at "
+                "n_stages=1 and is the canonical config; set "
+                "aux_lambdas=[0.0] to disable.",
+                self._aux_lambdas[0], 1.0 + self._aux_lambdas[0],
             )
         self._use_sigma_weighting = bool(resdec_cfg.get("use_sigma_weighting", True))
         # Numerical floor for aug-U: w(σ) = 1 / (σ² + eps). See module-level
@@ -167,10 +179,12 @@ class ResDecLightningModule(pl.LightningModule):
             if self._reg_scheme != "entropy_bonus":
                 raise NotImplementedError(
                     f"attention_regularization.scheme={self._reg_scheme!r} is "
-                    "not yet implemented; only 'entropy_bonus' (Scheme A) is "
-                    "currently supported. Other schemes (kl_to_uniform, "
-                    "coverage_penalty, top1_cap) are skeleton in "
-                    "src/training/regularization.py."
+                    "not supported; only 'entropy_bonus' (Scheme A) is "
+                    "currently implemented. To add another scheme (e.g., "
+                    "kl_to_uniform, coverage_penalty, top1_cap), implement it "
+                    "in src/training/regularization.py with tests, per the "
+                    "design doc at "
+                    "docs/plans/2026-04-28-encoder-attention-regularization-design.md."
                 )
         else:
             # Reg disabled — restore the canonical SDPA fast path even if the
@@ -491,6 +505,11 @@ class ResDecLightningModule(pl.LightningModule):
             target = target.squeeze(-1)
 
         if self._tabpfn_enabled:
+            # Composite construction: pred (residual head output) + y_tabpfn.
+            # NOTE: keep this in sync with the consumer-side guard at
+            # src/analysis/composite_y.py (load_composite_y_with_sanity_check),
+            # which catches the 2026-04-28 double-add bug class. If the
+            # arithmetic here changes, update the guard too.
             subject_ids = batch["subject_ids"]
             y_tabpfn, _sigma = self._tabpfn_val_batch(
                 subject_ids, device=target.device, dtype=target.dtype,
@@ -557,14 +576,22 @@ class ResDecLightningModule(pl.LightningModule):
         # and interpretability. Overwritten each val epoch; the final .npz reflects
         # the final epoch. Best-epoch predictions can be recovered via ModelCheckpoint.
         if self._val_subject_ids and len(self._val_subject_ids) == len(p_np):
+            log_dir: Path | None = None
             try:
+                log_dir = Path(self.trainer.log_dir) if self.trainer.log_dir else None
+            except RuntimeError:
+                # Lightning raises RuntimeError when self.trainer is not attached.
                 log_dir = None
-                try:
-                    log_dir = Path(self.trainer.log_dir) if self.trainer.log_dir else None
-                except Exception:
-                    log_dir = None
-                if log_dir is None:
-                    log_dir = Path("outputs/canonical/val_predictions")
+            if log_dir is None:
+                # No hardcoded fallback path: raise instead of silently writing
+                # to a literal directory (per feedback_no_hardcoded_paths.md).
+                raise RuntimeError(
+                    "Cannot persist val predictions: trainer.log_dir is not "
+                    "available. Run inside a Lightning Trainer (which sets "
+                    "log_dir from logger config) so this writer has an "
+                    "explicit destination."
+                )
+            try:
                 log_dir.mkdir(parents=True, exist_ok=True)
                 _np.savez(
                     log_dir / "val_predictions_final.npz",
@@ -575,10 +602,12 @@ class ResDecLightningModule(pl.LightningModule):
                     mse=mse, mae=mae, rmse=rmse,
                     r2=r2, pearson_r=pearson_r, spearman_rho=spearman_rho,
                 )
-            except Exception as e:  # do not let IO crash training
+            except (OSError, RuntimeError):  # do not let IO crash training
+                # Use logger.exception to preserve traceback rather than just
+                # the message string.
                 import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    "Failed to persist val predictions: %s", e,
+                _logging.getLogger(__name__).exception(
+                    "Failed to persist val predictions",
                 )
 
         self._val_preds.clear()
@@ -593,13 +622,31 @@ class ResDecLightningModule(pl.LightningModule):
 
         # lr and weight_decay: some configs set them at the top-level of
         # `training`, while the project default lives under `training.optimizer`.
-        # Honor both so this module works against either shape.
-        lr = train_cfg.get("lr")
+        # Honor both so this module works against either shape. Top-level
+        # wins when both are present; warn so the user notices the override.
+        top_lr = train_cfg.get("lr")
+        opt_lr = train_cfg.optimizer.lr if "lr" in train_cfg.optimizer else None
+        if top_lr is not None and opt_lr is not None and top_lr != opt_lr:
+            logger.warning(
+                "Both training.lr=%s and training.optimizer.lr=%s are set; "
+                "using top-level training.lr (%s).", top_lr, opt_lr, top_lr,
+            )
+        lr = top_lr if top_lr is not None else opt_lr
         if lr is None:
-            lr = train_cfg.optimizer.lr
-        weight_decay = train_cfg.get("weight_decay")
+            lr = train_cfg.optimizer.lr  # KeyError if neither is set
+
+        top_wd = train_cfg.get("weight_decay")
+        opt_wd = train_cfg.optimizer.get("weight_decay")
+        if top_wd is not None and opt_wd is not None and top_wd != opt_wd:
+            logger.warning(
+                "Both training.weight_decay=%s and "
+                "training.optimizer.weight_decay=%s are set; using "
+                "top-level training.weight_decay (%s).",
+                top_wd, opt_wd, top_wd,
+            )
+        weight_decay = top_wd if top_wd is not None else opt_wd
         if weight_decay is None:
-            weight_decay = train_cfg.optimizer.get("weight_decay", 0.0)
+            weight_decay = 0.0
 
         betas = tuple(train_cfg.get("betas", (0.9, 0.999)))
 
@@ -610,27 +657,26 @@ class ResDecLightningModule(pl.LightningModule):
             betas=betas,
         )
 
-        # Cosine annealing with 5-epoch linear warmup — matches the pattern in
+        # Cosine annealing with linear warmup — matches the pattern in
         # CognitiveResilienceLightningModule.configure_optimizers for the
-        # deterministic head.
+        # deterministic head. Both call sites delegate to
+        # ``build_cosine_warmup_scheduler`` for a single source of truth.
         sched_cfg = train_cfg.get("scheduler", {}) or {}
         warmup_epochs = int(sched_cfg.get("warmup_epochs", 5))
         eta_min = float(sched_cfg.get("eta_min", 1e-6))
         max_epochs = int(train_cfg.get("max_epochs", 60))
-        t_max = max(1, max_epochs - warmup_epochs)
+        # Match prior behaviour: clamp t_max to >= 1 even when
+        # warmup_epochs >= max_epochs (resdec configs allow short
+        # smoke-runs where this could happen).
+        t_max_override = max(1, max_epochs - warmup_epochs)
 
-        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=t_max, eta_min=eta_min,
+        scheduler = build_cosine_warmup_scheduler(
+            optimizer,
+            max_epochs=max_epochs,
+            warmup_epochs=warmup_epochs,
+            eta_min=eta_min,
+            t_max_override=t_max_override,
         )
-        if warmup_epochs > 0:
-            warmup = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs,
-            )
-            scheduler = torch.optim.lr_scheduler.SequentialLR(
-                optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs],
-            )
-        else:
-            scheduler = cosine
 
         return {
             "optimizer": optimizer,

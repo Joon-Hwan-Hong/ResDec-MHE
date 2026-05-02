@@ -15,16 +15,13 @@ from src.analysis.uncertainty_analysis import (
     CALIBRATION_LEVELS,
 )
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
 
-
 @pytest.fixture
 def sample_predictions():
     """Sample prediction data (well-calibrated)."""
-    np.random.seed(42)
     n_subjects = 50
     actual = np.random.randn(n_subjects) * 2 + 5  # Mean 5, std 2
     true_std = np.abs(np.random.randn(n_subjects)) * 0.5 + 0.3
@@ -37,17 +34,14 @@ def sample_predictions():
         "actual": actual,
     }
 
-
 @pytest.fixture
 def sample_subject_ids():
     """Sample subject IDs."""
     return [f"ROSMAP_{i:03d}" for i in range(50)]
 
-
 @pytest.fixture
 def sample_covariates():
     """Sample covariates DataFrame."""
-    np.random.seed(42)
     n = 50
     return pd.DataFrame({
         "cell_count": np.random.randint(1000, 10000, n),
@@ -57,11 +51,9 @@ def sample_covariates():
         "education": np.random.randint(8, 20, n),
     })
 
-
 # =============================================================================
 # UncertaintyAnalyzer Tests
 # =============================================================================
-
 
 class TestUncertaintyAnalyzerInit:
     """Test UncertaintyAnalyzer initialization."""
@@ -118,7 +110,6 @@ class TestUncertaintyAnalyzerInit:
 
         assert len(analyzer.subject_ids) == 50
         assert all("subject_" in sid for sid in analyzer.subject_ids)
-
 
 class TestUncertaintyAnalyzerValidation:
     """Test input validation."""
@@ -180,7 +171,6 @@ class TestUncertaintyAnalyzerValidation:
                 predicted_std=bad_std,
             )
 
-
 class TestUncertaintyAnalyzerAnalyze:
     """Test UncertaintyAnalyzer.analyze()."""
 
@@ -240,7 +230,6 @@ class TestUncertaintyAnalyzerAnalyze:
         assert result.calibration is not None
         assert result.correlates is not None
 
-
 class TestPredictionSummary:
     """Test prediction summary DataFrame."""
 
@@ -289,7 +278,6 @@ class TestPredictionSummary:
         expected_z = np.abs(sample_predictions["actual"] - sample_predictions["predicted_mean"]) / sample_predictions["predicted_std"]
         np.testing.assert_array_almost_equal(df["z_score"].values, expected_z)
 
-
 class TestCalibration:
     """Test calibration analysis."""
 
@@ -327,7 +315,6 @@ class TestCalibration:
     def test_calibration_interpretation(self):
         """Test calibration interpretation labels."""
         # Create underconfident model (too wide predictions)
-        np.random.seed(42)
         actual = np.random.randn(100)
         predicted_mean = actual + np.random.randn(100) * 0.1  # Small errors
         predicted_std = np.ones(100) * 2.0  # Large std
@@ -342,7 +329,6 @@ class TestCalibration:
 
         # Should be mostly underconfident (coverage > expected)
         assert any(result.calibration["interpretation"] == "underconfident")
-
 
 class TestCorrelates:
     """Test uncertainty correlates analysis."""
@@ -396,7 +382,6 @@ class TestCorrelates:
         pvalues = result.correlates["p_value"].values
         assert (pvalues[:-1] <= pvalues[1:]).all()
 
-
 class TestUncertaintyAnalyzerSave:
     """Test UncertaintyAnalyzer.save()."""
 
@@ -433,11 +418,9 @@ class TestUncertaintyAnalyzerSave:
         assert "calibration_parquet" not in saved_files
         assert "correlates_parquet" not in saved_files
 
-
 # =============================================================================
 # Convenience Function Tests
 # =============================================================================
-
 
 class TestComputeUncertaintyAnalysis:
     """Test compute_uncertainty_analysis convenience function."""
@@ -464,13 +447,11 @@ class TestComputeUncertaintyAnalysis:
         assert (tmp_path / "prediction_uncertainty.csv").exists()
         assert (tmp_path / "calibration_summary.csv").exists()
 
-
 class TestComputeEceRegression:
     """Test ECE computation."""
 
     def test_ece_well_calibrated(self):
         """Test ECE for well-calibrated model."""
-        np.random.seed(42)
         actual = np.random.randn(1000)
         predicted_mean = actual + np.random.randn(1000) * 0.5
         predicted_std = np.ones(1000) * 0.5
@@ -487,7 +468,6 @@ class TestComputeEceRegression:
 
     def test_ece_poorly_calibrated(self):
         """Test ECE for poorly calibrated model."""
-        np.random.seed(42)
         actual = np.random.randn(1000)
         predicted_mean = actual + np.random.randn(1000) * 2.0  # Large errors
         predicted_std = np.ones(1000) * 0.1  # Overconfident
@@ -504,7 +484,6 @@ class TestComputeEceRegression:
 
     def test_ece_n_bins(self):
         """Test ECE with different bin counts."""
-        np.random.seed(42)
         actual = np.random.randn(100)
         predicted_mean = actual + np.random.randn(100) * 0.5
         predicted_std = np.abs(np.random.randn(100)) * 0.5 + 0.1
@@ -527,11 +506,9 @@ class TestComputeEceRegression:
         assert 0 <= ece_5 <= 1
         assert 0 <= ece_20 <= 1
 
-
 # =============================================================================
 # Property-Based Tests
 # =============================================================================
-
 
 class TestUncertaintyAnalysisProperties:
     """Property-based tests using Hypothesis."""
@@ -555,7 +532,6 @@ class TestUncertaintyAnalysisProperties:
     @settings(max_examples=15)
     def test_z_scores_nonnegative(self, n_subjects):
         """Test z-scores are always non-negative."""
-        np.random.seed(42)
         predicted_mean = np.random.randn(n_subjects)
         predicted_std = np.abs(np.random.randn(n_subjects)) + 0.1
         actual = np.random.randn(n_subjects)
@@ -573,7 +549,6 @@ class TestUncertaintyAnalysisProperties:
     @settings(max_examples=15)
     def test_calibration_coverage_bounds(self, n_subjects):
         """Test observed coverage is between 0 and 1."""
-        np.random.seed(42)
         predicted_mean = np.random.randn(n_subjects)
         predicted_std = np.abs(np.random.randn(n_subjects)) + 0.1
         actual = np.random.randn(n_subjects)
@@ -588,11 +563,9 @@ class TestUncertaintyAnalysisProperties:
         assert (result.calibration["observed_coverage"] >= 0).all()
         assert (result.calibration["observed_coverage"] <= 1).all()
 
-
 # =============================================================================
 # Schema Validation Tests
 # =============================================================================
-
 
 class TestUncertaintyAnalysisSchema:
     """Test output DataFrame schemas."""
@@ -651,11 +624,9 @@ class TestUncertaintyAnalysisSchema:
         assert df["significant"].dtype == bool
         assert df["interpretation"].dtype == object
 
-
 # =============================================================================
 # Round-Trip Tests
 # =============================================================================
-
 
 class TestUncertaintyAnalysisRoundTrip:
     """Test save and load round-trips."""
@@ -695,11 +666,9 @@ class TestUncertaintyAnalysisRoundTrip:
             loaded.reset_index(drop=True),
         )
 
-
 # =============================================================================
 # Edge Cases
 # =============================================================================
-
 
 class TestUncertaintyAnalysisEdgeCases:
     """Test edge cases."""
@@ -744,18 +713,15 @@ class TestUncertaintyAnalysisEdgeCases:
         assert result.metadata["has_actual"] is True
         assert result.metadata["has_covariates"] is True
 
-
 # ============================================================================
 # NaN-safe spearmanr
 # ============================================================================
-
 
 class TestSpearmanrNaNHandling:
     """Tests for NaN-safe Spearman correlation in uncertainty correlates."""
 
     def test_nan_in_covariates_does_not_crash(self):
         """spearmanr with NaN covariate values should not crash or produce NaN."""
-        np.random.seed(42)
         n = 50
         predicted_std = np.random.rand(n)
         covariates = pd.DataFrame({
@@ -774,7 +740,6 @@ class TestSpearmanrNaNHandling:
 
     def test_few_valid_values_skips_correlation(self):
         """Covariate with fewer than 3 valid values should be skipped."""
-        np.random.seed(42)
         n = 10
         predicted_std = np.random.rand(n)
         covariates = pd.DataFrame({

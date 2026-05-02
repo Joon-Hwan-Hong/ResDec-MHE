@@ -58,6 +58,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -105,10 +106,13 @@ AD_GWAS_GENES: frozenset[str] = frozenset({
     "MYO15A", "NCK2", "PLEKHA1", "PRDM7", "PRKD3", "RBCK1",
     "RHOH", "SCIMP", "SEC61G", "SHARPIN", "SIGLEC11", "SIGLEC14",
     "SNX1", "SORT1", "TMEM106B", "TNIP1", "TPCN1", "TSPAN14",
-    "TSPOAP1", "UMAD1", "UNC5CL", "USP6NL", "WDR12", "WDR81",
+    "TSPOAP1", "UMAD1", "UNC5CL", "WDR12", "WDR81",
     "WNT3", "ZCWPW1",
-    # Wightman 2021 additions (non-overlapping with Bellenguez)
-    "ADAMTS4", "HESX1", "CNTNAP2", "AGRN", "KAT8",
+    # Wightman 2021 additions (non-overlapping with Bellenguez above).
+    # USP6NL and KAT8 deduped from the Bellenguez block above; the frozenset
+    # would dedup automatically, but the source list now matches the
+    # "Deduplicated, uppercased" claim in line 84.
+    "ADAMTS4", "HESX1", "CNTNAP2", "AGRN",
 })
 
 
@@ -331,7 +335,10 @@ def compute_ad_gwas_overlap(
             - ``n_gwas_in_universe`` (int)
             - ``universe_size`` (int)
     """
-    universe_set = set(universe)
+    # Cheap idempotent set() — already a set/frozenset stays the same; an
+    # arbitrary Iterable becomes a fresh set. Caller can save the cost by
+    # passing the universe in already-set form (main() does so).
+    universe_set = universe if isinstance(universe, (set, frozenset)) else set(universe)
     gwas_in_universe = set(gwas_genes) & universe_set
     gene_list_in_universe = [g for g in gene_list if g in universe_set]
     overlap_set = set(gene_list_in_universe) & gwas_in_universe
@@ -567,14 +574,14 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _safe_list_name(name: str) -> str:
-    """Sanitise a cell-type or scope name for use in file paths."""
-    bad = " /\\,()[]"
-    out = name
-    for ch in bad:
-        out = out.replace(ch, "_")
-    # Collapse repeated underscores.
-    while "__" in out:
-        out = out.replace("__", "_")
+    """Sanitise a cell-type or scope name for use in file paths.
+
+    Replaces whitespace, slashes, commas, and brackets with underscores in
+    one regex pass, then strips leading/trailing underscores. Equivalent
+    to the prior per-character loop + manual ``__`` collapse but O(n)
+    instead of O(n * len(bad_chars)).
+    """
+    out = re.sub(r"[\s/\\,()\[\]]+", "_", name)
     return out.strip("_")
 
 
@@ -594,7 +601,9 @@ def main() -> int:
     logger.info("Loading gene names: %s", args.gene_names_npy)
     gene_names_arr = np.load(args.gene_names_npy, allow_pickle=True)
     gene_names = [str(g) for g in gene_names_arr]
-    universe = set(gene_names)
+    # frozenset so ``compute_ad_gwas_overlap`` re-uses it directly (avoids
+    # rebuilding ``set(universe)`` on each of the 5+ overlap calls).
+    universe = frozenset(gene_names)
     logger.info(
         "HVG universe: %d genes; AD-GWAS reference: %d genes (%d in universe)",
         len(universe),

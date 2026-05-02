@@ -22,7 +22,6 @@ import pytest
 
 from src.analysis.resdec_subgroup_analysis import stratified_metrics
 
-
 def test_trivial_single_subgroup_matches_overall():
     """With a single 'all-subjects' mask, subgroup R² equals overall R²."""
     rng = np.random.default_rng(0)
@@ -34,7 +33,6 @@ def test_trivial_single_subgroup_matches_overall():
     from sklearn.metrics import r2_score
     assert out["all"]["r2"] == pytest.approx(r2_score(y, y_pred))
     assert out["all"]["n"] == n
-
 
 def test_two_subgroup_case_returns_different_r2():
     """Two subgroups with deliberately different noise levels produce different R²."""
@@ -52,7 +50,6 @@ def test_two_subgroup_case_returns_different_r2():
     assert out["A"]["n"] == n_per
     assert out["B"]["n"] == n_per
 
-
 def test_bootstrap_ci_wider_for_smaller_n():
     """CI width should increase as subgroup n decreases."""
     rng = np.random.default_rng(7)
@@ -64,7 +61,6 @@ def test_bootstrap_ci_wider_for_smaller_n():
     ci_large = out["large"]["r2_ci"][1] - out["large"]["r2_ci"][0]
     ci_small = out["small"]["r2_ci"][1] - out["small"]["r2_ci"][0]
     assert ci_small > ci_large
-
 
 def test_tiny_subgroup_returns_nan():
     """Subgroup with n<3 gives NaN metrics / NaN CIs."""
@@ -80,7 +76,6 @@ def test_tiny_subgroup_returns_nan():
     assert np.isnan(out["tiny"]["spearman_rho"])
     assert "n_valid_bootstraps" in out["tiny"]
 
-
 def test_empty_subgroup_returns_nan_and_warns():
     """Subgroup with n=0 gives NaN metrics, n_valid_bootstraps=0, AND emits UserWarning."""
     y = np.array([1.0, 2.0, 3.0])
@@ -91,7 +86,6 @@ def test_empty_subgroup_returns_nan_and_warns():
     assert out["empty"]["n"] == 0
     assert np.isnan(out["empty"]["r2"])
     assert out["empty"]["n_valid_bootstraps"] == 0
-
 
 def test_percentile_ci_not_normal_approx():
     """CI must be percentile method (q2.5, q97.5), NOT mean ± 1.96*std.
@@ -117,7 +111,6 @@ def test_percentile_ci_not_normal_approx():
     # symmetry exactly; percentile preserves the empirical asymmetry.
     assert abs(left_arm - right_arm) > 1e-4
 
-
 def test_orchestration_uses_public_names():
     """Verify subgroup_r2.py imports public (non-underscore) helpers.
 
@@ -131,7 +124,6 @@ def test_orchestration_uses_public_names():
     # Quartile helpers were consolidated into the shared `quantile_labels`;
     # either name is acceptable for rename-safety.
     assert hasattr(mod, "age_quartile_labels") or hasattr(mod, "quantile_labels")
-
 
 def test_reproducibility_across_seeds():
     """Same seed produces the same CIs; different seeds produce different CIs."""

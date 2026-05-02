@@ -27,7 +27,6 @@ import pytest
 
 from src.analysis.resdec_variance_decomposition import decompose_variance
 
-
 def _orthogonal_residual(rng: np.random.Generator, *predictors: np.ndarray) -> np.ndarray:
     """Return a residual with sample covariance zero against every ``predictor``.
 
@@ -43,7 +42,6 @@ def _orthogonal_residual(rng: np.random.Generator, *predictors: np.ndarray) -> n
     # (including the intercept, so r is also mean-zero by construction).
     beta, *_ = np.linalg.lstsq(X, r, rcond=None)
     return r - X @ beta
-
 
 def test_identity_case_f1_zero():
     """When f_1 == 0, var_resid == Var(y - y_tabpfn) exactly."""
@@ -64,7 +62,6 @@ def test_identity_case_f1_zero():
     # and noise is orthogonal to y_tabpfn by construction).
     assert g["var_y"] == pytest.approx(g["var_tabpfn"] + g["var_resid"], abs=1e-6)
     assert g["n"] == n
-
 
 def test_known_covariance():
     """Crafted orthogonal-residual case where additivity reconstructs Var(y) exactly."""
@@ -89,7 +86,6 @@ def test_known_covariance():
     assert g["total_explained_fraction"] == pytest.approx(
         1.0 - g["var_resid"] / g["var_y"], abs=1e-9
     )
-
 
 def test_subgroup_decomposition():
     """Subgroup split produces per-group dicts with same keys as global."""
@@ -129,7 +125,6 @@ def test_subgroup_decomposition():
         # vanish only in the full sample; per-subgroup they are O(1/sqrt(n_group)).
         assert grp["var_y"] == pytest.approx(reconstructed, abs=0.05)
 
-
 def test_global_full_expansion_matches_var_y():
     """Independent of orthogonality, the full 6-term expansion must equal Var(y)."""
     rng = np.random.default_rng(11)
@@ -151,7 +146,6 @@ def test_global_full_expansion_matches_var_y():
     # Full expansion is exact at float precision.
     assert g["var_y"] == pytest.approx(full, abs=1e-8)
 
-
 def test_subgroup_skips_missing_labels():
     """None / NaN labels are excluded from a subgroup (no 'nan' bucket)."""
     rng = np.random.default_rng(3)
@@ -170,7 +164,6 @@ def test_subgroup_skips_missing_labels():
     assert out["by_label"]["A"]["n"] == 50
     assert out["by_label"]["B"]["n"] == 40
 
-
 def test_length_mismatch_raises():
     """Mismatched input lengths raise ValueError."""
     y_true = np.zeros(10)
@@ -179,7 +172,6 @@ def test_length_mismatch_raises():
     with pytest.raises(ValueError):
         decompose_variance(y_true, y_tabpfn, f1)
 
-
 def test_subgroup_length_mismatch_raises():
     """Subgroup labels with wrong length raise ValueError."""
     y_true = np.zeros(10)
@@ -187,7 +179,6 @@ def test_subgroup_length_mismatch_raises():
     f1 = np.zeros(10)
     with pytest.raises(ValueError):
         decompose_variance(y_true, y_tabpfn, f1, subgroups={"by_x": np.array(["a"] * 9)})
-
 
 def test_tiny_group_returns_nan():
     """A subgroup with <2 samples has undefined sample variance; n=1 returns NaN."""
@@ -205,7 +196,6 @@ def test_tiny_group_returns_nan():
     assert np.isnan(out["by_label"]["A"]["var_y"])
     assert out["by_label"]["B"]["n"] == 49
     assert not np.isnan(out["by_label"]["B"]["var_y"])
-
 
 def test_zero_variance_y_returns_nan_fraction():
     """When Var(y) == 0, total_explained_fraction is NaN (avoids 0/0)."""

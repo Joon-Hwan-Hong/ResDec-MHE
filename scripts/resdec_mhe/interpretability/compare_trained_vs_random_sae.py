@@ -45,7 +45,7 @@ Usage
     uv run python scripts/resdec_mhe/interpretability/compare_trained_vs_random_sae.py \\
         --trained-dir outputs/canonical/sae/batch_topk/fused/exp32_k64_seed0 \\
         --random-dir outputs/canonical/sae/random_encoder/batch_topk/fused/exp32_k64_seed0 \\
-        --out outputs/canonical/sae/random_encoder_null_comparison.json
+        --out outputs/canonical/sae/random_encoder_null/comparison.json
 """
 from __future__ import annotations
 
@@ -121,15 +121,6 @@ def _top10_decoder_cos_sim(
 ) -> dict:
     """Top-10 fraction-active features in each SAE; pairwise cos-sim matrix.
 
-    The original ``pearson_to_identity_pattern`` metric was meaningless: the
-    top-K features in trained vs random SAEs are sorted independently by
-    ``fraction_active``, so the K×K cosine matrix has no expected diagonal
-    structure to begin with — Pearson correlation against the identity
-    pattern measures nothing of interest. The canonical Orlov §8.3 / Heap
-    2026 procedure pairs each trained feature with its single best random
-    match via the Hungarian algorithm, then averages the post-alignment
-    diagonal cosine.
-
     Returns
     -------
     dict with
@@ -138,27 +129,17 @@ def _top10_decoder_cos_sim(
                                                   cols = random).
         ``mean_abs_cosine_off_diag``            — mean of |cosine| off-diagonal
                                                   (coarse stat, kept for
-                                                  reference; sees randomly-
-                                                  permuted feature pairs).
+                                                  reference).
         ``hungarian_mean_diagonal_cosine``      — canonical metric: average
                                                   diagonal cosine after
                                                   ``scipy.optimize.linear_sum_assignment(-cos)``
                                                   pairs each trained feature
                                                   with its best random match
-                                                  (one-to-one). This is the
-                                                  expected similarity *after*
-                                                  permutation invariance is
-                                                  removed.
+                                                  (one-to-one). Per Orlov
+                                                  §8.3 / Heap 2026.
         ``hungarian_assignment``                — list of (trained_rank,
                                                   random_rank) tuples produced
                                                   by linear_sum_assignment.
-        ``cos_to_identity_pattern_DEPRECATED``  — the old Pearson statistic,
-                                                  kept under a DEPRECATED key
-                                                  so old consumers don't
-                                                  silently miss the change.
-                                                  Do NOT rely on this value;
-                                                  prefer
-                                                  ``hungarian_mean_diagonal_cosine``.
     """
     from scipy.optimize import linear_sum_assignment
 
@@ -168,8 +149,10 @@ def _top10_decoder_cos_sim(
             "the two SAEs must share input dim n."
         )
     K = min(10, fa_a.size, fa_b.size)
-    top_a = np.argsort(-fa_a)[:K]
-    top_b = np.argsort(-fa_b)[:K]
+    # kind="stable" so ties break by original index — matches
+    # captum_composite_attribution + gsea_from_captum convention.
+    top_a = np.argsort(-fa_a, kind="stable")[:K]
+    top_b = np.argsort(-fa_b, kind="stable")[:K]
     cols_a = W_dec_a[:, top_a]  # [n, K]
     cols_b = W_dec_b[:, top_b]  # [n, K]
 
@@ -181,7 +164,7 @@ def _top10_decoder_cos_sim(
     mask_off = ~np.eye(K, dtype=bool)
     mean_abs = float(np.abs(cos[mask_off]).mean()) if K > 1 else float("nan")
 
-    # ── Hungarian-aligned mean diagonal cosine (canonical). ──────────────
+    # Hungarian-aligned mean diagonal cosine (canonical metric).
     # linear_sum_assignment minimises a cost matrix; we maximise cosine by
     # passing the negative. row_ind == arange(K) since cos is square.
     if K >= 1:
@@ -194,24 +177,11 @@ def _top10_decoder_cos_sim(
         hungarian_assignment = []
         hungarian_mean = float("nan")
 
-    # ── DEPRECATED: Pearson-to-identity-pattern. ─────────────────────────
-    # Computed only so JSON consumers that look up the old key see an
-    # explicit "DEPRECATED" suffix and can migrate. The metric itself is
-    # meaningless because the K×K matrix has no expected diagonal
-    # structure prior to alignment.
-    cos_flat = cos.flatten()
-    ref = np.eye(K).flatten()
-    if cos_flat.std() < 1e-12 or ref.std() < 1e-12:
-        pearson = float("nan")
-    else:
-        pearson = float(np.corrcoef(cos_flat, ref)[0, 1])
-
     return {
         "cosine_matrix": cos.tolist(),
         "mean_abs_cosine_off_diag": mean_abs,
         "hungarian_mean_diagonal_cosine": hungarian_mean,
         "hungarian_assignment": hungarian_assignment,
-        "cos_to_identity_pattern_DEPRECATED": pearson,
         "K": int(K),
         "top_features_trained": [int(i) for i in top_a.tolist()],
         "top_features_random": [int(i) for i in top_b.tolist()],
@@ -238,7 +208,7 @@ def main() -> int:
     )
     p.add_argument(
         "--out",
-        default="outputs/canonical/sae/random_encoder_null_comparison.json",
+        default="outputs/canonical/sae/random_encoder_null/comparison.json",
         help="Output JSON path.",
     )
     p.add_argument(
@@ -303,13 +273,19 @@ def main() -> int:
         rand["W_dec"], rand["fraction_active"],
     )
 
-    # Acceptance criterion.
-    if interp_random > 0:
-        ratio = interp_trained / interp_random
+    # Acceptance criterion. Schema-clean output: always emit a numeric ratio
+    # (NaN if undefined) and two booleans the consumer can dispatch on:
+    #   random_produced_zero_interpretable      — distinguishes +inf branch
+    #   trained_produced_zero_interpretable     — distinguishes "both dead"
+    random_zero = interp_random == 0
+    trained_zero = interp_trained == 0
+    if not random_zero:
+        ratio: float = interp_trained / interp_random
         passed = bool(ratio > args.criterion_multiplier)
-    elif interp_trained > 0:
-        # Random produced zero interpretable features → ratio is +inf, criterion passes.
-        ratio = float("inf")
+    elif not trained_zero:
+        # Random produced zero interpretable features → ratio undefined
+        # (was +inf in old schema; prefer NaN + boolean flag for clarity).
+        ratio = float("nan")
         passed = True
     else:
         ratio = float("nan")
@@ -342,8 +318,13 @@ def main() -> int:
         "decoder_cos_sim_top10_pairs": cos_pack,
         "acceptance": {
             "criterion_multiplier": float(args.criterion_multiplier),
-            "trained_over_random_interpretable_ratio": ratio if ratio != float("inf") else "inf",
+            # Always emit a numeric ratio (or NaN); consumers should
+            # dispatch on the boolean flags below rather than the magnitude
+            # when random_produced_zero_interpretable is True.
+            "trained_over_random_interpretable_ratio": ratio,
             "pass_criterion": passed,
+            "random_produced_zero_interpretable": bool(random_zero),
+            "trained_produced_zero_interpretable": bool(trained_zero),
             "rule": (
                 f"trained_interpretable_fraction > {args.criterion_multiplier}x "
                 "random_interpretable_fraction"
@@ -384,14 +365,13 @@ def main() -> int:
     print(
         f"  decoder top-10 Hungarian mean diag cos:    {cos_pack['hungarian_mean_diagonal_cosine']:.4f}"
     )
-    print(
-        f"  (deprecated) Pearson(cos, identity):       {cos_pack['cos_to_identity_pattern_DEPRECATED']:.4f}"
-    )
     print()
-    ratio_str = (
-        "inf" if ratio == float("inf")
-        else (f"{ratio:.3f}" if not (isinstance(ratio, float) and np.isnan(ratio)) else "nan")
-    )
+    if random_zero and not trained_zero:
+        ratio_str = "n/a (random produced zero interpretable features)"
+    elif np.isnan(ratio):
+        ratio_str = "nan (both runs produced zero interpretable features)"
+    else:
+        ratio_str = f"{ratio:.3f}"
     print(
         f"  trained / random interpretable ratio:   {ratio_str}"
     )

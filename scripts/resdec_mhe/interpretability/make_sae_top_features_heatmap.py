@@ -60,6 +60,10 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+import matplotlib
+
+matplotlib.use("Agg")  # must precede pyplot import
+
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np

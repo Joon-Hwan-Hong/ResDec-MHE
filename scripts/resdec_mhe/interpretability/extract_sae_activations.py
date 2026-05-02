@@ -34,6 +34,7 @@ Arguments
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -118,12 +119,31 @@ def main() -> int:
             device=args.device,
             batch_size=int(args.batch_size),
         )
+        n_subj = int(bundle.activations.shape[0])
+        n_folds = len({int(f) for f in bundle.fold_indices.tolist()})
+        n_val = int(bundle.is_val.sum())
         logger.info(
             "layer=%s: extracted shape=%s, %d folds, %d val rows",
-            layer, bundle.activations.shape,
-            len(set(bundle.fold_indices.tolist())),
-            int(bundle.is_val.sum()),
+            layer, bundle.activations.shape, n_folds, n_val,
         )
+        # Persist a small summary alongside the npz so a user can verify
+        # n_subj / n_val / n_folds / layer post-hoc without re-running.
+        summary_path = out_dir / f"extract_summary_{layer}.json"
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "layer": layer,
+                    "n_subjects": n_subj,
+                    "n_val_rows": n_val,
+                    "n_folds_seen": n_folds,
+                    "activation_shape": list(bundle.activations.shape),
+                    "checkpoint_paths": [str(p) for p in checkpoint_paths],
+                    "out_dir": str(out_dir),
+                },
+                indent=2,
+            )
+        )
+        logger.info("Wrote %s", summary_path)
 
     return 0
 

@@ -14,11 +14,9 @@ from src.analysis.subgroup_uncertainty import (
     SubgroupUncertaintyResult,
 )
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
-
 
 @pytest.fixture
 def synthetic_data():
@@ -32,7 +30,6 @@ def synthetic_data():
     Uncertainty deliberately differs between sex groups so that Kruskal-Wallis
     should detect a difference.
     """
-    np.random.seed(42)
     n = 100
 
     subject_ids = [f"ROSMAP_{i:04d}" for i in range(n)]
@@ -85,11 +82,9 @@ def synthetic_data():
         "aleatoric_std": aleatoric_std,
     }
 
-
 # =============================================================================
 # Initialization
 # =============================================================================
-
 
 class TestSubgroupUncertaintyAnalyzerInit:
     """Test SubgroupUncertaintyAnalyzer initialization and validation."""
@@ -172,11 +167,9 @@ class TestSubgroupUncertaintyAnalyzerInit:
                 epistemic_std=synthetic_data["epistemic_std"][:50],
             )
 
-
 # =============================================================================
 # Subgroup Stats
 # =============================================================================
-
 
 class TestSubgroupStats:
     """Test that per-group statistics are correctly computed."""
@@ -293,11 +286,9 @@ class TestSubgroupStats:
         # R² should be a number (not NaN) for groups with enough subjects
         assert not result.subgroup_stats["r2"].isna().all()
 
-
 # =============================================================================
 # Between-group tests
 # =============================================================================
-
 
 class TestBetweenGroupTests:
     """Test Kruskal-Wallis and Cohen's d."""
@@ -376,11 +367,9 @@ class TestBetweenGroupTests:
         # 3 groups => C(3,2) = 3 pairwise comparisons
         assert len(cd_rows) == 3
 
-
 # =============================================================================
 # Continuous covariates (Spearman correlations)
 # =============================================================================
-
 
 class TestCovariateCorrelations:
     """Test Spearman correlations with continuous covariates."""
@@ -453,11 +442,9 @@ class TestCovariateCorrelations:
         pvals = corr["pvalue"].values
         assert (pvals[:-1] <= pvals[1:]).all()
 
-
 # =============================================================================
 # Missing columns handled gracefully
 # =============================================================================
-
 
 class TestMissingColumns:
     """Missing metadata columns should be skipped, not crash."""
@@ -531,11 +518,9 @@ class TestMissingColumns:
         )
         assert len(result.subgroup_stats) == 0
 
-
 # =============================================================================
 # Small groups (n < MIN_GROUP_SIZE) excluded from tests
 # =============================================================================
-
 
 class TestSmallGroupExclusion:
     """Groups with n < MIN_GROUP_SIZE are excluded from statistical tests."""
@@ -589,17 +574,14 @@ class TestSmallGroupExclusion:
         ]
         assert len(kw_rows) == 1
 
-
 # =============================================================================
 # NaN handling in metadata
 # =============================================================================
-
 
 class TestNaNHandling:
     """NaN values in metadata should be dropped for the affected scheme."""
 
     def test_nan_labels_excluded(self):
-        np.random.seed(42)
         n = 20
         subject_ids = [f"S_{i}" for i in range(n)]
         groups = np.array(["A"] * 8 + ["B"] * 8 + [np.nan] * 4, dtype=object)
@@ -621,7 +603,6 @@ class TestNaNHandling:
 
     def test_nan_continuous_covariate(self):
         """NaN in continuous covariate should not crash Spearman."""
-        np.random.seed(42)
         n = 30
         subject_ids = [f"S_{i}" for i in range(n)]
         values = np.random.randn(n)
@@ -643,11 +624,9 @@ class TestNaNHandling:
         assert len(result.covariate_correlations) > 0
         assert not result.covariate_correlations["spearman_rho"].isna().any()
 
-
 # =============================================================================
 # Save
 # =============================================================================
-
 
 class TestSave:
     """Test that save() creates expected files."""
@@ -709,11 +688,9 @@ class TestSave:
         # No files should be created for empty DataFrames
         assert len(saved) == 0
 
-
 # =============================================================================
 # Metadata
 # =============================================================================
-
 
 class TestMetadata:
     """Test metadata dict in result."""
@@ -738,11 +715,9 @@ class TestMetadata:
         assert m["has_aleatoric"] is False
         assert "sex" in m["schemes_analyzed"]
 
-
 # =============================================================================
 # Default schemes integration
 # =============================================================================
-
 
 class TestDefaultSchemes:
     """Test that default schemes can be applied to synthetic data that has the columns."""

@@ -1,7 +1,8 @@
 """
 Central registry for data schema constants.
 
-Single source of truth for cell types, edge types, and regions.
+Single source of truth for cell types, edge types, regions, and ROSMAP
+phenotype encodings (cogdx).
 All data modules import from here.
 """
 
@@ -99,6 +100,28 @@ N_CELL_TYPES: int = len(CELL_TYPE_ORDER)  # 31
 N_EDGE_TYPES: int = len(ALL_EDGE_TYPES)   # 5
 N_REGIONS: int = len(REGION_ORDER)        # 6
 
+
+# ROSMAP cogdx (cognitive diagnosis) integer encoding — single source of truth.
+# Used by AD-dx binarization, prediction-scatter coloring, and subgroup analyses.
+# Reference: ROSMAP data dictionary; cross-checked against
+#   scripts/resdec_mhe/interpretability/run_subgroup_r2_table.py (AD = {4,5})
+#   scripts/resdec_mhe/interpretability/run_ccc_outlier_deepdive.py
+#   scripts/resdec_mhe/interpretability/run_bimodal_residual_deepdive.py
+COGDX_LABEL: dict[int, str] = {
+    1: "NCI",         # No cognitive impairment
+    2: "MCI",         # Mild cognitive impairment, no other condition
+    3: "MCI+",        # MCI plus another condition contributing to impairment
+    4: "AD-prob",     # Alzheimer's disease, probable, NINCDS-ADRDA criteria
+    5: "AD-poss",     # Alzheimer's disease, possible
+    6: "Other",       # Other dementia
+}
+
+# AD-dx binarization (per project convention): cogdx ∈ {4, 5} = AD;
+# cogdx ∈ {1, 2, 3} = non-AD; cogdx == 6 (Other dementia) excluded from
+# binary contrasts.
+AD_COGDX_CODES: frozenset[int] = frozenset({4, 5})
+NONAD_COGDX_CODES: frozenset[int] = frozenset({1, 2, 3})
+
 # Separator for composite keys (must not appear in cell type names or subject IDs)
 GROUP_SEPARATOR: str = "||"
 
@@ -110,6 +133,13 @@ PFC_REGION_IDX: int = REGION_ORDER.index("PFC")  # 0
 EPSILON_DIVISION: float = 1e-10     # Division-by-zero guard for float64 computations
 EPSILON_SOFTMAX: float = 1e-8       # Softmax/normalization denominator guard
 EPSILON_POSITIVE_FLOOR: float = 1e-6  # Minimum positive value floor (e.g., std, scores)
+
+# Sentinel for masked logits before softmax. Using -1e9 (not 0.0 or
+# float("-inf")) avoids NaN gradients when an entire row is masked while
+# keeping the softmax output negligibly small (~exp(-1e9)). Both
+# RegionHandler and PathologyStratifiedAttention reference this constant
+# so the masking convention is in lockstep.
+SOFTMAX_MASK_LARGE_NEGATIVE: float = -1e9
 
 
 def sanitize_key(name: str) -> str:

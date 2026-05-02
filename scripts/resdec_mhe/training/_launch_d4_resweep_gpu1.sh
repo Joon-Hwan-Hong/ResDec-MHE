@@ -2,6 +2,11 @@
 # d4 entropy-reg re-sweep — single-GPU sequential variant for GPU 1
 # (GPU 0 reserved for the running F1 vulnerable CF deep-dive).
 #
+# Naming: the ``_launch`` prefix follows the codebase convention that this
+# is a MANUAL entry-point, not auto-invoked by another driver. Single-GPU
+# sequential is intentional (B-D43): GPU 0 is being used by F1 deep-dive,
+# so we cannot parallelize across both GPUs.
+#
 # 5λ × 5 fold = 25 cells × ~25 min/cell ≈ 10.4 hr wall on one RTX 6000 Ada.
 # Output: outputs/canonical/p5_entropy_reg_d4/lambda_<λ>/fold<N>/summary.json
 #
@@ -9,6 +14,16 @@
 #   tmux new-session -d -s d4_resweep_gpu1 \
 #     bash scripts/resdec_mhe/training/_launch_d4_resweep_gpu1.sh
 set -euo pipefail
+
+# tmux preflight (feedback_long_runs_need_tmux.md): 25 cells × ~25 min/cell ≈
+# 10.4 hr wall — 20× the 30-min threshold. Bare SSH loses the run on
+# disconnect.
+if [ -z "${TMUX:-}" ]; then
+    echo "ERROR: This sweep runs ~10 hr and must be in tmux to survive SSH disconnect." >&2
+    echo "  tmux new -s d4_resweep_gpu1 'bash $0'" >&2
+    exit 1
+fi
+
 WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../" && pwd)"
 cd "$WORKTREE_ROOT"
 

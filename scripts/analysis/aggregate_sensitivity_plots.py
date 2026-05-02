@@ -689,9 +689,9 @@ def plot_pathology_attention_scatter(interp: dict, output_dir: Path) -> None:
     gpath = meta["gpath"].to_numpy()
     cogn = meta["actual"].to_numpy()
 
-    # Data-driven cell-type selection: top-3 positive r(attn, cogn) (Tier 1 equivalents)
-    # and top-3 negative (Tier 2 equivalents). Filter out low-attention types to avoid
-    # noisy rare-type correlations.
+    # Data-driven cell-type selection: top-3 positive r(attn, cogn) and top-3
+    # negative r(attn, cogn). Filter out low-attention types to avoid noisy
+    # rare-type correlations.
     mean_attn = attn.mean(axis=0)
     attn_floor = float(np.quantile(mean_attn, 0.25))  # require at least 25th-percentile attention
 

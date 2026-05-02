@@ -22,9 +22,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_WORKTREE_ROOT))
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def test_run_bimodal_residual_deepdive_runs(tmp_path: Path) -> None:
     residual_csv = (
@@ -109,7 +107,6 @@ def test_run_bimodal_residual_deepdive_runs(tmp_path: Path) -> None:
             f"Braak χ² mismatch: ours={ours_chi2}, ref={ref_chi2}"
         )
 
-
 def test_apoe_e4_dose_counts_correctly() -> None:
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_bimodal_residual_deepdive as mod,
@@ -123,7 +120,6 @@ def test_apoe_e4_dose_counts_correctly() -> None:
     # NaN passthrough
     assert np.isnan(mod._apoe_e4_dose(float("nan")))
 
-
 def test_tertile_splits_with_nan() -> None:
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_bimodal_residual_deepdive as mod,
@@ -136,7 +132,6 @@ def test_tertile_splits_with_nan() -> None:
     # NaNs preserved
     for v in out.iloc[6:]:
         assert isinstance(v, float) and np.isnan(v), v
-
 
 def test_bh_correct_preserves_none() -> None:
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
@@ -156,7 +151,6 @@ def test_bh_correct_preserves_none() -> None:
     assert all(0.0 < x <= 1.0 for x in valid_q)
     # Monotonicity: BH q-values respect raw p-value ordering.
     assert q["a"] <= q["b"] <= q["d"]
-
 
 def test_residual_sign_test_quadrant_split() -> None:
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
@@ -179,7 +173,6 @@ def test_residual_sign_test_quadrant_split() -> None:
     assert fp["2"]["fraction_positive"] == pytest.approx(0.5)
     assert fp["3"]["fraction_positive"] == pytest.approx(1.0)
 
-
 def test_bootstrap_unimodality_clear_bimodal() -> None:
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_bimodal_residual_deepdive as mod,
@@ -192,7 +185,6 @@ def test_bootstrap_unimodality_clear_bimodal() -> None:
     assert out["obs_LL_diff_k2_minus_k1"] > out["null_LL_diff_mean"] + 2 * out["null_LL_diff_std"]
     # p-value must hit the empirical floor (1/(n_boot+1) = 1/21).
     assert out["p_value_one_sided"] == pytest.approx(1 / 21, abs=1e-6)
-
 
 def test_bootstrap_unimodality_unimodal_passes_floor() -> None:
     from scripts.resdec_mhe.interpretability import (  # noqa: E402

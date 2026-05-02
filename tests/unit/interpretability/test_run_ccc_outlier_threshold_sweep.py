@@ -13,8 +13,7 @@ from pathlib import Path
 
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def test_run_ccc_outlier_threshold_sweep_runs(tmp_path: Path) -> None:
     ccc_npz = (
@@ -82,10 +81,8 @@ def test_run_ccc_outlier_threshold_sweep_runs(tmp_path: Path) -> None:
     n_out = [r["n_outliers"] for r in payload["per_threshold"]]
     assert all(n_out[i] >= n_out[i + 1] for i in range(len(n_out) - 1)), n_out
 
-
 def test_per_subject_outlier_metrics_basic() -> None:
     """``_per_subject_outlier_metrics`` correctly counts edges and max."""
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_ccc_outlier_threshold_sweep as mod,
     )
@@ -106,9 +103,7 @@ def test_per_subject_outlier_metrics_basic() -> None:
     assert max_above[1] == pytest.approx(0.02, rel=1e-5)
     assert np.isnan(max_above[2])
 
-
 def test_jaccard_overlap() -> None:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_ccc_outlier_threshold_sweep as mod,
     )
@@ -124,9 +119,7 @@ def test_jaccard_overlap() -> None:
     j_empty = mod._jaccard([], [])
     assert math.isnan(j_empty)
 
-
 def test_dominant_edge_counter_dedups_per_subject() -> None:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_ccc_outlier_threshold_sweep as mod,
     )
@@ -141,9 +134,7 @@ def test_dominant_edge_counter_dedups_per_subject() -> None:
     assert counter[("X", "Y", "T1")] == 2
     assert counter[("A", "B", "T2")] == 1
 
-
 def test_parse_thresholds_sorted() -> None:
-    sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_ccc_outlier_threshold_sweep as mod,
     )

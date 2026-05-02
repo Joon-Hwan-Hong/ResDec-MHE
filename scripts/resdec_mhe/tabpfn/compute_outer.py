@@ -15,13 +15,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
-from tabpfn import TabPFNRegressor
+from sklearn.metrics import r2_score
 
 from src.analysis.tabpfn_preprocessing import apply_zscore_train_only
 from src.data.enriched_features import (
@@ -33,78 +32,34 @@ from src.data.enriched_features import (
 from src.data.feature_loaders import load_flat_features, load_targets
 from src.data.splits import load_splits
 
+# Shared TabPFN helpers (CC4: ``predict_with_sigma`` / ``build_regressor`` /
+# ``filter_usable_subjects`` / ``top_k_filename`` / ``outer_output_filename`` /
+# ``resolve_tabpfn_cache_dir`` previously duplicated across
+# compute_top_k_features.py / compute_oof.py / compute_outer.py).
+from scripts.resdec_mhe.tabpfn._helpers import (
+    build_regressor,
+    filter_usable_subjects,
+    outer_output_filename,
+    predict_with_sigma,
+    resolve_tabpfn_cache_dir,
+    top_k_filename,
+)
+
 logger = logging.getLogger(__name__)
 
 
-def _top_k_filename(top_k_dir: Path, top_k: int, fold_idx: int, feature_set: str) -> Path:
-    if feature_set == "A":
-        return top_k_dir / f"top_{top_k}_features_fold{fold_idx}.json"
-    return top_k_dir / f"top_{top_k}_features_fold{fold_idx}_{feature_set}.json"
-
-
-def _outer_output_filename(output_dir: Path, fold_idx: int, feature_set: str) -> Path:
-    if feature_set == "A":
-        return output_dir / f"tabpfn_outer_fold{fold_idx}.npz"
-    return output_dir / f"tabpfn_outer_fold{fold_idx}_{feature_set}.npz"
-
-
-def _predict_with_sigma(reg: TabPFNRegressor, X: np.ndarray):
-    """Return (median, std) via a SINGLE predict() call (output_type='full').
-
-    Falls back to legacy two-call path if dict schema differs.
-    """
-    result = reg.predict(X, output_type="full", quantiles=[0.16, 0.84])
-    if isinstance(result, dict) and "median" in result and "quantiles" in result:
-        median = np.asarray(result["median"])
-        q = result["quantiles"]  # list[np.ndarray], length 2 -> [q16, q84]
-        lower = np.asarray(q[0])
-        upper = np.asarray(q[1])
-        sigma = np.clip((upper - lower) / 2.0, a_min=1e-3, a_max=None)
-        return median, sigma
-
-    logger.warning(
-        "TabPFN predict(output_type='full') returned unexpected schema; "
-        "falling back to two-call path."
-    )
-    median = np.asarray(reg.predict(X, output_type="median"))
-    q_arr = reg.predict(X, output_type="quantiles", quantiles=[0.16, 0.84])
-    lower = np.asarray(q_arr[0])
-    upper = np.asarray(q_arr[1])
-    sigma = np.clip((upper - lower) / 2.0, a_min=1e-3, a_max=None)
-    return median, sigma
-
-
-def _build_regressor(
-    device: str, seed: int, ignore_pretraining_limits: bool
-) -> TabPFNRegressor:
-    """Construct a TabPFNRegressor with the ablation safety-override flag.
-
-    ``ignore_pretraining_limits=True`` is a DELIBERATE override of TabPFN-2.6's
-    2000-feature safety check. Use ONLY when deliberately testing
-    >2000-feature behavior (e.g., top-k > 2000 ablations). Accepts the
-    distributional-extrapolation risk; TabPFN's prior was trained on ≤2000
-    features. Default MUST be False everywhere upstream.
-
-    model_version is NOT a TabPFNRegressor constructor kwarg — set via
-    tabpfn.settings (default is ModelVersion.V2_6 per tabpfn/settings.py:36).
-    """
-    return TabPFNRegressor(
-        device=device,
-        random_state=seed,
-        ignore_pretraining_limits=ignore_pretraining_limits,
-    )
-
-
 def main(args):
-    # See _build_regressor() for --ignore-pretraining-limits override semantics.
+    # See ``build_regressor`` in _helpers.py for --ignore-pretraining-limits
+    # override semantics.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    os.environ.setdefault(
-        "TABPFN_MODEL_CACHE_DIR",
-        "/host/milan/tank/Joon/__external_programs/tabpfn",
+    # CC8: resolve TABPFN_MODEL_CACHE_DIR via the shared helper. Falls back to
+    # a host-specific path with a logged warning rather than silent setdefault.
+    resolve_tabpfn_cache_dir(
+        default="/host/milan/tank/Joon/__external_programs/tabpfn",
     )
     splits = load_splits(args.splits_path)
     precomputed_dir = Path(args.precomputed_dir)
@@ -145,25 +100,11 @@ def main(args):
         logger.info("=== Fold %d ===", fold_idx)
         n_train_raw = len(fold_split["train"])
         n_val_raw = len(fold_split["val"])
-        train_ids = [
-            s for s in fold_split["train"] if s in features and s in targets
-        ]
-        val_ids = [
-            s for s in fold_split["val"] if s in features and s in targets
-        ]
-        dropped_train_no_feat = sum(
-            1 for s in fold_split["train"] if s not in features
+        train_ids, dropped_train_no_feat, dropped_train_no_tgt = filter_usable_subjects(
+            fold_split["train"], features, targets,
         )
-        dropped_train_no_tgt = sum(
-            1 for s in fold_split["train"]
-            if s in features and s not in targets
-        )
-        dropped_val_no_feat = sum(
-            1 for s in fold_split["val"] if s not in features
-        )
-        dropped_val_no_tgt = sum(
-            1 for s in fold_split["val"]
-            if s in features and s not in targets
+        val_ids, dropped_val_no_feat, dropped_val_no_tgt = filter_usable_subjects(
+            fold_split["val"], features, targets,
         )
         logger.info(
             "fold %d: train usable=%d/%d (dropped no_features=%d, no_target=%d)"
@@ -172,7 +113,7 @@ def main(args):
             len(train_ids), n_train_raw, dropped_train_no_feat, dropped_train_no_tgt,
             len(val_ids), n_val_raw, dropped_val_no_feat, dropped_val_no_tgt,
         )
-        top_k_path = _top_k_filename(top_k_dir, args.top_k, fold_idx, args.feature_set)
+        top_k_path = top_k_filename(top_k_dir, args.top_k, fold_idx, args.feature_set)
         top_k = json.loads(top_k_path.read_text())["indices"]
 
         X_train = np.stack(
@@ -191,15 +132,15 @@ def main(args):
             # pooled stats.
             X_train, X_val = apply_zscore_train_only(X_train, X_val)
 
-        reg = _build_regressor(
+        reg = build_regressor(
             device=device,
             seed=args.seed,
             ignore_pretraining_limits=args.ignore_pretraining_limits,
         )
         reg.fit(X_train, y_train)
-        mean, sigma = _predict_with_sigma(reg, X_val)
+        mean, sigma = predict_with_sigma(reg, X_val)
 
-        out_path = _outer_output_filename(output_dir, fold_idx, args.feature_set)
+        out_path = outer_output_filename(output_dir, fold_idx, args.feature_set)
         np.savez(
             out_path,
             val_subject_ids=np.array(val_ids, dtype=object),
@@ -209,7 +150,6 @@ def main(args):
             train_n=len(train_ids),
         )
 
-        from sklearn.metrics import r2_score
         r2 = r2_score(y_val, mean)
         results.append({
             "fold": fold_idx, "r2": r2, "n_val": len(val_ids),
@@ -230,24 +170,39 @@ def main(args):
     logger.info("  per-fold R² = %s", [f"{r:+.4f}" for r in r2s])
     logger.info("==============================")
 
-    # Write CSV for paper table
-    outputs_pipeline = Path("outputs/pipeline")
-    outputs_pipeline.mkdir(parents=True, exist_ok=True)
+    # Write CSV for paper table. CC7: writable dir is configurable via
+    # --csv-output-dir (defaults to outputs/pipeline alongside output-dir).
+    csv_dir = Path(args.csv_output_dir)
+    csv_dir.mkdir(parents=True, exist_ok=True)
     if args.feature_set == "A":
-        csv_path = outputs_pipeline / "baseline_results_tabpfn.csv"
+        csv_path = csv_dir / "baseline_results_tabpfn.csv"
     else:
-        csv_path = outputs_pipeline / f"baseline_results_tabpfn_{args.feature_set}.csv"
+        csv_path = csv_dir / f"baseline_results_tabpfn_{args.feature_set}.csv"
     pd.DataFrame(results).to_csv(csv_path, index=False)
     logger.info("Wrote baseline CSV: %s", csv_path)
 
 
 if __name__ == "__main__":
+    # Anchor defaults to the worktree root so callers in arbitrary cwds get
+    # consistent paths (mirrors run_clinical_baseline.py:54-65).
+    REPO_ROOT = Path(__file__).resolve().parents[3]
     p = argparse.ArgumentParser()
-    p.add_argument("--splits-path", default="outputs/splits.json")
-    p.add_argument("--precomputed-dir", default="data/precomputed")
-    p.add_argument("--metadata-csv", default="data/metadata_ROSMAP/metadata.csv")
-    p.add_argument("--top-k-dir", default="data/canonical")
-    p.add_argument("--output-dir", default="data/canonical")
+    p.add_argument("--splits-path", default=str(REPO_ROOT / "outputs/splits.json"))
+    p.add_argument("--precomputed-dir", default=str(REPO_ROOT / "data/precomputed"))
+    p.add_argument(
+        "--metadata-csv",
+        default=str(REPO_ROOT / "data/metadata_ROSMAP/metadata.csv"),
+    )
+    p.add_argument("--top-k-dir", default=str(REPO_ROOT / "data/canonical"))
+    p.add_argument("--output-dir", default=str(REPO_ROOT / "data/canonical"))
+    p.add_argument(
+        "--csv-output-dir",
+        default=str(REPO_ROOT / "outputs/pipeline"),
+        help=(
+            "Directory for per-feature-set baseline CSV (paper table). "
+            "Separate from --output-dir which holds per-fold .npz."
+        ),
+    )
     p.add_argument("--top-k", type=int, default=2000)
     p.add_argument(
         "--feature-set",

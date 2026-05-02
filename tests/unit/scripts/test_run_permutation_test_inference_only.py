@@ -21,8 +21,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 SCRIPT_PATH = (
     _WORKTREE_ROOT
     / "scripts"
@@ -31,17 +30,13 @@ SCRIPT_PATH = (
     / "run_permutation_test_inference_only.py"
 )
 
-
 def _import_script():
-    if str(_WORKTREE_ROOT) not in sys.path:
-        sys.path.insert(0, str(_WORKTREE_ROOT))
     spec = importlib.util.spec_from_file_location(
         "run_permutation_test_inference_only", SCRIPT_PATH,
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
 
 def _build_synthetic_canonical_dir(tmp_path: Path, n_folds: int = 3, n_per_fold: int = 8):
     """Create a fake canonical run with per-fold val_predictions_best.npz.
@@ -79,7 +74,6 @@ def _build_synthetic_canonical_dir(tmp_path: Path, n_folds: int = 3, n_per_fold:
     meta.to_csv(meta_csv, index=False)
     return canonical, meta_csv, all_subjects, all_targets
 
-
 def test_shuffle_finite_labels_preserves_nan(tmp_path):
     """NaN positions must remain NaN; finite values must be a permutation."""
     mod = _import_script()
@@ -102,7 +96,6 @@ def test_shuffle_finite_labels_preserves_nan(tmp_path):
     )
     assert finite_vals == [1.0, 3.0, 4.0]
 
-
 def test_compute_per_fold_r2_drops_nan_subjects(tmp_path):
     """Subjects with NaN shuffled labels are excluded from R² calculation."""
     mod = _import_script()
@@ -115,7 +108,6 @@ def test_compute_per_fold_r2_drops_nan_subjects(tmp_path):
     r2s, ns = mod.compute_per_fold_r2(folds, y_lookup)
     assert ns[0] == 3  # 4 subjects but B has NaN
     assert np.isfinite(r2s[0])
-
 
 def test_smoke_run_inference_only_n5(tmp_path):
     """Smoke: N=5 perms produce summary JSON with all required schema fields."""
@@ -167,7 +159,6 @@ def test_smoke_run_inference_only_n5(tmp_path):
     # Null mean should be near zero or negative (random shuffling kills signal).
     assert summary["null_mean"] < summary["canonical_mean_r2"]
 
-
 def test_canonical_dir_missing_files_raises(tmp_path):
     """Non-existent canonical predictions raise a clear error."""
     mod = _import_script()
@@ -177,7 +168,6 @@ def test_canonical_dir_missing_files_raises(tmp_path):
             n_folds=5,
             pred_filename="val_predictions_best.npz",
         )
-
 
 def test_p_value_floor_at_one_over_n_plus_one():
     """Empirical p-value floor is 1/(N+1) when no perm beats canonical."""

@@ -58,8 +58,14 @@ class CellTransformer(nn.Module):
         dropout: float = 0.1,
         use_gradient_checkpointing: bool = False,
         condition_on_cell_type: bool = True,
-        gene_gate_temperature: float = 2.0,  # Unused — kept for config backward compat
+        gene_gate_temperature: float = 2.0,
     ):
+        # NOTE: ``gene_gate_temperature`` is ACCEPTED but not used by the
+        # current GeneAttentionGate implementation (the gate switched from
+        # softmax to sigmoid; see gene_attention_gate.py L75-L87). The
+        # parameter is retained at this call site for backward
+        # compatibility with old config YAMLs. Removing it would require
+        # bumping the config schema version; treat as a no-op until then.
         super().__init__()
 
         if n_genes <= 0:

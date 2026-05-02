@@ -18,14 +18,12 @@ from src.analysis.subgroup_helpers import (
     quantile_labels,
 )
 
-
 def test_quantile_labels_basic():
     """8 equally-spaced points should map to Q1 Q1 Q2 Q2 Q3 Q3 Q4 Q4."""
     s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
     out = quantile_labels(s, n_quantiles=4, prefix="Q")
     expected = ["Q1", "Q1", "Q2", "Q2", "Q3", "Q3", "Q4", "Q4"]
     assert list(out) == expected
-
 
 def test_quantile_labels_preserves_none_for_nan():
     """NaN entries must yield None (not a bucket label) so downstream drops them."""
@@ -40,7 +38,6 @@ def test_quantile_labels_preserves_none_for_nan():
     assert len(labelled) == 7
     assert all(x in {"Q1", "Q2", "Q3", "Q4"} for x in labelled)
 
-
 def test_quantile_labels_n_quantiles_3():
     """n_quantiles=3 should yield T1/T2/T3-style labels (with prefix='T')."""
     s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
@@ -48,7 +45,6 @@ def test_quantile_labels_n_quantiles_3():
     # 6 points / 3 buckets → 2 per bucket.
     expected = ["T1", "T1", "T2", "T2", "T3", "T3"]
     assert list(out) == expected
-
 
 def test_apoe_e4_count_label_codes():
     """APOE genotype two-digit codes → ε4 count as string; NaN → None."""
@@ -59,7 +55,6 @@ def test_apoe_e4_count_label_codes():
     assert apoe_e4_count_label(24) == "1"
     assert apoe_e4_count_label(float("nan")) is None
     assert apoe_e4_count_label(None) is None
-
 
 def test_msex_label_codes():
     """msex 0/1 → '0'/'1' strings; NaN → None."""

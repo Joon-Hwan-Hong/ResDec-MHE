@@ -17,21 +17,23 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-
 # Paths used by the scripts when run in this worktree. We write minimal stubs
 # into tmp_path to keep the tests self-contained.
-
 
 # ---------------------------------------------------------------------------
 # _build_regressor helper: direct function-level thread test
 # ---------------------------------------------------------------------------
+# After CC4: the previously duplicated ``_build_regressor`` is now the shared
+# ``build_regressor`` in scripts.resdec_mhe.tabpfn._helpers. The flag-threading
+# contract is identical; the patch target moved from each consumer module to
+# the helper.
 @pytest.mark.parametrize("flag_value", [True, False])
-def test_build_regressor_threads_ignore_pretraining_limits_oof(flag_value):
-    """compute_tabpfn_oof._build_regressor forwards the flag verbatim."""
-    from scripts.resdec_mhe.tabpfn import compute_oof as compute_tabpfn_oof
+def test_build_regressor_threads_ignore_pretraining_limits(flag_value):
+    """Shared build_regressor forwards the flag verbatim into TabPFNRegressor."""
+    from scripts.resdec_mhe.tabpfn import _helpers
 
-    with patch.object(compute_tabpfn_oof, "TabPFNRegressor") as mock_cls:
-        compute_tabpfn_oof._build_regressor(
+    with patch.object(_helpers, "TabPFNRegressor") as mock_cls:
+        _helpers.build_regressor(
             device="cpu", seed=42, ignore_pretraining_limits=flag_value,
         )
         mock_cls.assert_called_once()
@@ -39,23 +41,6 @@ def test_build_regressor_threads_ignore_pretraining_limits_oof(flag_value):
         assert kwargs["ignore_pretraining_limits"] is flag_value
         assert kwargs["device"] == "cpu"
         assert kwargs["random_state"] == 42
-
-
-@pytest.mark.parametrize("flag_value", [True, False])
-def test_build_regressor_threads_ignore_pretraining_limits_outer(flag_value):
-    """compute_tabpfn_outer._build_regressor forwards the flag verbatim."""
-    from scripts.resdec_mhe.tabpfn import compute_outer as compute_tabpfn_outer
-
-    with patch.object(compute_tabpfn_outer, "TabPFNRegressor") as mock_cls:
-        compute_tabpfn_outer._build_regressor(
-            device="cpu", seed=42, ignore_pretraining_limits=flag_value,
-        )
-        mock_cls.assert_called_once()
-        kwargs = mock_cls.call_args.kwargs
-        assert kwargs["ignore_pretraining_limits"] is flag_value
-        assert kwargs["device"] == "cpu"
-        assert kwargs["random_state"] == 42
-
 
 # ---------------------------------------------------------------------------
 # CLI default: when the flag is omitted, argparse parses it as False
@@ -77,16 +62,13 @@ def _parse_oof_cli(argv: list[str]):
     )
     return p.parse_args(argv)
 
-
 def test_cli_flag_defaults_to_false_when_omitted():
     args = _parse_oof_cli(argv=[])
     assert args.ignore_pretraining_limits is False
 
-
 def test_cli_flag_enabled_when_passed():
     args = _parse_oof_cli(argv=["--ignore-pretraining-limits"])
     assert args.ignore_pretraining_limits is True
-
 
 # ---------------------------------------------------------------------------
 # End-to-end mock: verify that the CLI-driven value lands on every
@@ -97,6 +79,7 @@ def test_cli_flag_enabled_when_passed():
 def test_main_oof_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, flag_value):
     """main(args) must pass ignore_pretraining_limits into EVERY inner-fold
     TabPFNRegressor construction."""
+    from scripts.resdec_mhe.tabpfn import _helpers
     from scripts.resdec_mhe.tabpfn import compute_oof as compute_tabpfn_oof
 
     # Stub out data loaders so main() doesn't try to read real data
@@ -137,7 +120,7 @@ def test_main_oof_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, fl
     mock_instance.predict.side_effect = predict_full
     mock_instance.fit.return_value = None
     mock_cls.return_value = mock_instance
-    monkeypatch.setattr(compute_tabpfn_oof, "TabPFNRegressor", mock_cls)
+    monkeypatch.setattr(_helpers, "TabPFNRegressor", mock_cls)
 
     # Provide top-k JSON file
     top_k_dir = tmp_path / "topk"
@@ -160,6 +143,7 @@ def test_main_oof_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, fl
     a.top_k = top_k
     a.n_inner_folds = 2
     a.seed = 42
+    a.feature_set = "A"  # default OOF feature-set (post-CC6 parity with outer)
     a.ignore_pretraining_limits = flag_value
     a.zscore = False  # unrelated to this test; default backward-compat path
 
@@ -179,11 +163,11 @@ def test_main_oof_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, fl
             f"TabPFNRegressor(...) call; saw kwargs={call.kwargs}"
         )
 
-
 @pytest.mark.parametrize("flag_value", [True, False])
 def test_main_outer_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, flag_value):
     """main(args) of the outer script must pass ignore_pretraining_limits
     into EVERY outer-fold TabPFNRegressor construction."""
+    from scripts.resdec_mhe.tabpfn import _helpers
     from scripts.resdec_mhe.tabpfn import compute_outer as compute_tabpfn_outer
 
     # Stub out data loaders
@@ -229,7 +213,7 @@ def test_main_outer_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, 
     mock_instance.predict.side_effect = predict_full
     mock_instance.fit.return_value = None
     mock_cls.return_value = mock_instance
-    monkeypatch.setattr(compute_tabpfn_outer, "TabPFNRegressor", mock_cls)
+    monkeypatch.setattr(_helpers, "TabPFNRegressor", mock_cls)
 
     # Provide top-k JSON files for both folds
     top_k_dir = tmp_path / "topk"
@@ -249,6 +233,7 @@ def test_main_outer_threads_flag_to_every_regressor_call(monkeypatch, tmp_path, 
     a.metadata_csv = "dummy.csv"
     a.top_k_dir = str(top_k_dir)
     a.output_dir = str(output_dir)
+    a.csv_output_dir = str(tmp_path / "csv")  # post-CC7 outer CSV write target
     a.top_k = top_k
     a.feature_set = "A"
     a.seed = 42

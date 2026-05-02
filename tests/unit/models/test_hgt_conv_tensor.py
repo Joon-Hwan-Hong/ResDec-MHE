@@ -5,7 +5,6 @@ import torch
 
 from src.data.constants import N_CELL_TYPES, N_EDGE_TYPES
 
-
 @pytest.fixture
 def conv_config():
     """Small conv configuration for testing."""
@@ -19,12 +18,10 @@ def conv_config():
         "dropout": 0.0,
     }
 
-
 @pytest.fixture
 def conv(conv_config):
     from src.models.components.hgt_conv_tensor import HGTConvTensor
     return HGTConvTensor(**conv_config)
-
 
 @pytest.fixture
 def sample_batch(conv_config):
@@ -44,7 +41,6 @@ def sample_batch(conv_config):
     edge_type = torch.cat(type_parts)
     edge_attr = torch.rand(B * edges_per_sample, 1)
     return x, edge_index, edge_type, edge_attr
-
 
 class TestHGTConvTensorInit:
     def test_creates_qkv_weights(self, conv, conv_config):
@@ -87,7 +83,6 @@ class TestHGTConvTensorInit:
         conv = HGTConvTensor(32, 32, 4, 2, edge_dim=None)
         assert conv.edge_lin is None
         assert conv.edge_scale_lin is None
-
 
 class TestHGTConvTensorForward:
     def test_output_shape(self, conv, sample_batch):
@@ -162,7 +157,6 @@ class TestHGTConvTensorForward:
         out = conv(x, edge_index, edge_type, edge_attr)
         assert out.shape == (B, N_CELL_TYPES, 128)
         assert torch.isfinite(out).all()
-
 
 class TestHGTConvTensorFlatEdges:
     """Tests for the flat/concatenated edge format."""

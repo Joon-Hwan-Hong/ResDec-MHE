@@ -22,22 +22,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-_WORKTREE_ROOT = Path(__file__).resolve().parents[3]
-
+from tests.conftest import WORKTREE_ROOT as _WORKTREE_ROOT
 
 def _import_module():
-    if str(_WORKTREE_ROOT) not in sys.path:
-        sys.path.insert(0, str(_WORKTREE_ROOT))
     from scripts.resdec_mhe.interpretability import (  # noqa: E402
         run_baseline_fdr_correction as mod,
     )
     return mod
 
-
 # ----------------------------------------------------------------------
 # bh_fdr — invariants and cross-implementation agreement
 # ----------------------------------------------------------------------
-
 
 def test_bh_fdr_matches_statsmodels_machine_precision() -> None:
     """scipy and statsmodels BH must agree to machine precision."""
@@ -53,14 +48,12 @@ def test_bh_fdr_matches_statsmodels_machine_precision() -> None:
     _, q_sm, _, _ = multipletests(p, alpha=0.05, method="fdr_bh")
     np.testing.assert_allclose(q_scipy, q_sm, atol=1e-15)
 
-
 def test_bh_fdr_clipped_to_one() -> None:
     """All q-values must be ≤ 1 even if M·p exceeds 1."""
     mod = _import_module()
     p = np.array([0.9, 0.95, 0.99, 0.999])
     q = mod.bh_fdr(p)
     assert np.all(q <= 1.0 + 1e-12)
-
 
 def test_bh_fdr_rejects_invalid_input() -> None:
     """Out-of-[0,1] p-values must raise ValueError."""
@@ -72,17 +65,14 @@ def test_bh_fdr_rejects_invalid_input() -> None:
     with pytest.raises(ValueError):
         mod.bh_fdr(np.array([[0.1, 0.2], [0.3, 0.4]]))
 
-
 # ----------------------------------------------------------------------
 # bonferroni_threshold — arithmetic
 # ----------------------------------------------------------------------
-
 
 def test_bonferroni_threshold_basic() -> None:
     mod = _import_module()
     assert mod.bonferroni_threshold(0.05, 22) == pytest.approx(0.05 / 22, rel=1e-12)
     assert mod.bonferroni_threshold(0.01, 10) == pytest.approx(0.001, rel=1e-12)
-
 
 def test_bonferroni_threshold_rejects_invalid() -> None:
     mod = _import_module()
@@ -95,11 +85,9 @@ def test_bonferroni_threshold_rejects_invalid() -> None:
     with pytest.raises(ValueError):
         mod.bonferroni_threshold(1.5, 10)
 
-
 # ----------------------------------------------------------------------
 # correct_panel — synthetic 4-baseline panel with a lost-to-FDR entry
 # ----------------------------------------------------------------------
-
 
 def _make_synthetic_payload() -> dict:
     """4-baseline panel: 3 strongly-significant, 1 borderline.
@@ -142,7 +130,6 @@ def _make_synthetic_payload() -> dict:
             },
         },
     }
-
 
 def _make_lost_to_fdr_payload() -> dict:
     """Panel with one entry that is unadjusted-significant but lost to FDR.
@@ -190,7 +177,6 @@ def _make_lost_to_fdr_payload() -> dict:
         },
     }
 
-
 def test_correct_panel_synthetic_all_pass() -> None:
     """All-significant 4-baseline synthetic panel: BH passes all 4."""
     mod = _import_module()
@@ -220,7 +206,6 @@ def test_correct_panel_synthetic_all_pass() -> None:
     # Per-seed Wilcoxon round-trip: 5 seeds preserved per baseline.
     for r in record["per_baseline"]:
         assert len(r["per_seed_wilcoxon_p_one_sided_greater"]) == 5
-
 
 def test_correct_panel_lost_to_fdr_branch() -> None:
     """Constructed panel exercises the lost-to-FDR diagnostic.
@@ -257,11 +242,9 @@ def test_correct_panel_lost_to_fdr_branch() -> None:
     # Bonferroni at α/M = 0.0125 — only Strong (1e-6) passes.
     assert record["summary"]["n_bonferroni_significant"] == 1
 
-
 # ----------------------------------------------------------------------
 # End-to-end smoke test against the canonical 22-baseline JSON
 # ----------------------------------------------------------------------
-
 
 def test_run_baseline_fdr_correction_e2e(tmp_path: Path) -> None:
     """Run the script against the real 22-baseline JSON and validate outputs."""
@@ -334,7 +317,6 @@ def test_run_baseline_fdr_correction_e2e(tmp_path: Path) -> None:
     for line in md_text.splitlines():
         if line.startswith("| XGBoost [A] ") or line.startswith("| XGBoost [A+C+E] "):
             assert "| no |" in line, line
-
 
 def test_format_p_helper() -> None:
     """``_format_p`` uses scientific notation below 1e-3, fixed-point above."""

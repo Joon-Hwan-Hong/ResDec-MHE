@@ -44,10 +44,17 @@ from src.utils.provenance import git_sha
 logger = logging.getLogger(__name__)
 
 
-def storey_qvalues(p: np.ndarray, lambdas: np.ndarray = None) -> tuple[np.ndarray, float]:
+def storey_qvalues(p: np.ndarray, lambdas: np.ndarray = None) -> tuple[np.ndarray, float, str]:
     """Storey-Tibshirani 2003 q-values via the smoother method (default in R qvalue).
 
-    Returns (q_values, pi0_estimate).
+    Returns ``(q_values, pi0_estimate, method)``. ``method`` is one of:
+      * ``"storey_smoother"`` — full Storey procedure with the cubic-spline
+        π₀ estimate.
+      * ``"storey_smoother_mean_fallback"`` — spline fit failed; π₀ is the
+        mean of the per-λ estimates (less principled — see WARNING in log).
+      * ``"bh_fallback_few_pvalues"`` — fewer than 10 finite p-values; fell
+        back to BH (π₀=1) which is equivalent to Storey at π₀=1.
+
     Implementation: estimate π₀(λ) = #{p_i > λ} / (m·(1−λ)) on a grid of λ values,
     fit a natural cubic spline, and evaluate at λ → 1 (use λ = 0.95 as default).
     """
@@ -59,7 +66,7 @@ def storey_qvalues(p: np.ndarray, lambdas: np.ndarray = None) -> tuple[np.ndarra
         if finite.any():
             ranked = stats.false_discovery_control(p[finite], method="bh")
             q[finite] = ranked
-        return q, 1.0
+        return q, 1.0, "bh_fallback_few_pvalues"
     p_valid = p[finite]
     m = len(p_valid)
 
@@ -74,6 +81,7 @@ def storey_qvalues(p: np.ndarray, lambdas: np.ndarray = None) -> tuple[np.ndarra
     try:
         spline = UnivariateSpline(lambdas, pi0_lam, k=3, s=0)
         pi0 = float(spline(lambdas.max()))
+        method = "storey_smoother"
     except Exception as e:
         logger.warning(
             "Storey spline fit failed (%s); falling back to mean(pi0_lam) = %.3f. "
@@ -82,6 +90,7 @@ def storey_qvalues(p: np.ndarray, lambdas: np.ndarray = None) -> tuple[np.ndarra
             e, float(pi0_lam.mean()),
         )
         pi0 = float(pi0_lam.mean())
+        method = "storey_smoother_mean_fallback"
     pi0 = float(np.clip(pi0, 1e-3, 1.0))
 
     # Order p-values, compute q
@@ -97,7 +106,7 @@ def storey_qvalues(p: np.ndarray, lambdas: np.ndarray = None) -> tuple[np.ndarra
     q_full_valid[order] = q_ordered
     q = np.full_like(p, np.nan)
     q[finite] = q_full_valid
-    return q, pi0
+    return q, pi0, method
 
 
 def _wilcoxon_per_gene(expr_res: np.ndarray, expr_vul: np.ndarray) -> np.ndarray:
@@ -167,19 +176,34 @@ def _perm_null_one_ct(
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
-        "--residual-csv",
-        default="outputs/canonical/interpretability/residual_per_subject.csv",
+        "--residual-csv", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/residual_per_subject.csv"
+        ),
     )
-    p.add_argument("--precomputed-dir", default="data/precomputed")
-    p.add_argument("--gene-names-npy", default="data/precomputed/gene_names.npy")
     p.add_argument(
-        "--de-input-dir",
-        default="outputs/canonical/interpretability/de_resilient_vs_vulnerable",
+        "--precomputed-dir", type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed",
+    )
+    p.add_argument(
+        "--gene-names-npy", type=Path,
+        default=_WORKTREE_ROOT / "data/precomputed/gene_names.npy",
+    )
+    p.add_argument(
+        "--de-input-dir", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/de_resilient_vs_vulnerable"
+        ),
         help="Existing per-CT Wilcoxon DE outputs (reads CT_*_de.csv for p-values).",
     )
     p.add_argument(
-        "--out-dir",
-        default="outputs/canonical/interpretability/de_storey_and_permutation",
+        "--out-dir", type=Path,
+        default=(
+            _WORKTREE_ROOT
+            / "outputs/canonical/interpretability/de_storey_and_permutation"
+        ),
     )
     p.add_argument("--quartile-fraction", type=float, default=0.25)
     p.add_argument("--n-perms", type=int, default=1000)
@@ -197,18 +221,21 @@ def main() -> int:
     logger.info("Storey q-values per CT...")
     storey_rows = []
     pi0_per_ct: dict[str, float] = {}
+    qvalue_method_per_ct: dict[str, str] = {}
     for ct_idx in range(len(CELL_TYPE_ORDER)):
         de_csv = Path(args.de_input_dir) / f"CT_{ct_idx:02d}_de.csv"
         if not de_csv.exists():
             continue
         df = pd.read_csv(de_csv)
         p_vals = df["p_value"].to_numpy()
-        q, pi0 = storey_qvalues(p_vals)
+        q, pi0, qmethod = storey_qvalues(p_vals)
         df["q_storey"] = q
         df["cell_type_index"] = ct_idx
         df["cell_type"] = CELL_TYPE_ORDER[ct_idx]
         df["pi0_estimate"] = pi0
+        df["qvalue_method"] = qmethod  # storey_smoother | …_mean_fallback | bh_fallback…
         pi0_per_ct[CELL_TYPE_ORDER[ct_idx]] = pi0
+        qvalue_method_per_ct[CELL_TYPE_ORDER[ct_idx]] = qmethod
         # Top-20 by q
         top = df.nsmallest(20, "q_storey")
         storey_rows.append(top)
@@ -277,6 +304,10 @@ def main() -> int:
         "n_genes": pb.shape[2],
         "pi0_per_ct": pi0_per_ct,
         "mean_pi0": float(np.mean(list(pi0_per_ct.values()))) if pi0_per_ct else None,
+        # Per-CT Storey-vs-BH-fallback method (so consumers know which q-values
+        # are bona-fide Storey vs the BH fallback that fires when n_finite < 10
+        # OR the spline fit fails).
+        "qvalue_method_per_ct": qvalue_method_per_ct,
         "storey_qvalues_csv": str(out_dir / "storey_qvalues_per_ct_top20.csv"),
         "perm_pvalues_csv": str(out_dir / "perm_pvalues_per_ct_top50.csv"),
         "git_commit": git_sha(_WORKTREE_ROOT),

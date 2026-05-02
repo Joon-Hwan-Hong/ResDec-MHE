@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -35,6 +36,9 @@ from sklearn.metrics import r2_score
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TARGET = "cogn_global"
 DEFAULT_ID_COL = "ROSMAP_IndividualID"
+# Top-K feature count used by compute_top_k_features.py + downstream TabPFN
+# OOF / outer compute. Mirrors the same constant in run_learning_curve.py.
+TOP_K = 2000
 
 
 def generate_shuffled_metadata(
@@ -69,6 +73,10 @@ def run_step(cmd: list, log_handle, step_name: str) -> float:
     Note: env inherits parent's CUDA_VISIBLE_DEVICES — non-training stages
     (top-k, TabPFN) see whatever GPU mask the launcher set, which is correct
     under perm-shard parallelization.
+
+    On failure, writes to BOTH the perm log AND stderr so that users tailing
+    the parent stdout / tmux pane see the error in real time without having
+    to chase the per-perm log file.
     """
     log_handle.write(f"\n=== {step_name} === @ {time.strftime('%H:%M:%S')}\n")
     log_handle.write(f"$ {' '.join(str(c) for c in cmd)}\n")
@@ -79,8 +87,12 @@ def run_step(cmd: list, log_handle, step_name: str) -> float:
         subprocess.run(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=env, check=True)
     except subprocess.CalledProcessError as exc:
         elapsed = time.time() - t0
-        log_handle.write(f"=== {step_name} FAILED in {elapsed:.1f}s, exit {exc.returncode} ===\n")
+        msg = f"=== {step_name} FAILED in {elapsed:.1f}s, exit {exc.returncode} ==="
+        log_handle.write(msg + "\n")
         log_handle.flush()
+        # Also surface to stderr so the parent pane sees the failure
+        # immediately (B-PT4: subprocess output is captured into log only).
+        print(msg, file=sys.stderr, flush=True)
         raise RuntimeError(f"{step_name} failed (see log); cmd: {cmd}") from exc
     elapsed = time.time() - t0
     log_handle.write(f"=== {step_name} done in {elapsed:.1f}s ===\n")
@@ -141,7 +153,7 @@ def run_one_permutation(
     precomputed_dir: Path,
     target_col: str,
     id_col: str,
-    gpus: list[int] | None = None,
+    gpus: list[int],
 ) -> dict:
     perm_dir = output_base / f"perm_{perm_seed}"
     perm_dir.mkdir(parents=True, exist_ok=True)
@@ -164,7 +176,7 @@ def run_one_permutation(
             "--precomputed-dir", str(precomputed_dir),
             "--metadata-csv", str(shuffled_csv),
             "--output-dir", str(topk_dir),
-            "--top-k", "2000",
+            "--top-k", str(TOP_K),
             "--feature-set", "A",
         ], log, "top-k features")
 
@@ -177,7 +189,7 @@ def run_one_permutation(
             "--metadata-csv", str(shuffled_csv),
             "--top-k-dir", str(topk_dir),
             "--output-dir", str(tabpfn_dir),
-            "--top-k", "2000",
+            "--top-k", str(TOP_K),
         ], log, "tabpfn OOF")
 
         # 4. TabPFN outer
@@ -188,7 +200,7 @@ def run_one_permutation(
             "--metadata-csv", str(shuffled_csv),
             "--top-k-dir", str(topk_dir),
             "--output-dir", str(tabpfn_dir),
-            "--top-k", "2000",
+            "--top-k", str(TOP_K),
             "--feature-set", "A",
         ], log, "tabpfn outer")
 
@@ -202,9 +214,11 @@ def run_one_permutation(
             "--tabpfn-oof-dir", str(tabpfn_dir),
             "--tabpfn-outer-dir", str(tabpfn_dir),
         ]
-        gpus_to_use = gpus or [0, 1]  # treat None or empty list as default 2-GPU
+        # `gpus` was already validated as non-empty by the argparse block in
+        # main() (raises SystemExit on empty list), so no further fallback is
+        # needed here. The earlier ``gpus or [0, 1]`` was dead defaulting.
         train_elapsed = run_train_folds_parallel(
-            folds=[0, 1, 2, 3, 4], gpus=gpus_to_use, base_args=train_args, log_handle=log,
+            folds=[0, 1, 2, 3, 4], gpus=gpus, base_args=train_args, log_handle=log,
         )
         log.write(f"\n=== train all folds done in {train_elapsed:.1f}s ===\n")
 
