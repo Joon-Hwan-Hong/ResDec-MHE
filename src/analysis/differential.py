@@ -74,6 +74,136 @@ def differential_attribution_effect(
     return df.sort_values("padj_bh").reset_index(drop=True)
 
 
+def quartile_subgroup_indices(
+    target: np.ndarray,
+    *,
+    quartile: float = 0.25,
+) -> dict[str, np.ndarray]:
+    """Split subjects into top-quartile (resilient) and bottom-quartile (vulnerable).
+
+    NaN targets are excluded from both subgroups.
+
+    Parameters
+    ----------
+    target : 1D array of per-subject targets (e.g. residualized cogn_global).
+    quartile : fraction in (0, 0.5] for the top/bottom slices. 0.25 = 25%.
+
+    Returns
+    -------
+    dict with "resilient" (highest-target subjects) and "vulnerable"
+    (lowest-target subjects) integer-index arrays into `target`.
+    """
+    if not (0.0 < quartile <= 0.5):
+        raise ValueError(f"quartile must be in (0, 0.5], got {quartile}")
+    target = np.asarray(target, dtype=float)
+    valid_mask = ~np.isnan(target)
+    valid_idx = np.flatnonzero(valid_mask)
+    valid_targets = target[valid_idx]
+    n_take = max(1, int(round(len(valid_idx) * quartile)))
+    order = np.argsort(valid_targets)
+    bottom_local = order[:n_take]
+    top_local = order[-n_take:]
+    return {
+        "resilient": valid_idx[top_local],
+        "vulnerable": valid_idx[bottom_local],
+    }
+
+
+def binned_subgroup_ct_importance(
+    attribution: np.ndarray,
+    *,
+    resilient_idx: np.ndarray,
+    vulnerable_idx: np.ndarray,
+    ct_names: Sequence[str],
+) -> pd.DataFrame:
+    """Per-CT Mann-Whitney U test of attribution magnitude resilient vs vulnerable.
+
+    Parameters
+    ----------
+    attribution : (n_subjects, n_ct) per-subject per-CT attribution magnitudes.
+    resilient_idx, vulnerable_idx : index arrays into attribution's first axis.
+
+    Returns
+    -------
+    DataFrame with columns: cell_type, mean_resilient, mean_vulnerable,
+    p_wilcoxon, padj_bh.  Sorted by padj_bh ascending.
+    """
+    if attribution.ndim != 2:
+        raise ValueError(f"expected 2D, got ndim={attribution.ndim}")
+    n_subj, n_ct = attribution.shape
+    if len(ct_names) != n_ct:
+        raise ValueError(f"ct_names len {len(ct_names)} != n_ct {n_ct}")
+
+    rows = []
+    for ct_idx in range(n_ct):
+        x_res = attribution[resilient_idx, ct_idx]
+        x_vul = attribution[vulnerable_idx, ct_idx]
+        try:
+            _, p = stats.mannwhitneyu(x_res, x_vul, alternative="two-sided")
+        except ValueError:
+            p = 1.0
+        rows.append({
+            "cell_type": ct_names[ct_idx],
+            "mean_resilient": float(np.nanmean(x_res)),
+            "mean_vulnerable": float(np.nanmean(x_vul)),
+            "p_wilcoxon": float(p),
+        })
+    df = pd.DataFrame(rows)
+    _, padj, _, _ = multipletests(df["p_wilcoxon"], method="fdr_bh")
+    df["padj_bh"] = padj
+    return df.sort_values("padj_bh").reset_index(drop=True)
+
+
+def binned_subgroup_dge_wilcoxon(
+    pseudobulk: np.ndarray,
+    *,
+    resilient_idx: np.ndarray,
+    vulnerable_idx: np.ndarray,
+    ct_names: Sequence[str],
+    gene_names: Sequence[str],
+) -> pd.DataFrame:
+    """Per (CT, gene) Mann-Whitney U DGE between resilient and vulnerable subgroups.
+
+    Parameters
+    ----------
+    pseudobulk : (n_subjects, n_ct, n_gene) per-(subject, CT, gene) expression.
+    resilient_idx, vulnerable_idx : index arrays into pseudobulk's first axis.
+
+    Returns
+    -------
+    DataFrame with columns: cell_type, gene, mean_resilient, mean_vulnerable,
+    p_wilcoxon, padj_bh. Sorted by padj_bh ascending.
+    """
+    if pseudobulk.ndim != 3:
+        raise ValueError(f"expected 3D, got ndim={pseudobulk.ndim}")
+    n_subj, n_ct, n_gene = pseudobulk.shape
+    if len(ct_names) != n_ct:
+        raise ValueError(f"ct_names len {len(ct_names)} != n_ct {n_ct}")
+    if len(gene_names) != n_gene:
+        raise ValueError(f"gene_names len {len(gene_names)} != n_gene {n_gene}")
+
+    rows = []
+    for ct_idx in range(n_ct):
+        for g_idx in range(n_gene):
+            x_res = pseudobulk[resilient_idx, ct_idx, g_idx]
+            x_vul = pseudobulk[vulnerable_idx, ct_idx, g_idx]
+            try:
+                _, p = stats.mannwhitneyu(x_res, x_vul, alternative="two-sided")
+            except ValueError:
+                p = 1.0
+            rows.append({
+                "cell_type": ct_names[ct_idx],
+                "gene":      gene_names[g_idx],
+                "mean_resilient": float(np.nanmean(x_res)),
+                "mean_vulnerable": float(np.nanmean(x_vul)),
+                "p_wilcoxon": float(p),
+            })
+    df = pd.DataFrame(rows)
+    _, padj, _, _ = multipletests(df["p_wilcoxon"], method="fdr_bh")
+    df["padj_bh"] = padj
+    return df.sort_values("padj_bh").reset_index(drop=True)
+
+
 def differential_ct_ranking(
     canonical_ranks: dict[str, list],
     variant_ranks: dict[str, list],
