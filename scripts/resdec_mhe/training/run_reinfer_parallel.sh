@@ -4,13 +4,17 @@
 # + best_summary.json into $OUTROOT/fold{N}/.
 #
 # Env overrides (all optional):
-#   CONFIG       phase YAML (default: configs/resdec_mhe/canonical.yaml)
-#   OUTROOT      output dir to read ckpts from + write best.npz to
-#                (default: outputs/canonical/p5_phase2_residual)
-#   TABPFN_DIR   directory holding tabpfn_outer_fold{N}*.npz files for
-#                the comparison summary (default: data/canonical)
-#   N_GPUS       number of GPUs (default: all visible)
-#   GPU_LIST     comma-separated GPU list, e.g. "0,1"
+#   CONFIG          phase YAML (default: configs/resdec_mhe/canonical.yaml)
+#   OUTROOT         output dir to read ckpts from + write best.npz to
+#                   (default: outputs/canonical/p5_phase2_residual)
+#   TABPFN_DIR      directory holding tabpfn_outer_fold{N}*.npz files for
+#                   the comparison summary (default: data/canonical)
+#   METADATA_PATH   override cfg.data.metadata_path (e.g. data/metadata_ROSMAP)
+#   PRECOMPUTED_DIR override cfg.data.precomputed_dir (e.g. data/precomputed)
+#   TABPFN_OOF_DIR  override cfg.data.tabpfn_oof_dir (variant TabPFN cache)
+#   TABPFN_OUTER_DIR override cfg.data.tabpfn_outer_dir
+#   N_GPUS          number of GPUs (default: all visible)
+#   GPU_LIST        comma-separated GPU list, e.g. "0,1"
 #
 # Usage:
 #   bash scripts/resdec_mhe/training/run_reinfer_parallel.sh
@@ -26,6 +30,10 @@ ROOT="${ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 CONFIG="${CONFIG:-configs/resdec_mhe/canonical.yaml}"
 OUTROOT="${OUTROOT:-outputs/canonical/p5_phase2_residual}"
 TABPFN_DIR="${TABPFN_DIR:-data/canonical}"
+METADATA_PATH="${METADATA_PATH:-}"
+PRECOMPUTED_DIR="${PRECOMPUTED_DIR:-}"
+TABPFN_OOF_DIR="${TABPFN_OOF_DIR:-}"
+TABPFN_OUTER_DIR="${TABPFN_OUTER_DIR:-}"
 FOLDS=(0 1 2 3 4)
 
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"
@@ -50,10 +58,24 @@ while (( idx < ${#FOLDS[@]} )); do
         gpu=${GPUS[$g]}
         out="$OUTROOT/fold${fold}"
         echo "[$(date '+%H:%M:%S')] fold $fold -> GPU $gpu"
+        EXTRA_ARGS=()
+        if [[ -n "$METADATA_PATH" ]]; then
+            EXTRA_ARGS+=(--metadata-path "$METADATA_PATH")
+        fi
+        if [[ -n "$PRECOMPUTED_DIR" ]]; then
+            EXTRA_ARGS+=(--precomputed-dir "$PRECOMPUTED_DIR")
+        fi
+        if [[ -n "$TABPFN_OOF_DIR" ]]; then
+            EXTRA_ARGS+=(--tabpfn-oof-dir "$TABPFN_OOF_DIR")
+        fi
+        if [[ -n "$TABPFN_OUTER_DIR" ]]; then
+            EXTRA_ARGS+=(--tabpfn-outer-dir "$TABPFN_OUTER_DIR")
+        fi
         CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/resdec_mhe/training/reinfer_best_ckpt.py \
             --config "$CONFIG" \
             --fold "$fold" \
             --output-dir "$OUTROOT" \
+            "${EXTRA_ARGS[@]}" \
             > "$out/fold${fold}_reinfer.log" 2>&1 &
         PIDS+=($!)
         DESCR+=("fold${fold}:gpu${gpu}:pid=$!")
