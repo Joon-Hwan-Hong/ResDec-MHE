@@ -1,15 +1,23 @@
-"""Run interpretability suite on a trained variant.
+"""Full attribution suite for a trained variant — Captum IG + GradientSHAP +
+SmoothGrad + 5 attention methods (AttnLRP / GMAR / GAF AF/GF/AGF) + LOCO
+zero-out + per-subject CCC attention + (optional) SAE 31-CT causal patching.
 
 Wraps existing canonical scripts, redirecting --canonical-dir / --pred-root /
---out-dir / --tabpfn-dir flags + variant-specific --metadata-path /
---precomputed-dir overrides for the sanitized configs/default.yaml.
+--out-dir / --tabpfn-dir flags + injecting variant-specific --metadata-path /
+--precomputed-dir overrides. Each script-fold takes ~1-30 min depending on
+method; full run on Variant A is ~3-5 GPU-hr.
+
+For "thin" variant runs (Variant B per plan), pass --thin to skip the 5
+attention methods + GradientSHAP/SmoothGrad + CCC. Captum IG + LOCO + SAE 31-CT
+remain (the four most cited canonical methods).
 
 USAGE
 -----
 uv run python scripts/resdec_mhe/variants/run_attribution_for_variant.py \\
-    --variant-name gpath_only --device cuda:0
+    --variant-name gpath_only --device cuda:0  # full suite
 
-Add --full-suite to also run SAE 31-CT causal patching (1 GPU, ~1 min).
+uv run python scripts/resdec_mhe/variants/run_attribution_for_variant.py \\
+    --variant-name multi_axis --device cuda:1 --thin
 """
 from __future__ import annotations
 
@@ -32,8 +40,8 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--variant-name", required=True,
                    choices=["gpath_only", "multi_axis"])
-    p.add_argument("--full-suite", action="store_true",
-                   help="Also run SAE 31-CT causal patching.")
+    p.add_argument("--thin", action="store_true",
+                   help="Skip GradientSHAP/SmoothGrad + 5 attention methods + CCC + SAE 31-CT (Variant B per plan).")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--metadata-path", type=Path,
                    default=_ROOT / "data/metadata_ROSMAP")
@@ -50,7 +58,7 @@ def main() -> int:
     variant_config = _ROOT / "configs/resdec_mhe/variants" / f"{args.variant_name}.yaml"
     variant_tabpfn_dir = out_root / "tabpfn_cache"
 
-    # 1. Captum IG composite attribution
+    # 1. Captum IG composite attribution (always)
     _run([
         sys.executable,
         str(_ROOT / "scripts/resdec_mhe/interpretability/captum_composite_attribution.py"),
@@ -62,7 +70,7 @@ def main() -> int:
         "--precomputed-dir", str(args.precomputed_dir),
     ])
 
-    # 2. LOCO zero-out per CT
+    # 2. LOCO zero-out per CT (always)
     _run([
         sys.executable,
         str(_ROOT / "scripts/resdec_mhe/interpretability/run_loco_zero_out.py"),
@@ -76,8 +84,44 @@ def main() -> int:
         "--precomputed-dir", str(args.precomputed_dir),
     ])
 
-    if args.full_suite:
-        # SAE 31-CT causal patching on variant (~1 min on 1 GPU)
+    if not args.thin:
+        # 3. GradientSHAP + SmoothGrad (combined script)
+        _run([
+            sys.executable,
+            str(_ROOT / "scripts/resdec_mhe/interpretability/gradient_shap_smoothgrad_attribution.py"),
+            "--config", str(variant_config),
+            "--pred-root", str(canonical_dir),
+            "--splits-path", str(args.splits_path),
+            "--out-dir", str(interp_out / "captum_robustness"),
+            "--metadata-path", str(args.metadata_path),
+            "--precomputed-dir", str(args.precomputed_dir),
+        ])
+
+        # 4. 5 attention methods (AttnLRP / GMAR / GAF AF / GAF GF / GAF AGF)
+        _run([
+            sys.executable,
+            str(_ROOT / "scripts/resdec_mhe/interpretability/run_attention_attribution.py"),
+            "--config", str(variant_config),
+            "--pred-root", str(canonical_dir),
+            "--splits-path", str(args.splits_path),
+            "--out-dir", str(interp_out / "attention_attribution"),
+            "--metadata-path", str(args.metadata_path),
+            "--precomputed-dir", str(args.precomputed_dir),
+        ])
+
+        # 5. Per-subject CCC attention (CT-CT edges)
+        _run([
+            sys.executable,
+            str(_ROOT / "scripts/resdec_mhe/interpretability/per_subject_ccc_attention.py"),
+            "--config", str(variant_config),
+            "--pred-root", str(canonical_dir),
+            "--splits-path", str(args.splits_path),
+            "--out-dir", str(interp_out / "ccc"),
+            "--metadata-path", str(args.metadata_path),
+            "--precomputed-dir", str(args.precomputed_dir),
+        ])
+
+        # 6. SAE 31-CT causal patching (~1 min on 1 GPU)
         _run([
             sys.executable,
             str(_ROOT / "scripts/resdec_mhe/interpretability/run_sae_causal_patching_31ct.py"),
@@ -89,13 +133,10 @@ def main() -> int:
             "--precomputed-dir", str(args.precomputed_dir),
         ])
 
-    # NOTE: Wasserstein-1 (run_distributional_resilience.py wasserstein) needs
-    # a per-subject residual CSV that does not exist for variants yet — produced
-    # by a downstream aggregator that consumes Captum + ResDec predictions. CMI
-    # (run_resilience_analyses.py latent_class) similarly chains downstream.
-    # Invoke those manually once the prereq CSVs are produced.
-
-    print(f"\nattribution suite done for variant {args.variant_name}", flush=True)
+    print(f"\nattribution suite done for variant {args.variant_name} (thin={args.thin})", flush=True)
+    print("\nNOTE: Wasserstein-1 (run_distributional_resilience.py wasserstein) and CMI "
+          "(run_resilience_analyses.py latent_class) need a per-subject residual CSV "
+          "produced downstream. Invoke those manually after this completes.", flush=True)
     return 0
 
 
