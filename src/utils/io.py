@@ -4,6 +4,8 @@ Input/output utilities for saving and loading various data formats.
 
 from pathlib import Path
 
+import os
+
 import h5py
 import numpy as np
 import pandas as pd
@@ -66,14 +68,13 @@ def save_attention_weights(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # NOTE: This writer is NOT atomic. Following the pattern at
-    # src/data/datasets.py:save_precomputed_features (tempfile + rename)
-    # would prevent partial-write corruption on crash, but requires
-    # restructuring the entire ~200-line ``with h5py.File(path, "w") as f:``
-    # body. Tracked as a future hardening item; current callers tolerate
-    # rerun-on-corruption because the writer is fast and the inputs are
-    # deterministic.
-    with h5py.File(path, "w") as f:
+    # Atomic write pattern: write to a sibling .tmp file, then os.replace
+    # to the final path. Prevents partial-write corruption on crash —
+    # readers either see the prior version (still valid) or the new file
+    # (fully written), never a half-written file. Pattern matches
+    # src/data/datasets.py::save_precomputed_features.
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with h5py.File(tmp_path, "w") as f:
         f.attrs["schema_version"] = "2.0"
 
         # --- Flat arrays ---
@@ -279,6 +280,9 @@ def save_attention_weights(
                     f.attrs[key] = value
                 elif isinstance(value, (int, float, bool)):
                     f.attrs[key] = value
+
+    # Atomic rename: replaces `path` if it exists, in a single filesystem op.
+    os.replace(tmp_path, path)
 
 
 def load_attention_weights(path: str | Path) -> dict[str, np.ndarray | dict]:

@@ -486,10 +486,16 @@ class Predictor:
         head_weights: dict[str, torch.Tensor] = {}
         HEAD_PREFIX = "prediction_head."
         for name, start, shape in site_slices:
-            prefix_pos = name.find(HEAD_PREFIX)
-            if prefix_pos < 0:
+            # Match the prefix only at module-path boundaries (start of name OR
+            # immediately after a `.`). `str.find` would match `"prediction_head"`
+            # inside a hypothetical `"old_prediction_head_v2"` and silently
+            # mis-attribute weights — the boundary check prevents that.
+            if name.startswith(HEAD_PREFIX):
+                key = name[len(HEAD_PREFIX):]
+            elif (sep_pos := name.find("." + HEAD_PREFIX)) >= 0:
+                key = name[sep_pos + 1 + len(HEAD_PREFIX):]
+            else:
                 continue
-            key = name[prefix_pos + len(HEAD_PREFIX):]
             numel = 1
             for s in shape:
                 numel *= s
