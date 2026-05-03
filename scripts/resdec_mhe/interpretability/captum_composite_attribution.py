@@ -148,6 +148,10 @@ def attribute_one_fold(args: argparse.Namespace, fold: int,
     OmegaConf.set_struct(cfg, False)
     cfg.model.head.type = "deterministic"
     cfg.data.fold = int(fold)
+    if args.metadata_path is not None:
+        cfg.data.metadata_path = str(args.metadata_path)
+    if args.precomputed_dir is not None:
+        cfg.data.precomputed_dir = str(args.precomputed_dir)
 
     fold_dir = Path(args.pred_root) / f"fold{fold}"
     ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
@@ -328,6 +332,8 @@ def main(args: argparse.Namespace) -> int:
         OmegaConf.load("configs/default.yaml"),
         OmegaConf.load(args.config),
     )
+    if args.precomputed_dir is not None:
+        cfg.data.precomputed_dir = str(args.precomputed_dir)
     gene_names, used_real_gene_names = _load_gene_names(
         Path(cfg.data.precomputed_dir), n_genes
     )
@@ -373,4 +379,14 @@ if __name__ == "__main__":
     p.add_argument("--n-steps", type=int, default=50)
     p.add_argument("--internal-batch-size", type=int, default=4)
     p.add_argument("--top-k", type=int, default=50)
+    p.add_argument(
+        "--metadata-path", type=Path, default=None,
+        help="Override cfg.data.metadata_path (the directory containing "
+             "metadata.csv). Useful when configs/default.yaml ships placeholder paths.",
+    )
+    p.add_argument(
+        "--precomputed-dir", type=Path, default=None,
+        help="Override cfg.data.precomputed_dir (PrecomputedDataset cache "
+             "of R*.pt files).",
+    )
     sys.exit(main(p.parse_args()))

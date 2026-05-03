@@ -137,6 +137,15 @@ def main():
             / "composite_attribution_summary.json"
         ),
     )
+    p.add_argument(
+        "--metadata-path", type=Path, default=None,
+        help="Override cfg.data.metadata_path (the directory containing "
+             "metadata.csv). Useful when configs/default.yaml ships placeholders.",
+    )
+    p.add_argument(
+        "--precomputed-dir", type=Path, default=None,
+        help="Override cfg.data.precomputed_dir (PrecomputedDataset cache).",
+    )
     args = p.parse_args()
 
     logging.basicConfig(
@@ -153,6 +162,10 @@ def main():
     )
     OmegaConf.set_struct(cfg, False)
     cfg.model.head.type = "deterministic"
+    if args.metadata_path is not None:
+        cfg.data.metadata_path = str(args.metadata_path)
+    if args.precomputed_dir is not None:
+        cfg.data.precomputed_dir = str(args.precomputed_dir)
 
     # Per-fold canonical + LOCO R² tables.
     per_ct_rows: list[dict] = []
