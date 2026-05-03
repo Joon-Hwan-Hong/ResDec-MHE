@@ -1,0 +1,37 @@
+# ResDec-MHE variant — target is cognition residualized jointly against
+# gpath + tangsqrt + amylsqrt. Variant TabPFN caches live under outputs/ (not
+# data/) because they are derived from per-fold residualized targets.
+
+experiment:
+  run_name: "variant_multi_axis_seed42"
+
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+    n_stages: 1
+    aux_lambdas: [1.0]
+    use_diff_attn: false
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
+    monitor: "val/r2"
+    mode: "max"
+
+data:
+  dataloader:
+    batch_size: 24
+  use_cached_embeddings: false
+  residualize_against:
+    axes: ["gpath", "tangsqrt", "amylsqrt"]
+    cache_dir: "outputs/canonical/variants/multi_axis/cache"
+  tabpfn_oof_dir: outputs/canonical/variants/multi_axis/tabpfn_cache
+  tabpfn_outer_dir: outputs/canonical/variants/multi_axis/tabpfn_cache

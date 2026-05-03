@@ -52,6 +52,99 @@ from scripts.resdec_mhe.tabpfn._helpers import (
 logger = logging.getLogger(__name__)
 
 
+def process_oof_fold(
+    fold_idx: int,
+    fold_split: dict,
+    features: dict,
+    targets: dict[str, float],
+    args,
+    device: str,
+    output_dir: Path,
+    top_k_dir: Path,
+) -> dict:
+    """Run inner-OOF TabPFN on one fold.
+
+    Reusable per-fold callable extracted from main() so variant pipelines
+    (residualized targets) can inject a custom ``targets`` map per fold.
+    Writes ``tabpfn_oof_fold{fold_idx}.npz`` and returns a summary dict.
+    """
+    logger.info("=== Fold %d ===", fold_idx)
+    n_train_raw = len(fold_split["train"])
+    train_ids, dropped_no_feat, dropped_no_tgt = filter_usable_subjects(
+        fold_split["train"], features, targets,
+    )
+    logger.info(
+        "fold %d: train usable=%d/%d (dropped no_features=%d, no_target=%d)",
+        fold_idx, len(train_ids), n_train_raw,
+        dropped_no_feat, dropped_no_tgt,
+    )
+    top_k_path = top_k_filename(
+        top_k_dir, args.top_k, fold_idx, args.feature_set,
+    )
+    top_k = json.loads(top_k_path.read_text())["indices"]
+
+    X_train_full = np.stack(
+        [features[s] for s in train_ids]
+    )[:, top_k].astype(np.float32)
+    y_train = np.array([targets[s] for s in train_ids], dtype=np.float32)
+    logger.info(
+        "  X shape: %s, y shape: %s", X_train_full.shape, y_train.shape
+    )
+
+    oof_mean = np.zeros_like(y_train, dtype=np.float32)
+    oof_std = np.ones_like(y_train, dtype=np.float32)
+
+    inner_kf = KFold(
+        n_splits=args.n_inner_folds, shuffle=True, random_state=args.seed
+    )
+    for inner_fold, (tr_idx, va_idx) in enumerate(inner_kf.split(X_train_full)):
+        X_tr = X_train_full[tr_idx]
+        X_va = X_train_full[va_idx]
+        if args.zscore:
+            # Per-feature z-score fit on INNER-fold train ONLY; transform
+            # both inner-train and inner-val with those train stats. No
+            # pooled stats across inner splits.
+            X_tr, X_va = apply_zscore_train_only(X_tr, X_va)
+        reg = build_regressor(
+            device=device,
+            seed=args.seed,
+            ignore_pretraining_limits=args.ignore_pretraining_limits,
+        )
+        reg.fit(X_tr, y_train[tr_idx])
+        try:
+            mean, sigma = predict_with_sigma(reg, X_va)
+        except Exception as e:
+            logger.warning(
+                "  inner %d: quantile path failed (%s); fallback to mean-only",
+                inner_fold, e,
+            )
+            mean = reg.predict(X_va)
+            sigma = np.ones_like(mean, dtype=np.float32)
+        oof_mean[va_idx] = mean.astype(np.float32)
+        oof_std[va_idx] = sigma.astype(np.float32)
+        logger.info("  inner %d: %d val preds done", inner_fold, len(va_idx))
+
+    if args.feature_set == "A":
+        out_path = output_dir / f"tabpfn_oof_fold{fold_idx}.npz"
+    else:
+        out_path = output_dir / f"tabpfn_oof_fold{fold_idx}_{args.feature_set}.npz"
+    np.savez(
+        out_path,
+        subject_ids=np.array(train_ids, dtype=object),
+        y_true=y_train,
+        y_tabpfn_oof=oof_mean,
+        sigma_tabpfn_oof=oof_std,
+    )
+
+    r2 = r2_score(y_train, oof_mean)
+    logger.info(
+        "fold %d: wrote %s  OOF R² = %.4f  mean σ = %.4f",
+        fold_idx, out_path, r2, oof_std.mean(),
+    )
+    return {"fold": fold_idx, "out_path": str(out_path), "r2": float(r2),
+            "n_train": len(train_ids), "mean_sigma": float(oof_std.mean())}
+
+
 def main(args):
     # See ``build_regressor`` in _helpers.py for --ignore-pretraining-limits
     # override semantics.
@@ -108,78 +201,11 @@ def main(args):
         )
 
     for fold_idx, fold_split in enumerate(splits["folds"]):
-        logger.info("=== Fold %d ===", fold_idx)
-        n_train_raw = len(fold_split["train"])
-        train_ids, dropped_no_feat, dropped_no_tgt = filter_usable_subjects(
-            fold_split["train"], features, targets,
-        )
-        logger.info(
-            "fold %d: train usable=%d/%d (dropped no_features=%d, no_target=%d)",
-            fold_idx, len(train_ids), n_train_raw,
-            dropped_no_feat, dropped_no_tgt,
-        )
-        top_k_path = top_k_filename(
-            top_k_dir, args.top_k, fold_idx, args.feature_set,
-        )
-        top_k = json.loads(top_k_path.read_text())["indices"]
-
-        X_train_full = np.stack(
-            [features[s] for s in train_ids]
-        )[:, top_k].astype(np.float32)
-        y_train = np.array([targets[s] for s in train_ids], dtype=np.float32)
-        logger.info(
-            "  X shape: %s, y shape: %s", X_train_full.shape, y_train.shape
-        )
-
-        oof_mean = np.zeros_like(y_train, dtype=np.float32)
-        oof_std = np.ones_like(y_train, dtype=np.float32)
-
-        inner_kf = KFold(
-            n_splits=args.n_inner_folds, shuffle=True, random_state=args.seed
-        )
-        for inner_fold, (tr_idx, va_idx) in enumerate(inner_kf.split(X_train_full)):
-            X_tr = X_train_full[tr_idx]
-            X_va = X_train_full[va_idx]
-            if args.zscore:
-                # Per-feature z-score fit on INNER-fold train ONLY; transform
-                # both inner-train and inner-val with those train stats. No
-                # pooled stats across inner splits.
-                X_tr, X_va = apply_zscore_train_only(X_tr, X_va)
-            reg = build_regressor(
-                device=device,
-                seed=args.seed,
-                ignore_pretraining_limits=args.ignore_pretraining_limits,
-            )
-            reg.fit(X_tr, y_train[tr_idx])
-            try:
-                mean, sigma = predict_with_sigma(reg, X_va)
-            except Exception as e:
-                logger.warning(
-                    "  inner %d: quantile path failed (%s); fallback to mean-only",
-                    inner_fold, e,
-                )
-                mean = reg.predict(X_va)
-                sigma = np.ones_like(mean, dtype=np.float32)
-            oof_mean[va_idx] = mean.astype(np.float32)
-            oof_std[va_idx] = sigma.astype(np.float32)
-            logger.info("  inner %d: %d val preds done", inner_fold, len(va_idx))
-
-        if args.feature_set == "A":
-            out_path = output_dir / f"tabpfn_oof_fold{fold_idx}.npz"
-        else:
-            out_path = output_dir / f"tabpfn_oof_fold{fold_idx}_{args.feature_set}.npz"
-        np.savez(
-            out_path,
-            subject_ids=np.array(train_ids, dtype=object),
-            y_true=y_train,
-            y_tabpfn_oof=oof_mean,
-            sigma_tabpfn_oof=oof_std,
-        )
-
-        r2 = r2_score(y_train, oof_mean)
-        logger.info(
-            "fold %d: wrote %s  OOF R² = %.4f  mean σ = %.4f",
-            fold_idx, out_path, r2, oof_std.mean(),
+        process_oof_fold(
+            fold_idx=fold_idx, fold_split=fold_split,
+            features=features, targets=targets,
+            args=args, device=device,
+            output_dir=output_dir, top_k_dir=top_k_dir,
         )
 
 

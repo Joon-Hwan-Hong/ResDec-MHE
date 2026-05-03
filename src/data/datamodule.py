@@ -14,6 +14,7 @@ from omegaconf import DictConfig
 
 from src.data.collate import create_dataloader
 from src.data.datasets import CognitiveResilienceDataset, PrecomputedDataset
+from src.data.feature_loaders import load_residualized_targets
 from src.data.prefetch import ThreadedPrefetcher
 from src.data.splits import get_fold_subjects, get_final_train_subjects
 
@@ -87,6 +88,12 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         self._train_age_mean: float | None = None
         self._train_age_std: float | None = None
 
+        # Variant-target override: when cfg.data.residualize_against is set,
+        # setup() injects fold-specific residual targets as a synthetic
+        # metadata column and stores the column name here so _make_dataset
+        # passes it as target_column. Empty string means use raw cogn_global.
+        self._target_column_override: str = ""
+
     @property
     def _effective_num_workers(self) -> int:
         """Return 0 workers when using precomputed (heap-loaded) data.
@@ -109,6 +116,48 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
         and the CV loop legitimately recreates DataModules with different fold_idx.
         Recreating datasets is cheap (index-only, no data copy).
         """
+        # Variant-target injection: when cfg.data.residualize_against is set,
+        # the dataset classes read targets from metadata.loc[sid, target_column],
+        # so the cleanest wire-up for a per-fold residual target is to inject
+        # the fold's residuals as a synthetic metadata column and override
+        # target_column. (Plan Task 4 originally proposed swapping a
+        # load_targets() call, but the datamodule does not own that call —
+        # the dataset does.)
+        rcfg = self._data_cfg.get("residualize_against")
+        if rcfg is not None and self.final_mode:
+            raise NotImplementedError(
+                "final_mode=True with cfg.data.residualize_against is not "
+                "supported: residual cache is per-fold; final_mode trains on "
+                "the full train_val_pool with no fold structure. Use per-fold "
+                "training and aggregate, or extend "
+                "scripts/resdec_mhe/variants/compute_residual_target.py to "
+                "emit a final-mode cache."
+            )
+        if rcfg is not None:
+            cache_dir = Path(rcfg.cache_dir)
+            override_col = f"_residual_target_fold{self.fold_idx}"
+            stale = [
+                c for c in self.metadata.columns
+                if c.startswith("_residual_target_fold")
+            ]
+            if stale:
+                self.metadata = self.metadata.drop(columns=stale)
+            residuals = load_residualized_targets(
+                subject_ids=self.metadata["ROSMAP_IndividualID"].tolist(),
+                cache_dir=cache_dir, fold_idx=self.fold_idx,
+            )
+            self.metadata = self.metadata.copy()
+            self.metadata[override_col] = self.metadata[
+                "ROSMAP_IndividualID"
+            ].map(residuals)
+            self._target_column_override = override_col
+            logger.info(
+                "Variant residualized target injected: fold=%d cache=%s "
+                "n_subjects=%d (axes=%s)",
+                self.fold_idx, cache_dir, len(residuals),
+                list(rcfg.axes),
+            )
+
         if self.final_mode:
             train_subjects = get_final_train_subjects(self.splits)
             test_subjects = self.splits["holdout_test"]
@@ -208,6 +257,27 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
     def _make_dataset(self, subject_ids: list[str]):
         """Create a dataset for the given subject IDs."""
         meta_csv = self._resolve_meta_csv()
+        target_column = self._target_column_override or self._data_cfg.get(
+            "target_column", "cogn_global"
+        )
+        # Variant override fallback: holdout_test subjects are NOT in the
+        # per-fold residual cache (cache spans train_val_pool only). If any
+        # of these subjects are missing from the override column, fall back
+        # to the canonical raw target column rather than crashing on NaN.
+        if self._target_column_override:
+            mcol = self.metadata.set_index("ROSMAP_IndividualID")[
+                self._target_column_override
+            ]
+            requested = [s for s in subject_ids if s in mcol.index]
+            if mcol.loc[requested].isna().any():
+                target_column = self._data_cfg.get(
+                    "target_column", "cogn_global"
+                )
+                logger.warning(
+                    "Variant override has NaN for some requested subjects "
+                    "(likely holdout_test); falling back to %s for this dataset.",
+                    target_column,
+                )
         if self.precomputed_dir is not None:
             return PrecomputedDataset(
                 feature_dir=self.precomputed_dir,
@@ -216,9 +286,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 subject_column=self._data_cfg.get(
                     "subject_column", "ROSMAP_IndividualID"
                 ),
-                target_column=self._data_cfg.get(
-                    "target_column", "cogn_global"
-                ),
+                target_column=target_column,
                 pathology_columns=list(
                     self._data_cfg.get("pathology_columns", [])
                 ),
@@ -243,9 +311,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 subject_column=self._data_cfg.get(
                     "subject_column", "ROSMAP_IndividualID"
                 ),
-                target_column=self._data_cfg.get(
-                    "target_column", "cogn_global"
-                ),
+                target_column=target_column,
                 pathology_columns=list(
                     self._data_cfg.get("pathology_columns", [])
                 ),

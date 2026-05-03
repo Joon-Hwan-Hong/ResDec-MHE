@@ -48,6 +48,84 @@ from scripts.resdec_mhe.tabpfn._helpers import (
 logger = logging.getLogger(__name__)
 
 
+def process_outer_fold(
+    fold_idx: int,
+    fold_split: dict,
+    features: dict,
+    targets: dict[str, float],
+    args,
+    device: str,
+    output_dir: Path,
+    top_k_dir: Path,
+) -> dict:
+    """Run outer-fold TabPFN on one fold.
+
+    Reusable per-fold callable extracted from main() so variant pipelines
+    (residualized targets) can inject a custom ``targets`` map per fold.
+    Writes ``tabpfn_outer_fold{fold_idx}.npz`` and returns a summary dict.
+    """
+    logger.info("=== Fold %d ===", fold_idx)
+    n_train_raw = len(fold_split["train"])
+    n_val_raw = len(fold_split["val"])
+    train_ids, dropped_train_no_feat, dropped_train_no_tgt = filter_usable_subjects(
+        fold_split["train"], features, targets,
+    )
+    val_ids, dropped_val_no_feat, dropped_val_no_tgt = filter_usable_subjects(
+        fold_split["val"], features, targets,
+    )
+    logger.info(
+        "fold %d: train usable=%d/%d (dropped no_features=%d, no_target=%d)"
+        " | val usable=%d/%d (dropped no_features=%d, no_target=%d)",
+        fold_idx,
+        len(train_ids), n_train_raw, dropped_train_no_feat, dropped_train_no_tgt,
+        len(val_ids), n_val_raw, dropped_val_no_feat, dropped_val_no_tgt,
+    )
+    top_k_path = top_k_filename(top_k_dir, args.top_k, fold_idx, args.feature_set)
+    top_k = json.loads(top_k_path.read_text())["indices"]
+
+    X_train = np.stack(
+        [features[s] for s in train_ids]
+    )[:, top_k].astype(np.float32)
+    y_train = np.array([targets[s] for s in train_ids], dtype=np.float32)
+    X_val = np.stack(
+        [features[s] for s in val_ids]
+    )[:, top_k].astype(np.float32)
+    y_val = np.array([targets[s] for s in val_ids], dtype=np.float32)
+    logger.info("  train %s, val %s", X_train.shape, X_val.shape)
+
+    if args.zscore:
+        # Per-feature z-score fit on OUTER-fold train ONLY; transform both
+        # outer-train and outer-val with those train stats. No pooled stats.
+        X_train, X_val = apply_zscore_train_only(X_train, X_val)
+
+    reg = build_regressor(
+        device=device,
+        seed=args.seed,
+        ignore_pretraining_limits=args.ignore_pretraining_limits,
+    )
+    reg.fit(X_train, y_train)
+    mean, sigma = predict_with_sigma(reg, X_val)
+
+    out_path = outer_output_filename(output_dir, fold_idx, args.feature_set)
+    np.savez(
+        out_path,
+        val_subject_ids=np.array(val_ids, dtype=object),
+        y_true=y_val,
+        y_tabpfn=mean.astype(np.float32),
+        sigma_tabpfn=sigma.astype(np.float32),
+        train_n=len(train_ids),
+    )
+
+    r2 = r2_score(y_val, mean)
+    logger.info(
+        "fold %d: R²=%+.4f, mean σ=%.4f  (wrote %s)",
+        fold_idx, r2, sigma.mean(), out_path,
+    )
+    return {"fold": fold_idx, "r2": r2, "n_val": len(val_ids),
+            "n_train": len(train_ids), "mean_sigma": float(sigma.mean()),
+            "out_path": str(out_path)}
+
+
 def main(args):
     # See ``build_regressor`` in _helpers.py for --ignore-pretraining-limits
     # override semantics.
@@ -95,70 +173,19 @@ def main(args):
             "predictions beyond that regime are distributional extrapolation."
         )
 
+    # Canonical baseline CSV preserves the 5-column schema (fold/r2/n_val/
+    # n_train/mean_sigma); strip the per-fold callable's `out_path` field
+    # before append so downstream paper-table consumers see no schema drift.
     results = []
     for fold_idx, fold_split in enumerate(splits["folds"]):
-        logger.info("=== Fold %d ===", fold_idx)
-        n_train_raw = len(fold_split["train"])
-        n_val_raw = len(fold_split["val"])
-        train_ids, dropped_train_no_feat, dropped_train_no_tgt = filter_usable_subjects(
-            fold_split["train"], features, targets,
+        summary = process_outer_fold(
+            fold_idx=fold_idx, fold_split=fold_split,
+            features=features, targets=targets,
+            args=args, device=device,
+            output_dir=output_dir, top_k_dir=top_k_dir,
         )
-        val_ids, dropped_val_no_feat, dropped_val_no_tgt = filter_usable_subjects(
-            fold_split["val"], features, targets,
-        )
-        logger.info(
-            "fold %d: train usable=%d/%d (dropped no_features=%d, no_target=%d)"
-            " | val usable=%d/%d (dropped no_features=%d, no_target=%d)",
-            fold_idx,
-            len(train_ids), n_train_raw, dropped_train_no_feat, dropped_train_no_tgt,
-            len(val_ids), n_val_raw, dropped_val_no_feat, dropped_val_no_tgt,
-        )
-        top_k_path = top_k_filename(top_k_dir, args.top_k, fold_idx, args.feature_set)
-        top_k = json.loads(top_k_path.read_text())["indices"]
-
-        X_train = np.stack(
-            [features[s] for s in train_ids]
-        )[:, top_k].astype(np.float32)
-        y_train = np.array([targets[s] for s in train_ids], dtype=np.float32)
-        X_val = np.stack(
-            [features[s] for s in val_ids]
-        )[:, top_k].astype(np.float32)
-        y_val = np.array([targets[s] for s in val_ids], dtype=np.float32)
-        logger.info("  train %s, val %s", X_train.shape, X_val.shape)
-
-        if args.zscore:
-            # Per-feature z-score fit on OUTER-fold train ONLY; transform
-            # both outer-train and outer-val with those train stats. No
-            # pooled stats.
-            X_train, X_val = apply_zscore_train_only(X_train, X_val)
-
-        reg = build_regressor(
-            device=device,
-            seed=args.seed,
-            ignore_pretraining_limits=args.ignore_pretraining_limits,
-        )
-        reg.fit(X_train, y_train)
-        mean, sigma = predict_with_sigma(reg, X_val)
-
-        out_path = outer_output_filename(output_dir, fold_idx, args.feature_set)
-        np.savez(
-            out_path,
-            val_subject_ids=np.array(val_ids, dtype=object),
-            y_true=y_val,
-            y_tabpfn=mean.astype(np.float32),
-            sigma_tabpfn=sigma.astype(np.float32),
-            train_n=len(train_ids),
-        )
-
-        r2 = r2_score(y_val, mean)
-        results.append({
-            "fold": fold_idx, "r2": r2, "n_val": len(val_ids),
-            "n_train": len(train_ids), "mean_sigma": float(sigma.mean()),
-        })
-        logger.info(
-            "fold %d: R²=%+.4f, mean σ=%.4f  (wrote %s)",
-            fold_idx, r2, sigma.mean(), out_path,
-        )
+        summary.pop("out_path", None)
+        results.append(summary)
 
     # Summary
     r2s = [r["r2"] for r in results]
