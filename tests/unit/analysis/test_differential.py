@@ -1,9 +1,10 @@
-"""Unit tests for src.analysis.differential (DAE/DCR helpers)."""
+"""Unit tests for src.analysis.differential (DAE/DCR/DCCI helpers)."""
 import numpy as np
 import pandas as pd
 import pytest
 from src.analysis.differential import (
     differential_attribution_effect,
+    differential_ccc_importance,
     differential_ct_ranking,
 )
 
@@ -89,3 +90,42 @@ def test_dcr_skips_methods_in_one_dict_only():
     assert "a" in res
     assert "b" not in res
     assert "c" not in res
+
+
+def test_dcci_returns_per_pair_pvalues():
+    rng = np.random.default_rng(42)
+    n_folds, n_ct = 5, 7
+    canonical = rng.normal(0, 0.05, (n_folds, n_ct, n_ct))
+    variant = canonical + rng.normal(0, 0.005, (n_folds, n_ct, n_ct))
+    res = differential_ccc_importance(
+        canonical, variant, ct_names=[f"CT{i}" for i in range(n_ct)],
+    )
+    assert len(res) == n_ct * n_ct
+    assert "ct_source" in res.columns
+    assert "ct_target" in res.columns
+    assert "p_wilcoxon" in res.columns
+    assert "padj_bh" in res.columns
+
+
+def test_dcci_shape_mismatch_raises():
+    canonical = np.zeros((5, 3, 3))
+    variant = np.zeros((5, 3, 4))
+    with pytest.raises(ValueError):
+        differential_ccc_importance(
+            canonical, variant, ct_names=["A", "B", "C"],
+        )
+
+
+def test_dcci_signal_recovers():
+    rng = np.random.default_rng(0)
+    n_folds, n_ct = 5, 4
+    canonical = rng.normal(0, 0.01, (n_folds, n_ct, n_ct))
+    variant = canonical.copy()
+    # Plant: edge (0, 1) has +0.5 shift in variant
+    variant[:, 0, 1] += 0.5
+    res = differential_ccc_importance(
+        canonical, variant, ct_names=[f"CT{i}" for i in range(n_ct)],
+    )
+    top = res.iloc[0]
+    assert top["ct_source"] == "CT0"
+    assert top["ct_target"] == "CT1"

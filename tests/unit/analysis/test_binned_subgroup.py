@@ -3,9 +3,11 @@ import numpy as np
 import pandas as pd
 import pytest
 from src.analysis.differential import (
-    quartile_subgroup_indices,
+    binned_subgroup_ccc,
     binned_subgroup_ct_importance,
     binned_subgroup_dge_wilcoxon,
+    binned_subgroup_dge_deseq2,
+    quartile_subgroup_indices,
 )
 
 
@@ -66,6 +68,63 @@ def test_binned_subgroup_dge_wilcoxon_per_pair():
     )
     assert len(res) == n_ct * n_gene
     assert "padj_bh" in res.columns
+
+
+def test_binned_subgroup_ccc_returns_per_pair():
+    rng = np.random.default_rng(0)
+    n_subj = 100
+    n_ct = 4
+    ccc = rng.normal(0, 1, (n_subj, n_ct, n_ct))
+    res = binned_subgroup_ccc(
+        ccc, resilient_idx=np.arange(0, 25),
+        vulnerable_idx=np.arange(75, 100),
+        ct_names=[f"CT{i}" for i in range(n_ct)],
+    )
+    assert len(res) == n_ct * n_ct
+    assert "ct_source" in res.columns
+    assert "ct_target" in res.columns
+    assert "p_wilcoxon" in res.columns
+    assert "padj_bh" in res.columns
+
+
+def test_binned_subgroup_ccc_signal_recovers():
+    rng = np.random.default_rng(0)
+    n_subj = 100
+    n_ct = 3
+    ccc = rng.normal(0, 1, (n_subj, n_ct, n_ct))
+    # Plant: edge (1, 2) +5 in resilient
+    ccc[0:25, 1, 2] += 5.0
+    res = binned_subgroup_ccc(
+        ccc, resilient_idx=np.arange(0, 25),
+        vulnerable_idx=np.arange(75, 100),
+        ct_names=[f"CT{i}" for i in range(n_ct)],
+    )
+    top = res.iloc[0]
+    assert top["ct_source"] == "CT1"
+    assert top["ct_target"] == "CT2"
+    assert top["padj_bh"] < 0.05
+
+
+@pytest.mark.slow
+def test_binned_subgroup_dge_deseq2_smoke():
+    pytest.importorskip("pydeseq2")
+    rng = np.random.default_rng(0)
+    n_subj = 60
+    n_ct = 2
+    n_gene = 20
+    counts = rng.poisson(20, (n_subj, n_ct, n_gene)).astype(int)
+    res = binned_subgroup_dge_deseq2(
+        counts,
+        resilient_idx=np.arange(0, 15),
+        vulnerable_idx=np.arange(45, 60),
+        ct_names=[f"CT{i}" for i in range(n_ct)],
+        gene_names=[f"G{j}" for j in range(n_gene)],
+    )
+    # 2 CTs × 20 genes (all-NaN rows for under-powered CTs allowed)
+    assert len(res) > 0
+    # If pydeseq2 succeeded for at least one CT, padj_bh column present
+    assert "cell_type" in res.columns
+    assert "gene" in res.columns
 
 
 def test_binned_subgroup_dge_signal_recovers():

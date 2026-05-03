@@ -60,6 +60,8 @@ def differential_attribution_effect(
             # we record p=1.0.
             try:
                 _, p = stats.wilcoxon(x, y)
+                if not np.isfinite(p):
+                    p = 1.0
             except ValueError:
                 p = 1.0
             rows.append({
@@ -71,7 +73,7 @@ def differential_attribution_effect(
     df = pd.DataFrame(rows)
     _, padj, _, _ = multipletests(df["p_wilcoxon"], method="fdr_bh")
     df["padj_bh"] = padj
-    return df.sort_values("padj_bh").reset_index(drop=True)
+    return df.sort_values(["padj_bh", "p_wilcoxon"]).reset_index(drop=True)
 
 
 def quartile_subgroup_indices(
@@ -151,7 +153,7 @@ def binned_subgroup_ct_importance(
     df = pd.DataFrame(rows)
     _, padj, _, _ = multipletests(df["p_wilcoxon"], method="fdr_bh")
     df["padj_bh"] = padj
-    return df.sort_values("padj_bh").reset_index(drop=True)
+    return df.sort_values(["padj_bh", "p_wilcoxon"]).reset_index(drop=True)
 
 
 def binned_subgroup_dge_wilcoxon(
@@ -201,7 +203,173 @@ def binned_subgroup_dge_wilcoxon(
     df = pd.DataFrame(rows)
     _, padj, _, _ = multipletests(df["p_wilcoxon"], method="fdr_bh")
     df["padj_bh"] = padj
-    return df.sort_values("padj_bh").reset_index(drop=True)
+    return df.sort_values(["padj_bh", "p_wilcoxon"]).reset_index(drop=True)
+
+
+def differential_ccc_importance(
+    canonical: np.ndarray,
+    variant: np.ndarray,
+    *,
+    ct_names: Sequence[str],
+) -> pd.DataFrame:
+    """Per (CT_source, CT_target) paired Wilcoxon on CCC attention magnitude.
+
+    Parameters
+    ----------
+    canonical, variant : (n_folds, n_ct, n_ct) per-fold mean CCC attention.
+    """
+    if canonical.shape != variant.shape:
+        raise ValueError(
+            f"shape mismatch: canonical {canonical.shape} vs variant {variant.shape}"
+        )
+    if canonical.ndim != 3:
+        raise ValueError(f"expected 3D (n_folds, n_ct, n_ct), got ndim={canonical.ndim}")
+    n_folds, n_ct, n_ct2 = canonical.shape
+    if n_ct != n_ct2:
+        raise ValueError(f"CT axes must match: ({n_ct}, {n_ct2})")
+    if len(ct_names) != n_ct:
+        raise ValueError(f"ct_names len {len(ct_names)} != n_ct {n_ct}")
+
+    rows = []
+    for src_idx in range(n_ct):
+        for tgt_idx in range(n_ct):
+            x = canonical[:, src_idx, tgt_idx]
+            y = variant[:, src_idx, tgt_idx]
+            try:
+                _, p = stats.wilcoxon(x, y)
+                if not np.isfinite(p):
+                    p = 1.0
+            except ValueError:
+                p = 1.0
+            rows.append({
+                "ct_source": ct_names[src_idx],
+                "ct_target": ct_names[tgt_idx],
+                "mean_diff": float((y - x).mean()),
+                "p_wilcoxon": float(p),
+            })
+    df = pd.DataFrame(rows)
+    _, padj, _, _ = multipletests(df["p_wilcoxon"], method="fdr_bh")
+    df["padj_bh"] = padj
+    return df.sort_values(["padj_bh", "p_wilcoxon"]).reset_index(drop=True)
+
+
+def binned_subgroup_ccc(
+    ccc_attention: np.ndarray,
+    *,
+    resilient_idx: np.ndarray,
+    vulnerable_idx: np.ndarray,
+    ct_names: Sequence[str],
+) -> pd.DataFrame:
+    """Per (CT_source, CT_target) Mann-Whitney U on CCC attention between
+    resilient and vulnerable subjects (top vs bottom quartile).
+
+    Parameters
+    ----------
+    ccc_attention : (n_subjects, n_ct, n_ct) per-subject CCC attention magnitude.
+    """
+    if ccc_attention.ndim != 3:
+        raise ValueError(f"expected 3D (n_subj, n_ct, n_ct), got ndim={ccc_attention.ndim}")
+    n_subj, n_ct, n_ct2 = ccc_attention.shape
+    if n_ct != n_ct2:
+        raise ValueError(f"CT axes must match: ({n_ct}, {n_ct2})")
+    if len(ct_names) != n_ct:
+        raise ValueError(f"ct_names len {len(ct_names)} != n_ct {n_ct}")
+
+    rows = []
+    for src_idx in range(n_ct):
+        for tgt_idx in range(n_ct):
+            x_res = ccc_attention[resilient_idx, src_idx, tgt_idx]
+            x_vul = ccc_attention[vulnerable_idx, src_idx, tgt_idx]
+            try:
+                _, p = stats.mannwhitneyu(x_res, x_vul, alternative="two-sided")
+            except ValueError:
+                p = 1.0
+            rows.append({
+                "ct_source": ct_names[src_idx],
+                "ct_target": ct_names[tgt_idx],
+                "mean_resilient": float(np.nanmean(x_res)),
+                "mean_vulnerable": float(np.nanmean(x_vul)),
+                "p_wilcoxon": float(p),
+            })
+    df = pd.DataFrame(rows)
+    _, padj, _, _ = multipletests(df["p_wilcoxon"], method="fdr_bh")
+    df["padj_bh"] = padj
+    return df.sort_values(["padj_bh", "p_wilcoxon"]).reset_index(drop=True)
+
+
+def binned_subgroup_dge_deseq2(
+    raw_counts_pseudobulk: np.ndarray,
+    *,
+    resilient_idx: np.ndarray,
+    vulnerable_idx: np.ndarray,
+    ct_names: Sequence[str],
+    gene_names: Sequence[str],
+    min_cells_per_subject: int = 1,
+) -> pd.DataFrame:
+    """Per CT, run pydeseq2 between resilient and vulnerable subjects.
+
+    Wraps src.analysis.de_resilience.deseq2_de — assumes raw INTEGER count
+    pseudobulk (sum across cells, NOT log-normalized). Per (CT, gene) padj
+    + shrunken log2 fold change (lfc_shrink).
+    """
+    from src.analysis.de_resilience import deseq2_de
+
+    if raw_counts_pseudobulk.ndim != 3:
+        raise ValueError(
+            f"expected 3D raw counts (n_subj, n_ct, n_gene), got ndim={raw_counts_pseudobulk.ndim}"
+        )
+    n_subj, n_ct, n_gene = raw_counts_pseudobulk.shape
+    if len(ct_names) != n_ct:
+        raise ValueError(f"ct_names len {len(ct_names)} != n_ct {n_ct}")
+    if len(gene_names) != n_gene:
+        raise ValueError(f"gene_names len {len(gene_names)} != n_gene {n_gene}")
+
+    all_rows = []
+    for ct_idx in range(n_ct):
+        # Per-CT counts: (n_subj, n_gene). DESeq2 wants integer counts.
+        counts_ct = raw_counts_pseudobulk[:, ct_idx, :].astype(int)
+        # Filter subjects with no cells of this CT (zero counts everywhere).
+        nonzero = counts_ct.sum(axis=1) >= min_cells_per_subject
+        res_keep = np.array([i for i in resilient_idx if nonzero[i]], dtype=int)
+        vul_keep = np.array([i for i in vulnerable_idx if nonzero[i]], dtype=int)
+        if len(res_keep) < 5 or len(vul_keep) < 5:
+            for g_idx in range(n_gene):
+                all_rows.append({
+                    "cell_type": ct_names[ct_idx],
+                    "gene": gene_names[g_idx],
+                    "log2_fold_change": float("nan"),
+                    "p_wald": float("nan"),
+                    "padj_bh": float("nan"),
+                    "n_resilient": len(res_keep),
+                    "n_vulnerable": len(vul_keep),
+                })
+            continue
+
+        keep = np.concatenate([res_keep, vul_keep])
+        is_resilient = np.concatenate([
+            np.ones(len(res_keep), dtype=bool),
+            np.zeros(len(vul_keep), dtype=bool),
+        ])
+        per_gene = deseq2_de(
+            counts=counts_ct[keep],
+            is_resilient=is_resilient,
+            gene_names=list(gene_names),
+        )
+        per_gene["cell_type"] = ct_names[ct_idx]
+        per_gene["n_resilient"] = len(res_keep)
+        per_gene["n_vulnerable"] = len(vul_keep)
+        all_rows.append(per_gene)
+
+    if not all_rows:
+        return pd.DataFrame()
+    if isinstance(all_rows[0], dict):
+        df = pd.DataFrame(all_rows)
+    else:
+        df = pd.concat(all_rows, ignore_index=True)
+    if "padj_bh" not in df.columns and "padj" in df.columns:
+        df = df.rename(columns={"padj": "padj_bh"})
+    sort_col = "padj_bh" if "padj_bh" in df.columns else df.columns[0]
+    return df.sort_values(sort_col).reset_index(drop=True)
 
 
 def differential_ct_ranking(
