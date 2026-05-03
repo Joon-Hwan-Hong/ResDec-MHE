@@ -1,5 +1,7 @@
 # ResDec-MHE
 
+**Res**idual **Dec**omposition + **M**ulti-**H**ead **E**nsemble.
+
 Hybrid graph-tabular model for predicting cognitive resilience from single-nucleus RNA-seq, with a multi-method interpretability suite.
 
 ## Overview
@@ -19,7 +21,7 @@ Left: 5-fold cross-validation predictions vs actual `cogn_global`, all 516 subje
 
 ### Baselines
 
-One row per method family. R² is mean ± std across the same 5 folds. Full 22-baseline + 13-ablation table at [`outputs/canonical/interpretability/paper_baseline_table.md`](outputs/canonical/interpretability/paper_baseline_table.md).
+One row per method family. R² is mean ± std across the same 5 folds. Full 22-baseline + 13-ablation table at [`tables/baseline_table.md`](tables/baseline_table.md) (also [`tables/baseline_table.csv`](tables/baseline_table.csv) for programmatic use).
 
 | Model                         | R² (5-fold)        |
 | ----------------------------- | ------------------ |
@@ -132,15 +134,33 @@ Eleven methods grouped into three families. Outputs at [`outputs/canonical/inter
 
 </details>
 
-### Cross-method consensus and SAE causal patching
+### Cross-method results — 12 panels, one per method
 
-![Figure 3 — 11-method × 31-CT consensus heatmap (left) and SAE causal-patching null (right)](figures/fig3_consensus_causal.png)
+![Figure 3 — 12-panel methods grid: 3 sunbursts (gradient-attribution) + 5 radial violins (attention) + ridge plot (Wasserstein) + slope chart (CMI) + tornado (LOCO) + size-encoded heatmap (consensus)](figures/fig3_methods_grid.png)
 
-Left: per-CT top-5 membership across 11 methods. Two CTs are top-5 in nearly every method: Splatter (a Siletti et al. 2023 reference cell type, identified in our cohort by SST+CHODL+NPY+NOS1 markers; top-5 in 11/11) and Fibroblast (top-5 in 10/11; missing AttnLRP).
+Each panel is a method's native visualization, not a unified bar chart:
 
-Right: SAE causal patching. Sparse autoencoders trained on the canonical encoder's pooled fused-layer activations produce 323 features that pass a relaxed-interpretability filter (non-dead, `mw_p_cognition < 0.05`, `fraction_active ∈ [10⁻⁴, 0.5]`, `ct_dominance ≤ 0.7`). Of those 323, exactly 1 has a decoder weight that concentrates on Splatter (Splatter has the lowest per-CT count among all 31 CTs — vs 28 for Microglia, 23 for OPC, 22 for Deep-layer IT). Saturate-mode patch on that feature: ΔR² = +0.000213 ± 0.000666 (5 folds). Random-feature null (10 features × 5 folds): ΔR² = -0.0000728 ± 0.001190. Distributions overlap.
+- **Sunbursts** (Captum IG, GradientSHAP, SmoothGrad): inner ring = top cell types, outer ring = top genes per CT, area ∝ `mean_abs_attribution`. Splatter sector is largest in all three; Fibroblast second.
+- **Radial violins / rainclouds** (AttnLRP, GMAR, GAF AF/AGF/GF): each spoke is a CT, the violin shows the per-subject (n=516) distribution of that method's attribution magnitude. AttnLRP top-1 = Splatter; GMAR/GAF AF top-1 = Fibroblast; GAF GF top-1 = Microglia. The five attention methods diverge below their top-2.
+- **Ridge plot** (Wasserstein-1): top-5 (CT, gene) pairs by W₁ distance, each as a horizontal pair of overlaid resilient (n=129) vs vulnerable (n=129) pseudobulk distributions. Top-1 (CT, gene) is **Fibroblast × ST5** (W₁=0.322), not Splatter; Splatter × CTNNA2 is rank 2 (0.310).
+- **Slope chart** (CMI): per-CT, unconditional MI → conditional MI given pathology (paired). Top-1 by conditional MI = MGE interneuron (0.230); Splatter is rank 5 (0.225). Negative deltas (pathology-conditioning increases MI) suggest pathology-orthogonal information.
+- **Tornado / diverging bars** (LOCO ΔR² zero-out): both load-bearing (negative ΔR²) and adversarial (positive ΔR²) directions visible. Top load-bearing: Splatter (-0.0214); top adversarial: Cerebellar inhibitory (+0.0043).
+- **Size-encoded consensus heatmap** (panel 12): each of the 31 CTs as a dot; color = top-5 frequency across the 11 methods, size = (1 − zero_frac) coverage status (sparse-coverage CTs visibly smaller).
 
-Source: [`outputs/canonical/sae/feature_xref_consensus.json`](outputs/canonical/sae/feature_xref_consensus.json), [`outputs/canonical/interpretability/sae_causal_patching.json`](outputs/canonical/interpretability/sae_causal_patching.json).
+Splatter is a [Siletti et al. 2023](https://www.science.org/doi/10.1126/science.add7046) reference cell type identified in our cohort by SST+CHODL+NPY+NOS1 markers. The two CTs reaching top-5 in nearly every method are Splatter (11/11) and Fibroblast (10/11; missing AttnLRP); below those, agreement decays. Upper rhombic lip appears top-5 in 7/11 methods but is sparsely covered (zero_frac=0.79) and is flagged as a likely gradient-from-zero artifact in our internal coverage-stratified analyses.
+
+<details>
+<summary>Alternative consensus visualizations</summary>
+
+**Brain-anatomy spatial map** — CTs laid out by their approximate anatomical / lineage origin, color = top-5 frequency, size = coverage:
+
+![Brain-anatomy spatial consensus map](figures/fig3alt_brain_anatomy.png)
+
+**Voronoi treemap** — true power-diagram (Aurenhammer 1987 algorithm; 116 iterations to <5% area error). Each CT is an organic region with area ∝ top-5 frequency, color = the same metric; sparse CTs are hatched:
+
+![Voronoi treemap consensus (custom power-diagram)](figures/fig3alt_voronoi.png)
+
+</details>
 
 ![Figure 4 — UpSet plots: top-5 cell types across 11 methods (top) and top-50 (cell type, gene) pairs across 6 gene-rankable methods (bottom)](figures/fig4_upset.png)
 
@@ -149,6 +169,38 @@ Top: set-overlap of method top-5 cell-type rankings, 11 methods. Right-most bar 
 Bottom: set-overlap of top-50 (CT, gene) pair rankings, restricted to 6 gene-rankable methods (Captum IG, GradientSHAP, SmoothGrad, DE Wilcoxon, DE DESeq2, Wasserstein-1). Within-attribution-family overlaps reach 48/50; cross-family agreement drops to 0–8. 0 pairs in 6/6; 31 of 2332 union genes (collapsing the CT axis) appear in 6/6. Median pairwise Jaccard on (CT, gene) pairs = 0.0; on genes only = 0.16.
 
 Source: [`outputs/canonical/interpretability/cross_method_gene_jaccard.json`](outputs/canonical/interpretability/cross_method_gene_jaccard.json).
+
+### SAE causal patching
+
+![Figure 5 — SAE polar feature wheel (left) and per-feature patch ΔR² raincloud (right)](figures/fig5_sae_main.png)
+
+**Left panel:** 323 SAE features that pass the relaxed-interpretability filter (`non-dead AND mw_p_cognition < 0.05 AND fraction_active ∈ [10⁻⁴, 0.5] AND ct_dominance ≤ 0.7`), arranged on a circle. Each spoke is one feature; spoke length ∝ `ct_dominance`, color ∝ the feature's top cell type (`top_cell_types[0]`). Of these 323, exactly **one** has Splatter as its top cell type — feature 572 (highlighted with a red star). For comparison: 28 features have Microglia as top-CT, 23 OPC, 22 Deep-layer IT; Splatter is the lowest count of any of the 31 CTs.
+
+**Right panel:** raincloud (KDE + strip + box) of patch ΔR² across the 5 cross-validation folds for 11 features: feature 572 (Splatter top-CT) on top, plus 10 randomly sampled control features below. Saturate-mode patch (clamp activation to its 99th-percentile cohort value) on feature 572: ΔR² = +0.000213 ± 0.000666 (5 folds). Random-feature null (10 × 5 = 50 saturate-mode patches): ΔR² = -0.0000728 ± 0.001190. The two distributions overlap.
+
+Source: [`outputs/canonical/sae/feature_xref_consensus.json`](outputs/canonical/sae/feature_xref_consensus.json), [`outputs/canonical/interpretability/sae_causal_patching.json`](outputs/canonical/interpretability/sae_causal_patching.json), [`outputs/canonical/sae/batch_topk/fused/exp32_k64_seed0/feature_report.json`](outputs/canonical/sae/batch_topk/fused/exp32_k64_seed0/feature_report.json).
+
+<details>
+<summary>Alternative SAE visualizations</summary>
+
+**Decoder-weight heatmap** — 11 patched features × 31 CTs, color = decoder weight (PiYG diverging, centered at 0). Loaded from the SAE state_dict (`W_dec` shape `[64, 2048]`); per-CT projection computed as `μ_c @ W_dec[:, j]` where `μ_c` is the per-CT mean encoder activation. Feature 572 (top row) shows broadly positive projection across many CTs with Splatter winning by a small margin (Splatter +1.72, Hippocampal CA1-3 +1.69, Oligodendrocyte +1.67) — consistent with its low ct_dominance (0.155 — polysemantic, not Splatter-axis):
+
+![SAE decoder-weight heatmap](figures/fig5alt_decoder_heatmap.png)
+
+**UMAP point cloud** — 2D UMAP of the 323 relaxed-filter features' 64-dim decoder vectors, with hexbin density backdrop. Splatter feature (red star) and 10 random control features (grey diamonds) highlighted:
+
+![SAE UMAP point cloud](figures/fig5alt_umap.png)
+
+</details>
+
+<details>
+<summary>Appendix β — unified bar-chart view of all 11 methods (for readers who want a clean ranked view)</summary>
+
+A 12-panel grid (one per method, plus consensus) showing top-5 CTs as horizontal bars with method-specific units. Sparse CTs (zero_frac ≥ 0.20) are hatched. Same data as Fig 3 main, different visual encoding:
+
+![Unified bar-chart grid (β)](figures/figbeta_bars.png)
+
+</details>
 
 ## Reproducibility
 
@@ -200,30 +252,207 @@ uv run python scripts/resdec_mhe/interpretability/run_sae_causal_patching.py
 tmux new -d -s permnull_n50 'bash scripts/resdec_mhe/_launch_permnull_n50_perm_shard.sh'
 uv run python scripts/resdec_mhe/training/aggregate_permnull_n50_shards.py
 
-# Render the README's figures
+# Render the README's figures (10 PNG outputs in figures/)
 uv run python scripts/resdec_mhe/interpretability/make_readme_fig1_problem.py
 uv run python scripts/resdec_mhe/interpretability/make_readme_fig2_result.py
-uv run python scripts/resdec_mhe/interpretability/make_readme_fig3_consensus_causal.py
+uv run python scripts/resdec_mhe/interpretability/make_readme_fig3_methods_grid.py
+uv run python scripts/resdec_mhe/interpretability/make_readme_fig3alt_brain_anatomy.py
+uv run python scripts/resdec_mhe/interpretability/make_readme_fig3alt_voronoi.py
 uv run python scripts/resdec_mhe/interpretability/make_readme_fig4_upset.py
+uv run python scripts/resdec_mhe/interpretability/make_readme_fig5_sae_main.py
+uv run python scripts/resdec_mhe/interpretability/make_readme_fig5alt_decoder_heatmap.py
+uv run python scripts/resdec_mhe/interpretability/make_readme_fig5alt_umap.py
+uv run python scripts/resdec_mhe/interpretability/make_readme_figbeta_bars.py
 ```
 
 ## Repository structure
 
+### Top-level
+
 ```
 proj_ml_snrna/
-├── src/                          # production source (importable as src.*)
-│   ├── analysis/                 # post-hoc analyses, attribution, SAE, CMI, counterfactuals
-│   ├── data/                     # datasets, datamodule, collate, splits, AnnData loader
-│   ├── models/                   # encoder + heads (full_model.py, resdec_head/)
-│   ├── training/                 # Lightning module, callbacks, optimizers
-│   └── visualization/            # figure-drawing primitives + theme.py
-├── scripts/resdec_mhe/           # CLI entrypoints (training/, interpretability/, tabpfn/)
-├── configs/                      # OmegaConf YAMLs (default.yaml + resdec_mhe/canonical.yaml)
-├── tests/                        # pytest tree (unit, integration, regression, smoke, negative)
-├── baselines/                    # vendored or adapted external baselines
-├── figures/                      # README figures
-├── data/                         # raw + precomputed inputs (gitignored)
-└── outputs/                      # training + interpretability outputs (gitignored)
+├── src/             # Production source (importable as src.*)
+├── scripts/         # CLI entrypoints + orchestration
+├── configs/         # OmegaConf YAMLs
+├── tests/           # pytest tree
+├── baselines/       # Vendored or adapted external baselines
+├── tables/          # Tracked baseline + ablation tables (.md, .csv)
+├── figures/         # Tracked README figures (PNG)
+├── tools/           # Standalone tooling (test runners, sweeps)
+├── docs/            # Local-only knowledge base + plans (gitignored)
+├── data/            # Raw + precomputed inputs (gitignored)
+├── outputs/         # Training + interpretability outputs (gitignored)
+├── pytest.ini       # Pytest config (markers, ignore patterns)
+├── README.md        # This file
+└── LICENSE          # GPL-3.0
+```
+
+### `src/` — production code
+
+```
+src/
+├── analysis/                  # Post-hoc analyses
+│   ├── attribution/           # Captum IG, GradientSHAP, SmoothGrad
+│   ├── attention/             # AttnLRP, GMAR, GAF AF/AGF/GF
+│   ├── distributional/        # Wasserstein-1, pseudobulk distributional shifts
+│   ├── information_theory/    # Conditional MI, raw-pseudobulk
+│   ├── perturbation/          # LOCO zero-out, counterfactuals (Wachter Mode-A)
+│   ├── sae/                   # Sparse autoencoders: TopK, BatchTopK, training, inference
+│   ├── ccc/                   # Cell-cell-communication graph analyses
+│   └── statistical/           # Wilcoxon, Stouffer, BH-FDR, bootstrap CI
+├── data/                      # Data IO and pipeline
+│   ├── adata_loader.py        # AnnData → per-subject pseudobulk + cell metadata
+│   ├── precomputed_dataset.py # Cached PrecomputedDataset (.pt files)
+│   ├── datamodule.py          # PyTorch Lightning DataModule
+│   ├── feature_loaders.py     # Targets and metadata utilities
+│   ├── splits.py              # Stratified K-fold split logic
+│   └── constants.py           # CT names, region IDs, edge type IDs
+├── models/                    # Encoder + heads
+│   ├── full_model.py          # CognitiveResilienceModel (encoder)
+│   ├── hgt/                   # Heterogeneous Graph Transformer
+│   ├── set_transformer/       # ISAB-based set transformer over cells per CT
+│   ├── fusion/                # Cross-attention fusion of HGT + set-transformer
+│   ├── pathology_attention/   # Pathology-stratified attention pooling
+│   └── resdec_head/           # ResDecMHEHead (canonical head)
+│       ├── film.py            # FiLM conditioning layer
+│       ├── tabm.py            # TabM-style multi-head expansion
+│       ├── attention.py       # Vanilla MHA + diff-attention variant
+│       └── hyperconn.py       # HyperConn residual link
+├── training/                  # Lightning training
+│   ├── resdec_lightning_module.py  # The LightningModule
+│   ├── callbacks/                  # Custom Lightning callbacks
+│   └── optimizers/                 # OptimizerFactory + LR schedulers
+├── inference/                 # Inference pipelines
+├── visualization/             # Figure-drawing primitives
+│   ├── theme.py               # Project visual standard (palettes, fonts, save_fig)
+│   ├── prediction_plots.py    # Predicted vs actual, per-fold scatters
+│   ├── attribution_plots.py   # Captum / SAE attribution figures
+│   ├── attention_plots.py     # Attention rollout, per-CT magnitudes
+│   ├── distributional_plots.py # Wasserstein, density overlays
+│   ├── architecture_plots.py  # Architecture diagrams
+│   └── ...                    # Additional per-analysis modules
+└── utils/                     # Shared utilities (io, gene names, cell types, reproducibility)
+```
+
+### `scripts/resdec_mhe/` — CLI entrypoints + orchestration
+
+```
+scripts/resdec_mhe/
+├── training/
+│   ├── train.py                              # Main training driver
+│   ├── run_5fold_parallel.sh                 # Train 5 folds across 2 GPUs
+│   ├── run_seed_variation.sh                 # Train across 5 seeds for variance estimate
+│   ├── run_permutation_test.py               # Full-pipeline label-shuffle null
+│   ├── run_permutation_test_inference_only.py # Strategy-A perm null (~1 sec/perm)
+│   ├── aggregate_permnull_n50_shards.py      # Aggregate sharded perm-null shards
+│   └── _launch_permnull_n50_perm_shard.sh    # tmux launcher for sharded perm null
+├── tabpfn/
+│   ├── compute_top_k_features.py             # Build top-K HVG selection for TabPFN
+│   ├── compute_oof.py                        # Inner-OOF predictions (training residual base)
+│   └── compute_outer.py                      # Outer-fold predictions (val residual base)
+├── interpretability/        # ~100 scripts: SAE, Captum, CMI, Wasserstein, figures
+│   ├── captum_composite_attribution.py       # Captum IG over the canonical model
+│   ├── extract_sae_activations.py            # Pull encoder activations for SAE training
+│   ├── run_sae_sweep.sh                      # 60-config SAE sweep
+│   ├── run_sae_causal_patching.py            # SAE feature causal-patching experiment
+│   ├── run_distributional_resilience.py      # Pseudobulk Wasserstein-1
+│   ├── run_loco_zero_out.py                  # LOCO ΔR² ablation
+│   ├── run_resilience_analyses.py            # Conditional MI on raw pseudobulk
+│   ├── make_baseline_table.py                # Aggregate canonical + 22 baselines
+│   ├── make_readme_fig{1,2,3,4,5}_*.py       # README figure orchestrators
+│   └── ...                                   # ~80 additional analysis + figure scripts
+├── eval/                                     # Evaluation utilities
+└── batch_runners/                            # Sweep runners
+```
+
+### `configs/` — OmegaConf YAMLs
+
+```
+configs/
+├── default.yaml                              # Base configuration (anonymized example paths)
+├── resdec_mhe/
+│   ├── canonical.yaml                        # Canonical reproduction config (the actual one)
+│   ├── example_config.yaml                   # Anonymized template — copy + edit
+│   ├── ablations/                            # Per-ablation YAMLs (no-tabpfn, no-film, ...)
+│   ├── diff_test_no_reg_with_flag.yaml       # DiffAttn variant config
+│   └── entropy_reg.yaml                      # Entropy-regularization variant
+├── ablations/                                # Cross-cutting ablation configs
+├── archived/                                 # Pre-canonical configs (kept for diff/history)
+├── hpo_round6.yaml, hpo_round7.yaml          # Optuna HPO sweep configs
+└── MapMyCells/                               # MapMyCells alignment configs
+```
+
+### `tests/` — pytest tree
+
+```
+tests/
+├── unit/                # Per-module unit tests (~1500 tests, ~6 min full sweep)
+│   ├── analysis/        # SAE, Captum, CMI, Wasserstein
+│   ├── data/            # Datasets, datamodule, splits, loaders
+│   ├── models/          # Encoder + heads
+│   ├── training/        # Lightning module, optimizers, schedulers
+│   ├── visualization/   # Figure-drawing primitives
+│   ├── interpretability/# Interp orchestrator helper tests
+│   └── archive/         # Pre-canonical legacy tests (excluded by pytest.ini)
+├── integration/         # End-to-end pipeline smoke tests
+├── regression/          # Numerical regression checks
+├── smoke/               # Fast sanity checks
+└── negative/            # Negative-controls (intentional failures)
+```
+
+### `baselines/` — vendored or adapted external baselines
+
+```
+baselines/
+├── mixmil/                # MixMIL (Engelmann et al. 2024) — adapted for the 516-split
+├── scPhase/               # scPhase (Berson et al. 2025) — adapted
+├── gpio/                  # GPIO baseline
+├── cloudpred/             # CloudPred (Daum et al. 2024)
+├── perceiver_io/          # Perceiver-IO baseline
+├── set_transformer/       # Set-transformer-only baseline
+└── abmil/                 # Attention-MIL baseline
+```
+
+### `outputs/` (gitignored) — training + interpretability artifacts
+
+```
+outputs/
+├── canonical/                                  # Canonical run artifacts
+│   ├── p5_canonical_seed42/                    # 5-fold canonical training output
+│   ├── p5_ablation_*/                          # Ablation training outputs
+│   ├── permutation_test_n50_full/              # N=50 permutation null shards + summary
+│   ├── clinical_baseline/                      # Clinical-only LinReg + ElasticNet
+│   ├── interpretability/                       # All post-hoc analyses
+│   │   ├── captum_ig/                          # Captum IG attribution outputs
+│   │   ├── captum_robustness/                  # GradientSHAP + SmoothGrad
+│   │   ├── attention_attribution/              # AttnLRP / GMAR / GAF outputs
+│   │   ├── distributional_resilience/          # Wasserstein-1 pseudobulk
+│   │   ├── conditional_mi_*.json               # CMI variants (raw_max, raw_vector)
+│   │   ├── loco_zero_out/                      # LOCO ΔR² per CT
+│   │   ├── counterfactuals_{relative,absolute}/# Wachter counterfactuals
+│   │   ├── ccc/, ccc_heterogeneity/            # Cell-cell-communication analyses
+│   │   ├── seed_variation_wilcoxon.json        # Cross-seed Wilcoxon + Stouffer
+│   │   ├── baseline_fdr_correction.json        # BH-FDR + Bonferroni vs 22 baselines
+│   │   ├── paper_baseline_table.{md,csv}       # Full 22-baseline + 13-ablation table
+│   │   └── ...                                 # ~60 additional analysis JSONs
+│   └── sae/                                    # Sparse autoencoder sweep + causal patching
+│       ├── batch_topk/, topk/                  # Per-architecture sweeps
+│       ├── feature_xref_consensus.json         # Consensus across SAE configs
+│       ├── stability_smaller_m/                # 180-config smaller-m sweep
+│       └── cross_seed_stability/               # Cross-seed feature stability
+└── splits.json                                 # Canonical 5-fold split assignments
+```
+
+### `data/` (gitignored) — inputs
+
+```
+data/
+├── snRNAseq/             # Preprocessed AnnData (h5ad)
+├── precomputed/          # Per-subject pseudobulk + cell metadata cache (R*.pt files)
+├── canonical/            # Per-fold TabPFN OOF + outer caches (tabpfn_*.npz)
+├── metadata_ROSMAP/      # Clinical metadata CSV
+├── database/             # CellChatDB ligand-receptor pairs
+└── liana_cache/          # LIANA-derived cell-cell communication graphs
 ```
 
 ## Citation

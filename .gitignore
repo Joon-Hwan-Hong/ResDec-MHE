@@ -71,11 +71,11 @@ uv.lock
 CLAUDE.md
 claude_prompt_scrap.txt
 
-# Only track default config, ablation configs, and redesign configs
+# Only track default config, ablation configs, and resdec_mhe configs (canonical + example + variants)
 configs/*
 !configs/default.yaml
 !configs/ablations/
-!configs/redesign/
+!configs/resdec_mhe/
 
 # Baseline model repos (cloned externally)
 baselines/*/repo/

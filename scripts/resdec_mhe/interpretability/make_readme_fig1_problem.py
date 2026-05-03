@@ -339,11 +339,11 @@ def main() -> int:
         logger.info("[fig1] removing preexisting %s", out_png)
         out_png.unlink()
 
-    # DPI tuned to stay under the 1 MB GitHub-viewer ceiling at the
-    # current figsize (9 x 7 in). save_fig() defaults to 600 DPI which
-    # produced a 1.03 MB file in V1; 450 DPI keeps detail crisp while
-    # comfortably fitting under 1 MB.
-    written = save_fig(fig, args.out_stem, dpi=450, formats=("png",))
+    # DPI matches the project visual standard (600 DPI, theme default in
+    # src/visualization/theme.py::save_fig). An earlier revision used 450
+    # to stay under a 1 MB GitHub-viewer ceiling, but the user explicitly
+    # authorized any file size for this figure.
+    written = save_fig(fig, args.out_stem, dpi=600, formats=("png",))
     plt.close(fig)
     for w in written:
         size_mb = w.stat().st_size / (1024 * 1024)

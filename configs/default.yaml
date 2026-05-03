@@ -5,7 +5,7 @@
 # Experiment metadata
 experiment:
   name: "cognitive_resilience"
-  run_name: "FixAttempt3"  # Human-readable tag for experiment dirs (e.g., "baseline-5fold", "hgt-ablation")
+  run_name: "default_run"  # ← change to a descriptive tag (e.g., "baseline-5fold", "hgt-ablation")
   seed: 42
   device: "auto"  # "auto", "cuda", "cpu"
 
@@ -14,12 +14,14 @@ experiment:
 # ─────────────────────────────────────────────────────────────────────────────
 
 data:
-  # Paths
-  adata_path: "data/snRNAseq/adata_ROSMAP_merged.h5ad"
-  cellchatdb_path: "data/database/CellChatDB_human_interaction.csv"
-  metadata_path: "data/metadata_ROSMAP/"
-  liana_cache_dir: "data/liana_cache/"
-  precomputed_dir: "data/precomputed/"  # PrecomputedDataset .npz files (recommended for training)
+  # Paths — replace these placeholder paths with your local paths.
+  # Inputs assume preprocessed snRNA-seq data + CellChatDB + a per-subject
+  # clinical metadata CSV.
+  adata_path: "path/to/your/snrnaseq.h5ad"
+  cellchatdb_path: "path/to/your/cellchatdb_interactions.csv"
+  metadata_path: "path/to/your/metadata_dir/"
+  liana_cache_dir: "path/to/your/liana_cache/"
+  precomputed_dir: "path/to/your/precomputed_dataset_cache/"  # PrecomputedDataset cache (recommended for training)
 
   # Preprocessing
   preprocessing:

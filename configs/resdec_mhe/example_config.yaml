@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ResDec-MHE example configuration — anonymized template
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Copy this file to a new path (e.g., configs/resdec_mhe/my_run.yaml), edit the
+# placeholders, and pass it as `CONFIG=path/to/my_run.yaml` to the train script.
+#
+# This file inherits unspecified fields from configs/default.yaml.
+#
+# ResDec-MHE = Residual Decomposition + Multi-Head Ensemble.
+# Training targets become y - y_tabpfn_oof (residuals from cached TabPFN OOF
+# predictions). Validation prediction is the composite ŷ = y_tabpfn_outer + f̂_1
+# where f̂_1 is the encoder + head output. TabPFN itself is NOT trained here —
+# its predictions are read from pre-computed .npz files.
+#
+# Cache files are fold-specific:
+#   <tabpfn_oof_dir>/tabpfn_oof_fold{fold}.npz   — inner-OOF preds for training
+#   <tabpfn_outer_dir>/tabpfn_outer_fold{fold}.npz — outer-fold preds for val
+#
+# Design note: this is the LIVE-encoder path (use_cached_embeddings: false).
+
+experiment:
+  run_name: "MY_RUN_NAME"   # ← rename to something descriptive (e.g., "ablation-no-tabpfn")
+
+model:
+  # Dataset-specific dims; canonical dataset: 4785 HVGs × 31 cell types.
+  n_genes: 4785
+  n_cell_types: 31
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+    # Canonical: n_stages=1 + TabM(k=8) + vanilla MHA + HyperConn + FiLM.
+    n_stages: 1
+    aux_lambdas: [1.0]
+    use_diff_attn: false   # vanilla nn.MultiheadAttention
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
+    monitor: "val/r2"
+    mode: "max"
+
+data:
+  dataloader:
+    batch_size: 24
+  use_cached_embeddings: false
+  # ← edit these to point at your TabPFN cache directories.
+  tabpfn_oof_dir: path/to/your/tabpfn_oof_cache
+  tabpfn_outer_dir: path/to/your/tabpfn_outer_cache
