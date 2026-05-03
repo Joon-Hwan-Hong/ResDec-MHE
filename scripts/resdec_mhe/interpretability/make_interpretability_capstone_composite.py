@@ -12,7 +12,8 @@ Builds a single 4-panel figure that summarizes the interpretability story:
     dominant CT count over 323 features). Splatter highlighted in a different
     color to visually emphasize 1/323 = 0.31%. Source:
     ``feature_xref_consensus.json`` -> ``trained.relaxed.per_ct_counts``.
-  - Panel D: Permutation null distribution (N=10) with canonical R^2 marker.
+  - Panel D: Permutation null distribution (N=50 full-pipeline by default; EXP-006
+    canonical) with canonical R^2 marker.
     Source: ``permutation_summary.json`` -> ``null_mean_r2_per_perm`` array.
 
 Output: ``outputs/canonical/interpretability/figures/composite/
@@ -409,8 +410,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     p.add_argument(
         "--permutation-summary",
-        default="outputs/canonical/permutation_test/permutation_summary.json",
-        help="Permutation null summary (Panel D).",
+        default="outputs/canonical/permutation_test_n50_full/permutation_summary.json",
+        help=(
+            "Permutation null summary (Panel D). Default = N=50 full-pipeline "
+            "(EXP-006 canonical, z=9.30, p=0.0196=1/51). Older N=10 lives at "
+            "outputs/canonical/permutation_test/permutation_summary.json."
+        ),
     )
     p.add_argument(
         "--statistical-rigor",
