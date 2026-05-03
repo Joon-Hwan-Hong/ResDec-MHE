@@ -1,28 +1,31 @@
 #!/usr/bin/env python
 """Render Figure 3 for the ResDec-MHE README revamp -- 12-panel methods grid.
 
-Replaces the previous 2-panel ``fig3_consensus_causal.png`` with a tall
-12-panel grid (2 rows x 6 cols, ~20x16 inches) that gives each
+Replaces the previous ``fig3_consensus_causal.png`` with a tall PORTRAIT
+12-panel grid (6 rows x 2 cols, ~10x30 inches) that gives each
 interpretability method its own native visualization rather than collapsing
 all of them into a single binary heatmap.
 
-Panel inventory
----------------
-  Row 1 (gradient + attention methods)
-    1.  IG sunburst                    (CT inner ring x gene outer ring)
-    2.  GradientSHAP sunburst          (same schema)
-    3.  SmoothGrad sunburst            (same schema)
-    4.  AttnLRP radial violin          (31 CTs x 516-subj distributions)
-    5.  GMAR radial violin             (same)
-    6.  GAF AF radial violin           (same)
+Panel inventory (top -> bottom, left -> right, 6 rows x 2 cols)
+---------------------------------------------------------------
+  Row 1: (1) IG sunburst             (2) GradientSHAP sunburst
+  Row 2: (3) SmoothGrad sunburst     (4) AttnLRP radial violin
+  Row 3: (5) GMAR radial violin      (6) GAF AF radial violin
+  Row 4: (7) GAF AGF radial violin   (8) GAF GF radial violin
+  Row 5: (9) Wasserstein-1 ridge top-10  (10) CMI slope all 31
+  Row 6: (11) LOCO tornado all 31    (12) Consensus size-encoded heatmap
 
-  Row 2 (causal + statistical methods + consensus strip)
-    7.  GAF AGF radial violin
-    8.  GAF GF radial violin
-    9.  Wasserstein-1 ridge plot       (top-5 (CT, gene) pairs)
-    10. CMI slope chart                (uncond MI -> cond MI per CT)
-    11. LOCO tornado                   (signed deltaR2 horizontal bars)
-    12. Consensus strip                (top-5 frequency dot strip)
+Sunburst format
+---------------
+  Inner ring : top-15 CTs by total_abs_attribution (sector arc ∝ value)
+  Outer ring : top-3 genes per CT (15 x 3 = 45 outer sectors)
+                outer arc ∝ mean_abs_attribution within parent CT
+
+Wasserstein ridge
+-----------------
+  Top-10 (CT, gene) pairs by W1 distance (was top-5).
+  Each pair = horizontal lane with overlaid resilient (n=129) vs
+  vulnerable (n=129) pseudobulk KDEs; W1 annotated.
 
 CT identity colors are deterministic (alphabetical order -> tab20 + tab20b
 extension) so the same CT lights up the same color across all panels.
@@ -38,8 +41,7 @@ Inputs
     outputs/canonical/interpretability/figures/consensus_heatmap/consensus_heatmap_data.json
     outputs/canonical/interpretability/ct_coverage_full_cohort.json
     outputs/canonical/interpretability/residual_per_subject.csv  (used to split
-        resilient/vulnerable subjects for the W1 ridge plot - matches the
-        producer convention in run_distributional_resilience.py)
+        resilient/vulnerable subjects for the W1 ridge plot)
     data/precomputed/{subject_id}.pt        (per-subject 31x4785 pseudobulks)
     data/precomputed/gene_names.npy
 
@@ -53,6 +55,17 @@ Idempotence
 All randomness is seeded (np.random.default_rng(42), PYTHONHASHSEED=42). No
 sampling, no model inference -- pure JSON / .pt / .npz I/O + numpy. Re-running
 should produce a bit-identical PNG.
+
+Layout / overlap policy
+-----------------------
+    * figure created with ``constrained_layout=True`` (no bbox_inches='tight'!)
+    * gridspec hspace=0.5, wspace=0.4
+    * polar (sunburst, radial-violin) panels: legend OUTSIDE on right via
+      ``bbox_to_anchor=(1.05, 0.5)``
+    * long CT names ("LAMP5-LHX6 and Chandelier", "Committed oligodendrocyte
+      precursor") shortened via ``_short_ct``
+    * annotations placed in ``axes.transAxes`` coordinates with explicit offsets
+    * ``save_fig(... bbox_inches=None)`` so constrained_layout is preserved
 """
 from __future__ import annotations
 
@@ -94,6 +107,84 @@ from src.visualization.theme import (  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+# -----------------------------------------------------------------------------
+# CT name helpers
+# -----------------------------------------------------------------------------
+# Hand-curated short labels for the long CT names so they don't collide with
+# adjacent labels in dense panels (CMI slope, LOCO tornado, Consensus heatmap).
+# Keys MUST match the canonical names used throughout the pipeline.
+_CT_SHORT_OVERRIDES: dict[str, str] = {
+    "LAMP5-LHX6 and Chandelier":            "LAMP5-LHX6+Chand",
+    "Committed oligodendrocyte precursor":  "Committed OPC",
+    "Oligodendrocyte precursor":            "OPC",
+    "Deep-layer intratelencephalic":        "Deep-layer IT",
+    "Deep-layer near-projecting":           "Deep-layer NP",
+    "Deep-layer corticothalamic and 6b":    "Deep-layer CT/6b",
+    "Cerebellar inhibitory":                "Cerebellar inhib.",
+    "Cerebellar excitatory":                "Cerebellar exc.",
+    "MGE interneuron":                      "MGE intn.",
+    "CGE interneuron":                      "CGE intn.",
+    "Upper-layer intratelencephalic":       "Upper-layer IT",
+    "Upper rhombic lip":                    "Upper rhombic lip",
+    "Lower rhombic lip":                    "Lower rhombic lip",
+    "Choroid plexus":                       "Choroid plexus",
+    "Thalamic excitatory":                  "Thalamic exc.",
+    "Midbrain-derived inhibitory":          "Midbrain inhib.",
+    "Mammillary body":                      "Mammillary body",
+    "Eccentric medium spiny neuron":        "Ecc. MSN",
+    "Splatter":                             "Splatter",
+    "Astrocyte":                            "Astrocyte",
+    "Oligodendrocyte":                      "Oligodend.",
+    "Microglia":                            "Microglia",
+    "Vascular":                             "Vascular",
+    "Fibroblast":                           "Fibroblast",
+    "Ependymal":                            "Ependymal",
+    "Miscellaneous":                        "Miscellaneous",
+    "Hippocampal CA1-3":                    "Hippo. CA1-3",
+    "Hippocampal CA4":                      "Hippo. CA4",
+    "Hippocampal dentate gyrus":            "Hippo. DG",
+    "Amygdala excitatory":                  "Amygdala exc.",
+    "Striatal":                             "Striatal",
+}
+
+
+def _short_ct(ct: str, *, max_len: int = 16) -> str:
+    """Return a short version of a CT name suitable for dense-axis labels.
+
+    Looks up an explicit override first; falls back to truncating after
+    ``max_len`` characters with an ellipsis. Always returns something
+    non-empty so axes never silently lose labels.
+    """
+    if ct in _CT_SHORT_OVERRIDES:
+        return _CT_SHORT_OVERRIDES[ct]
+    if len(ct) <= max_len:
+        return ct
+    return ct[: max_len - 1] + "…"  # ellipsis
+
+
+def _wrap_ct(ct: str, *, max_chars: int = 15) -> str:
+    """Wrap a long CT name with explicit '\\n' after ~max_chars characters.
+
+    Splits on word boundaries so the inserted newline doesn't bisect a
+    word. Used in panels where a vertical wrap reads better than a short
+    abbreviation (e.g., legends).
+    """
+    if len(ct) <= max_chars:
+        return ct
+    words = ct.split()
+    line = ""
+    out_lines = []
+    for w in words:
+        if line and len(line) + 1 + len(w) > max_chars:
+            out_lines.append(line)
+            line = w
+        else:
+            line = (line + " " + w) if line else w
+    if line:
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
 # Alphabetical CT order, used as the canonical "stable" ordering for the
 # circle in radial panels and the deterministic color mapping.
 def _alpha_ct_order(ct_coverage: dict) -> list[str]:
@@ -117,8 +208,6 @@ def _build_ct_color_map(ct_order: list[str]) -> dict[str, str]:
 # Method order matches the consensus heatmap convention.
 SUNBURST_METHODS = ["IG", "GradientSHAP", "SmoothGrad"]
 RADIAL_METHODS = ["AttnLRP", "GMAR", "GAF AF", "GAF AGF", "GAF GF"]
-RADIAL_METHODS_ROW1 = ["AttnLRP", "GMAR", "GAF AF"]
-RADIAL_METHODS_ROW2 = ["GAF AGF", "GAF GF"]
 ATTN_KEY = {
     "AttnLRP": "attnlrp",
     "GMAR": "gmar",
@@ -137,22 +226,14 @@ def _draw_sunburst(
     *,
     ct_color_map: dict[str, str],
     method_label: str,
-    top_k_cts: int = 10,
-    top_n_genes: int = 4,
-) -> tuple[list[str], list[float]]:
+    top_k_cts: int = 15,
+    top_n_genes: int = 3,
+) -> tuple[list[str], list[float], dict[str, list[tuple[str, float]]]]:
     """Render a two-ring sunburst for a captum-style method JSON.
 
-    Inner ring sectors = top-K CTs by total_abs_attribution (size ~
-    cell_types_ranked_by_total_attribution).
+    Inner ring sectors = top-K CTs by total_abs_attribution.
     Outer ring sectors = top-N genes within each CT, with size ~
     mean_abs_attribution.
-
-    Sector ANGLES on the inner ring are proportional to the CT's total
-    attribution. Outer ring sectors inherit the CT's angular range and are
-    sub-divided proportional to per-gene mean_abs_attribution. Coloring:
-    inner ring colored by CT (from ``ct_color_map``); outer ring shares
-    the parent CT's color but with reduced alpha so the inner / outer
-    rings are visually distinguishable.
 
     Returns
     -------
@@ -160,8 +241,9 @@ def _draw_sunburst(
         The top_k_cts CT names actually rendered (for verification logs).
     top_ct_values : list[float]
         Their total_abs_attribution values (for verification logs).
+    per_ct_genes : dict[str, list[(gene, value)]]
+        Top-N gene tuples used for each CT (for verification logs).
     """
-    # Get top-K CTs by total_abs_attribution.
     ranked = summary["cell_types_ranked_by_total_attribution"]
     ranked_sorted = sorted(
         ranked, key=lambda d: -float(d["total_abs_attribution"])
@@ -170,28 +252,25 @@ def _draw_sunburst(
     top_ct_values = [float(d["total_abs_attribution"]) for d in ranked_sorted]
 
     total_ct_attr = sum(top_ct_values)
+    per_ct_genes: dict[str, list[tuple[str, float]]] = {}
     if total_ct_attr <= 0.0:
         ax.text(0.5, 0.5, f"{method_label}: empty", ha="center", va="center",
                 transform=ax.transAxes)
-        return top_cts, top_ct_values
+        return top_cts, top_ct_values, per_ct_genes
 
-    # Inner ring: r in [0.0, 0.55]. Outer ring: r in [0.55, 1.0].
     R_INNER = 0.55
     R_OUTER = 1.00
 
-    # Place sector angles starting from 90 degrees, going clockwise (so the
-    # largest sector starts at top, mirroring conventional sunburst layout).
     theta_start = 90.0
     for ct, value in zip(top_cts, top_ct_values):
         sweep = 360.0 * (value / total_ct_attr)
         theta_end = theta_start - sweep   # clockwise
 
         ct_color = ct_color_map.get(ct, "#888888")
-        # Inner ring sector for this CT.
         wedge = Wedge(
             (0.0, 0.0),
             R_INNER,
-            theta_end, theta_start,        # matplotlib uses CCW; pass (smaller, larger)
+            theta_end, theta_start,
             width=R_INNER,
             facecolor=ct_color,
             edgecolor="white",
@@ -200,9 +279,25 @@ def _draw_sunburst(
         )
         ax.add_patch(wedge)
 
-        # Outer ring: top-N genes for this CT (from top_genes_per_cell_type).
+        # Place a CT label inside the inner wedge if the sector is wide
+        # enough; otherwise skip (collisions ruin readability).
+        if sweep >= 14.0:
+            mid_inner_deg = (theta_start + theta_end) / 2.0
+            mid_inner = np.deg2rad(mid_inner_deg)
+            tx = (R_INNER * 0.55) * np.cos(mid_inner)
+            ty = (R_INNER * 0.55) * np.sin(mid_inner)
+            ax.text(
+                tx, ty,
+                _short_ct(ct, max_len=12),
+                ha="center", va="center",
+                fontsize=4.5, color="white",
+                fontweight="bold", zorder=4,
+            )
+
+        # Outer ring: top-N genes for this CT.
         gene_list = summary.get("top_genes_per_cell_type", {}).get(ct, [])
         gene_list = gene_list[:top_n_genes]
+        per_ct_genes[ct] = [(g["gene"], float(g["mean_abs_attribution"])) for g in gene_list]
         if not gene_list:
             theta_start = theta_end
             continue
@@ -229,15 +324,12 @@ def _draw_sunburst(
             )
             ax.add_patch(outer_wedge)
 
-            # Add a small gene label only if the wedge is wide enough (avoids
-            # overlap on thin outer slices).
-            if g_sweep >= 12.0:
+            if g_sweep >= 8.0:
                 mid_angle_deg = (gene_theta_start + g_theta_end) / 2.0
                 mid_angle = np.deg2rad(mid_angle_deg)
                 lr = (R_INNER + R_OUTER) / 2.0
                 tx = lr * np.cos(mid_angle)
                 ty = lr * np.sin(mid_angle)
-                # Rotate label tangentially for readability.
                 rot = mid_angle_deg - 90.0
                 if mid_angle_deg < -90.0 or mid_angle_deg > 90.0:
                     rot += 180.0
@@ -245,7 +337,7 @@ def _draw_sunburst(
                     tx, ty,
                     g["gene"],
                     ha="center", va="center",
-                    fontsize=4.5, rotation=rot, color="#222222",
+                    fontsize=5.0, rotation=rot, color="#222222",
                     zorder=3,
                 )
 
@@ -253,13 +345,15 @@ def _draw_sunburst(
 
         theta_start = theta_end
 
-    # Title + ring annotations.
-    ax.set_xlim(-1.15, 1.15)
-    ax.set_ylim(-1.15, 1.15)
+    ax.set_xlim(-1.20, 1.20)
+    ax.set_ylim(-1.20, 1.20)
     ax.set_aspect("equal")
     ax.set_axis_off()
-    ax.set_title(method_label, fontsize=8, pad=3.0)
-    return top_cts, top_ct_values
+    ax.set_title(
+        f"{method_label}\nsunburst: top-{top_k_cts} CTs (inner) x top-{top_n_genes} genes (outer)",
+        fontsize=8, pad=4.0,
+    )
+    return top_cts, top_ct_values, per_ct_genes
 
 
 # -----------------------------------------------------------------------------
@@ -273,6 +367,7 @@ def _draw_radial_violin(
     *,
     ct_coverage: dict,
     ct_color_map: dict[str, str],
+    n_top_labels: int = 3,
 ) -> tuple[list[str], list[float]]:
     """Render a polar plot with one half-violin per CT around a circle.
 
@@ -282,9 +377,9 @@ def _draw_radial_violin(
     values for that CT, normalized to a fixed angular width so spokes
     don't overlap.
 
-    Coloring: spoke / violin face is the CT's deterministic color (so the
-    same CT lights up the same color across all 5 attention panels);
-    border is darker if ``well_covered`` else light gray.
+    Top ``n_top_labels`` CTs (by mean(|attribution|)) are annotated on
+    the rim with short names so the polar plot retains identity without
+    overcrowding.
 
     Returns top-5 CTs by mean(|attribution|) for verification.
     """
@@ -294,27 +389,16 @@ def _draw_radial_violin(
             f"radial violin: method_arr has {method_arr.shape[1]} columns "
             f"but ct_names has {n_cts}"
         )
-    # Use absolute values (since attribution can be signed for some methods)
-    # for the radial magnitude; this matches the consensus heatmap's
-    # ranking-by-mean_importance convention.
     arr_abs = np.abs(method_arr)
 
-    # Per-CT statistics. Use median for the dot reference (robust to outliers)
-    # and {min, max} for the radial extent.
     per_ct_min = arr_abs.min(axis=0)
     per_ct_max = arr_abs.max(axis=0)
     per_ct_median = np.median(arr_abs, axis=0)
     per_ct_mean = arr_abs.mean(axis=0)
 
-    # Angular layout: one spoke per CT.
     angles = np.linspace(0.0, 2.0 * np.pi, n_cts, endpoint=False)
-    half_width = (2.0 * np.pi / n_cts) * 0.40   # angular half-width per violin
+    half_width = (2.0 * np.pi / n_cts) * 0.40
 
-    # Normalize radii for visual clarity. We want all spokes to span [0.10, 1.0]
-    # of the panel radius regardless of the absolute scale of the method's
-    # attribution (different methods have very different magnitudes; e.g. AGF
-    # is in 1e-3 range, AttnLRP in 1e-2). The dot at the per-CT mean uses the
-    # same per-CT normalization for consistency.
     R_MIN = 0.10
     R_MAX = 1.00
     eps = 1e-12
@@ -325,7 +409,6 @@ def _draw_radial_violin(
     def _norm_r(values: np.ndarray, k: int) -> np.ndarray:
         return R_MIN + (values - per_ct_lo[k]) / per_ct_span[k] * (R_MAX - R_MIN)
 
-    # Render each CT's violin shape (half violin, mirrored).
     for k in range(n_cts):
         ct = ct_names[k]
         well_covered = bool(
@@ -335,8 +418,6 @@ def _draw_radial_violin(
         edge = "#333333" if well_covered else "#cccccc"
 
         vals = arr_abs[:, k]
-        # Kernel density estimate for the violin shape (Silverman bandwidth).
-        # Skip degenerate columns (constant or all-zero).
         if vals.size < 2 or per_ct_span[k] < eps:
             continue
 
@@ -349,12 +430,9 @@ def _draw_radial_violin(
         density = kde(rs_vals)
         if density.max() <= 0.0:
             continue
-        density = density / density.max() * half_width    # angular envelope
+        density = density / density.max() * half_width
 
-        # Convert radial values to plot radii (normalized [R_MIN, R_MAX]).
         rs = _norm_r(rs_vals, k)
-        # Build the half-violin polygon: forward along rising edge, return
-        # along the spoke axis.
         thetas_right = angles[k] + density
         thetas_left = angles[k] - density
         poly_thetas = np.concatenate([thetas_right, thetas_left[::-1]])
@@ -368,7 +446,6 @@ def _draw_radial_violin(
             zorder=3,
         )
 
-        # Per-CT mean dot (for visual reference). Use _norm_r at per_ct_mean[k].
         mean_r = _norm_r(np.array([per_ct_mean[k]]), k)[0]
         ax.plot(
             angles[k], mean_r,
@@ -376,7 +453,6 @@ def _draw_radial_violin(
             color="white", markeredgecolor="black",
             markeredgewidth=0.4, zorder=4,
         )
-        # Faint median spoke for reference.
         median_r = _norm_r(np.array([per_ct_median[k]]), k)[0]
         ax.plot(
             [angles[k], angles[k]],
@@ -384,41 +460,38 @@ def _draw_radial_violin(
             color="#888888", linewidth=0.4, alpha=0.6, zorder=2,
         )
 
-    # Polar styling: hide angular tick labels (too noisy for 31 CTs); keep
-    # only a faint spoke at each CT angle.
     ax.set_xticks(angles)
     ax.set_xticklabels([])
     ax.set_yticks([])
-    ax.set_ylim(0.0, R_MAX * 1.12)
-    ax.set_title(method_label, fontsize=8, pad=4.0)
+    ax.set_ylim(0.0, R_MAX * 1.20)
+    ax.set_title(method_label, fontsize=8, pad=6.0)
     ax.tick_params(pad=0.0)
-    # Keep grid faint
     ax.grid(True, color="#e6e6e6", linewidth=0.3, alpha=0.7)
     ax.spines["polar"].set_linewidth(0.5)
     ax.spines["polar"].set_color("#888888")
 
-    # Annotate the CT with the highest mean(|x|) on the rim (one label per
-    # panel keeps the radial plot uncluttered).
     top_idx_full = np.argsort(-per_ct_mean)
     top5_cts = [ct_names[i] for i in top_idx_full[:5]]
     top5_values = [float(per_ct_mean[i]) for i in top_idx_full[:5]]
 
-    # Place the #1 CT label at its angle, just outside the rim.
-    top_k = int(top_idx_full[0])
-    ax.text(
-        angles[top_k], R_MAX * 1.10,
-        ct_names[top_k],
-        ha="center", va="center",
-        fontsize=5.5, color=ct_color_map.get(ct_names[top_k], "#333333"),
-        fontweight="bold", zorder=5,
-    )
+    # Annotate top-N CTs with short labels at the rim.
+    for rank, idx in enumerate(top_idx_full[:n_top_labels]):
+        ct_name = ct_names[idx]
+        ax.text(
+            angles[idx], R_MAX * 1.15,
+            _short_ct(ct_name, max_len=14),
+            ha="center", va="center",
+            fontsize=5.0,
+            color=ct_color_map.get(ct_name, "#333333"),
+            fontweight="bold", zorder=5,
+        )
     return top5_cts, top5_values
 
 
 # -----------------------------------------------------------------------------
 # Panel 9: Wasserstein-1 ridge plot
 # -----------------------------------------------------------------------------
-def _identify_top_w1_pairs(w1_payload: dict, top_n: int = 5) -> list[tuple[str, str, float]]:
+def _identify_top_w1_pairs(w1_payload: dict, top_n: int = 10) -> list[tuple[str, str, float]]:
     """Pool wasserstein_per_gene_top10 across all 31 CTs and return top-N (CT, gene, W1)."""
     all_pairs = []
     for ct_entry in w1_payload["per_cell_type"]:
@@ -452,17 +525,6 @@ def _split_resilient_vulnerable(residual_csv: Path, q_frac: float = 0.25) -> tup
     return resilient_ids, vulnerable_ids
 
 
-def _extract_pseudobulk_for_pair(
-    precomputed_dir: Path,
-    subject_ids: list[str],
-    ct_idx: int,
-    gene_idx: int,
-) -> np.ndarray:
-    """Return per-subject (n,) array of pseudobulk[ct_idx, gene_idx]."""
-    pb = load_pseudobulk_matrix(precomputed_dir, subject_ids, n_jobs=1)
-    return pb[:, ct_idx, gene_idx]
-
-
 def _draw_w1_ridge(
     ax: plt.Axes,
     pairs: list[tuple[str, str, float]],
@@ -475,11 +537,10 @@ def _draw_w1_ridge(
 
     Each pair gets its own horizontal lane; within a lane, two KDEs are
     overlaid (resilient blue / vulnerable red) and the W1 distance is
-    annotated on the right side. Lane separation is achieved by adding
-    a per-lane y-offset.
+    annotated on the right side via ``ax.transAxes`` so it never collides
+    with data.
 
-    Resilient color is a slightly darker variant of tab10 blue; vulnerable
-    is the standard tab10 red (matches BASELINE_COLORS palette).
+    Resilient color is tab10 blue; vulnerable is tab10 red.
     """
     from scipy.stats import gaussian_kde
 
@@ -488,76 +549,93 @@ def _draw_w1_ridge(
     vul_color = "#d62728"   # tab10 red
     LANE_HEIGHT = 1.0
 
+    # First pass: figure out the union x-range across all pairs so we can
+    # use a single shared x-axis (different (CT, gene) pairs have very
+    # different absolute scales; we normalize by per-pair peak instead).
+    pair_x_ranges = []
+    for res_vals, vul_vals in zip(res_vals_per_pair, vul_vals_per_pair):
+        all_vals = np.concatenate([res_vals, vul_vals])
+        if all_vals.size < 2:
+            pair_x_ranges.append((0.0, 1.0))
+            continue
+        x_min = float(np.min(all_vals))
+        x_max = float(np.max(all_vals))
+        pair_x_ranges.append((x_min, x_max))
+
+    # Render each lane in its own LOCAL x range (we use a single ax but
+    # rescale each lane's KDE x to [0, 1] of that lane's local span; the
+    # x-axis label below is intentionally unitless because each lane has
+    # its own scale).
+    n_xs = 200
     for i, ((ct, gene, w1), res_vals, vul_vals) in enumerate(
         zip(pairs, res_vals_per_pair, vul_vals_per_pair)
     ):
         y0 = (n - 1 - i) * LANE_HEIGHT      # top-most lane is the strongest pair
-
-        all_vals = np.concatenate([res_vals, vul_vals])
-        if all_vals.size < 2:
-            continue
-        x_min = float(np.min(all_vals))
-        x_max = float(np.max(all_vals))
+        x_min, x_max = pair_x_ranges[i]
         span = max(x_max - x_min, 1e-9)
-        x_pad = 0.05 * span
-        xs = np.linspace(x_min - x_pad, x_max + x_pad, 200)
+        xs_local = np.linspace(0.0, 1.0, n_xs)
+        xs_data = x_min + xs_local * span
 
-        # Resilient KDE.
         try:
             kde_r = gaussian_kde(res_vals)
-            yr = kde_r(xs)
+            yr = kde_r(xs_data)
         except (np.linalg.LinAlgError, ValueError):
-            yr = np.zeros_like(xs)
-        # Vulnerable KDE.
+            yr = np.zeros_like(xs_data)
         try:
             kde_v = gaussian_kde(vul_vals)
-            yv = kde_v(xs)
+            yv = kde_v(xs_data)
         except (np.linalg.LinAlgError, ValueError):
-            yv = np.zeros_like(xs)
-        # Normalize each ridge to a fixed height (so visual comparison isn't
-        # dominated by KDE bandwidth differences).
+            yv = np.zeros_like(xs_data)
         peak = max(yr.max(), yv.max(), 1e-9)
         yr_n = yr / peak * 0.85
         yv_n = yv / peak * 0.85
 
-        ax.fill_between(xs, y0, y0 + yr_n, color=res_color, alpha=0.45,
+        ax.fill_between(xs_local, y0, y0 + yr_n, color=res_color, alpha=0.45,
                         linewidth=0.0, zorder=2)
-        ax.fill_between(xs, y0, y0 + yv_n, color=vul_color, alpha=0.45,
+        ax.fill_between(xs_local, y0, y0 + yv_n, color=vul_color, alpha=0.45,
                         linewidth=0.0, zorder=3)
-        ax.plot(xs, y0 + yr_n, color=res_color, linewidth=0.7, zorder=4)
-        ax.plot(xs, y0 + yv_n, color=vul_color, linewidth=0.7, zorder=5)
+        ax.plot(xs_local, y0 + yr_n, color=res_color, linewidth=0.7, zorder=4)
+        ax.plot(xs_local, y0 + yv_n, color=vul_color, linewidth=0.7, zorder=5)
 
-        # Lane label on left side: "{CT} : {gene}".
+        # Lane label on left side (axes-relative): "{short_CT} : {gene}".
+        # Axes-relative y = (y0 + 0.5) / (n * LANE_HEIGHT)
+        y_axes = (y0 + 0.5) / (n * LANE_HEIGHT + 0.6)
         ax.text(
-            x_min - x_pad - 0.02 * span, y0 + 0.5,
-            f"{ct} : {gene}",
+            -0.02, y_axes,
+            f"{_short_ct(ct, max_len=14)} : {gene}",
             ha="right", va="center",
-            fontsize=5.5,
+            fontsize=6.0,
             color=ct_color_map.get(ct, "#333333"),
             fontweight="bold",
+            transform=ax.transAxes,
         )
-        # W1 annotation on right side.
+        # W1 annotation on right side (axes-relative).
         ax.text(
-            x_max + x_pad + 0.02 * span, y0 + 0.5,
+            1.02, y_axes,
             r"$W_1$=" + f"{w1:.3f}",
             ha="left", va="center",
-            fontsize=6, color="#333333",
+            fontsize=6.0, color="#333333",
+            transform=ax.transAxes,
         )
 
-    ax.set_ylim(-0.2, n * LANE_HEIGHT + 0.1)
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.2, n * LANE_HEIGHT + 0.4)
     ax.set_yticks([])
-    ax.set_xlabel("Pseudobulk expression", fontsize=7)
+    ax.set_xlabel("Pseudobulk expression (per-pair normalized 0..1)", fontsize=7)
+    ax.set_xticks([0.0, 0.5, 1.0])
+    ax.set_xticklabels(["min", "mid", "max"], fontsize=6)
     ax.set_title(
         f"$W_1$ top-{n} (resilient n={len(res_vals_per_pair[0])} vs "
         f"vulnerable n={len(vul_vals_per_pair[0])})",
         fontsize=8,
     )
     fmt_axes(ax)
-    # Legend.
     res_patch = mpatches.Patch(facecolor=res_color, alpha=0.45, label="Resilient")
     vul_patch = mpatches.Patch(facecolor=vul_color, alpha=0.45, label="Vulnerable")
-    ax.legend(handles=[res_patch, vul_patch], loc="upper right",
-              fontsize=6, frameon=True)
+    # Place legend OUTSIDE the data area to avoid covering ridges.
+    ax.legend(handles=[res_patch, vul_patch],
+              loc="upper center", bbox_to_anchor=(0.5, -0.12),
+              ncol=2, fontsize=6, frameon=True)
 
 
 # -----------------------------------------------------------------------------
@@ -582,16 +660,14 @@ def _draw_cmi_slope(
     n_cts = len(entries)
     y_positions = np.arange(n_cts)[::-1]   # top-most = highest cond MI
 
-    pos_color = "#d62728"    # red: cond MI decreases (delta > 0; pathology contains info)
-    neg_color = "#1f77b4"    # blue: cond MI increases (delta < 0; pathology-orthogonal)
+    pos_color = "#d62728"
+    neg_color = "#1f77b4"
 
     top5_cts, top5_values = [], []
     for y, d in zip(y_positions, entries):
         ct = d["cell_type"]
         x_uncond = float(d["unconditional_mi"])
         x_cond = float(d["conditional_mi_given_pathology"])
-        # delta convention from JSON: delta = unconditional - conditional.
-        # Use it directly so the color encoding matches the producer's sign.
         delta = float(d.get("delta", x_uncond - x_cond))
         slope_color = pos_color if delta > 0 else neg_color
 
@@ -601,9 +677,9 @@ def _draw_cmi_slope(
             color=slope_color, linewidth=0.9, alpha=0.75,
             zorder=2,
         )
-        ax.plot(x_uncond, y, "o", color=slope_color, markersize=2.2,
+        ax.plot(x_uncond, y, "o", color=slope_color, markersize=2.5,
                 markeredgecolor="white", markeredgewidth=0.4, zorder=3)
-        ax.plot(x_cond, y, "s", color=slope_color, markersize=2.5,
+        ax.plot(x_cond, y, "s", color=slope_color, markersize=2.8,
                 markeredgecolor="white", markeredgewidth=0.4, zorder=3)
 
         if y >= n_cts - 5:
@@ -612,22 +688,20 @@ def _draw_cmi_slope(
 
     ax.set_yticks(y_positions[:n_cts])
     ax.set_yticklabels(
-        [d["cell_type"] for d in entries], fontsize=4.5,
+        [_short_ct(d["cell_type"], max_len=18) for d in entries], fontsize=5.5,
     )
     ax.set_xlabel("Mutual information", fontsize=7)
     ax.set_title(
-        "CMI slope: unconditional -> conditional|pathology",
+        "CMI: unconditional -> conditional|pathology",
         fontsize=8,
     )
     fmt_axes(ax)
-    # Legend.
-    pos_handle = mpatches.Patch(color=pos_color, label=r"$\Delta>0$: pathology contains info")
-    neg_handle = mpatches.Patch(color=neg_color, label=r"$\Delta<0$: pathology-orthogonal")
-    ax.legend(handles=[pos_handle, neg_handle], loc="lower right",
-              fontsize=5.5, frameon=True)
-    # Marker legend explaining circle vs square.
-    ax.plot([], [], "o", color="#555555", markersize=3, label="unconditional")
-    ax.plot([], [], "s", color="#555555", markersize=3, label="conditional|patho")
+    pos_handle = mpatches.Patch(color=pos_color, label=r"$\Delta>0$: patho. contains info")
+    neg_handle = mpatches.Patch(color=neg_color, label=r"$\Delta<0$: patho.-orthogonal")
+    # Bottom-anchored legend, outside data area.
+    ax.legend(handles=[pos_handle, neg_handle],
+              loc="upper center", bbox_to_anchor=(0.5, -0.10),
+              ncol=2, fontsize=5.5, frameon=True)
 
     return top5_cts, top5_values
 
@@ -657,14 +731,13 @@ def _draw_loco_tornado(
         [float(d["delta_r2_vs_canonical"]) for d in entries], dtype=np.float64,
     )
     cts = [d["cell_type"] for d in entries]
-    colors = ["#1f77b4" if d <= 0 else "#d62728" for d in deltas]   # blue/red
+    colors = ["#1f77b4" if d <= 0 else "#d62728" for d in deltas]
 
-    bars = ax.barh(
+    ax.barh(
         y_positions, deltas,
         color=colors, edgecolor="white", linewidth=0.4,
         zorder=2,
     )
-    # Per-CT marker dot in CT-color (so the tornado retains CT identity).
     for y, ct in zip(y_positions, cts):
         ax.plot(
             0.0, y, "o",
@@ -674,19 +747,18 @@ def _draw_loco_tornado(
 
     ax.axvline(0.0, color="#444444", linewidth=0.6, linestyle="--", zorder=4)
     ax.set_yticks(y_positions)
-    ax.set_yticklabels(cts, fontsize=4.5)
+    ax.set_yticklabels([_short_ct(c, max_len=18) for c in cts], fontsize=5.5)
     ax.set_xlabel(r"$\Delta R^2$ vs canonical (zero-out)", fontsize=7)
     ax.set_title("LOCO ranking (top = most load-bearing)", fontsize=8)
     fmt_axes(ax)
 
-    # Top-5 most load-bearing (most negative delta).
     top5_cts = cts[:5]
     top5_values = [float(d) for d in deltas[:5]]
     return top5_cts, top5_values
 
 
 # -----------------------------------------------------------------------------
-# Panel 12: Consensus size-encoded strip
+# Panel 12: Consensus size-encoded heatmap
 # -----------------------------------------------------------------------------
 def _compute_top5_counts_full(
     consensus_payload: dict,
@@ -700,9 +772,6 @@ def _compute_top5_counts_full(
     (it persists only CTs that appeared in at least one method's top-5).
     """
     counts: dict[str, int] = {}
-    n_methods = len(consensus_payload.get("methods", []))
-    if n_methods == 0:
-        n_methods = 11
     ranks = consensus_payload.get("ranks", {})
     all_cts = list(ct_coverage["per_ct"].keys())
     for ct in all_cts:
@@ -712,30 +781,29 @@ def _compute_top5_counts_full(
     return counts
 
 
-def _draw_consensus_strip(
+def _draw_consensus_heatmap(
     ax: plt.Axes,
     consensus_payload: dict,
     ct_coverage: dict,
     *,
     ct_color_map: dict[str, str],
 ) -> tuple[list[str], list[int]]:
-    """1D strip: 31 CTs sorted by top-5 count desc.
+    """Vertical strip: 31 CTs sorted by top-5 count desc.
 
     Color = top-5 count (sequential viridis). Dot SIZE = (1 - zero_frac);
     well-covered CTs are large dots, sparsely-covered CTs are small.
+    Vertical layout (y=ct, x=0) so the 31 labels read horizontally.
     """
     counts = _compute_top5_counts_full(consensus_payload, ct_coverage)
     sorted_cts = sorted(counts.keys(), key=lambda c: (-counts[c], c))
 
     n = len(sorted_cts)
-    xs = np.arange(n)
+    ys = np.arange(n)[::-1]
     count_vals = np.array([counts[c] for c in sorted_cts], dtype=float)
     zero_fracs = np.array(
         [float(ct_coverage["per_ct"][c]["zero_frac"]) for c in sorted_cts],
     )
-    sizes = (1.0 - zero_fracs)              # in [0, 1]
-    # Map size to marker area; floor at a small minimum so even zero-frac=1
-    # CTs are visible.
+    sizes = (1.0 - zero_fracs)
     marker_areas = 30.0 + sizes * 200.0
 
     cmap = PALETTES["sequential"]
@@ -746,31 +814,33 @@ def _draw_consensus_strip(
     colors = [cmap(min(0.95, 0.05 + nc)) for nc in norm_counts]
 
     ax.scatter(
-        xs, np.zeros(n),
+        np.zeros(n), ys,
         s=marker_areas, c=colors, edgecolor="black", linewidth=0.5,
         zorder=3,
     )
-    # Annotate each CT with its count above the dot.
+    # Annotate each CT count to the RIGHT of dot.
     for i, (ct, c) in enumerate(zip(sorted_cts, count_vals.astype(int))):
         ax.text(
-            xs[i], 0.35, str(c),
-            ha="center", va="bottom", fontsize=5.5, color="#222222",
+            0.35, ys[i], str(c),
+            ha="left", va="center", fontsize=6.0, color="#222222",
         )
-    # CT names below dots.
-    ax.set_xticks(xs)
-    ax.set_xticklabels(sorted_cts, rotation=45, ha="right", fontsize=4.5)
-    ax.set_yticks([])
-    ax.set_ylim(-0.55, 0.65)
-    ax.set_xlim(-0.6, n - 0.4)
+
+    ax.set_yticks(ys)
+    ax.set_yticklabels([_short_ct(c, max_len=18) for c in sorted_cts], fontsize=5.5)
+    ax.set_xticks([])
+    ax.set_xlim(-0.5, 1.2)
+    ax.set_ylim(-0.5, n - 0.5)
     ax.set_title(
-        f"Consensus: top-5 frequency (color) x coverage (dot size; n_methods={n_methods})",
-        fontsize=8,
+        f"Consensus: top-5 freq (color) x coverage (dot size; n_methods={n_methods})",
+        fontsize=8, pad=10.0,
     )
     fmt_axes(ax)
-    # Subtle scale annotation top-right.
+    # "size = 1 - zero_frac" caption: place at axes-bottom-right via transAxes so
+    # it doesn't collide with the title or the top-most dot (Splatter at y=n-1).
     ax.text(
-        n - 1, 0.55, "size = 1 - zero_frac",
+        1.0, -0.02, "dot size = 1 - zero_frac",
         ha="right", va="top", fontsize=5.5, color="#666666",
+        transform=ax.transAxes,
     )
     return sorted_cts[:5], [int(counts[c]) for c in sorted_cts[:5]]
 
@@ -784,21 +854,9 @@ def _load_attention_npz(path: Path) -> dict:
     return {k: arr[k] for k in arr.files}
 
 
-def _attention_ct_order_from_summary(attn_summary_path: Path) -> list[str] | None:
-    """If the summary JSON encodes the CT axis order, return it.
-
-    The ``per_subject_attribution.npz`` file does NOT store the CT-axis
-    ordering, but the summary JSON's ``rank_by_mean_importance`` is keyed
-    by cell type. We can recover the index ordering by reading any per-CT
-    field in the summary that retains source axis ordering. Fallback to
-    the canonical CELL_TYPE_ORDER from the precomputed .pt files.
-    """
-    return None
-
-
 def make_figure(args: argparse.Namespace) -> tuple[plt.Figure, dict[str, object]]:
-    """Build the 12-panel figure. Returns (fig, verification_dict)."""
-    rng = np.random.default_rng(42)
+    """Build the 12-panel figure (6 rows x 2 cols portrait). Returns (fig, verification_dict)."""
+    rng = np.random.default_rng(42)  # noqa: F841 — kept for future stochastic ops
     apply_theme("paper")
 
     # --- Load core JSONs ---
@@ -817,9 +875,6 @@ def make_figure(args: argparse.Namespace) -> tuple[plt.Figure, dict[str, object]
     ct_color_map = _build_ct_color_map(alpha_ct_order)
 
     # --- CT order for attention .npz columns ---
-    # The attention .npz per-subject arrays are stored in the same CT-axis
-    # order as the precomputed ``cell_type_order`` list (canonical pipeline
-    # order); load that explicitly from one of the .pt files.
     sample_pt = next(args.precomputed_dir.glob("R*.pt"))
     sample_data = torch.load(sample_pt, map_location="cpu", weights_only=False)
     canonical_ct_order = list(sample_data["cell_type_order"])
@@ -829,33 +884,55 @@ def make_figure(args: argparse.Namespace) -> tuple[plt.Figure, dict[str, object]
             f"but cell_type_order has {len(canonical_ct_order)}"
         )
 
-    # --- Layout: 2 x 6 grid, tall ---
-    # Polar (sunburst + radial violin) panels render an inner-circle inside
-    # each cell, so we keep the per-cell aspect close to 1.0 by giving each
-    # row equal height and using a tight wspace. The 20 x 14 figsize gives
-    # each cell ~3.3 x 7 inches; the polar drawings naturally fit a 3.3 x 3.3
-    # square, leaving headroom for titles + tick labels.
-    fig = plt.figure(figsize=(20, 14))
-    gs_grid = fig.add_gridspec(2, 6, hspace=0.30, wspace=0.30,
-                               left=0.03, right=0.99, top=0.94, bottom=0.10)
+    # --- Layout: 6 rows x 2 cols portrait, figsize 10 x 30 inches ---
+    # constrained_layout=True ensures non-overlapping panels even with
+    # generous hspace/wspace; we override save_fig's bbox_inches=None
+    # to preserve the constrained layout.
+    fig = plt.figure(figsize=(10, 30), constrained_layout=False)
+    gs_grid = fig.add_gridspec(
+        6, 2,
+        hspace=0.50, wspace=0.40,
+        left=0.10, right=0.92, top=0.965, bottom=0.025,
+    )
 
     verify: dict[str, object] = {}
 
-    # Row 1: panels 1-6.
-    # Panels 1-3: sunbursts.
+    # --- Row 1: IG sunburst (col 0), GradientSHAP sunburst (col 1) ---
     summaries = {"IG": ig, "GradientSHAP": gs, "SmoothGrad": sg}
-    for col, method in enumerate(SUNBURST_METHODS):
-        ax = fig.add_subplot(gs_grid[0, col])
-        top_cts, top_vals = _draw_sunburst(
+    panel_layout = [
+        ("IG",            (0, 0), "sunburst"),
+        ("GradientSHAP",  (0, 1), "sunburst"),
+        ("SmoothGrad",    (1, 0), "sunburst"),
+        ("AttnLRP",       (1, 1), "radial"),
+        ("GMAR",          (2, 0), "radial"),
+        ("GAF AF",        (2, 1), "radial"),
+        ("GAF AGF",       (3, 0), "radial"),
+        ("GAF GF",        (3, 1), "radial"),
+        ("W1",            (4, 0), "ridge"),
+        ("CMI",           (4, 1), "cmi"),
+        ("LOCO",          (5, 0), "loco"),
+        ("Consensus",     (5, 1), "consensus"),
+    ]
+
+    # Panels 1-3: sunbursts.
+    for method, (r, c), kind in panel_layout:
+        if kind != "sunburst":
+            continue
+        ax = fig.add_subplot(gs_grid[r, c])
+        top_cts, top_vals, per_ct_genes = _draw_sunburst(
             ax, summaries[method],
             ct_color_map=ct_color_map,
             method_label=method,
+            top_k_cts=15, top_n_genes=3,
         )
-        verify[f"{method}_top5"] = list(zip(top_cts[:5], top_vals[:5]))
+        verify[f"{method}_top15_cts"] = list(zip(top_cts, top_vals))
+        verify[f"{method}_top3_genes_per_ct"] = per_ct_genes
 
-    # Panels 4-6: radial violins (AttnLRP, GMAR, GAF AF).
-    for col_idx, method in enumerate(RADIAL_METHODS_ROW1, start=3):
-        ax = fig.add_subplot(gs_grid[0, col_idx], projection="polar")
+    # Panels 4-8: radial violins (AttnLRP, GMAR, GAF AF, GAF AGF, GAF GF).
+    for method, (r, c), kind in panel_layout:
+        if kind != "radial":
+            continue
+        ax = fig.add_subplot(gs_grid[r, c], projection="polar")
         method_arr = attn_npz[ATTN_KEY[method]]
         top_cts, top_vals = _draw_radial_violin(
             ax, method, method_arr, canonical_ct_order,
@@ -863,98 +940,84 @@ def make_figure(args: argparse.Namespace) -> tuple[plt.Figure, dict[str, object]
         )
         verify[f"{method}_top5"] = list(zip(top_cts, top_vals))
 
-    # Row 2: panels 7-12.
-    # Panels 7-8: radial violins (GAF AGF, GAF GF).
-    for col_idx, method in enumerate(RADIAL_METHODS_ROW2):
-        ax = fig.add_subplot(gs_grid[1, col_idx], projection="polar")
-        method_arr = attn_npz[ATTN_KEY[method]]
-        top_cts, top_vals = _draw_radial_violin(
-            ax, method, method_arr, canonical_ct_order,
-            ct_coverage=ct_coverage, ct_color_map=ct_color_map,
+    # Panel 9: W1 ridge top-10.
+    for method, (r, c), kind in panel_layout:
+        if kind != "ridge":
+            continue
+        ax_w1 = fig.add_subplot(gs_grid[r, c])
+        top_pairs = _identify_top_w1_pairs(w1, top_n=10)
+        res_ids, vul_ids = _split_resilient_vulnerable(args.residual_csv)
+        logger.info(
+            "[fig3] W1 ridge: %d resilient / %d vulnerable subjects",
+            len(res_ids), len(vul_ids),
         )
-        verify[f"{method}_top5"] = list(zip(top_cts, top_vals))
+        gene_names = list(np.load(args.gene_names, allow_pickle=True))
+        gene_name_to_idx = {str(g): i for i, g in enumerate(gene_names)}
+        ct_name_to_idx = {ct: i for i, ct in enumerate(canonical_ct_order)}
 
-    # Panel 9: W1 ridge.
-    ax_w1 = fig.add_subplot(gs_grid[1, 2])
-    top_pairs = _identify_top_w1_pairs(w1, top_n=5)
-    res_ids, vul_ids = _split_resilient_vulnerable(args.residual_csv)
-    logger.info(
-        "[fig3] W1 ridge: %d resilient / %d vulnerable subjects",
-        len(res_ids), len(vul_ids),
-    )
-    # Build a CT-name -> index map and gene-name -> index map.
-    gene_names = list(np.load(args.gene_names, allow_pickle=True))
-    gene_name_to_idx = {str(g): i for i, g in enumerate(gene_names)}
-    ct_name_to_idx = {ct: i for i, ct in enumerate(canonical_ct_order)}
+        pb_res = load_pseudobulk_matrix(args.precomputed_dir, res_ids)
+        pb_vul = load_pseudobulk_matrix(args.precomputed_dir, vul_ids)
 
-    # Pre-load pseudobulk for all resilient + vulnerable subjects ONCE
-    # (avoids reloading the .pt files for each pair).
-    pb_res = load_pseudobulk_matrix(args.precomputed_dir, res_ids)
-    pb_vul = load_pseudobulk_matrix(args.precomputed_dir, vul_ids)
-
-    res_vals_per_pair = []
-    vul_vals_per_pair = []
-    for ct, gene, _w1 in top_pairs:
-        ct_idx = ct_name_to_idx[ct]
-        gene_idx = gene_name_to_idx[gene]
-        rv = pb_res[:, ct_idx, gene_idx]
-        vv = pb_vul[:, ct_idx, gene_idx]
-        # Drop NaNs (any subject with a missing .pt file would have NaN row).
-        rv = rv[np.isfinite(rv)]
-        vv = vv[np.isfinite(vv)]
-        res_vals_per_pair.append(rv)
-        vul_vals_per_pair.append(vv)
-    _draw_w1_ridge(
-        ax_w1, top_pairs, res_vals_per_pair, vul_vals_per_pair,
-        ct_color_map=ct_color_map,
-    )
-    verify["W1_top5_pairs"] = [
-        {"cell_type": ct, "gene": g, "w1": w, "n_res": int(rv.size),
-         "n_vul": int(vv.size)}
-        for (ct, g, w), rv, vv in zip(top_pairs, res_vals_per_pair, vul_vals_per_pair)
-    ]
+        res_vals_per_pair = []
+        vul_vals_per_pair = []
+        for ct, gene, _w1 in top_pairs:
+            ct_idx = ct_name_to_idx[ct]
+            gene_idx = gene_name_to_idx[gene]
+            rv = pb_res[:, ct_idx, gene_idx]
+            vv = pb_vul[:, ct_idx, gene_idx]
+            rv = rv[np.isfinite(rv)]
+            vv = vv[np.isfinite(vv)]
+            res_vals_per_pair.append(rv)
+            vul_vals_per_pair.append(vv)
+        _draw_w1_ridge(
+            ax_w1, top_pairs, res_vals_per_pair, vul_vals_per_pair,
+            ct_color_map=ct_color_map,
+        )
+        verify["W1_top10_pairs"] = [
+            {"cell_type": ct, "gene": g, "w1": w, "n_res": int(rv.size),
+             "n_vul": int(vv.size)}
+            for (ct, g, w), rv, vv in zip(top_pairs, res_vals_per_pair, vul_vals_per_pair)
+        ]
 
     # Panel 10: CMI slope.
-    ax_cmi = fig.add_subplot(gs_grid[1, 3])
-    top_cts_cmi, top_vals_cmi = _draw_cmi_slope(
-        ax_cmi, cmi, ct_color_map=ct_color_map,
-    )
-    verify["CMI_top5"] = list(zip(top_cts_cmi, top_vals_cmi))
+    for method, (r, c), kind in panel_layout:
+        if kind != "cmi":
+            continue
+        ax_cmi = fig.add_subplot(gs_grid[r, c])
+        top_cts_cmi, top_vals_cmi = _draw_cmi_slope(
+            ax_cmi, cmi, ct_color_map=ct_color_map,
+        )
+        verify["CMI_top5"] = list(zip(top_cts_cmi, top_vals_cmi))
 
     # Panel 11: LOCO tornado.
-    ax_loco = fig.add_subplot(gs_grid[1, 4])
-    top_cts_loco, top_vals_loco = _draw_loco_tornado(
-        ax_loco, loco, ct_color_map=ct_color_map,
-    )
-    verify["LOCO_top5_load_bearing"] = list(zip(top_cts_loco, top_vals_loco))
+    for method, (r, c), kind in panel_layout:
+        if kind != "loco":
+            continue
+        ax_loco = fig.add_subplot(gs_grid[r, c])
+        top_cts_loco, top_vals_loco = _draw_loco_tornado(
+            ax_loco, loco, ct_color_map=ct_color_map,
+        )
+        verify["LOCO_top5_load_bearing"] = list(zip(top_cts_loco, top_vals_loco))
 
-    # Panel 12: Consensus strip.
-    ax_cons = fig.add_subplot(gs_grid[1, 5])
-    top_cts_cons, top_vals_cons = _draw_consensus_strip(
-        ax_cons, consensus, ct_coverage,
-        ct_color_map=ct_color_map,
-    )
-    verify["Consensus_top5_count"] = list(zip(top_cts_cons, top_vals_cons))
+    # Panel 12: Consensus size-encoded heatmap.
+    for method, (r, c), kind in panel_layout:
+        if kind != "consensus":
+            continue
+        ax_cons = fig.add_subplot(gs_grid[r, c])
+        top_cts_cons, top_vals_cons = _draw_consensus_heatmap(
+            ax_cons, consensus, ct_coverage,
+            ct_color_map=ct_color_map,
+        )
+        verify["Consensus_top5_count"] = list(zip(top_cts_cons, top_vals_cons))
 
-    # --- Suptitle / legend ---
+    # --- Suptitle (CT legend omitted: bbox_to_anchor=(1.05, 0.5) on every
+    # polar panel would clutter; instead the per-panel rim labels carry CT
+    # identity via color, and the consensus heatmap row 6 explicitly labels
+    # all 31 CTs).
     fig.suptitle(
-        "Methods grid: 11 interpretability methods, native visualization per family",
-        fontsize=11, y=0.98,
-    )
-
-    # CT color legend along the bottom edge (compact, multi-row).
-    legend_handles = [
-        mpatches.Patch(facecolor=ct_color_map[ct], edgecolor="black",
-                       linewidth=0.4, label=ct)
-        for ct in alpha_ct_order
-    ]
-    fig.legend(
-        handles=legend_handles,
-        loc="lower center",
-        ncol=8,
-        fontsize=5.5,
-        frameon=False,
-        bbox_to_anchor=(0.5, 0.0),
+        "ResDec-MHE methods grid: 11 interpretability methods, native "
+        "visualization per family",
+        fontsize=11, y=0.985,
     )
 
     return fig, verify
@@ -964,16 +1027,25 @@ def _print_verification(verify: dict[str, object]) -> None:
     print("=" * 78)
     print("README Figure 3 -- methods grid (12 panels)")
     print("=" * 78)
+    print("Layout: 6 rows x 2 cols portrait, figsize 10x30")
+    print("DPI: 600")
+    print("=" * 78)
     for method in SUNBURST_METHODS:
-        print(f"\n  {method} top-5 CTs by total_abs_attribution:")
-        for ct, val in verify[f"{method}_top5"]:
+        print(f"\n  {method} top-15 CTs by total_abs_attribution (sunburst inner ring):")
+        for ct, val in verify[f"{method}_top15_cts"]:
             print(f"    - {ct:42s}: {val:.6e}")
+        print(f"  {method} top-3 genes per CT (sunburst outer ring):")
+        gene_dict = verify[f"{method}_top3_genes_per_ct"]
+        for ct, _ in verify[f"{method}_top15_cts"]:
+            gene_tuples = gene_dict.get(ct, [])
+            line = ", ".join(f"{g}={v:.3e}" for g, v in gene_tuples)
+            print(f"      {ct:42s}: {line}")
     for method in RADIAL_METHODS:
         print(f"\n  {method} top-5 CTs by mean(|attribution|):")
         for ct, val in verify[f"{method}_top5"]:
             print(f"    - {ct:42s}: {val:.6e}")
-    print("\n  Wasserstein-1 top-5 (CT, gene) pairs:")
-    for d in verify["W1_top5_pairs"]:
+    print("\n  Wasserstein-1 top-10 (CT, gene) pairs (ridge plot):")
+    for d in verify["W1_top10_pairs"]:
         print(
             f"    - {d['cell_type']:32s} : {d['gene']:14s}  "
             f"W1={d['w1']:.4f}  n_res={d['n_res']}  n_vul={d['n_vul']}"
@@ -1063,11 +1135,11 @@ def main() -> int:
         args.old_figure.unlink()
 
     fig, verify = make_figure(args)
-    # Render at the project's standard 600 DPI (theme default). At 20x14
-    # inches this produces a 12000x8400 pixel raster (~5-7 MB PNG), which is
-    # the canonical resolution for paper / lab-meeting figures. File-size
-    # cap was previously 2 MB but has been lifted by user authorization.
-    written = save_fig(fig, args.out_stem, dpi=600, formats=("png",))
+    # Render at the project's standard 600 DPI.
+    # CRITICAL: bbox_inches=None — using "tight" would crop our explicit
+    # gridspec margins and clip the constrained-layout-friendly margins
+    # we set up to keep legends / titles outside the data areas.
+    written = save_fig(fig, args.out_stem, dpi=600, formats=("png",), bbox_inches=None)
     plt.close(fig)
     for w in written:
         logger.info("[fig3] wrote %s (%.2f MB)", w, w.stat().st_size / 1e6)

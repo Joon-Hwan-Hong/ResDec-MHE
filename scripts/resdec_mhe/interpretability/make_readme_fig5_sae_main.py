@@ -8,23 +8,24 @@ Two-panel figure summarizing the SAE-feature interpretability story:
     are rendered as spokes on a unit circle. Spoke length is proportional
     to ``ct_dominance`` in [0, 0.7] (the relaxed cap), spoke color is the
     deterministic CT color of the feature's max-CT identity (i.e.
-    ``top_cell_types[0]``). The lone Splatter feature (idx 572) is
-    highlighted with a thicker line, contrasting outline, and label so
-    its position relative to the population is immediately readable.
-    Concentric guide rings at ct_dominance = {0.2, 0.4, 0.6} give
-    visual grid for spoke length.
+    ``top_cell_types[0]``). All features are rendered equally — no
+    individual spoke is highlighted. Concentric guide rings at
+    ct_dominance = {0.2, 0.4, 0.6} give visual grid for spoke length.
 
   Panel B (raincloud, patch ΔR² across folds)
-    11 SAE features as rows, top row = Splatter feature 572, then 10
-    random control features ([178, 1577, 183, 1340, 898, 883, 1431, 194,
-    415, 1750]). Each row is a *raincloud*:
+    11 SAE features as rows. Each row is labeled solely by its max-CT
+    identity (no internal feature index, no "Random" / "test" framing).
+    Each row is a *raincloud*:
       * half-violin (KDE) above the row baseline
       * strip dots below for the 5 per-fold ΔR² values
       * boxplot (median + IQR) inside the violin
     X-axis is patch ΔR² (saturate mode, vs SAE baseline). Vertical
-    dashed line at ΔR² = 0; mean ± std annotated for the Splatter row
-    and for the pooled random null. Splatter row is colored distinct
-    (red); random control rows in a neutral palette.
+    dashed line at ΔR² = 0. Each row is colored by its CT using the
+    project-stable ``CELL_TYPE_COLORS`` palette; no row is privileged.
+
+    Caveat: the experiment as run patched 1 feature with Splatter as
+    top-CT and 10 control features (one per other CT). Symmetric
+    across-CT patching (same number of features per CT) is future work.
 
 Inputs (read fresh — no hardcoded numbers):
 
@@ -73,7 +74,6 @@ import matplotlib
 matplotlib.use("Agg")  # must precede pyplot import
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from scipy.stats import gaussian_kde
 
@@ -91,23 +91,16 @@ from src.visualization.theme import (  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
-# Ordered list of 10 random control features that the causal-patching run
-# used. Order is preserved here so Panel B rows are deterministic and
-# match the JSON column order.
+# Ordered list of 10 control features that the causal-patching run used.
+# Order is preserved here so Panel B rows are deterministic and match the
+# JSON column order.
 RANDOM_FEATURE_IDXS: tuple[int, ...] = (
     178, 1577, 183, 1340, 898, 883, 1431, 194, 415, 1750,
 )
 
-# The lone Splatter SAE feature in the relaxed filter.
+# The lone Splatter SAE feature in the relaxed filter (used internally for
+# data lookup; not surfaced as a row label).
 SPLATTER_FEATURE_IDX: int = 572
-
-# Splatter highlight color: red, distinct from the gray Splatter CT color
-# used in Panel A spoke rendering. The CT color (CELL_TYPE_COLORS["Splatter"]
-# = "#D3D3D3") is too desaturated to highlight a single spoke against the
-# 322-feature backdrop, so we override to a high-contrast red and add a
-# black outline. This is a presentation-only choice — the underlying CT
-# identity is still Splatter.
-SPLATTER_HIGHLIGHT_COLOR: str = "#D62728"  # tab10 red
 
 
 # -----------------------------------------------------------------------------
@@ -144,16 +137,6 @@ def _max_ct_identity(feat: dict) -> str | None:
     if not tcts:
         return None
     return tcts[0].get("cell_type")
-
-
-def _load_relaxed_features(report_path: Path) -> list[dict]:
-    """Load + relax-filter the SAE feature report. Returns list of dicts."""
-    payload = json.loads(report_path.read_text())
-    if not isinstance(payload, list):
-        raise ValueError(
-            f"Expected list at {report_path}; got {type(payload).__name__}"
-        )
-    return [feat for feat in payload if _passes_relaxed_filter(feat)]
 
 
 # -----------------------------------------------------------------------------
@@ -219,7 +202,7 @@ def _draw_polar_wheel(
 
     Spoke length = ``ct_dominance`` in [0, 0.7].
     Spoke color  = ``CELL_TYPE_COLORS[top_cell_types[0].cell_type]``.
-    Splatter spoke = highlighted (thicker, red, black outline, labeled).
+    All features rendered equally — no individual spoke is highlighted.
 
     Returns a dict mapping CTs that appear in the population to their colors
     (used to draw the Panel-A legend).
@@ -230,8 +213,7 @@ def _draw_polar_wheel(
 
     # Sort relaxed features by max-CT identity then by ct_dominance descending,
     # so spokes with the same CT cluster together on the wheel and the
-    # eyeballs see CT-blocks rather than a uniform mess. Splatter is the
-    # last block (only 1 feature) so it gets its own angular slot regardless.
+    # eyeballs see CT-blocks rather than a uniform mess.
     def _sort_key(feat: dict) -> tuple[str, float]:
         ct = _max_ct_identity(feat) or "zzz_unknown"
         # negative dominance for descending; tie-break on idx for stability
@@ -255,35 +237,12 @@ def _draw_polar_wheel(
             zorder=1,
         )
 
-    # Draw spokes one by one. Splatter spoke is drawn last (top z-order) with
-    # highlight styling.
-    splatter_theta: float | None = None
-    splatter_dom: float | None = None
+    # Draw all spokes uniformly — no spoke is privileged.
     used_cts: dict[str, str] = {}
-
     for theta, feat in zip(thetas, sorted_feats):
         ct = _max_ct_identity(feat) or "Miscellaneous"
         dom = float(feat.get("ct_dominance", 0.0))
-        # Rendering color: CT color for everyone except Splatter, which gets
-        # its dedicated highlight pass below (still draw a faint gray spoke
-        # underneath for layering consistency).
-        is_splatter = (ct == "Splatter")
         color = CELL_TYPE_COLORS.get(ct, "#808080")
-        if is_splatter:
-            splatter_theta = float(theta)
-            splatter_dom = dom
-            # Draw the underlying gray spoke first for alignment, then
-            # overlay the highlight in the next loop iteration's drawing.
-            ax.plot(
-                [theta, theta],
-                [0.0, dom],
-                color=color,
-                linewidth=0.6,
-                alpha=0.7,
-                zorder=2,
-            )
-            continue
-
         ax.plot(
             [theta, theta],
             [0.0, dom],
@@ -294,66 +253,21 @@ def _draw_polar_wheel(
         )
         used_cts.setdefault(ct, color)
 
-    # Highlight Splatter (drawn on top with thicker line + black outline).
-    if splatter_theta is not None and splatter_dom is not None:
-        # Thick red spoke in the foreground.
-        ax.plot(
-            [splatter_theta, splatter_theta],
-            [0.0, splatter_dom],
-            color=SPLATTER_HIGHLIGHT_COLOR,
-            linewidth=2.6,
-            zorder=5,
-            solid_capstyle="round",
-        )
-        # Black outline by overplotting a slightly thicker line behind it.
-        ax.plot(
-            [splatter_theta, splatter_theta],
-            [0.0, splatter_dom],
-            color="black",
-            linewidth=4.0,
-            zorder=4,
-            solid_capstyle="round",
-        )
-        # Marker at the spoke tip for emphasis.
-        ax.plot(
-            [splatter_theta],
-            [splatter_dom],
-            marker="o",
-            color=SPLATTER_HIGHLIGHT_COLOR,
-            markersize=7.0,
-            markeredgecolor="black",
-            markeredgewidth=0.9,
-            zorder=6,
-        )
-        # Label "Splatter (idx 572)" placed just outside the spoke tip,
-        # rotated tangentially so it doesn't overlap neighboring spokes.
-        label_r = max(splatter_dom + 0.10, 0.72)
-        ax.annotate(
-            f"Splatter\n(feat {SPLATTER_FEATURE_IDX})",
-            xy=(splatter_theta, splatter_dom),
-            xytext=(splatter_theta, label_r),
-            ha="center",
-            va="bottom" if splatter_theta < np.pi else "top",
-            fontsize=7,
-            color="black",
-            fontweight="bold",
-            zorder=7,
-        )
-
     # Polar styling: hide angular grid labels (irrelevant — axis is a
     # categorical wheel of features), keep radial gridlines for the spoke
-    # length scale.
+    # length scale. No "(idx N)" annotations on radial axis; just the
+    # numeric ct_dominance grid for spoke length scale.
     ax.set_theta_direction(-1)         # clockwise
     ax.set_theta_zero_location("N")    # 0° at top
     ax.set_xticks([])
     ax.set_xticklabels([])
-    ax.set_yticks(list(ring_radii) + [0.7])
+    ax.set_yticks(list(ring_radii))
     ax.set_yticklabels(
-        [f"{r:.1f}" for r in ring_radii] + ["0.7 (max)"],
+        [f"{r:.1f}" for r in ring_radii],
         fontsize=6,
         color="#666666",
     )
-    ax.set_ylim(0.0, 0.78)  # leave room for splatter label outside the cap
+    ax.set_ylim(0.0, 0.72)
     ax.set_rlabel_position(135.0)
     ax.grid(True, color="#e6e6e6", linewidth=0.4)
     ax.set_facecolor("white")
@@ -368,39 +282,44 @@ def _draw_raincloud(
     ax,
     splatter_per_fold: np.ndarray,
     random_per_fold: dict[int, np.ndarray],
+    row_ct_labels: list[str],
 ) -> None:
     """Render the per-feature 5-fold ΔR² raincloud.
 
-    Layout: one row per feature, top row = Splatter, then 10 random
-    controls in their canonical order. Each row contains:
+    Layout: one row per feature, all rows treated equally. Each row's label
+    is the cell-type identity of the patched feature's max-CT (no internal
+    feature index, no "Random" / "test" framing). Each row is colored by
+    its own CT using the project-stable ``CELL_TYPE_COLORS`` palette.
+    Each row contains:
 
       * half-violin (KDE) above the row baseline
       * boxplot (median + IQR) on the row baseline
       * strip dots (the 5 raw per-fold values) below the baseline.
     """
-    # Row order: Splatter on top (row index 0 = highest y), random controls
-    # below in their canonical order.
-    row_labels: list[str] = [f"Splatter\n(feat {SPLATTER_FEATURE_IDX})"]
+    # Row order: row 0 corresponds to the Splatter-CT feature (data-wise
+    # idx 572), then the 10 control features in their canonical order. The
+    # row label is just the CT name; nothing about the row signals
+    # privilege relative to the others.
+    if len(row_ct_labels) != 1 + len(RANDOM_FEATURE_IDXS):
+        raise ValueError(
+            f"row_ct_labels length {len(row_ct_labels)} != "
+            f"{1 + len(RANDOM_FEATURE_IDXS)}"
+        )
+
+    row_labels: list[str] = list(row_ct_labels)
     row_data: list[np.ndarray] = [splatter_per_fold]
-    row_colors: list[str] = [SPLATTER_HIGHLIGHT_COLOR]
-    is_splatter_row: list[bool] = [True]
-
-    # Neutral grayscale palette for the random rows; sample viridis at
-    # 10 evenly spaced positions for visual differentiation while staying
-    # subdued vs the Splatter highlight.
-    cmap = plt.get_cmap("viridis")
-    rand_colors = [cmap(0.18 + 0.06 * k) for k in range(len(RANDOM_FEATURE_IDXS))]
-
-    for k, idx in enumerate(RANDOM_FEATURE_IDXS):
-        row_labels.append(f"Random\n{idx}")
+    for idx in RANDOM_FEATURE_IDXS:
         row_data.append(random_per_fold[idx])
-        row_colors.append(rand_colors[k])
-        is_splatter_row.append(False)
+
+    # Per-row colors come from CELL_TYPE_COLORS keyed by the row's CT label.
+    row_colors: list[str] = [
+        CELL_TYPE_COLORS.get(ct, "#808080") for ct in row_labels
+    ]
 
     n_rows = len(row_data)
 
-    # Y positions: row 0 (Splatter) at the top → y = n_rows - 1
-    y_positions = np.arange(n_rows)[::-1]  # row 0 → y = n_rows-1, ..., row n-1 → y = 0
+    # Y positions: row 0 at the top → y = n_rows - 1
+    y_positions = np.arange(n_rows)[::-1]
 
     # X axis: shared across all rows, centered on 0.
     all_vals = np.concatenate(row_data)
@@ -416,7 +335,7 @@ def _draw_raincloud(
     box_height = 0.10           # boxplot height
     kde_grid = np.linspace(x_range[0], x_range[1], 256)
 
-    for vals, y, color, is_sp in zip(row_data, y_positions, row_colors, is_splatter_row):
+    for vals, y, color in zip(row_data, y_positions, row_colors):
         # Half-violin via gaussian KDE — only with > 1 distinct value.
         if vals.size >= 2 and np.std(vals) > 1e-12:
             try:
@@ -429,7 +348,7 @@ def _draw_raincloud(
                     y,
                     y + density,
                     color=color,
-                    alpha=0.55 if not is_sp else 0.70,
+                    alpha=0.55,
                     linewidth=0.0,
                     zorder=2,
                 )
@@ -438,7 +357,7 @@ def _draw_raincloud(
                     kde_grid,
                     y + density,
                     color=color,
-                    linewidth=0.8 if not is_sp else 1.1,
+                    linewidth=0.8,
                     zorder=3,
                 )
             except np.linalg.LinAlgError:
@@ -457,7 +376,7 @@ def _draw_raincloud(
             q1, q3,
             color="white",
             edgecolor=color,
-            linewidth=1.0 if not is_sp else 1.4,
+            linewidth=1.0,
             zorder=4,
         )
         # Median line.
@@ -465,7 +384,7 @@ def _draw_raincloud(
             [med, med],
             [y - box_height / 2, y + box_height / 2],
             color=color,
-            linewidth=1.6 if not is_sp else 2.0,
+            linewidth=1.6,
             zorder=5,
         )
         # Whiskers (extend to min/max — only 5 points so no outlier rule).
@@ -485,15 +404,11 @@ def _draw_raincloud(
         )
 
         # Strip plot (raw per-fold dots) below the baseline.
-        # Add small horizontal jitter for visibility (deterministic via
-        # rank-based offsets, not random — bit-stable across reruns).
         if vals.size > 0:
-            ranks = np.argsort(np.argsort(vals))  # 0..n-1
-            jitter = (ranks - (vals.size - 1) / 2.0) * 0.0  # no jitter; values are spread
             ax.scatter(
                 vals,
-                np.full_like(vals, y + strip_offset, dtype=float) + jitter,
-                s=20.0 if not is_sp else 32.0,
+                np.full_like(vals, y + strip_offset, dtype=float),
+                s=20.0,
                 facecolor=color,
                 edgecolor="white",
                 linewidth=0.5,
@@ -511,47 +426,9 @@ def _draw_raincloud(
         label=r"$\Delta R^2 = 0$",
     )
 
-    # Annotate Splatter mean ± std and pooled-random mean ± std.
-    sp_mean = float(splatter_per_fold.mean())
-    sp_std = float(splatter_per_fold.std(ddof=1))
-    pooled_random = np.concatenate(
-        [random_per_fold[idx] for idx in RANDOM_FEATURE_IDXS]
-    )
-    rand_mean = float(pooled_random.mean())
-    rand_std = float(pooled_random.std(ddof=1))
-
-    ax.text(
-        0.02, 0.985,
-        (
-            "Splatter (saturate)\n"
-            r"$\overline{\Delta R^2}\pm$std = "
-            + f"{sp_mean:+.4f} $\\pm$ {sp_std:.4f}"
-        ),
-        transform=ax.transAxes,
-        ha="left", va="top",
-        fontsize=7,
-        bbox=dict(boxstyle="round,pad=0.30", facecolor="white",
-                  edgecolor=SPLATTER_HIGHLIGHT_COLOR, linewidth=0.9),
-        zorder=7,
-    )
-    ax.text(
-        0.98, 0.985,
-        (
-            "Random null (10x5=50)\n"
-            r"$\overline{\Delta R^2}\pm$std = "
-            + f"{rand_mean:+.4f} $\\pm$ {rand_std:.4f}"
-        ),
-        transform=ax.transAxes,
-        ha="right", va="top",
-        fontsize=7,
-        bbox=dict(boxstyle="round,pad=0.30", facecolor="white",
-                  edgecolor="#666666", linewidth=0.9),
-        zorder=7,
-    )
-
-    # Y axis: row labels.
+    # Y axis: row labels (CT names only).
     ax.set_yticks(y_positions)
-    ax.set_yticklabels(row_labels, fontsize=6.5)
+    ax.set_yticklabels(row_labels, fontsize=7)
     ax.set_ylim(-0.6, n_rows - 0.4)
 
     # X axis: ΔR², centered on 0.
@@ -569,6 +446,7 @@ def make_figure(
     relaxed_feats: list[dict],
     splatter_per_fold: np.ndarray,
     random_per_fold: dict[int, np.ndarray],
+    row_ct_labels: list[str],
 ) -> tuple[plt.Figure, dict[str, object]]:
     """Build the 2-panel figure. Returns (fig, panel_a_meta)."""
     apply_theme("paper")
@@ -579,59 +457,47 @@ def make_figure(
     ax_b = fig.add_subplot(1, 2, 2)
 
     panel_a_meta = _draw_polar_wheel(ax_a, relaxed_feats)
-    _draw_raincloud(ax_b, splatter_per_fold, random_per_fold)
+    _draw_raincloud(ax_b, splatter_per_fold, random_per_fold, row_ct_labels)
 
-    # Panel A legend: list the most frequent CTs in the wheel + Splatter
-    # highlight. Build a legend from CT colors that actually appear in
-    # the relaxed features, top-N by frequency.
-    used = panel_a_meta["used_cts"]
-    # Frequency count per CT in relaxed features.
+    # Panel A legend: list the top-N most frequent CTs that actually appear
+    # in the wheel. No row is privileged.
     ct_counts: dict[str, int] = {}
     for feat in relaxed_feats:
         ct = _max_ct_identity(feat) or "Miscellaneous"
         ct_counts[ct] = ct_counts.get(ct, 0) + 1
 
-    # Choose top 8 CTs by count for the legend (excluding Splatter — it gets
-    # its own highlight entry). Tie-break alphabetical.
-    nonsplatter_sorted = sorted(
-        ((ct, n) for ct, n in ct_counts.items() if ct != "Splatter"),
-        key=lambda kv: (-kv[1], kv[0]),
+    # Choose top 10 CTs by count for the legend. Tie-break alphabetical.
+    sorted_cts = sorted(
+        ct_counts.items(), key=lambda kv: (-kv[1], kv[0])
     )
-    legend_cts = nonsplatter_sorted[:8]
+    legend_cts = sorted_cts[:10]
 
     legend_handles: list[Patch] = []
     for ct, n in legend_cts:
         col = CELL_TYPE_COLORS.get(ct, "#808080")
         legend_handles.append(Patch(facecolor=col, edgecolor="black",
                                     linewidth=0.5, label=f"{ct} (n={n})"))
-    # Splatter highlight entry.
-    legend_handles.append(
-        Line2D(
-            [0], [0],
-            color=SPLATTER_HIGHLIGHT_COLOR,
-            marker="o",
-            markersize=6.0,
-            markeredgecolor="black",
-            markeredgewidth=0.7,
-            linewidth=2.4,
-            label=f"Splatter (n=1, feat {SPLATTER_FEATURE_IDX})",
-        )
-    )
 
-    ax_a.legend(
+    # Place the legend below the polar axis (anchored to the figure, NOT
+    # the polar axis) to keep it well clear of the raincloud row labels on
+    # the right. Use 2 columns so the legend block stays compact.
+    fig.legend(
         handles=legend_handles,
-        loc="upper left",
-        bbox_to_anchor=(-0.18, 1.04),
+        loc="lower left",
+        bbox_to_anchor=(0.02, 0.02),
         fontsize=6.5,
         frameon=True,
-        title=f"Top-CT identity (top 8 of 31)\nN_feat={len(relaxed_feats)}",
+        title=(
+            f"Top-CT identity (top {len(legend_cts)} of "
+            f"{len(ct_counts)})\nN_feat={len(relaxed_feats)}"
+        ),
         title_fontsize=7,
-        ncol=1,
+        ncol=2,
     )
 
     # Panel-level annotations.
     ax_a.set_title(
-        "A. SAE feature wheel (323 relaxed-filter features)",
+        f"A. SAE feature wheel ({len(relaxed_feats)} relaxed-filter features)",
         fontsize=9, fontweight="bold", pad=18,
     )
     ax_b.set_title(
@@ -639,8 +505,11 @@ def make_figure(
         fontsize=9, fontweight="bold", pad=8,
     )
 
-    fig.subplots_adjust(left=0.18, right=0.97, top=0.93, bottom=0.10,
-                        wspace=0.28)
+    # Generous left margin for the multi-word raincloud row labels; bottom
+    # margin reserved for the figure-level legend; wide wspace so the
+    # polar wheel and the raincloud do not visually crowd each other.
+    fig.subplots_adjust(left=0.04, right=0.99, top=0.93, bottom=0.28,
+                        wspace=0.50)
     return fig, panel_a_meta
 
 
@@ -655,6 +524,8 @@ def _print_report(
     splatter_per_fold: np.ndarray,
     random_per_fold: dict[int, np.ndarray],
     summary_from_json: dict,
+    row_ct_labels: list[str],
+    dpi: int,
 ) -> None:
     n_relaxed = len(relaxed_feats)
     splatter_count = sum(
@@ -675,17 +546,23 @@ def _print_report(
     rand_std = float(pooled_random.std(ddof=1))
 
     print("=" * 72)
-    print("README Figure 5 -- SAE polar wheel + raincloud")
+    print("README Figure 5 -- SAE polar wheel + raincloud (no Splatter highlight)")
     print("=" * 72)
     print(f"  n_relaxed_filter             : {n_relaxed}")
     print(f"  consensus.relaxed.n_features : {consensus_n}")
-    print(f"  splatter_in_relaxed          : {splatter_count}")
+    print(f"  splatter_in_relaxed          : {splatter_count}  (no special markup)")
     print(f"  consensus.relaxed.Splatter   : {consensus_splatter}")
     print(f"  splatter_feature_idx         : {splatter_feat['feature_idx']}")
     print(f"  splatter_ct_dominance        : "
           f"{splatter_feat['ct_dominance']:.6f}")
     print(f"  splatter_top_cts             : "
           f"{[c['cell_type'] for c in splatter_feat['top_cell_types']]}")
+    print(f"  panel_a_dpi                  : {dpi}")
+
+    print()
+    print(f"  raincloud rows (n={len(row_ct_labels)}, CT-only labels):")
+    for k, label in enumerate(row_ct_labels):
+        print(f"    row {k}: {label}")
 
     print()
     print("  splatter_saturate_dr2_per_fold:")
@@ -717,6 +594,10 @@ def _print_report(
                 else:
                     print(f"    {k:42s}: {v}")
 
+    print()
+    print("  CAVEAT: the experiment as run patched 1 feature with Splatter")
+    print("  as top-CT and 10 random controls; symmetric across-CT patching")
+    print("  is future work.")
     print("=" * 72)
 
 
@@ -755,10 +636,17 @@ def main() -> int:
     args = parser.parse_args()
 
     logger.info("[fig5] loading SAE feature report: %s", args.feature_report)
-    relaxed_feats = _load_relaxed_features(args.feature_report)
+    full_report = json.loads(args.feature_report.read_text())
+    if not isinstance(full_report, list):
+        raise ValueError(
+            f"Expected list at {args.feature_report}; "
+            f"got {type(full_report).__name__}"
+        )
+    by_idx = {feat["feature_idx"]: feat for feat in full_report}
+    relaxed_feats = [feat for feat in full_report if _passes_relaxed_filter(feat)]
     logger.info(
-        "[fig5] loaded %d relaxed-filter features (out of total in report)",
-        len(relaxed_feats),
+        "[fig5] loaded %d relaxed-filter features (out of %d total in report)",
+        len(relaxed_feats), len(full_report),
     )
 
     logger.info("[fig5] loading xref consensus: %s", args.xref_consensus)
@@ -789,10 +677,29 @@ def main() -> int:
         splatter_per_fold.shape, sorted(random_per_fold.keys()),
     )
 
+    # Resolve per-row CT labels from feature_report. Row 0 is always
+    # Splatter (data-wise feature 572); rows 1..10 are the 10 control
+    # feature_idxs in canonical order, with the row label being each
+    # feature's max-CT identity (top_cell_types[0].cell_type).
+    row_ct_labels: list[str] = ["Splatter"]
+    for idx in RANDOM_FEATURE_IDXS:
+        feat = by_idx.get(idx)
+        if feat is None:
+            raise KeyError(
+                f"Control feature idx {idx} not found in feature_report"
+            )
+        ct = _max_ct_identity(feat)
+        if ct is None:
+            raise ValueError(
+                f"Control feature idx {idx} has no top_cell_types entry"
+            )
+        row_ct_labels.append(ct)
+
     fig, _meta = make_figure(
         relaxed_feats=relaxed_feats,
         splatter_per_fold=splatter_per_fold,
         random_per_fold=random_per_fold,
+        row_ct_labels=row_ct_labels,
     )
 
     out_png = args.out_stem.with_suffix(".png")
@@ -813,6 +720,8 @@ def main() -> int:
         splatter_per_fold=splatter_per_fold,
         random_per_fold=random_per_fold,
         summary_from_json=summary_from_json,
+        row_ct_labels=row_ct_labels,
+        dpi=args.dpi,
     )
     return 0
 

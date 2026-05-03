@@ -1,14 +1,19 @@
 #!/usr/bin/env python
 """README Figure 4: cross-method set agreement (2 stacked UpSet plots).
 
-Renders ``figures/fig4_upset.png`` with two stacked UpSet panels:
+Renders ``figures/fig4_upset.png`` with two stacked UpSet panels with method-
+family color encoding:
 
   Top panel: UpSet on the top-5 cell-types ranked by each of 11 attribution /
              attention / distributional / information-theoretic / perturbation
              methods (IG, GradientSHAP, SmoothGrad, AttnLRP, GMAR, GAF AF,
              GAF AGF, GAF GF, Wasserstein, CMI, LOCO). Two CTs (Splatter,
              Fibroblast) appear in 11/11 and 10/11 sets respectively; agreement
-             decays below those.
+             decays below those. Set bars (left totals) and intersection bars
+             (top) are colored by method family (gradient-attribution = blue,
+             attention-based = orange, distributional = green, information-
+             theoretic = red, perturbation = purple); mixed-family intersections
+             remain grey.
 
   Bottom panel: UpSet on the global top-50 (CT, gene) pairs across the 6
                 gene-rankable methods (Captum IG, GradientSHAP, SmoothGrad,
@@ -16,7 +21,15 @@ Renders ``figures/fig4_upset.png`` with two stacked UpSet panels:
                 methods (AttnLRP, GMAR, GAF AF/AGF/GF) are CT-only and the
                 two EXP-016 task-excluded methods (LOCO, raw-pseudobulk CMI)
                 are likewise CT-only, so neither family contributes a gene
-                axis to this UpSet.
+                axis to this UpSet. Color encoding here uses the gradient-
+                attribution family (blue) for Captum IG/GradientSHAP/
+                SmoothGrad, the differential-expression family (pink) for DE
+                Wilcoxon/DE DESeq2, and distributional (green) for Wasserstein.
+
+  Legend: a single figure-level legend is rendered below both panels with
+  color swatches for every family that appears in either panel. Legend is
+  placed in figure-level coordinates via ``bbox_to_anchor`` so it never
+  overlaps the upsetplot internal axes.
 
 Data sources (read fresh on every run; no hardcoded numbers):
   - Top panel:
@@ -119,6 +132,91 @@ EXPECTED_BOTTOM_PANEL_METHODS = (
     "Captum IG", "DE DESeq2", "DE Wilcoxon",
     "GradientSHAP", "SmoothGrad", "Wasserstein",
 )
+
+# ---------------------------------------------------------------------------
+# Method-family color encoding
+# ---------------------------------------------------------------------------
+#
+# Five families distinguished by tab10 colors. Bottom panel introduces a new
+# DE family (pink) that does not appear in the top panel because no DE method
+# is in the 11-method top-panel enumeration. Mixed-family intersections in the
+# UpSet (intersections that span 2+ families) keep the default ``MIXED_FAMILY``
+# grey color so the family encoding only "fires" when the convergence story
+# is intra-family.
+
+GRAY_MIXED = "#404040"  # default fill for mixed-family intersections + bars
+
+FAMILY_COLOR = {
+    "Gradient-attribution": "#1f77b4",  # tab10 blue
+    "Attention-based":      "#ff7f0e",  # tab10 orange
+    "Distributional":       "#2ca02c",  # tab10 green
+    "Information-theoretic": "#d62728",  # tab10 red
+    "Perturbation":         "#9467bd",  # tab10 purple
+    # Bottom-panel-only family (DE Wilcoxon + DE DESeq2). User spec allowed
+    # either reusing attention-orange or introducing a new color; pink picked
+    # for visual distinctness from the gradient-attribution blue.
+    "Differential expression": "#e377c2",  # tab10 pink
+}
+
+# Top-panel: 11 methods -> family.
+FAMILY_BY_METHOD_TOP = {
+    "IG":            "Gradient-attribution",
+    "GradientSHAP":  "Gradient-attribution",
+    "SmoothGrad":    "Gradient-attribution",
+    "AttnLRP":       "Attention-based",
+    "GMAR":          "Attention-based",
+    "GAF AF":        "Attention-based",
+    "GAF AGF":       "Attention-based",
+    "GAF GF":        "Attention-based",
+    "Wasserstein":   "Distributional",
+    "CMI":           "Information-theoretic",
+    "LOCO":          "Perturbation",
+}
+
+# Bottom-panel: 6 methods -> family.
+FAMILY_BY_METHOD_BOTTOM = {
+    "Captum IG":    "Gradient-attribution",
+    "GradientSHAP": "Gradient-attribution",
+    "SmoothGrad":   "Gradient-attribution",
+    "DE Wilcoxon":  "Differential expression",
+    "DE DESeq2":    "Differential expression",
+    "Wasserstein":  "Distributional",
+}
+
+
+def _family_color_by_method(family_by_method: dict[str, str]) -> dict[str, str]:
+    """Return ``{method_label: family_hex_color}`` for a panel."""
+    return {m: FAMILY_COLOR[fam] for m, fam in family_by_method.items()}
+
+
+def _families_present(family_by_method: dict[str, str]) -> list[str]:
+    """Return the unique families used by ``family_by_method``, in stable order."""
+    seen: list[str] = []
+    for fam in family_by_method.values():
+        if fam not in seen:
+            seen.append(fam)
+    return seen
+
+
+def _group_methods_by_family(
+    family_by_method: dict[str, str],
+    *,
+    methods: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, list[str]]:
+    """Return ``{family: [methods belonging to that family]}``.
+
+    Restricts to ``methods`` (the panel-specific column order) when given so
+    the caller can pass a subset to ``style_subsets(present=...)``.
+    """
+    if methods is None:
+        methods = list(family_by_method.keys())
+    out: dict[str, list[str]] = {}
+    for m in methods:
+        fam = family_by_method.get(m)
+        if fam is None:
+            continue
+        out.setdefault(fam, []).append(m)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +455,7 @@ def _render_upset_to_image(
     show_counts: str | bool = True,
     sort_by: str = "cardinality",
     min_subset_size: int | None = None,
+    family_by_method: dict[str, str] | None = None,
 ) -> Image.Image:
     """Render a single UpSet plot to a PIL Image at the requested DPI.
 
@@ -367,6 +466,20 @@ def _render_upset_to_image(
     ``min_subset_size`` is forwarded to ``UpSet`` to suppress empty / single-
     member intersections that would otherwise crowd the dot-grid; default
     ``None`` keeps every visible intersection.
+
+    Family coloring (when ``family_by_method`` is provided)
+    ------------------------------------------------------
+    - **Set bars (totals, left side)**: colored by the family of each method
+      via ``upset.style_categories(method, bar_facecolor=family_color)``.
+    - **Intersection bars (top)** + **matrix dots**: for every family that
+      appears in this panel, ``upset.style_subsets(present=[methods in
+      family], absent=[methods NOT in family], facecolor=family_color)`` is
+      called once. This colors *only* intersections whose membership is
+      EXACTLY the methods of one family — so a "pure single-family"
+      convergence is colored, while any intersection mixing two or more
+      families remains the default ``GRAY_MIXED`` (#404040). Single-method
+      intersections (degree=1) are colored by that method's family because
+      they trivially "all members from same family".
     """
     df = _build_indicator_df(sets, column_order=column_order)
     if df.empty:
@@ -391,7 +504,7 @@ def _render_upset_to_image(
         sort_by=sort_by,
         sort_categories_by="cardinality",
         show_counts=show_counts,
-        facecolor="#404040",
+        facecolor=GRAY_MIXED,
         other_dots_color=0.30,
         shading_color=0.05,
         with_lines=True,
@@ -399,6 +512,46 @@ def _render_upset_to_image(
     if min_subset_size is not None:
         upset_kwargs["min_subset_size"] = min_subset_size
     upset = UpSet(membership, **upset_kwargs)
+
+    # ------------------------------------------------------------------
+    # Family color encoding (must happen BEFORE upset.plot)
+    # ------------------------------------------------------------------
+    if family_by_method is not None:
+        # 1) Set-bar (totals) coloring per method.
+        for method in column_order:
+            fam = family_by_method.get(method)
+            if fam is None:
+                continue
+            upset.style_categories(
+                method,
+                bar_facecolor=FAMILY_COLOR[fam],
+            )
+
+        # 2) Intersection bars + matrix dots. For every family present in
+        #    this panel, color the EXACTLY-that-family intersection (i.e.
+        #    every method in the family is "present" AND every method in
+        #    OTHER families is "absent"). This implementation matches the
+        #    spec: "if all members are from the same family, color by that
+        #    family; if mixed, color grey".
+        family_to_methods = _group_methods_by_family(
+            family_by_method, methods=column_order,
+        )
+        all_methods_in_panel = list(column_order)
+        for fam, fam_methods in family_to_methods.items():
+            absent_methods = [
+                m for m in all_methods_in_panel if m not in fam_methods
+            ]
+            # Note: we color *every* subset of the family, not just the
+            # full-degree one — single-method intersections (degree=1) and
+            # within-family pairs both qualify as "same family". Achieved
+            # by setting absent=other-family methods and present=None
+            # (matches subsets that may include any subset of fam_methods
+            # while excluding all other-family methods).
+            upset.style_subsets(
+                absent=absent_methods if absent_methods else None,
+                facecolor=FAMILY_COLOR[fam],
+            )
+
     upset.plot(fig=fig_temp)
 
     buf = io.BytesIO()
@@ -414,6 +567,8 @@ def _composite_two_panels(
     *,
     figsize: tuple[float, float],
     dpi: int,
+    families: list[str] | None = None,
+    include_mixed_swatch: bool = True,
 ) -> plt.Figure:
     """Stack the two PNG-buffer images into a single matplotlib Figure.
 
@@ -422,13 +577,60 @@ def _composite_two_panels(
     arrange them vertically. ``figsize`` and ``dpi`` are the OUTPUT canvas
     dimensions; the ``img_top`` / ``img_bot`` already carry their own internal
     DPI from upsetplot's renderer.
+
+    ``families`` (when provided) drives a figure-level legend with one color
+    swatch per family. The legend is anchored at figure-coords below the two
+    panels via ``bbox_to_anchor=(0.5, 0.0)``, so it cannot overlap the
+    upsetplot internal axes (which were rasterised onto the panel images).
+    ``include_mixed_swatch=True`` appends a "Mixed families" grey swatch so
+    readers can map the default color too.
     """
-    fig, axes = plt.subplots(2, 1, figsize=figsize, dpi=dpi)
+    if families:
+        # Reserve ~12 % of vertical space at the bottom for the legend strip.
+        gridspec_kw = {"height_ratios": [1.0, 1.0], "hspace": 0.04}
+        fig = plt.figure(figsize=figsize, dpi=dpi)
+        # 2 panels stacked + 1 thin legend axis at the bottom (no axis -- just
+        # acts as anchor for the legend). bbox_to_anchor uses figure coords so
+        # the legend is guaranteed not to clip into the panel images.
+        gs = fig.add_gridspec(
+            nrows=2, ncols=1,
+            top=0.98, bottom=0.10, left=0.01, right=0.99,
+            **gridspec_kw,
+        )
+        axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[1, 0])]
+    else:
+        fig, axes = plt.subplots(2, 1, figsize=figsize, dpi=dpi)
+        fig.subplots_adjust(top=0.99, bottom=0.01, left=0.01, right=0.99,
+                            hspace=0.04)
     for ax, img in zip(axes, (img_top, img_bot)):
         ax.imshow(np.asarray(img), interpolation="bilinear")
         ax.set_axis_off()
-    fig.subplots_adjust(top=0.99, bottom=0.01, left=0.01, right=0.99,
-                        hspace=0.04)
+
+    if families:
+        from matplotlib.patches import Patch
+        handles = [
+            Patch(facecolor=FAMILY_COLOR[fam], edgecolor="none", label=fam)
+            for fam in families
+        ]
+        if include_mixed_swatch:
+            handles.append(
+                Patch(facecolor=GRAY_MIXED, edgecolor="none",
+                      label="Mixed families"),
+            )
+        fig.legend(
+            handles=handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.005),
+            ncol=min(len(handles), 7),
+            frameon=False,
+            fontsize=10,
+            title="Method family",
+            title_fontsize=11,
+            handlelength=1.6,
+            handleheight=1.2,
+            columnspacing=1.6,
+            borderaxespad=0.0,
+        )
     return fig
 
 
@@ -523,7 +725,7 @@ def main() -> int:
         metavar=("W", "H"),
         help="Final canvas figsize in inches.",
     )
-    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--dpi", type=int, default=600)
     parser.add_argument(
         "--top-min-subset",
         type=int, default=1,
@@ -603,6 +805,7 @@ def main() -> int:
         dpi=panel_dpi,
         min_subset_size=args.top_min_subset,
         sort_by="-degree",
+        family_by_method=FAMILY_BY_METHOD_TOP,
     )
     # Bottom panel: sort by cardinality (descending) so the largest
     # intersections come first; emphasizes that the within-family
@@ -615,11 +818,21 @@ def main() -> int:
         dpi=panel_dpi,
         min_subset_size=args.bottom_min_subset,
         sort_by="cardinality",
+        family_by_method=FAMILY_BY_METHOD_BOTTOM,
     )
+    # Union of families across both panels for a single shared legend.
+    families_top = _families_present(FAMILY_BY_METHOD_TOP)
+    families_bot = _families_present(FAMILY_BY_METHOD_BOTTOM)
+    families_union: list[str] = []
+    for fam in families_top + families_bot:
+        if fam not in families_union:
+            families_union.append(fam)
     fig = _composite_two_panels(
         img_top, img_bot,
         figsize=tuple(args.figsize),
         dpi=panel_dpi,
+        families=families_union,
+        include_mixed_swatch=True,
     )
     written = save_fig(fig, args.out_stem, formats=("png",), dpi=panel_dpi)
     plt.close(fig)
@@ -669,9 +882,14 @@ def main() -> int:
         f"pair-set is finer granularity so values may differ)"
     )
     print()
+    print(f"DPI                                : {panel_dpi}")
+    print()
     for path in written:
         size_mb = path.stat().st_size / (1024 * 1024)
-        print(f"Wrote: {path}  ({size_mb:.3f} MB)")
+        size_kb = path.stat().st_size / 1024
+        print(
+            f"Wrote: {path}  ({size_mb:.3f} MB / {size_kb:.1f} KB)"
+        )
     print("=" * 78)
 
     # Per-method set-size breakdown for sanity / debugging.
@@ -682,6 +900,31 @@ def main() -> int:
     print("  BOTTOM PANEL (top-50 (CT, gene) pairs)")
     for m in bottom_methods_ordered:
         print(f"    {m:<14s} : {len(pair_sets[m]):>3d}")
+
+    # Family color encoding -- print which methods got which colors.
+    print()
+    print("Family color encoding (TOP PANEL, 11 methods):")
+    fam_to_methods_top = _group_methods_by_family(
+        FAMILY_BY_METHOD_TOP, methods=top_methods_ordered,
+    )
+    for fam in _families_present(FAMILY_BY_METHOD_TOP):
+        members = fam_to_methods_top.get(fam, [])
+        print(
+            f"  {fam:<24s} {FAMILY_COLOR[fam]}  "
+            f"-> [{', '.join(members)}]"
+        )
+    print()
+    print("Family color encoding (BOTTOM PANEL, 6 methods):")
+    fam_to_methods_bot = _group_methods_by_family(
+        FAMILY_BY_METHOD_BOTTOM, methods=bottom_methods_ordered,
+    )
+    for fam in _families_present(FAMILY_BY_METHOD_BOTTOM):
+        members = fam_to_methods_bot.get(fam, [])
+        print(
+            f"  {fam:<24s} {FAMILY_COLOR[fam]}  "
+            f"-> [{', '.join(members)}]"
+        )
+    print(f"  {'Mixed-family (default)':<24s} {GRAY_MIXED}")
     return 0
 
 

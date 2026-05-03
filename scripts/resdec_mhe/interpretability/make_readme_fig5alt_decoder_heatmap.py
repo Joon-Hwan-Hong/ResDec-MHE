@@ -1,20 +1,18 @@
 #!/usr/bin/env python
 """Render Figure 5 alt-1 (SAE decoder-direction CT projection heatmap).
 
-11 rows (1 Splatter feature + 10 random control features) x 31 columns
-(canonical cell types). Each cell is the per-CT *projection* of the SAE
-decoder column ``W_dec[:, j]`` against that CT's mean fused activation
-``mu_c`` -- i.e.  ``proj[c, j] = mu_c . W_dec[:, j]``. This is the
-quantity reported in :func:`src.analysis.sparse_autoencoder.interpret_features`
-(see ``feature_report.json::top_cell_types``); we expand the per-feature
-top-3 down to the full 31-CT vector by computing the projection from the
-SAE state-dict and the persisted fused activations.
+11 rows (SAE features) x 31 columns (canonical cell types). Each cell is
+the per-CT *projection* of the SAE decoder column ``W_dec[:, j]`` against
+that CT's mean fused activation ``mu_c`` -- i.e.
+``proj[c, j] = mu_c . W_dec[:, j]``. This is the quantity reported in
+:func:`src.analysis.sparse_autoencoder.interpret_features` (see
+``feature_report.json::top_cell_types``); we expand the per-feature top-3
+down to the full 31-CT vector by computing the projection from the SAE
+state-dict and the persisted fused activations.
 
-The Splatter feature (idx 572) is the lone SAE feature whose top-CT match
-falls on the Splatter cell type under the "relaxed" CT-dominance filter;
-the 10 random controls (drawn from the live, non-dead, non-ubiquitous
-pool) act as the visual null. The (Splatter feature x Splatter CT) cell
-is highlighted with a black box for emphasis.
+Row labels are the cell-type name of each feature's max-CT (no internal
+feature-index annotations). The heatmap is neutral -- no special marker
+is drawn on the (Splatter row, Splatter CT) cell.
 
 Inputs
 ------
@@ -52,7 +50,6 @@ os.environ.setdefault("PYTHONHASHSEED", "42")
 import matplotlib
 
 matplotlib.use("Agg")  # must precede pyplot import
-import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -70,11 +67,30 @@ from src.visualization.theme import (  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
-# Splatter SAE feature (the one the relaxed filter picked up) + 10
-# random control features per the README revamp brief.
+# 11 SAE features rendered as rows (Splatter-top-CT feature first, then
+# 10 additional features whose max-CT spans the canonical 31-CT panel).
 SPLATTER_FEATURE_IDX: int = 572
-RANDOM_FEATURE_INDICES: tuple[int, ...] = (
+ADDITIONAL_FEATURE_INDICES: tuple[int, ...] = (
     178, 1577, 183, 1340, 898, 883, 1431, 194, 415, 1750,
+)
+
+# Row labels: the cell-type name of each feature's max-CT (column index
+# of the largest |projection|). One entry per feature, in the same order
+# as [SPLATTER_FEATURE_IDX, *ADDITIONAL_FEATURE_INDICES]. Note the
+# duplicate ``Deep-layer intratelencephalic`` label at rows 2 and 8 is
+# intentional -- features 1577 and 194 both peak on Deep-IT.
+ROW_LABELS: tuple[str, ...] = (
+    "Splatter",
+    "Hippocampal CA4",
+    "Deep-layer intratelencephalic",
+    "MGE interneuron",
+    "Eccentric medium spiny neuron",
+    "Committed oligodendrocyte precursor",
+    "Microglia",
+    "CGE interneuron",
+    "Deep-layer intratelencephalic",
+    "Mammillary body",
+    "Midbrain-derived inhibitory",
 )
 
 
@@ -177,14 +193,13 @@ def _draw_heatmap(
     proj: np.ndarray,
     feature_labels: list[str],
     cell_types: list[str],
-    splatter_ct_idx: int,
 ) -> None:
     """Draw the (11 x 31) signed projection heatmap with PiYG diverging cmap.
 
     The colormap is centered at zero (decoder weights / projections are
     signed); ``vmax`` is set to the symmetric max-abs of the matrix so the
-    color bar is balanced. The (Splatter feature, Splatter CT) cell is
-    annotated with a 1.5-pt black box to flag the relaxed-filter pick.
+    color bar is balanced. No special marker singles out any (row, col)
+    cell -- the heatmap is rendered uniformly.
     """
     cmap = PALETTES["diverging"]  # PiYG -- magenta(-) / green(+)
     vmax = float(np.max(np.abs(proj)))
@@ -217,18 +232,6 @@ def _draw_heatmap(
     # (handled manually via minor ticks above).
     fmt_axes(ax, hide_spines=(), grid_major=False, grid_minor=False)
 
-    # Highlight the (Splatter feature row=0, Splatter CT column) cell with
-    # a black square. Splatter feature is row 0 by construction.
-    rect = mpatches.Rectangle(
-        (splatter_ct_idx - 0.5, 0 - 0.5),
-        1.0, 1.0,
-        linewidth=1.5,
-        edgecolor="black",
-        facecolor="none",
-        zorder=5,
-    )
-    ax.add_patch(rect)
-
     # Compact colorbar to the right.
     cb = ax.figure.colorbar(im, ax=ax, fraction=0.020, pad=0.015)
     cb.set_label(r"$\mu_c \cdot W_\mathrm{dec}[:,j]$  (signed)", fontsize=7)
@@ -236,26 +239,26 @@ def _draw_heatmap(
     cb.ax.tick_params(length=0, labelsize=6)
 
     ax.set_xlabel("Cell type (canonical 31-CT order)", fontsize=8)
-    ax.set_ylabel("SAE feature", fontsize=8)
+    ax.set_ylabel("SAE feature (max-CT)", fontsize=8)
 
 
 def make_figure(
     proj: np.ndarray,
     feature_labels: list[str],
     cell_types: list[str],
-    splatter_ct_idx: int,
 ) -> plt.Figure:
     """Build the 10 x 6 in figure with the single-panel heatmap."""
     apply_theme("paper")
     fig, ax = plt.subplots(figsize=(10, 6))
-    _draw_heatmap(ax, proj, feature_labels, cell_types, splatter_ct_idx)
-    fig.subplots_adjust(left=0.20, right=0.94, top=0.97, bottom=0.30)
+    _draw_heatmap(ax, proj, feature_labels, cell_types)
+    fig.subplots_adjust(left=0.30, right=0.94, top=0.97, bottom=0.30)
     return fig
 
 
 def _print_report(
     proj: np.ndarray,
     feature_indices: list[int],
+    row_labels: list[str],
     cell_types: list[str],
     decoder_method: str,
 ) -> None:
@@ -265,26 +268,19 @@ def _print_report(
     print("=" * 72)
     print(f"  decoder_access_method : {decoder_method}")
     print(f"  feature_indices       : {feature_indices}")
-    splatter_idx = cell_types.index("Splatter")
+    print(f"  --- Row labels (one per feature, in display order):")
+    for i, label in enumerate(row_labels):
+        print(f"      row {i:2d}: {label}")
 
-    # Splatter feature top-3.
-    splatter_row = proj[0]
-    sq = splatter_row ** 2
-    top3 = np.argsort(-sq)[:3]
-    print(f"  --- Splatter feature {feature_indices[0]} (top-3 CT, projection):")
-    for r in top3:
-        print(f"      {cell_types[r]:38s}  proj={splatter_row[r]:+.4f}  sq={sq[r]:.4f}")
-
-    # Each random feature's top CT.
-    print(f"  --- Random control features (top CT, projection):")
-    for k, fi in enumerate(feature_indices[1:], start=1):
+    # Each row's top CT (consistency check vs the row labels).
+    print(f"  --- Per-row top CT (largest |projection|):")
+    for k, fi in enumerate(feature_indices):
         row = proj[k]
         sq_row = row ** 2
         top1 = int(np.argmax(sq_row))
         print(f"      feat {fi:5d}  {cell_types[top1]:38s}  proj={row[top1]:+.4f}  "
               f"sq={sq_row[top1]:.4f}")
 
-    print(f"  splatter_ct_idx       : {splatter_idx}  (column highlighted)")
     print(f"  proj.shape            : {proj.shape}  (rows=features, cols=CTs)")
     print(f"  proj.minmax           : [{proj.min():+.4f}, {proj.max():+.4f}]")
     print("=" * 72)
@@ -318,7 +314,13 @@ def main() -> int:
 
     # Build the (n_features, 31) projection matrix from the SAE state-dict
     # + persisted fused activations.
-    feature_indices: list[int] = [SPLATTER_FEATURE_IDX, *RANDOM_FEATURE_INDICES]
+    feature_indices: list[int] = [SPLATTER_FEATURE_IDX, *ADDITIONAL_FEATURE_INDICES]
+    feature_labels: list[str] = list(ROW_LABELS)
+    if len(feature_labels) != len(feature_indices):
+        raise AssertionError(
+            f"ROW_LABELS length {len(feature_labels)} != feature_indices "
+            f"length {len(feature_indices)}; both must be 11"
+        )
 
     logger.info("[fig5alt] loading SAE state-dict + per-CT means")
     W_dec, per_ct_means, cell_types = _load_decoder_and_means(
@@ -349,15 +351,17 @@ def main() -> int:
         )
     logger.info("[fig5alt] round-trip verified vs feature_report top-3 (all pass)")
 
-    # Y-axis labels: "<idx> (Splatter top-CT)" for row 0, "<idx> (random)" for the rest.
-    feature_labels: list[str] = [
-        f"{feature_indices[0]} (Splatter top-CT)",
-        *[f"{fi} (random)" for fi in feature_indices[1:]],
-    ]
+    # Sanity-check: each row label should match the cell type at the row's
+    # argmax-|projection| (the feature's max-CT).
+    for k, fi in enumerate(feature_indices):
+        top_ct = cell_types[int(np.argmax(proj[k] ** 2))]
+        if feature_labels[k] != top_ct:
+            raise AssertionError(
+                f"row {k} (feat {fi}): label {feature_labels[k]!r} != "
+                f"max-CT {top_ct!r}"
+            )
 
-    splatter_ct_idx = cell_types.index("Splatter")
-
-    fig = make_figure(proj, feature_labels, cell_types, splatter_ct_idx)
+    fig = make_figure(proj, feature_labels, cell_types)
 
     out_png = args.out_stem.with_suffix(".png")
     if out_png.exists():
@@ -370,7 +374,7 @@ def main() -> int:
         logger.info("[fig5alt] wrote %s (size=%d B)", w, w.stat().st_size)
 
     _print_report(
-        proj, feature_indices, cell_types,
+        proj, feature_indices, feature_labels, cell_types,
         decoder_method="full SAE state_dict (W_dec[64,2048] x mu_c[31,64])",
     )
     return 0
