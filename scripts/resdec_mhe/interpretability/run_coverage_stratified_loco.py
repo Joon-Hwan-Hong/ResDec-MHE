@@ -761,6 +761,11 @@ def main() -> int:
         "--smoke-fold-only", type=int, default=None,
         help="If set, run only the given fold (for fast smoke tests).",
     )
+    p.add_argument(
+        "--metadata-path", type=Path, default=None,
+        help="Override config's data.metadata_path (the directory containing "
+             "metadata.csv). Useful when the config ships placeholder paths.",
+    )
     args = p.parse_args()
 
     logging.basicConfig(
@@ -794,6 +799,11 @@ def main() -> int:
     )
     OmegaConf.set_struct(cfg, False)
     cfg.model.head.type = "deterministic"
+    if args.metadata_path is not None:
+        cfg.data.metadata_path = str(args.metadata_path)
+    # The script's --precomputed-dir override needs to flow into the cfg too
+    # because the datamodule reads cfg.data.precomputed_dir directly.
+    cfg.data.precomputed_dir = str(args.precomputed_dir)
 
     # Folds — sequential on a single device.
     fold_payloads: list[dict[str, Any]] = []

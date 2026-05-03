@@ -324,6 +324,7 @@ def test_script_runs_smoke_one_fold(tmp_path: Path):
         "--coverage-json", str(cov_json),
         "--splits-path", str(splits_json),
         "--canonical-dir", str(pred_root),
+        "--metadata-path", str(_WORKTREE_ROOT / "data/metadata_ROSMAP"),
         "--out-data-dir", str(out_data),
         "--out-fig-dir", str(out_fig),
         "--smoke-fold-only", "0",
