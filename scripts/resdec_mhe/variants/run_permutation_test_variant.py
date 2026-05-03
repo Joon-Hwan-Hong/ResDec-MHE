@@ -120,9 +120,15 @@ def run_one_perm(
             "--metadata-csv", str(metadata_path / "metadata.csv"),
             "--splits-path", str(splits_path),
         ]
-        # Pin to first GPU in our list (build is single-process)
-        env_inherit_one_gpu = {**env_inherit, "CUDA_VISIBLE_DEVICES": str(gpus[0])}
-        _run_step_env(tabpfn_cmd, log, "build TabPFN cache", env_inherit_one_gpu)
+        # Per feedback_cuda_visible_devices_subprocess.md: when len(gpus)==1 the
+        # parent shell has already pinned CUDA_VISIBLE_DEVICES to a physical GPU
+        # (perm-shard mode); inherit that mask. Only override when len(gpus) > 1
+        # (fold-shard within-perm mode where we'd assign each child individually).
+        if len(gpus) > 1:
+            tabpfn_env = {**env_inherit, "CUDA_VISIBLE_DEVICES": str(gpus[0])}
+        else:
+            tabpfn_env = env_inherit
+        _run_step_env(tabpfn_cmd, log, "build TabPFN cache", tabpfn_env)
 
         # 3. Write per-perm variant config pointing at perm caches
         perm_config_path = perm_dir / "variant_perm.yaml"

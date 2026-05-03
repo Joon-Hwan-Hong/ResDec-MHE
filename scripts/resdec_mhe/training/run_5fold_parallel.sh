@@ -82,10 +82,25 @@ while (( idx < ${#FOLDS[@]} )); do
             continue
         fi
         echo "[$(date '+%H:%M:%S')] fold $fold -> GPU $gpu"
-        CMD=(CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/resdec_mhe/training/train.py
-             --config "$CONFIG"
-             --fold "$fold"
-             --output-dir "$OUTROOT")
+        # Per feedback_cuda_visible_devices_subprocess.md: when this script
+        # runs in single-GPU pinned-shard mode (parent shell sets
+        # CUDA_VISIBLE_DEVICES=N to assign a physical GPU and we see N_GPUS_EFF=1),
+        # do NOT prepend CUDA_VISIBLE_DEVICES=$gpu — the literal "0" override
+        # is ABSOLUTE in subprocess env and would force the child onto physical
+        # GPU 0 even when the parent pinned us to physical GPU 1, fighting any
+        # parallel shard. Inherit parent's mask in single-GPU mode; only
+        # override when the parent has multiple GPUs and we need to assign one.
+        if (( N_GPUS_EFF > 1 )); then
+            CMD=(CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/resdec_mhe/training/train.py
+                 --config "$CONFIG"
+                 --fold "$fold"
+                 --output-dir "$OUTROOT")
+        else
+            CMD=(uv run python scripts/resdec_mhe/training/train.py
+                 --config "$CONFIG"
+                 --fold "$fold"
+                 --output-dir "$OUTROOT")
+        fi
         if [[ -n "$MAX_EPOCHS" ]]; then
             CMD+=(--max-epochs "$MAX_EPOCHS")
         fi
