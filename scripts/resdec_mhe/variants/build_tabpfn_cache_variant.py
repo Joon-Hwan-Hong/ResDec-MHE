@@ -42,6 +42,7 @@ from src.data.feature_loaders import (  # noqa: E402
 from src.data.splits import load_splits  # noqa: E402
 
 from scripts.resdec_mhe.tabpfn._helpers import (  # noqa: E402
+    TabPFNFoldArgs,
     resolve_tabpfn_cache_dir,
 )
 from scripts.resdec_mhe.tabpfn.compute_oof import process_oof_fold  # noqa: E402
@@ -142,10 +143,10 @@ def main() -> int:
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("variant=%s: device=%s", args.variant_name, device)
 
-    # process_oof_fold / process_outer_fold read these attributes off args:
-    # top_k, feature_set, zscore, seed, ignore_pretraining_limits, n_inner_folds.
-    # The argparse Namespace built above defines all of them — keep that
-    # contract in sync if either per-fold callable adds new args.
+    # Wrap argparse args in TabPFNFoldArgs for explicit-contract documentation
+    # of the fields the per-fold callables read (top_k, feature_set, seed,
+    # zscore, ignore_pretraining_limits, n_inner_folds).
+    fold_args = TabPFNFoldArgs.from_argparse(args)
     for fold_idx in args.folds:
         targets = _load_full_fold_targets(args.residual_cache_dir, fold_idx)
         logger.info(
@@ -157,13 +158,13 @@ def main() -> int:
         process_oof_fold(
             fold_idx=fold_idx, fold_split=fold_split,
             features=features, targets=targets,
-            args=args, device=device,
+            args=fold_args, device=device,
             output_dir=args.out_dir, top_k_dir=args.top_k_dir,
         )
         process_outer_fold(
             fold_idx=fold_idx, fold_split=fold_split,
             features=features, targets=targets,
-            args=args, device=device,
+            args=fold_args, device=device,
             output_dir=args.out_dir, top_k_dir=args.top_k_dir,
         )
         logger.info(

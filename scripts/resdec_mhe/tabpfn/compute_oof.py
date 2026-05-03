@@ -67,6 +67,12 @@ def process_oof_fold(
     Reusable per-fold callable extracted from main() so variant pipelines
     (residualized targets) can inject a custom ``targets`` map per fold.
     Writes ``tabpfn_oof_fold{fold_idx}.npz`` and returns a summary dict.
+
+    `args` may be either an argparse Namespace (canonical use) or a
+    `TabPFNFoldArgs` dataclass (preferred for variant pipelines — see
+    `scripts.resdec_mhe.tabpfn._helpers.TabPFNFoldArgs`). Both expose the
+    same fields: top_k, feature_set, seed, zscore, ignore_pretraining_limits,
+    n_inner_folds.
     """
     logger.info("=== Fold %d ===", fold_idx)
     n_train_raw = len(fold_split["train"])
