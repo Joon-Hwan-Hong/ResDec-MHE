@@ -56,6 +56,7 @@ if not (_WORKTREE_ROOT / "src").is_dir():
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.analysis.attention_attribution import attnlrp_softmax
+from src.utils.cell_types import pad_cell_type_names
 from src.utils.provenance import git_sha, pick_max_r2_ckpt
 from src.data.constants import CELL_TYPE_ORDER, N_REGIONS, PFC_REGION_IDX
 from src.data.datamodule import CognitiveResilienceDataModule
@@ -339,9 +340,7 @@ def main(args: argparse.Namespace) -> int:
     np.savez(out_npz, subject_ids=sids, fold=folds, **merged)
     logger.info("Wrote %s", out_npz)
 
-    ct_names = list(CELL_TYPE_ORDER)[:n_ct]
-    if len(ct_names) < n_ct:
-        ct_names = ct_names + [f"ct_{c}" for c in range(len(ct_names), n_ct)]
+    ct_names = pad_cell_type_names(CELL_TYPE_ORDER, n_ct)
 
     summary = summarize(merged, ct_names, top_k=int(args.top_k))
     summary_path = out_dir / "attention_attribution_summary.json"

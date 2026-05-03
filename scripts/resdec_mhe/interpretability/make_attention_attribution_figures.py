@@ -45,6 +45,7 @@ if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.data.constants import CELL_TYPE_ORDER
+from src.utils.cell_types import pad_cell_type_names
 from src.visualization.composite import auto_letter, make_panel
 from src.visualization.theme import apply_theme, fmt_axes, save_fig
 
@@ -71,9 +72,7 @@ def _load_inputs(npz_path: Path, summary_path: Path) -> tuple[dict[str, np.ndarr
     d = np.load(npz_path, allow_pickle=True)
     summary = json.loads(summary_path.read_text())
     n_ct = int(d[METHODS[0]].shape[1])
-    ct_names = list(CELL_TYPE_ORDER)[:n_ct]
-    if len(ct_names) < n_ct:
-        ct_names = ct_names + [f"ct_{i}" for i in range(len(ct_names), n_ct)]
+    ct_names = pad_cell_type_names(CELL_TYPE_ORDER, n_ct)
     per_method_per_ct = {}
     for m in METHODS:
         arr = d[m]  # [N, C]

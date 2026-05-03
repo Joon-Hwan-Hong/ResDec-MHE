@@ -115,9 +115,43 @@ def _dead_fraction(reports: list[dict]) -> float:
     return n_dead / n if n > 0 else float("nan")
 
 
+def _annotate_top_features(
+    top_idx: np.ndarray, reports: list[dict]
+) -> list[dict]:
+    """Pair top feature indices with their feature_report.json metadata.
+
+    For each ``feature_index`` in ``top_idx``, returns a dict with the
+    interpretability-relevant fields from ``reports[feature_index]`` so a
+    consumer can answer "what concept is feature 17 capturing?" without
+    re-loading feature_report.json.
+
+    Returns
+    -------
+    list[dict]
+        One entry per top feature, in the order of ``top_idx``. Fields:
+        ``feature_index``, ``flags``, ``mw_p_cognition``,
+        ``ct_dominance`` (if present), ``dominant_cell_type`` (if present),
+        ``fraction_active``. Missing keys yield ``None``.
+    """
+    out: list[dict] = []
+    for idx in top_idx:
+        i = int(idx)
+        # Defensive: a malformed report.json could be shorter than fa_*.
+        rep = reports[i] if i < len(reports) else {}
+        out.append({
+            "feature_index": i,
+            "flags": list(rep.get("flags", [])),
+            "mw_p_cognition": rep.get("mw_p_cognition"),
+            "ct_dominance": rep.get("ct_dominance"),
+            "dominant_cell_type": rep.get("dominant_cell_type"),
+            "fraction_active": rep.get("fraction_active"),
+        })
+    return out
+
+
 def _top10_decoder_cos_sim(
-    W_dec_a: np.ndarray, fa_a: np.ndarray,
-    W_dec_b: np.ndarray, fa_b: np.ndarray,
+    W_dec_a: np.ndarray, fa_a: np.ndarray, reports_a: list[dict],
+    W_dec_b: np.ndarray, fa_b: np.ndarray, reports_b: list[dict],
 ) -> dict:
     """Top-10 fraction-active features in each SAE; pairwise cos-sim matrix.
 
@@ -140,6 +174,14 @@ def _top10_decoder_cos_sim(
         ``hungarian_assignment``                — list of (trained_rank,
                                                   random_rank) tuples produced
                                                   by linear_sum_assignment.
+        ``top_features_trained_annotated``      — list of dicts joining each
+                                                  ``top_features_trained`` index
+                                                  to the corresponding row in
+                                                  feature_report.json (flags +
+                                                  mw_p_cognition + ct_dominance
+                                                  + dominant_cell_type +
+                                                  fraction_active).
+        ``top_features_random_annotated``       — same, for the random run.
     """
     from scipy.optimize import linear_sum_assignment
 
@@ -185,6 +227,12 @@ def _top10_decoder_cos_sim(
         "K": int(K),
         "top_features_trained": [int(i) for i in top_a.tolist()],
         "top_features_random": [int(i) for i in top_b.tolist()],
+        # Joined feature_report.json metadata so a consumer reading the
+        # comparison.json alone can see *which concept* each top feature
+        # captures (flags + dominant_cell_type + ct_dominance) instead of
+        # having to re-load the per-run feature_report.json.
+        "top_features_trained_annotated": _annotate_top_features(top_a, reports_a),
+        "top_features_random_annotated": _annotate_top_features(top_b, reports_b),
     }
 
 
@@ -269,8 +317,8 @@ def main() -> int:
 
     # Decoder-direction comparison.
     cos_pack = _top10_decoder_cos_sim(
-        trained["W_dec"], trained["fraction_active"],
-        rand["W_dec"], rand["fraction_active"],
+        trained["W_dec"], trained["fraction_active"], trained["reports"],
+        rand["W_dec"], rand["fraction_active"], rand["reports"],
     )
 
     # Acceptance criterion. Schema-clean output: always emit a numeric ratio

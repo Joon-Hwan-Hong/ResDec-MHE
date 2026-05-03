@@ -80,6 +80,7 @@ from src.data.constants import CELL_TYPE_ORDER  # noqa: E402
 from src.data.datamodule import CognitiveResilienceDataModule  # noqa: E402
 from src.data.splits import load_splits  # noqa: E402
 from src.training.resdec_lightning_module import ResDecLightningModule  # noqa: E402
+from src.utils.cell_types import pad_cell_type_names  # noqa: E402
 from src.utils.provenance import git_sha, pick_max_r2_ckpt  # noqa: E402
 
 # Reuse the wrapper + summary helpers from the canonical IG orchestrator —
@@ -504,19 +505,22 @@ def main(args: argparse.Namespace) -> int:
     logger.info("Wrote %s", sg_npz)
 
     # Cell-type + gene names for summaries.
-    ct_names = list(CELL_TYPE_ORDER)[:n_ct]
-    if len(ct_names) < n_ct:
-        ct_names = ct_names + [f"ct_{c}" for c in range(len(ct_names), n_ct)]
+    ct_names = pad_cell_type_names(CELL_TYPE_ORDER, n_ct)
 
     cfg = OmegaConf.merge(
         OmegaConf.load("configs/default.yaml"),
         OmegaConf.load(args.config),
     )
-    gene_names = _load_gene_names(Path(cfg.data.precomputed_dir), n_genes)
+    gene_names, used_real_gene_names = _load_gene_names(
+        Path(cfg.data.precomputed_dir), n_genes
+    )
 
     # Per-method summaries reuse the same logic as captum_composite_attribution.
     gs_summary = summarize(gs_npz, ct_names, gene_names, top_k=int(args.top_k))
     sg_summary = summarize(sg_npz, ct_names, gene_names, top_k=int(args.top_k))
+    # Stamp gene-name provenance so consumers can detect placeholder use.
+    gs_summary["_no_gene_names"] = not used_real_gene_names
+    sg_summary["_no_gene_names"] = not used_real_gene_names
     (out_dir / "gradientshap_attribution_summary.json").write_text(
         json.dumps(gs_summary, indent=2),
     )

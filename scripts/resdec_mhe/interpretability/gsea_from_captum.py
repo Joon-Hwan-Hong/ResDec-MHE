@@ -451,9 +451,12 @@ def run_enrichr_for_gene_list(
     df = df.drop(columns=["_overlap_int"])
 
     # Normalise column names to lower_snake_case.
-    # NOTE: gseapy uses 'Old adjusted P-value' (lowercase 'a') when background
-    # is supplied vs. 'Old Adjusted P-value' without — not relevant to us but
-    # documented here.
+    # NOTE (gseapy quirk, kept inline as no project-wide gseapy notes doc
+    # exists yet): gseapy uses 'Old adjusted P-value' (lowercase 'a') when
+    # background is supplied vs. 'Old Adjusted P-value' without. We do not
+    # consume that column directly (we drop it via the explicit ``keep`` list
+    # below), but the casing trap is documented here so a future audit that
+    # tries to read the legacy column name knows where to look.
     df = df.rename(columns={
         "Term": "term",
         "Overlap": "overlap",

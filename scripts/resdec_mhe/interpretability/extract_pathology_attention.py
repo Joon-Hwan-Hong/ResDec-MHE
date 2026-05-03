@@ -51,6 +51,7 @@ from src.data.constants import CELL_TYPE_ORDER
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits
 from src.training.resdec_lightning_module import ResDecLightningModule
+from src.utils.cell_types import pad_cell_type_names
 from src.utils.provenance import pick_max_r2_ckpt
 
 logger = logging.getLogger(__name__)
@@ -150,10 +151,8 @@ def main(args: argparse.Namespace) -> int:
     mean_per = attn.mean(axis=0)  # [H, C]
     std_per = attn.std(axis=0)
 
-    cell_type_names = list(CELL_TYPE_ORDER)
-    if len(cell_type_names) < n_ct:
-        # Pad with placeholders if the constants list is shorter than the model.
-        cell_type_names = cell_type_names + [f"ct_{c}" for c in range(len(cell_type_names), n_ct)]
+    # Truncate or pad to actual ``n_ct`` (CC7 helper from src.utils.cell_types).
+    cell_type_names = pad_cell_type_names(CELL_TYPE_ORDER, n_ct)
 
     summary = {
         "n_subjects": int(len(sids)),

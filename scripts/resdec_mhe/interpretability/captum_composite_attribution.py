@@ -68,6 +68,8 @@ from src.data.constants import CELL_TYPE_ORDER, N_REGIONS, PFC_REGION_IDX
 from src.data.datamodule import CognitiveResilienceDataModule
 from src.data.splits import load_splits
 from src.training.resdec_lightning_module import ResDecLightningModule
+from src.utils.cell_types import pad_cell_type_names
+from src.utils.gene_names import load_gene_names as _load_gene_names_util
 from src.utils.provenance import pick_max_r2_ckpt
 
 logger = logging.getLogger(__name__)
@@ -270,33 +272,18 @@ def summarize(attr_npz_path: Path, ct_names: list[str], gene_names: list[str],
     }
 
 
-def _load_gene_names(precomputed_dir: Path, n_genes: int) -> list[str]:
+def _load_gene_names(precomputed_dir: Path, n_genes: int) -> tuple[list[str], bool]:
     """Try to load the gene-name list from precomputed feature metadata.
 
-    Supports both .npy (written by ``precompute_features`` in datasets.py) and
-    .json sidecars. Falls back to ``gene_<i>`` placeholders if none are found —
-    downstream interpretability output will be unreadable until a real sidecar
-    is added.
+    Thin wrapper over ``src.utils.gene_names.load_gene_names`` that returns
+    a ``(names, used_real_names)`` tuple. The boolean flag lets the caller
+    stamp ``_no_gene_names`` in the summary JSON when placeholders are
+    used (downstream interpretability output is unreadable in that case).
+
+    Used by both ``captum_composite_attribution`` and
+    ``gradient_shap_smoothgrad_attribution`` (which imports this name).
     """
-    candidates = [precomputed_dir / "gene_names.npy",
-                  precomputed_dir / "gene_names.json",
-                  precomputed_dir / "feature_names.json",
-                  Path("data/canonical/gene_names.json")]
-    for p in candidates:
-        if not p.exists():
-            continue
-        if p.suffix == ".npy":
-            names = np.load(p, allow_pickle=True).tolist()
-        else:
-            names = json.loads(p.read_text())
-        if isinstance(names, list) and len(names) >= n_genes:
-            logger.info("Loaded %d gene names from %s", n_genes, p)
-            return [str(n) for n in names[:n_genes]]
-    logger.warning(
-        "No gene-name file found in expected locations (%s). Using gene_<i> placeholders.",
-        ", ".join(str(p) for p in candidates),
-    )
-    return [f"gene_{i}" for i in range(n_genes)]
+    return _load_gene_names_util(precomputed_dir, n_genes)
 
 
 def main(args: argparse.Namespace) -> int:
@@ -333,19 +320,23 @@ def main(args: argparse.Namespace) -> int:
              predictions_residual=preds, fold=folds)
     logger.info("Wrote %s", out_npz)
 
-    # Cell-type names from constants (truncate to actual n_ct).
-    ct_names = list(CELL_TYPE_ORDER)[:n_ct]
-    if len(ct_names) < n_ct:
-        ct_names = ct_names + [f"ct_{c}" for c in range(len(ct_names), n_ct)]
+    # Cell-type names from constants (truncate / pad to actual n_ct).
+    ct_names = pad_cell_type_names(CELL_TYPE_ORDER, n_ct)
 
     # Gene names — best-effort from precomputed_dir; fall back to placeholders.
     cfg = OmegaConf.merge(
         OmegaConf.load("configs/default.yaml"),
         OmegaConf.load(args.config),
     )
-    gene_names = _load_gene_names(Path(cfg.data.precomputed_dir), n_genes)
+    gene_names, used_real_gene_names = _load_gene_names(
+        Path(cfg.data.precomputed_dir), n_genes
+    )
 
     summary = summarize(out_npz, ct_names, gene_names, top_k=int(args.top_k))
+    # Stamp gene-name provenance so a downstream consumer can detect that
+    # ``gene_<i>`` placeholders were used (the summary is then unreadable
+    # without re-running with a real sidecar).
+    summary["_no_gene_names"] = not used_real_gene_names
     summary_path = out_dir / "composite_attribution_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
     logger.info("Wrote %s", summary_path)

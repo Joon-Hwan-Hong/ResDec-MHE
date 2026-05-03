@@ -62,6 +62,7 @@ if not (_WORKTREE_ROOT / "src").is_dir():
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.data.constants import CELL_TYPE_ORDER
+from src.utils.cell_types import pad_cell_type_names
 
 # Cell types we care about for the GABAergic interneuron co-attention check.
 # Splatter in PFC = long-range SST+CHODL+ projection GABAergic neurons (Siletti
@@ -304,15 +305,13 @@ def main(args: argparse.Namespace) -> int:
     print(f"Loaded attention {attn.shape} from {attn_npz}")
 
     # cell_type_names: prefer the names saved in the matching summary; fall back
-    # to constants. Match length to actual n_ct (truncate if constants longer).
+    # to constants. Match length to actual n_ct via the CC7 helper.
     summary_path = attn_npz.parent / "pathology_attention_summary.json"
     if summary_path.exists():
         names = json.loads(summary_path.read_text())["cell_type_names_used"]
     else:
         names = list(CELL_TYPE_ORDER)
-    ct_names = names[:n_ct]
-    if len(ct_names) < n_ct:
-        ct_names = ct_names + [f"ct_{c}" for c in range(len(ct_names), n_ct)]
+    ct_names = pad_cell_type_names(names, n_ct)
 
     # Optional residual CSV from the prior phenotype script — joined for biology.
     residual_df: pd.DataFrame | None = None

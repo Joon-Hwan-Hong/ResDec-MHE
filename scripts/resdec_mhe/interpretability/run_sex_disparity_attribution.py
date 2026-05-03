@@ -76,6 +76,7 @@ if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 
 from src.data.constants import CELL_TYPE_ORDER  # noqa: E402
+from src.utils.cell_types import pad_cell_type_names  # noqa: E402
 from src.visualization.theme import (  # noqa: E402
     apply_theme,
     fmt_axes,
@@ -1126,9 +1127,7 @@ def main(argv: list[str] | None = None) -> int:
         "Attribution tensor: N=%d, n_ct=%d, n_genes=%d", n, n_ct, n_genes,
     )
 
-    ct_names = list(CELL_TYPE_ORDER)[:n_ct]
-    if len(ct_names) < n_ct:
-        ct_names = ct_names + [f"ct_{i}" for i in range(len(ct_names), n_ct)]
+    ct_names = pad_cell_type_names(CELL_TYPE_ORDER, n_ct)
     gene_names = load_gene_names(args.precomputed_dir, n_genes)
 
     logger.info("Loading metadata: %s", args.metadata_csv)
