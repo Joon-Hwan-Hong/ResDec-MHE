@@ -71,12 +71,26 @@ while (( idx < ${#FOLDS[@]} )); do
         if [[ -n "$TABPFN_OUTER_DIR" ]]; then
             EXTRA_ARGS+=(--tabpfn-outer-dir "$TABPFN_OUTER_DIR")
         fi
-        CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/resdec_mhe/training/reinfer_best_ckpt.py \
-            --config "$CONFIG" \
-            --fold "$fold" \
-            --output-dir "$OUTROOT" \
-            "${EXTRA_ARGS[@]}" \
-            > "$out/fold${fold}_reinfer.log" 2>&1 &
+        # Per feedback_cuda_visible_devices_subprocess.md: only override
+        # CUDA_VISIBLE_DEVICES when the parent has multiple GPUs visible
+        # (N_GPUS_EFF > 1). In single-GPU pinned-shard mode, inherit parent's
+        # mask — the literal "0" override is ABSOLUTE and would force the
+        # child onto physical GPU 0 regardless of parent's pin.
+        if (( N_GPUS_EFF > 1 )); then
+            CUDA_VISIBLE_DEVICES=$gpu uv run python scripts/resdec_mhe/training/reinfer_best_ckpt.py \
+                --config "$CONFIG" \
+                --fold "$fold" \
+                --output-dir "$OUTROOT" \
+                "${EXTRA_ARGS[@]}" \
+                > "$out/fold${fold}_reinfer.log" 2>&1 &
+        else
+            uv run python scripts/resdec_mhe/training/reinfer_best_ckpt.py \
+                --config "$CONFIG" \
+                --fold "$fold" \
+                --output-dir "$OUTROOT" \
+                "${EXTRA_ARGS[@]}" \
+                > "$out/fold${fold}_reinfer.log" 2>&1 &
+        fi
         PIDS+=($!)
         DESCR+=("fold${fold}:gpu${gpu}:pid=$!")
         idx=$((idx + 1))
