@@ -139,6 +139,10 @@ def extract_per_subject_attention(args: argparse.Namespace, device: torch.device
         OmegaConf.set_struct(cfg, False)
         cfg.model.head.type = "deterministic"
         cfg.data.fold = int(fold)
+        if getattr(args, "metadata_path", None) is not None:
+            cfg.data.metadata_path = str(args.metadata_path)
+        if getattr(args, "precomputed_dir", None) is not None:
+            cfg.data.precomputed_dir = str(args.precomputed_dir)
 
         fold_dir = Path(args.pred_root) / f"fold{fold}"
         ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
@@ -406,4 +410,8 @@ if __name__ == "__main__":
     )
     p.add_argument("--top-k", type=int, default=5,
                    help="Number of top edges to record per subject.")
+    p.add_argument("--metadata-path", type=Path, default=None,
+                   help="Override cfg.data.metadata_path (variant pipelines).")
+    p.add_argument("--precomputed-dir", type=Path, default=None,
+                   help="Override cfg.data.precomputed_dir.")
     sys.exit(main(p.parse_args()))
