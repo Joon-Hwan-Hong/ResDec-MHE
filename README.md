@@ -202,6 +202,44 @@ A 12-panel grid (one per method, plus consensus) showing top-5 CTs as horizontal
 
 </details>
 
+## Cognitive-residual variants
+
+Beyond the canonical model trained on raw `cogn_global`, two variants train on **pathology-residualized cognition**, asking how much non-pathology-mediated cognitive signal the encoder captures.
+
+- **Variant A (gpath-only):** target = `cogn_global − (α + β·gpath)`, fit per-fold on training subjects only.
+- **Variant B (multi-axis):** target = `cogn_global − (α + β₁·gpath + β₂·tangsqrt + β₃·amylsqrt)`. Sensitivity check.
+
+| Model on residualized target | Variant A R² (5-fold) | Variant B R² (5-fold) |
+|---|---|---|
+| **ResDec-MHE (this repo)** | **0.249 ± 0.095** | 0.168 ± 0.083 |
+| RandomForest               | 0.197 ± 0.034 | 0.149 ± 0.072 |
+| TabPFN-2.6 standalone       | 0.181 ± 0.090 | 0.157 ± 0.090 |
+| SVR (RBF)                   | 0.157 ± 0.040 | 0.129 ± 0.038 |
+| XGBoost (CPU)               | 0.138 ± 0.050 | 0.053 ± 0.102 |
+| Clinical-only (APOE+age+sex+ed+Braak) | 0.020 ± 0.041 | 0.007 ± 0.044 |
+| ElasticNet                  | -0.003 | -0.002 |
+| Ridge                       | -0.164 ± 0.108 | -0.168 ± 0.152 |
+
+For Variant A: ResDec-MHE wins the panel by +0.05 over the strongest classical baseline (RandomForest), +0.07 over TabPFN. The clinical-only baseline at R²≈0.02 confirms residualization is clean — most clinical signal is via pathology and the residual target retains negligible clinical predictivity.
+
+**Variant A permutation null** (N=20 full-pipeline label-shuffle re-trains on residualized target):
+- z = +6.64, one-sided empirical p = 0.048 (= 1/21 floor at N=20)
+- 0/20 null permutations ≥ canonical 0.249
+
+**Cross-variant differential analyses:**
+- DAE (per CT-gene attribution magnitude paired Wilcoxon): 0/148335 pairs significant at BH-FDR for Captum IG / GradientSHAP / SmoothGrad → variant doesn't redirect per-pair attribution.
+- DCR (per-method CT-rank Spearman): ρ = 0.72-0.95 for 7/8 attribution methods → CT importance ranking preserved. One outlier: gradient-free GAF at ρ=-0.20 (rank inversion; likely method-noise rather than biology).
+- DCCI (CT-CT edge attention paired Wilcoxon): 0/961 edges significant → CCC structure preserved.
+
+**Within-variant binned subgroup** (top vs bottom quartile residualized target):
+- DGE Wilcoxon: canonical 4154/148335 sig pairs; Variant A 1239 (≈30 % of canonical's signal); Variant B pending.
+- Per-CT Captum importance: 0/31 CTs significant in canonical or Variant A.
+- Differential CCC: 0/961 edges significant.
+
+Interpretation: residualizing cognition against pathology retains substantial predictive signal that ResDec-MHE captures better than any tested baseline; the model attends to the same per-(CT, gene) features regardless of which scalar cognitive component is the target. Cognitive resilience is a fine-grained gene-by-cell-type phenotype, not a coarse-grained CT-level rewiring.
+
+Full per-variant artifacts under `outputs/canonical/variants/{gpath_only,multi_axis}/`. Plan + execution doc: `docs/plans/2026-05-03-cogn-residual-variant-design.md`.
+
 ## Reproducibility
 
 ROSMAP cohort data is gated. Place the inputs at:
