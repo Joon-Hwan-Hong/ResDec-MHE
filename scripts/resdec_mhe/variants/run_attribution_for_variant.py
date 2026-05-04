@@ -22,6 +22,7 @@ uv run python scripts/resdec_mhe/variants/run_attribution_for_variant.py \\
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,15 @@ _ROOT = Path(__file__).resolve().parents[3]
 
 def _run(cmd: list, env: dict | None = None) -> None:
     print("RUN:", " ".join(str(c) for c in cmd), flush=True)
-    res = subprocess.run(cmd, cwd=str(_ROOT), env=env)
+    # Force PYTHONPATH to worktree root so subprocess imports of src.* resolve
+    # to the variant-aware modules in this worktree, not master's parent-repo
+    # copies (see feedback_subprocess_pythonpath_leak.md / commit notes —
+    # `python script.py` sets sys.path[0] to script-dir, leaving namespace-
+    # package resolution to fall through to a sibling worktree/repo).
+    full_env = {**os.environ, "PYTHONPATH": str(_ROOT)}
+    if env is not None:
+        full_env.update(env)
+    res = subprocess.run(cmd, cwd=str(_ROOT), env=full_env)
     if res.returncode != 0:
         raise RuntimeError(f"failed (exit {res.returncode}): {' '.join(str(c) for c in cmd)}")
 

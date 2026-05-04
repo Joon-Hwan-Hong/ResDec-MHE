@@ -24,6 +24,15 @@ BASE_CONFIG="${BASE_CONFIG:-configs/resdec_mhe/variants/gpath_only.yaml}"
 WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$WT"
 
+# Force PYTHONPATH to worktree root so all child Python invocations (this
+# launcher's `uv run python` calls AND their nested subprocess.run train.py
+# calls) resolve `import src.*` to this worktree, not the parent repo. The
+# parent repo (master) lacks the variant residualization injection and would
+# silently train on raw cogn_global. See feedback_no_silent_plan_drops.md
+# (audit-discipline rule) and the recurrence note added to
+# feedback_no_transient_codes_in_commits.md after the 2026-05-04 incident.
+export PYTHONPATH="${PYTHONPATH:-$WT}"
+
 mkdir -p "$OUT_BASE/work_a" "$OUT_BASE/work_b"
 DB_PATH="$WT/$OUT_BASE/study.db"
 STORAGE="sqlite:///$DB_PATH"
@@ -34,6 +43,12 @@ log() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG"; }
 HALF=$(( (N_TRIALS_TOTAL + 1) / 2 ))
 OTHER=$(( N_TRIALS_TOTAL - HALF ))
 
+# Pre-create the SQLite study schema BEFORE forking the two workers. Without
+# this, both workers race on `optuna.create_study(load_if_exists=True)` and
+# whichever loses gets `sqlite3.OperationalError: table studies already
+# exists` and dies at startup (cost: Worker B silently dead for 4h on
+# 2026-05-04). Pre-creating means every subsequent worker just does a
+# load_if_exists hit on an already-populated DB — no race possible.
 log "==================================================="
 log "Variant HPO launch: study=$STUDY_NAME, total trials=$N_TRIALS_TOTAL"
 log "Worker A (GPU 0): up to $HALF trials  →  $OUT_BASE/work_a/"
@@ -41,6 +56,13 @@ log "Worker B (GPU 1): up to $OTHER trials →  $OUT_BASE/work_b/"
 log "Storage: $STORAGE"
 log "Base config: $BASE_CONFIG"
 log "==================================================="
+log "Pre-creating SQLite study to eliminate worker startup race…"
+uv run python -c "
+import optuna
+optuna.create_study(study_name='$STUDY_NAME', storage='$STORAGE',
+                    load_if_exists=True, direction='maximize')
+print('study schema ready')
+" 2>&1 | tee -a "$LOG"
 
 CUDA_VISIBLE_DEVICES=0 \
   uv run python scripts/resdec_mhe/variants/run_hpo_variant.py \
@@ -72,7 +94,9 @@ log "Worker B finished, rc=$RC_B"
 log "==================================================="
 if [ "$RC_A" -eq 0 ] && [ "$RC_B" -eq 0 ]; then
     log "Both workers succeeded"
+    log "HPO_DONE"
 else
     log "One or more workers failed (rc_a=$RC_A, rc_b=$RC_B)"
+    log "HPO_FAIL_A=$RC_A HPO_FAIL_B=$RC_B"
     exit 1
 fi

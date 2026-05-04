@@ -86,9 +86,16 @@ def _train_one_fold(
         "--tabpfn-oof-dir", str(tabpfn_oof_dir),
         "--tabpfn-outer-dir", str(tabpfn_outer_dir),
     ]
+    # Force PYTHONPATH to this worktree so `import src.data.datamodule` resolves
+    # to the worktree's variant-aware module rather than the parent repo's
+    # master-branch copy. Without this, `python script.py` sets sys.path[0] to
+    # the script's directory (no src/ subdir there) and namespace-package
+    # resolution falls through to /host/.../proj_ml_snrna in sys.path, silently
+    # picking up master's datamodule which lacks the residualize_against branch.
+    env = {**os.environ, "PYTHONPATH": str(_ROOT)}
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w") as logf:
-        res = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=str(_ROOT))
+        res = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=str(_ROOT), env=env)
     rc = res.returncode
 
     # Read best val R² from per-fold summary.json (last-epoch metrics)
