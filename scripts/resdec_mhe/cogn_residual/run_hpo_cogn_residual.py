@@ -14,7 +14,7 @@ trial can be pruned after its first fold completes if its R² lies below the
 running median).
 
 Cross-worker SQLite study allows two workers (one per GPU) to pull trials
-from the same study concurrently. Launch via _launch_hpo_variant.sh which
+from the same study concurrently. Launch via _launch_hpo_cogn_residual.sh which
 forks a worker per GPU.
 """
 from __future__ import annotations
@@ -149,7 +149,7 @@ def main() -> int:
                    help="SQLite URL, e.g. sqlite:////absolute/path/to/study.db")
     p.add_argument("--n-trials", type=int, default=30)
     p.add_argument("--base-config", type=Path,
-                   default=_ROOT / "configs/resdec_mhe/variants/gpath_only.yaml")
+                   default=_ROOT / "configs/resdec_mhe/cogn_residual/gpath_only.yaml")
     p.add_argument("--eval-folds", nargs="+", type=int, default=[0, 2])
     p.add_argument("--work-dir", type=Path, required=True,
                    help="Per-trial scratch dir (configs + training outputs).")
@@ -158,9 +158,9 @@ def main() -> int:
     p.add_argument("--precomputed-dir", type=Path,
                    default=_ROOT / "data/precomputed")
     p.add_argument("--tabpfn-oof-dir", type=Path,
-                   default=_ROOT / "outputs/canonical/variants/gpath_only/tabpfn_cache")
+                   default=_ROOT / "outputs/canonical/cogn_residual/gpath_only/tabpfn_cache")
     p.add_argument("--tabpfn-outer-dir", type=Path,
-                   default=_ROOT / "outputs/canonical/variants/gpath_only/tabpfn_cache")
+                   default=_ROOT / "outputs/canonical/cogn_residual/gpath_only/tabpfn_cache")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 

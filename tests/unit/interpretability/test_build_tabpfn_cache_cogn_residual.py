@@ -1,4 +1,4 @@
-"""Smoke + import tests for scripts/resdec_mhe/variants/build_tabpfn_cache_variant.py.
+"""Smoke + import tests for scripts/resdec_mhe/cogn_residual/build_tabpfn_cache_cogn_residual.py.
 
 The full single-fold smoke test is `slow` because it actually runs TabPFN-2.6.
 The import test checks that the per-fold callables are properly exposed by
@@ -28,12 +28,12 @@ def test_per_fold_callables_have_expected_signature():
     assert set(inspect.signature(process_outer_fold).parameters) == expected
 
 
-def test_build_tabpfn_cache_variant_help_works(tmp_path):
+def test_build_tabpfn_cache_cogn_residual_help_works(tmp_path):
     """Smoke check that --help runs without import / argparse errors."""
     res = subprocess.run(
         [sys.executable,
          str(_ROOT
-             / "scripts/resdec_mhe/variants/build_tabpfn_cache_variant.py"),
+             / "scripts/resdec_mhe/cogn_residual/build_tabpfn_cache_cogn_residual.py"),
          "--help"],
         capture_output=True, text=True, timeout=60,
     )
@@ -44,15 +44,15 @@ def test_build_tabpfn_cache_variant_help_works(tmp_path):
 
 
 @pytest.mark.slow
-def test_build_tabpfn_cache_variant_writes_oof_and_outer_one_fold(tmp_path):
+def test_build_tabpfn_cache_cogn_residual_writes_oof_and_outer_one_fold(tmp_path):
     out_dir = tmp_path / "tabpfn_cache"
-    cache_dir = _ROOT / "outputs/canonical/variants/gpath_only/cache"
+    cache_dir = _ROOT / "outputs/canonical/cogn_residual/gpath_only/cache"
     if not (cache_dir / "residual_target_fold0.npz").exists():
         pytest.skip("residual cache missing; Task 2 smoke run not done")
     cmd = [
         sys.executable,
         str(_ROOT
-            / "scripts/resdec_mhe/variants/build_tabpfn_cache_variant.py"),
+            / "scripts/resdec_mhe/cogn_residual/build_tabpfn_cache_cogn_residual.py"),
         "--variant-name", "gpath_only",
         "--residual-cache-dir", str(cache_dir),
         "--out-dir", str(out_dir),

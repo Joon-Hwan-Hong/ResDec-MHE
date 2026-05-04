@@ -65,14 +65,14 @@ def test_datamodule_uses_residualized_target_when_configured(tmp_path):
     splits = json.loads((_WT_ROOT / "outputs/splits.json").read_text())
     metadata = pd.read_csv(_WT_ROOT / "data/metadata_ROSMAP/metadata.csv")
 
-    cache_dir = _WT_ROOT / "outputs/canonical/variants/gpath_only/cache"
+    cache_dir = _WT_ROOT / "outputs/canonical/cogn_residual/gpath_only/cache"
     if not (cache_dir / "residual_target_fold0.npz").exists():
         pytest.skip("residual cache missing; Task 2 smoke run not done")
 
     cfg = OmegaConf.merge(
         OmegaConf.load(_WT_ROOT / "configs/default.yaml"),
         OmegaConf.load(_WT_ROOT / "configs/resdec_mhe/canonical.yaml"),
-        OmegaConf.load(_WT_ROOT / "configs/resdec_mhe/variants/gpath_only.yaml"),
+        OmegaConf.load(_WT_ROOT / "configs/resdec_mhe/cogn_residual/gpath_only.yaml"),
     )
     OmegaConf.set_struct(cfg, False)
 
@@ -119,7 +119,7 @@ def test_final_mode_with_variant_config_raises_not_implemented():
     cfg = OmegaConf.merge(
         OmegaConf.load(_WT_ROOT / "configs/default.yaml"),
         OmegaConf.load(_WT_ROOT / "configs/resdec_mhe/canonical.yaml"),
-        OmegaConf.load(_WT_ROOT / "configs/resdec_mhe/variants/gpath_only.yaml"),
+        OmegaConf.load(_WT_ROOT / "configs/resdec_mhe/cogn_residual/gpath_only.yaml"),
     )
     OmegaConf.set_struct(cfg, False)
 

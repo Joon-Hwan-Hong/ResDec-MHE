@@ -3,11 +3,11 @@
 # trials from the same SQLite-backed study).
 #
 # Required env:
-#   OUT_BASE       output dir (e.g. outputs/canonical/variants/gpath_only/hpo)
+#   OUT_BASE       output dir (e.g. outputs/canonical/cogn_residual/gpath_only/hpo)
 # Optional env:
 #   N_TRIALS_TOTAL total trials across both workers (default: 30)
 #   STUDY_NAME     default: variant_gpath_only_hpo
-#   BASE_CONFIG    default: configs/resdec_mhe/variants/gpath_only.yaml
+#   BASE_CONFIG    default: configs/resdec_mhe/cogn_residual/gpath_only.yaml
 set -uo pipefail
 
 if [ -z "${TMUX:-}" ]; then
@@ -19,7 +19,7 @@ fi
 : "${OUT_BASE:?OUT_BASE required}"
 N_TRIALS_TOTAL="${N_TRIALS_TOTAL:-30}"
 STUDY_NAME="${STUDY_NAME:-variant_gpath_only_hpo}"
-BASE_CONFIG="${BASE_CONFIG:-configs/resdec_mhe/variants/gpath_only.yaml}"
+BASE_CONFIG="${BASE_CONFIG:-configs/resdec_mhe/cogn_residual/gpath_only.yaml}"
 
 WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$WT"
@@ -65,7 +65,7 @@ print('study schema ready')
 " 2>&1 | tee -a "$LOG"
 
 CUDA_VISIBLE_DEVICES=0 \
-  uv run python scripts/resdec_mhe/variants/run_hpo_variant.py \
+  uv run python scripts/resdec_mhe/cogn_residual/run_hpo_cogn_residual.py \
     --study-name "$STUDY_NAME" --storage "$STORAGE" \
     --base-config "$BASE_CONFIG" \
     --n-trials "$HALF" \
@@ -76,7 +76,7 @@ PID_A=$!
 log "Worker A PID: $PID_A"
 
 CUDA_VISIBLE_DEVICES=1 \
-  uv run python scripts/resdec_mhe/variants/run_hpo_variant.py \
+  uv run python scripts/resdec_mhe/cogn_residual/run_hpo_cogn_residual.py \
     --study-name "$STUDY_NAME" --storage "$STORAGE" \
     --base-config "$BASE_CONFIG" \
     --n-trials "$OTHER" \

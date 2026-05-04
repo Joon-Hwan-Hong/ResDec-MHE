@@ -6,13 +6,13 @@ beta + alpha stats.
 
 USAGE
 -----
-uv run python scripts/resdec_mhe/variants/compute_residual_target.py \\
+uv run python scripts/resdec_mhe/cogn_residual/compute_residual_target.py \\
     --variant-name gpath_only --axes gpath \\
-    --out-dir outputs/canonical/variants/gpath_only/cache
+    --out-dir outputs/canonical/cogn_residual/gpath_only/cache
 
-uv run python scripts/resdec_mhe/variants/compute_residual_target.py \\
+uv run python scripts/resdec_mhe/cogn_residual/compute_residual_target.py \\
     --variant-name multi_axis --axes gpath tangsqrt amylsqrt \\
-    --out-dir outputs/canonical/variants/multi_axis/cache
+    --out-dir outputs/canonical/cogn_residual/multi_axis/cache
 """
 from __future__ import annotations
 

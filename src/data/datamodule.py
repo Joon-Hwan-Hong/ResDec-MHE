@@ -130,7 +130,7 @@ class CognitiveResilienceDataModule(pl.LightningDataModule):
                 "supported: residual cache is per-fold; final_mode trains on "
                 "the full train_val_pool with no fold structure. Use per-fold "
                 "training and aggregate, or extend "
-                "scripts/resdec_mhe/variants/compute_residual_target.py to "
+                "scripts/resdec_mhe/cogn_residual/compute_residual_target.py to "
                 "emit a final-mode cache."
             )
         if rcfg is not None:

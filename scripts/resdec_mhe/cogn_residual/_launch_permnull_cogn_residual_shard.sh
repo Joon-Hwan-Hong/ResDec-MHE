@@ -6,9 +6,9 @@
 #
 # Required env vars:
 #   N_PERMS              total permutation count (e.g. 20)
-#   VARIANT_CONFIG       configs/resdec_mhe/variants/<variant>.yaml
+#   VARIANT_CONFIG       configs/resdec_mhe/cogn_residual/<variant>.yaml
 #   RESIDUAL_CACHE_DIR   variant residual cache (residual_target_fold{0..4}.npz)
-#   OUT_BASE             output dir (e.g. outputs/canonical/variants/<variant>/permutation_test_n20)
+#   OUT_BASE             output dir (e.g. outputs/canonical/cogn_residual/<variant>/permutation_test_n20)
 #
 # Optional env vars:
 #   METADATA_PATH        default data/metadata_ROSMAP
@@ -54,11 +54,11 @@ log "==================================================="
 
 # Per feedback_cuda_visible_devices_subprocess.md: parent CUDA_VISIBLE_DEVICES=N
 # pins each shard to one physical GPU; the inner script must inherit that mask
-# (run_permutation_test_variant.py passes --gpus 0 which becomes physical-N).
+# (run_permutation_test_cogn_residual.py passes --gpus 0 which becomes physical-N).
 
 log "Launching Shard A on GPU 0"
 CUDA_VISIBLE_DEVICES=0 \
-  uv run python scripts/resdec_mhe/variants/run_permutation_test_variant.py \
+  uv run python scripts/resdec_mhe/cogn_residual/run_permutation_test_cogn_residual.py \
     --num-perms "$SHARD_A_N" --start-perm "$SHARD_A_START" \
     --output-base "$OUT_BASE/shard_a" \
     --variant-config "$VARIANT_CONFIG" \
@@ -74,7 +74,7 @@ log "Shard A PID: $PID_A"
 if [ "$SHARD_B_N" -gt 0 ]; then
     log "Launching Shard B on GPU 1"
     CUDA_VISIBLE_DEVICES=1 \
-      uv run python scripts/resdec_mhe/variants/run_permutation_test_variant.py \
+      uv run python scripts/resdec_mhe/cogn_residual/run_permutation_test_cogn_residual.py \
         --num-perms "$SHARD_B_N" --start-perm "$SHARD_B_START" \
         --output-base "$OUT_BASE/shard_b" \
         --variant-config "$VARIANT_CONFIG" \

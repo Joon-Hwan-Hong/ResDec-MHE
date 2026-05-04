@@ -1,4 +1,4 @@
-"""Smoke test for scripts/resdec_mhe/variants/compute_residual_target.py."""
+"""Smoke test for scripts/resdec_mhe/cogn_residual/compute_residual_target.py."""
 import json
 import sys
 import subprocess
@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[3]
-_SCRIPT = _ROOT / "scripts/resdec_mhe/variants/compute_residual_target.py"
+_SCRIPT = _ROOT / "scripts/resdec_mhe/cogn_residual/compute_residual_target.py"
 
 
 @pytest.mark.slow

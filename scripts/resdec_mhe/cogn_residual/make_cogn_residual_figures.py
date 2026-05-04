@@ -43,7 +43,7 @@ def _load_variant_target(variant: str) -> tuple[np.ndarray, list[str]]:
         m = meta.set_index("ROSMAP_IndividualID")["cogn_global"]
         return np.array([m.get(s, np.nan) for s in cohort]), cohort
 
-    cache = _ROOT / f"outputs/canonical/variants/{variant}/cache"
+    cache = _ROOT / f"outputs/canonical/cogn_residual/{variant}/cache"
     splits = json.loads((_ROOT / "outputs/splits.json").read_text())
     cohort = sorted({s for f in splits["folds"] for s in f["train"] + f["val"]})
     fold_arr = []
@@ -90,11 +90,11 @@ def _fig_predicted_vs_actual(out_dir: Path) -> None:
          ("multi_axis", "Variant B: multi_axis residualized")],
     ):
         d = json.loads(
-            (_ROOT / f"outputs/canonical/variants/{variant}/p5_seed42/best_vs_tabpfn_summary.json").read_text()
+            (_ROOT / f"outputs/canonical/cogn_residual/{variant}/p5_seed42/best_vs_tabpfn_summary.json").read_text()
         )
         for f in d["per_fold"]:
             preds_path = (
-                _ROOT / f"outputs/canonical/variants/{variant}/p5_seed42/fold{f['fold']}/val_predictions_best.npz"
+                _ROOT / f"outputs/canonical/cogn_residual/{variant}/p5_seed42/fold{f['fold']}/val_predictions_best.npz"
             )
             npz = np.load(preds_path, allow_pickle=True)
             ax.scatter(npz["targets"], npz["predictions"], s=10, alpha=0.6,
@@ -111,7 +111,7 @@ def _fig_predicted_vs_actual(out_dir: Path) -> None:
 
 def _fig_perm_null_collapse(out_dir: Path) -> None:
     summary = json.loads(
-        (_ROOT / "outputs/canonical/variants/gpath_only/permutation_test_n20/permutation_summary.json").read_text()
+        (_ROOT / "outputs/canonical/cogn_residual/gpath_only/permutation_test_n20/permutation_summary.json").read_text()
     )
     fig, ax = plt.subplots(figsize=(7, 5))
     canon = summary["canonical_mean_r2"]
@@ -124,7 +124,7 @@ def _fig_perm_null_collapse(out_dir: Path) -> None:
     rows = []
     for shard in ("shard_a", "shard_b"):
         sj = json.loads(
-            (_ROOT / f"outputs/canonical/variants/gpath_only/permutation_test_n20/{shard}/permutation_results.json").read_text()
+            (_ROOT / f"outputs/canonical/cogn_residual/gpath_only/permutation_test_n20/{shard}/permutation_results.json").read_text()
         )
         rows.extend(r["mean_r2_true"] for r in sj if "mean_r2_true" in r)
     null_means = np.array(rows)
@@ -147,7 +147,7 @@ def _fig_perm_null_collapse(out_dir: Path) -> None:
 
 def _fig_dcr_slope_chart(out_dir: Path) -> None:
     dcr = json.loads(
-        (_ROOT / "outputs/canonical/variants/differential/gpath_only/dcr_canonical_vs_gpath_only.json").read_text()
+        (_ROOT / "outputs/canonical/cogn_residual/differential/gpath_only/dcr_canonical_vs_gpath_only.json").read_text()
     )
     methods = sorted(dcr.keys())
     rhos = [dcr[m]["spearman_rho"] for m in methods]
@@ -173,7 +173,7 @@ def _fig_dae_volcano(out_dir: Path) -> None:
     methods = ["captum_ig", "gradient_shap", "smoothgrad"]
     fig, axes = plt.subplots(1, len(methods), figsize=(15, 5))
     for ax, m in zip(axes, methods):
-        path = _ROOT / f"outputs/canonical/variants/differential/gpath_only/dae_canonical_vs_gpath_only__{m}.csv"
+        path = _ROOT / f"outputs/canonical/cogn_residual/differential/gpath_only/dae_canonical_vs_gpath_only__{m}.csv"
         if not path.is_file():
             ax.text(0.5, 0.5, f"missing: {m}", ha="center", va="center",
                     transform=ax.transAxes)
@@ -197,7 +197,7 @@ def _fig_dae_volcano(out_dir: Path) -> None:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--out-dir", type=Path,
-                   default=_ROOT / "outputs/canonical/variants/figures")
+                   default=_ROOT / "outputs/canonical/cogn_residual/figures")
     args = p.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     apply_theme("paper")

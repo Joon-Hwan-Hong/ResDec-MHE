@@ -1,6 +1,6 @@
 # ResDec-MHE variant — target is cognition residualized against gpath only.
 # Per-fold residual targets must be precomputed via
-# scripts/resdec_mhe/variants/compute_residual_target.py and written to
+# scripts/resdec_mhe/cogn_residual/compute_residual_target.py and written to
 # data.residualize_against.cache_dir; TabPFN caches under tabpfn_oof_dir /
 # tabpfn_outer_dir are the variant-specific caches (Task 5 of the plan), NOT
 # the canonical caches. Variant TabPFN caches live under outputs/ (not data/)
@@ -36,6 +36,6 @@ data:
   use_cached_embeddings: false
   residualize_against:
     axes: ["gpath"]
-    cache_dir: "outputs/canonical/variants/gpath_only/cache"
-  tabpfn_oof_dir: outputs/canonical/variants/gpath_only/tabpfn_cache
-  tabpfn_outer_dir: outputs/canonical/variants/gpath_only/tabpfn_cache
+    cache_dir: "outputs/canonical/cogn_residual/gpath_only/cache"
+  tabpfn_oof_dir: outputs/canonical/cogn_residual/gpath_only/tabpfn_cache
+  tabpfn_outer_dir: outputs/canonical/cogn_residual/gpath_only/tabpfn_cache

@@ -6,7 +6,7 @@ trains a variant ResDec-MHE model 5-fold using a per-perm temp config that point
 at the perm-shuffled caches, and recomputes R² against the TRUE per-fold
 residualized target. Mirrors run_permutation_test.py for the variant pipeline:
   - Reuses canonical top-k features (no per-perm XGBoost re-selection)
-  - Reuses build_tabpfn_cache_variant.py for per-perm TabPFN cache
+  - Reuses build_tabpfn_cache_cogn_residual.py for per-perm TabPFN cache
   - Reuses run_5fold_parallel.sh through subprocess for the 5-fold training
   - Per-fold residual target shuffle (within finite mask) replaces the canonical
     metadata.csv cogn_global shuffle.
@@ -111,7 +111,7 @@ def run_one_perm(
         env_inherit = {**os.environ, "PYTHONPATH": str(_ROOT)}
         tabpfn_cmd = [
             "uv", "run", "python",
-            str(_ROOT / "scripts/resdec_mhe/variants/build_tabpfn_cache_variant.py"),
+            str(_ROOT / "scripts/resdec_mhe/cogn_residual/build_tabpfn_cache_cogn_residual.py"),
             "--variant-name", f"perm_{perm_seed}",
             "--residual-cache-dir", str(perm_residual_cache_dir),
             "--out-dir", str(perm_tabpfn_cache_dir),
@@ -224,7 +224,7 @@ def main() -> int:
     p.add_argument("--start-perm", type=int, default=0)
     p.add_argument("--output-base", type=Path, required=True)
     p.add_argument("--variant-config", type=Path, required=True,
-                   help="Base variant YAML (e.g. configs/resdec_mhe/variants/gpath_only.yaml).")
+                   help="Base variant YAML (e.g. configs/resdec_mhe/cogn_residual/gpath_only.yaml).")
     p.add_argument("--residual-cache-dir", type=Path, required=True,
                    help="Original variant residual cache (residual_target_fold{0..4}.npz).")
     p.add_argument("--metadata-path", type=Path,

@@ -93,7 +93,7 @@ def load_residualized_targets(
     fold_idx: int,
 ) -> dict[str, float]:
     """Load fold-specific residualized targets from a cache produced by
-    ``scripts/resdec_mhe/variants/compute_residual_target.py``.
+    ``scripts/resdec_mhe/cogn_residual/compute_residual_target.py``.
 
     Returns dict[ROSMAP_IndividualID -> residual_target_float], skipping
     any subject whose stored target is NaN.
@@ -108,7 +108,7 @@ def load_residualized_targets(
     if not npz_path.is_file():
         raise FileNotFoundError(
             f"residual target cache not found at {npz_path}. "
-            f"Run scripts/resdec_mhe/variants/compute_residual_target.py first."
+            f"Run scripts/resdec_mhe/cogn_residual/compute_residual_target.py first."
         )
     d = np.load(npz_path, allow_pickle=True)
     sids = d["subject_ids"].tolist()

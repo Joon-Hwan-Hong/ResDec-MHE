@@ -8,10 +8,10 @@ cogn_global.
 
 USAGE
 -----
-uv run python scripts/resdec_mhe/variants/build_tabpfn_cache_variant.py \\
+uv run python scripts/resdec_mhe/cogn_residual/build_tabpfn_cache_cogn_residual.py \\
     --variant-name gpath_only \\
-    --residual-cache-dir outputs/canonical/variants/gpath_only/cache \\
-    --out-dir outputs/canonical/variants/gpath_only/tabpfn_cache \\
+    --residual-cache-dir outputs/canonical/cogn_residual/gpath_only/cache \\
+    --out-dir outputs/canonical/cogn_residual/gpath_only/tabpfn_cache \\
     --folds 0 1 2 3 4
 """
 from __future__ import annotations

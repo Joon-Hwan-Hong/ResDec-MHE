@@ -127,7 +127,7 @@ def main() -> int:
     p.add_argument("--captum-npz", type=Path, default=None,
                    help="Override path to Captum IG composite_attributions.npz "
                         "(default: outputs/canonical/.../captum_ig/composite_attributions.npz "
-                        "for canonical, outputs/canonical/variants/<v>/interpretability/captum_ig/... for variants).")
+                        "for canonical, outputs/canonical/cogn_residual/<v>/interpretability/captum_ig/... for variants).")
     p.add_argument("--ccc-npz", type=Path, default=None)
     p.add_argument("--skip-deseq2", action="store_true",
                    help="Skip slow DESeq2 step.")
@@ -141,9 +141,9 @@ def main() -> int:
         captum_default = _ROOT / "outputs/canonical/interpretability/captum_ig/composite_attributions.npz"
         ccc_default = _ROOT / "outputs/canonical/interpretability/ccc/per_subject_ccc_attention.npz"
     else:
-        residual_cache_dir = _ROOT / f"outputs/canonical/variants/{args.variant}/cache"
-        captum_default = _ROOT / f"outputs/canonical/variants/{args.variant}/interpretability/captum_ig/composite_attributions.npz"
-        ccc_default = _ROOT / f"outputs/canonical/variants/{args.variant}/interpretability/ccc/per_subject_ccc_attention.npz"
+        residual_cache_dir = _ROOT / f"outputs/canonical/cogn_residual/{args.variant}/cache"
+        captum_default = _ROOT / f"outputs/canonical/cogn_residual/{args.variant}/interpretability/captum_ig/composite_attributions.npz"
+        ccc_default = _ROOT / f"outputs/canonical/cogn_residual/{args.variant}/interpretability/ccc/per_subject_ccc_attention.npz"
     captum_path = args.captum_npz or captum_default
     ccc_path = args.ccc_npz or ccc_default
 

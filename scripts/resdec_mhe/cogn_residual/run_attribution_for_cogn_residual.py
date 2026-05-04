@@ -13,10 +13,10 @@ remain (the four most cited canonical methods).
 
 USAGE
 -----
-uv run python scripts/resdec_mhe/variants/run_attribution_for_variant.py \\
+uv run python scripts/resdec_mhe/cogn_residual/run_attribution_for_cogn_residual.py \\
     --variant-name gpath_only --device cuda:0  # full suite
 
-uv run python scripts/resdec_mhe/variants/run_attribution_for_variant.py \\
+uv run python scripts/resdec_mhe/cogn_residual/run_attribution_for_cogn_residual.py \\
     --variant-name multi_axis --device cuda:1 --thin
 """
 from __future__ import annotations
@@ -60,11 +60,11 @@ def main() -> int:
                    default=_ROOT / "outputs/splits.json")
     args = p.parse_args()
 
-    out_root = _ROOT / "outputs/canonical/variants" / args.variant_name
+    out_root = _ROOT / "outputs/canonical/cogn_residual" / args.variant_name
     canonical_dir = out_root / "p5_seed42"
     interp_out = out_root / "interpretability"
     interp_out.mkdir(parents=True, exist_ok=True)
-    variant_config = _ROOT / "configs/resdec_mhe/variants" / f"{args.variant_name}.yaml"
+    variant_config = _ROOT / "configs/resdec_mhe/cogn_residual" / f"{args.variant_name}.yaml"
     variant_tabpfn_dir = out_root / "tabpfn_cache"
 
     # 1. Captum IG composite attribution (always)

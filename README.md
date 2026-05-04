@@ -238,7 +238,7 @@ For Variant A: ResDec-MHE wins the panel by +0.05 over the strongest classical b
 
 Interpretation: residualizing cognition against pathology retains substantial predictive signal that ResDec-MHE captures better than any tested baseline; the model attends to the same per-(CT, gene) features regardless of which scalar cognitive component is the target. Cognitive resilience is a fine-grained gene-by-cell-type phenotype, not a coarse-grained CT-level rewiring.
 
-Full per-variant artifacts under `outputs/canonical/variants/{gpath_only,multi_axis}/`. Plan + execution doc: `docs/plans/2026-05-03-cogn-residual-variant-design.md`.
+Full per-variant artifacts under `outputs/canonical/cogn_residual/{gpath_only,multi_axis}/`. Plan + execution doc: `docs/plans/2026-05-03-cogn-residual-variant-design.md`.
 
 ## Reproducibility
 

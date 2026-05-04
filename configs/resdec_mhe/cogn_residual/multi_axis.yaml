@@ -32,6 +32,6 @@ data:
   use_cached_embeddings: false
   residualize_against:
     axes: ["gpath", "tangsqrt", "amylsqrt"]
-    cache_dir: "outputs/canonical/variants/multi_axis/cache"
-  tabpfn_oof_dir: outputs/canonical/variants/multi_axis/tabpfn_cache
-  tabpfn_outer_dir: outputs/canonical/variants/multi_axis/tabpfn_cache
+    cache_dir: "outputs/canonical/cogn_residual/multi_axis/cache"
+  tabpfn_oof_dir: outputs/canonical/cogn_residual/multi_axis/tabpfn_cache
+  tabpfn_outer_dir: outputs/canonical/cogn_residual/multi_axis/tabpfn_cache
