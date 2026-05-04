@@ -3,7 +3,7 @@
 Search space (all 7 sampled per trial):
   1. training.lr                   loguniform(1e-4, 1e-2)
   2. training.weight_decay         loguniform(1e-9, 1e-3)
-  3. resdec_head.n_stages          categorical [1, 2, 3, 4]
+  3. resdec_head.n_stages          categorical [1, 2, 3]   (model limit; n_stages=4 hard-fails)
   4. resdec_head.aux_lambdas[0]    uniform(0.0, 5.0)  (replicated to length n_stages)
   5. resdec_head.n_heads           categorical [2, 4, 8, 16]
   6. dataloader.batch_size         categorical [16, 24, 32, 48]
@@ -58,7 +58,10 @@ def _build_trial_config(
 
     lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
     weight_decay = trial.suggest_float("weight_decay", 1e-9, 1e-3, log=True)
-    n_stages = trial.suggest_categorical("n_stages", [1, 2, 3, 4])
+    # Hard-coded {1,2,3}: ResDecMHEHead validates n_stages ∈ {1,2,3} at init
+    # (src/models/resdec_head/resdec_mhe_head.py:100). Adding 4 raises
+    # ValueError at fold 0; the model's HyperConn assumes ≤3 stages.
+    n_stages = trial.suggest_categorical("n_stages", [1, 2, 3])
     aux_lambda = trial.suggest_float("aux_lambdas_0", 0.0, 5.0)
     n_heads = trial.suggest_categorical("n_heads", [2, 4, 8, 16])
     batch_size = trial.suggest_categorical("batch_size", [16, 24, 32, 48])
