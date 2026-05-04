@@ -44,9 +44,10 @@ def _build_pooled_target(
     """Return (pooled_target_per_subject, subject_ids in cohort order).
 
     For canonical: target = metadata['cogn_global'].
-    For variants: target = per-fold residual averaged across folds (each subject
-    gets the same residualized value across all folds where they're a member,
-    so per-subject pool is well-defined).
+    For variants: target = per-fold residual averaged across all 5 folds. The
+    residualization (α + β·gpath) is fit on train-only subjects each fold, so
+    a given subject's residual differs slightly across folds; averaging gives a
+    stable per-subject estimate suitable for quartile binning.
     """
     cohort_ids = sorted({s for f in splits["folds"] for s in f["train"] + f["val"]})
     if variant == "canonical":
@@ -160,6 +161,8 @@ def main() -> int:
     pseudobulk, kept_ids = _load_pseudobulk(args.precomputed_dir, cohort_ids)
     n_ct = pseudobulk.shape[1]
     n_gene = pseudobulk.shape[2]
+    if n_ct > len(CELL_TYPE_ORDER):
+        raise ValueError(f"n_ct={n_ct} exceeds CELL_TYPE_ORDER length {len(CELL_TYPE_ORDER)}")
     ct_names = list(CELL_TYPE_ORDER)[:n_ct]
     gene_names, used_real_genes = load_gene_names(args.precomputed_dir, n_gene)
     print(f"pseudobulk: {pseudobulk.shape}; kept {len(kept_ids)}/{len(cohort_ids)} subjects")
@@ -174,10 +177,10 @@ def main() -> int:
     # Reindex resilient/vulnerable arrays to kept_ids row positions
     keep_set = set(kept_ids)
     cohort_to_keep_idx = {s: i for i, s in enumerate(kept_ids)}
-    res_kept = np.array([cohort_to_keep_idx[s] for s in
-                         (cohort_ids[i] for i in res_idx) if s in keep_set])
-    vul_kept = np.array([cohort_to_keep_idx[s] for s in
-                         (cohort_ids[i] for i in vul_idx) if s in keep_set])
+    res_subjects = [cohort_ids[i] for i in res_idx if cohort_ids[i] in keep_set]
+    vul_subjects = [cohort_ids[i] for i in vul_idx if cohort_ids[i] in keep_set]
+    res_kept = np.array([cohort_to_keep_idx[s] for s in res_subjects], dtype=int)
+    vul_kept = np.array([cohort_to_keep_idx[s] for s in vul_subjects], dtype=int)
 
     # 1. DGE Wilcoxon
     print("computing DGE Wilcoxon...")

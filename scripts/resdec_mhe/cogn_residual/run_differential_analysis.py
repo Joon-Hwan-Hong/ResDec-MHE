@@ -55,8 +55,7 @@ def _per_fold_mean_abs(arr_per_subj: np.ndarray, folds: np.ndarray) -> np.ndarra
 def _ct_ranking_from_per_subject_per_ct(
     arr_per_subj_per_ct: np.ndarray, ct_names: list[str],
 ) -> list[str]:
-    ct_total = np.abs(arr_per_subj_per_ct).sum(axis=tuple(range(arr_per_subj_per_ct.ndim))[1:])
-    # collapse all non-CT axes — supports both (n_subj, n_ct) and (n_subj, n_ct, n_gene)
+    # Collapse all non-CT axes — supports both (n_subj, n_ct) and (n_subj, n_ct, n_gene).
     if arr_per_subj_per_ct.ndim == 3:
         ct_total = np.abs(arr_per_subj_per_ct).sum(axis=(0, 2))
     elif arr_per_subj_per_ct.ndim == 2:
@@ -144,6 +143,8 @@ def main() -> int:
             })
             continue
         n_folds, n_ct, n_gene = canon_pf.shape
+        if n_ct > len(CELL_TYPE_ORDER):
+            raise ValueError(f"n_ct={n_ct} exceeds CELL_TYPE_ORDER length {len(CELL_TYPE_ORDER)}")
         ct_names = list(CELL_TYPE_ORDER)[:n_ct]
         gene_names, used_real = load_gene_names(args.precomputed_dir, n_gene)
         dae = differential_attribution_effect(
@@ -179,7 +180,9 @@ def main() -> int:
                 )
                 continue
             n_ct = canon_attn[key].shape[1]
-            ct_names = list(CELL_TYPE_ORDER)[:n_ct]
+            if n_ct > len(CELL_TYPE_ORDER):
+            raise ValueError(f"n_ct={n_ct} exceeds CELL_TYPE_ORDER length {len(CELL_TYPE_ORDER)}")
+        ct_names = list(CELL_TYPE_ORDER)[:n_ct]
             canonical_ranks[key] = _ct_ranking_from_per_subject_per_ct(canon_attn[key], ct_names)
             variant_ranks[key] = _ct_ranking_from_per_subject_per_ct(var_attn[key], ct_names)
             print(f"  DCR registered for attention method {key}")
@@ -213,7 +216,9 @@ def main() -> int:
         var_pf = _ccc_per_fold_mean_abs(var_ccc["attention"], var_ccc["folds"])
         if canon_pf.shape == var_pf.shape:
             n_folds, n_ct, n_ct2 = canon_pf.shape
-            ct_names = list(CELL_TYPE_ORDER)[:n_ct]
+            if n_ct > len(CELL_TYPE_ORDER):
+            raise ValueError(f"n_ct={n_ct} exceeds CELL_TYPE_ORDER length {len(CELL_TYPE_ORDER)}")
+        ct_names = list(CELL_TYPE_ORDER)[:n_ct]
             dcci = differential_ccc_importance(canon_pf, var_pf, ct_names=ct_names)
             dcci_path = args.out_dir / f"dcci_canonical_vs_{args.variant_name}.csv"
             dcci.to_csv(dcci_path, index=False)

@@ -233,18 +233,18 @@ The **default residual base for both variants is a stacked TabPFN-2.6 + RandomFo
 
 For Variant A: stacked-base ResDec-MHE wins the panel by +0.083 over the strongest classical baseline (RandomForest) and +0.099 over TabPFN. The clinical-only baseline at R²≈0.02 confirms residualization is clean — most clinical signal is via pathology and the residual target retains negligible clinical predictivity. The "swap residual base" choice is exposed via the variant config's `data.tabpfn_oof_dir` / `tabpfn_outer_dir` fields; see `configs/resdec_mhe/cogn_residual/{gpath_only,gpath_only_tabpfn_base,gpath_only_rf_base,multi_axis,multi_axis_tabpfn_base}.yaml`.
 
-**Variant A permutation null** (N=20 full-pipeline label-shuffle re-trains, stacked base):
+**Variant A permutation null** (N=20 full-pipeline label-shuffle re-trains, stacked base; outputs at `outputs/canonical/cogn_residual/gpath_only/permutation_test_n20_stacked/permutation_summary.json`):
 - z = +9.79 null-std units, one-sided empirical p = 0.048 (= 1/21 floor at N=20)
 - null mean = −0.2427 ± 0.0534
 - 0/20 null permutations ≥ canonical R²=+0.280
-- TabPFN-only base perm null (preserved for comparison): z = +6.64
+- TabPFN-only base perm null (preserved at `permutation_test_n20/permutation_summary.json`): z = +6.64
 
 **Cross-variant differential analyses (stacked base):**
 - DAE (per CT-gene attribution magnitude paired Wilcoxon): 0/148335 pairs significant at BH-FDR for Captum IG / GradientSHAP / SmoothGrad → variant doesn't redirect per-pair attribution.
 - DCR (per-method CT-rank Spearman): ρ = 0.65-0.96 for 7/8 attribution methods → CT importance ranking preserved. Captum IG ρ=0.88, GAF AF ρ=0.96, GMAR ρ=0.95. One outlier: gradient-free GAF at ρ=-0.07 (mildly improved from -0.20 under TabPFN-only; method-noise rather than biology). Multi-axis Captum IG ρ=0.78.
 - DCCI (CT-CT edge attention paired Wilcoxon): 0/961 edges significant → CCC structure preserved.
 
-**Within-variant binned subgroup** (top vs bottom quartile residualized target; stacked-base attribution for variants):
+**Within-variant binned subgroup** (top vs bottom quartile residualized target; n_resilient = n_vulnerable = 129 each from N=516; stacked-base attribution for variants):
 - DGE Wilcoxon: canonical 4154/148335 sig pairs; Variant A 1239 (≈30 % of canonical); Variant B 261 (≈6 %). Monotonic decrease as residualization removes more variance.
 - DGE DESeq2: 0/148335 sig in all 3 variants. Cross-method disagreement vs Wilcoxon at this N (~258) is dramatic — the deep model captures distributional signal classical DGE cannot recover.
 - Per-CT Captum importance: 0/31 CTs significant in canonical or Variant B; **1/31 in Variant A: Deep-layer corticothalamic and 6b (padj=0.033)** — the same CT that hosts PDE10A/ADAMTSL1/NRXN3/ERBB4 in the gene-level resilience module. Attribution-level convergence with gene-level finding.

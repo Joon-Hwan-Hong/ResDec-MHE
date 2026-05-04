@@ -82,7 +82,7 @@ def _fig_residual_distribution(out_dir: Path) -> None:
     save_fig(fig, out_dir / "fig_target_distribution")
 
 
-def _fig_predicted_vs_actual(out_dir: Path) -> None:
+def _fig_predicted_vs_actual(out_dir: Path, pred_root_name: str) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(11, 5))
     for ax, (variant, label) in zip(
         axes,
@@ -90,11 +90,11 @@ def _fig_predicted_vs_actual(out_dir: Path) -> None:
          ("multi_axis", "Variant B: multi_axis residualized")],
     ):
         d = json.loads(
-            (_ROOT / f"outputs/canonical/cogn_residual/{variant}/p5_seed42/best_vs_tabpfn_summary.json").read_text()
+            (_ROOT / f"outputs/canonical/cogn_residual/{variant}/{pred_root_name}/best_vs_tabpfn_summary.json").read_text()
         )
         for f in d["per_fold"]:
             preds_path = (
-                _ROOT / f"outputs/canonical/cogn_residual/{variant}/p5_seed42/fold{f['fold']}/val_predictions_best.npz"
+                _ROOT / f"outputs/canonical/cogn_residual/{variant}/{pred_root_name}/fold{f['fold']}/val_predictions_best.npz"
             )
             npz = np.load(preds_path, allow_pickle=True)
             ax.scatter(npz["targets"], npz["predictions"], s=10, alpha=0.6,
@@ -109,9 +109,9 @@ def _fig_predicted_vs_actual(out_dir: Path) -> None:
     save_fig(fig, out_dir / "fig_predicted_vs_actual")
 
 
-def _fig_perm_null_collapse(out_dir: Path) -> None:
+def _fig_perm_null_collapse(out_dir: Path, perm_test_name: str) -> None:
     summary = json.loads(
-        (_ROOT / "outputs/canonical/cogn_residual/gpath_only/permutation_test_n20_stacked/permutation_summary.json").read_text()
+        (_ROOT / f"outputs/canonical/cogn_residual/gpath_only/{perm_test_name}/permutation_summary.json").read_text()
     )
     fig, ax = plt.subplots(figsize=(7, 5))
     canon = summary["canonical_mean_r2"]
@@ -124,7 +124,7 @@ def _fig_perm_null_collapse(out_dir: Path) -> None:
     rows = []
     for shard in ("shard_a", "shard_b"):
         sj = json.loads(
-            (_ROOT / f"outputs/canonical/cogn_residual/gpath_only/permutation_test_n20_stacked/{shard}/permutation_results.json").read_text()
+            (_ROOT / f"outputs/canonical/cogn_residual/gpath_only/{perm_test_name}/{shard}/permutation_results.json").read_text()
         )
         rows.extend(r["mean_r2_true"] for r in sj if "mean_r2_true" in r)
     null_means = np.array(rows)
@@ -198,6 +198,10 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--out-dir", type=Path,
                    default=_ROOT / "outputs/canonical/cogn_residual/figures")
+    p.add_argument("--pred-root-name", default="p5_seed42",
+                   help="Trained-model dir name under outputs/canonical/cogn_residual/<variant>/.")
+    p.add_argument("--perm-test-name", default="permutation_test_n20_stacked",
+                   help="Permutation-test dir name under outputs/canonical/cogn_residual/gpath_only/.")
     args = p.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     apply_theme("paper")
@@ -205,9 +209,9 @@ def main() -> int:
     print("[1/5] target distribution")
     _fig_residual_distribution(args.out_dir)
     print("[2/5] predicted-vs-actual")
-    _fig_predicted_vs_actual(args.out_dir)
+    _fig_predicted_vs_actual(args.out_dir, args.pred_root_name)
     print("[3/5] perm null collapse")
-    _fig_perm_null_collapse(args.out_dir)
+    _fig_perm_null_collapse(args.out_dir, args.perm_test_name)
     print("[4/5] DCR slope chart")
     _fig_dcr_slope_chart(args.out_dir)
     print("[5/5] DAE volcano")

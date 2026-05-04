@@ -8,7 +8,8 @@
 #   N_PERMS              total permutation count (e.g. 20)
 #   VARIANT_CONFIG       configs/resdec_mhe/cogn_residual/<variant>.yaml
 #   RESIDUAL_CACHE_DIR   variant residual cache (residual_target_fold{0..4}.npz)
-#   OUT_BASE             output dir (e.g. outputs/canonical/cogn_residual/<variant>/permutation_test_n20)
+#   OUT_BASE             output dir (e.g. outputs/canonical/cogn_residual/<variant>/permutation_test_n20_stacked
+#                        or _tabpfn — convention encodes the residual base)
 #
 # Optional env vars:
 #   METADATA_PATH        default data/metadata_ROSMAP

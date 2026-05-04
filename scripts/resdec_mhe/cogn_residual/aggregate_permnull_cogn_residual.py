@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
 from pathlib import Path
 
 import numpy as np
@@ -26,26 +25,39 @@ def main() -> int:
 
     rows: list[dict] = []
     seen: set[int] = set()
+    n_missing_files = 0
+    n_with_error = 0
+    n_missing_mean_r2 = 0
     for shard in ("shard_a", "shard_b"):
         path = args.shards_dir / shard / "permutation_results.json"
         if not path.is_file():
             print(f"warning: {path} missing; skipping", flush=True)
+            n_missing_files += 1
             continue
         for r in json.loads(path.read_text()):
             if "error" in r:
+                n_with_error += 1
                 continue
             ps = r["perm_seed"]
             if ps in seen:
+                continue
+            mr = r.get("mean_r2_true")
+            if mr is None or not np.isfinite(mr):
+                n_missing_mean_r2 += 1
                 continue
             seen.add(ps)
             rows.append(r)
 
     if not rows:
-        raise SystemExit("no usable perm rows found across both shards")
+        raise SystemExit(
+            f"no usable perm rows found across both shards "
+            f"(n_missing_shard_files={n_missing_files}, n_with_error={n_with_error}, "
+            f"n_missing_mean_r2={n_missing_mean_r2})"
+        )
 
     canonical_summary = json.loads(args.canonical_summary.read_text())
     canon_r2_per_fold = [f["ours"]["r2"] for f in canonical_summary["per_fold"]]
-    canon_mean_r2 = statistics.fmean(canon_r2_per_fold)
+    canon_mean_r2 = float(np.mean(canon_r2_per_fold))
 
     null_means = np.array([r["mean_r2_true"] for r in rows], dtype=float)
     null_mean = float(null_means.mean())
@@ -64,8 +76,11 @@ def main() -> int:
         "n_null_ge_canonical": n_ge,
         "z_under_null": z,
         "p_value_one_sided": p_one_sided,
-        "p_floor_at_n": 1.0 / (n + 1),
+        "p_min_achievable_at_n": 1.0 / (n + 1),
         "perm_seeds": sorted(int(r["perm_seed"]) for r in rows),
+        "n_missing_shard_files": n_missing_files,
+        "n_with_error": n_with_error,
+        "n_missing_mean_r2": n_missing_mean_r2,
         "shards_dir": str(args.shards_dir),
         "canonical_summary_path": str(args.canonical_summary),
     }
@@ -75,7 +90,7 @@ def main() -> int:
     print(f"canonical mean R² = {canon_mean_r2:+.4f}")
     print(f"null mean         = {null_mean:+.4f} ± {null_std:.4f} (N={n})")
     print(f"z under null      = {z:+.3f}")
-    print(f"empirical p (1-sided) = {p_one_sided:.4f}  (floor at N={n}: {1.0 / (n + 1):.4f})")
+    print(f"empirical p (1-sided) = {p_one_sided:.4f}  (min achievable at N={n}: {1.0 / (n + 1):.4f})")
     return 0
 
 

@@ -60,8 +60,7 @@ def main() -> int:
     p.add_argument("--pred-root-name", default="p5_seed42",
                    help="Trained model dir under outputs/canonical/cogn_residual/<variant>/.")
     p.add_argument("--base-cache-name", default="stacked_cache",
-                   help="Residual-base cache dir under outputs/canonical/cogn_residual/<variant>/. "
-                        "Use 'tabpfn_cache' to reproduce TabPFN-only attribution.")
+                   help="Residual-base cache subdir name under outputs/canonical/cogn_residual/<variant>/.")
     p.add_argument("--interp-out-name", default="interpretability",
                    help="Output dir for attribution under outputs/canonical/cogn_residual/<variant>/.")
     p.add_argument("--variant-config", type=Path,
