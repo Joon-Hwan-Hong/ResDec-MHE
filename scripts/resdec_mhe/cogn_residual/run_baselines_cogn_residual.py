@@ -33,6 +33,8 @@ from sklearn.svm import SVR
 _ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_ROOT))
 
+from src.baselines.rf_defaults import RF_KWARGS  # noqa: E402
+
 from src.data.feature_loaders import load_flat_features  # noqa: E402
 from src.data.splits import load_splits  # noqa: E402
 
@@ -131,9 +133,7 @@ def main() -> int:
         "ridge": lambda: Ridge(alpha=1.0, random_state=42),
         "elastic_net": lambda: ElasticNet(alpha=1.0, l1_ratio=0.5,
                                           random_state=42, max_iter=10000),
-        "random_forest": lambda: RandomForestRegressor(
-            n_estimators=100, max_depth=16, random_state=42, n_jobs=-1,
-        ),
+        "random_forest": lambda: RandomForestRegressor(**RF_KWARGS),
     }
     if not args.skip_svr:
         model_factories["svr"] = lambda: SVR(C=1.0, kernel="rbf")

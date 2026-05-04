@@ -28,13 +28,9 @@ BASE_CONFIG="${BASE_CONFIG:-configs/resdec_mhe/cogn_residual/gpath_only.yaml}"
 WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$WT"
 
-# Force PYTHONPATH to worktree root so all child Python invocations (this
-# launcher's `uv run python` calls AND their nested subprocess.run train.py
-# calls) resolve `import src.*` to this worktree, not the parent repo. The
-# parent repo (master) lacks the variant residualization injection and would
-# silently train on raw cogn_global. See feedback_no_silent_plan_drops.md
-# (audit-discipline rule) and the recurrence note added to
-# feedback_no_transient_codes_in_commits.md after the 2026-05-04 incident.
+# Lock src.* import resolution to this worktree; `uv run python script.py`
+# sets sys.path[0] to script-dir, so without PYTHONPATH a sibling repo's src/
+# can win.
 export PYTHONPATH="${PYTHONPATH:-$WT}"
 
 mkdir -p "$OUT_BASE/work_a" "$OUT_BASE/work_b"

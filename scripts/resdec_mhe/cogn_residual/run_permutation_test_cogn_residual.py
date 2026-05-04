@@ -120,10 +120,9 @@ def run_one_perm(
             "--metadata-csv", str(metadata_path / "metadata.csv"),
             "--splits-path", str(splits_path),
         ]
-        # Per feedback_cuda_visible_devices_subprocess.md: when len(gpus)==1 the
-        # parent shell has already pinned CUDA_VISIBLE_DEVICES to a physical GPU
-        # (perm-shard mode); inherit that mask. Only override when len(gpus) > 1
-        # (fold-shard within-perm mode where we'd assign each child individually).
+        # CUDA_VISIBLE_DEVICES set in subprocess.Popen env is ABSOLUTE, not
+        # relative to the parent's mask. When len(gpus)==1 the parent has
+        # already pinned a physical GPU; setting it again would force GPU 0.
         if len(gpus) > 1:
             tabpfn_env = {**env_inherit, "CUDA_VISIBLE_DEVICES": str(gpus[0])}
         else:

@@ -52,9 +52,8 @@ log "Variant config: $VARIANT_CONFIG"
 log "Residual cache: $RESIDUAL_CACHE_DIR"
 log "==================================================="
 
-# Per feedback_cuda_visible_devices_subprocess.md: parent CUDA_VISIBLE_DEVICES=N
-# pins each shard to one physical GPU; the inner script must inherit that mask
-# (run_permutation_test_cogn_residual.py passes --gpus 0 which becomes physical-N).
+# Each shard's parent CUDA_VISIBLE_DEVICES=N pins one physical GPU; the inner
+# script passes --gpus 0 which becomes physical-N within that mask.
 
 log "Launching Shard A on GPU 0"
 CUDA_VISIBLE_DEVICES=0 \

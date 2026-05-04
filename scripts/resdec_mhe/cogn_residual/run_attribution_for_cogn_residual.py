@@ -32,11 +32,10 @@ _ROOT = Path(__file__).resolve().parents[3]
 
 def _run(cmd: list, env: dict | None = None) -> None:
     print("RUN:", " ".join(str(c) for c in cmd), flush=True)
-    # Force PYTHONPATH to worktree root so subprocess imports of src.* resolve
-    # to the variant-aware modules in this worktree, not master's parent-repo
-    # copies (see feedback_subprocess_pythonpath_leak.md / commit notes —
-    # `python script.py` sets sys.path[0] to script-dir, leaving namespace-
-    # package resolution to fall through to a sibling worktree/repo).
+    # `python script.py` sets sys.path[0] to the script's dir, not cwd. In a
+    # worktree with no src/ adjacent to the script, namespace-package
+    # resolution falls through to any sibling repo's src/ that's on sys.path.
+    # Force PYTHONPATH to this worktree to lock it.
     full_env = {**os.environ, "PYTHONPATH": str(_ROOT)}
     if env is not None:
         full_env.update(env)

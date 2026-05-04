@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from src.analysis.differential import (
+    binned_subgroup_dge_deseq2,
     differential_attribution_effect,
     differential_ccc_importance,
     differential_ct_ranking,
@@ -129,3 +130,52 @@ def test_dcci_signal_recovers():
     top = res.iloc[0]
     assert top["ct_source"] == "CT0"
     assert top["ct_target"] == "CT1"
+
+
+def test_binned_subgroup_dge_deseq2_handles_filtered_ct(monkeypatch):
+    """Filter branch must produce a DataFrame so pd.concat doesn't choke on dicts.
+
+    A CT with <5 subjects per group should yield NaN-filled rows; the rest
+    should run through the DESeq2 path. We monkeypatch deseq2_de to return a
+    deterministic DataFrame so the test runs in milliseconds without invoking
+    pydeseq2.
+    """
+    n_subj, n_ct, n_gene = 12, 3, 4
+    rng = np.random.default_rng(0)
+    counts = rng.integers(0, 50, size=(n_subj, n_ct, n_gene))
+    # Drop CT 1's counts to zero — its row-sum filter rejects all subjects.
+    counts[:, 1, :] = 0
+    ct_names = ["CT0", "CT1_filtered", "CT2"]
+    gene_names = [f"G{i}" for i in range(n_gene)]
+    resilient_idx = list(range(0, 6))
+    vulnerable_idx = list(range(6, 12))
+
+    fake_de = pd.DataFrame({
+        "gene": gene_names,
+        "log2_fold_change": [0.1] * n_gene,
+        "p_wald": [0.5] * n_gene,
+        "padj_bh": [0.7] * n_gene,
+    })
+
+    monkeypatch.setattr(
+        "src.analysis.de_resilience.deseq2_de",
+        lambda **kw: fake_de.copy(),
+    )
+
+    df = binned_subgroup_dge_deseq2(
+        raw_counts_pseudobulk=counts,
+        ct_names=ct_names,
+        gene_names=gene_names,
+        resilient_idx=resilient_idx,
+        vulnerable_idx=vulnerable_idx,
+        min_cells_per_subject=1,
+    )
+    # 3 CTs × 4 genes = 12 rows; CT1_filtered must produce 4 NaN rows.
+    assert len(df) == n_ct * n_gene
+    filtered_rows = df[df["cell_type"] == "CT1_filtered"]
+    assert len(filtered_rows) == n_gene
+    assert filtered_rows["log2_fold_change"].isna().all()
+    assert filtered_rows["padj_bh"].isna().all()
+    # Non-filtered CTs got the fake DESeq2 output.
+    ok_rows = df[df["cell_type"] == "CT0"]
+    assert (ok_rows["log2_fold_change"] == 0.1).all()

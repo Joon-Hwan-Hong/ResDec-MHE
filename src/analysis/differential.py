@@ -333,16 +333,16 @@ def binned_subgroup_dge_deseq2(
         res_keep = np.array([i for i in resilient_idx if nonzero[i]], dtype=int)
         vul_keep = np.array([i for i in vulnerable_idx if nonzero[i]], dtype=int)
         if len(res_keep) < 5 or len(vul_keep) < 5:
-            for g_idx in range(n_gene):
-                all_rows.append({
-                    "cell_type": ct_names[ct_idx],
-                    "gene": gene_names[g_idx],
-                    "log2_fold_change": float("nan"),
-                    "p_wald": float("nan"),
-                    "padj_bh": float("nan"),
-                    "n_resilient": len(res_keep),
-                    "n_vulnerable": len(vul_keep),
-                })
+            filtered_df = pd.DataFrame({
+                "gene": list(gene_names),
+                "log2_fold_change": [float("nan")] * n_gene,
+                "p_wald": [float("nan")] * n_gene,
+                "padj_bh": [float("nan")] * n_gene,
+            })
+            filtered_df["cell_type"] = ct_names[ct_idx]
+            filtered_df["n_resilient"] = len(res_keep)
+            filtered_df["n_vulnerable"] = len(vul_keep)
+            all_rows.append(filtered_df)
             continue
 
         keep = np.concatenate([res_keep, vul_keep])
@@ -362,10 +362,7 @@ def binned_subgroup_dge_deseq2(
 
     if not all_rows:
         return pd.DataFrame()
-    if isinstance(all_rows[0], dict):
-        df = pd.DataFrame(all_rows)
-    else:
-        df = pd.concat(all_rows, ignore_index=True)
+    df = pd.concat(all_rows, ignore_index=True)
     if "padj_bh" not in df.columns and "padj" in df.columns:
         df = df.rename(columns={"padj": "padj_bh"})
     sort_col = "padj_bh" if "padj_bh" in df.columns else df.columns[0]

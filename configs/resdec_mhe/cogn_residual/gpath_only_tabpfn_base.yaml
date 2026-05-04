@@ -1,10 +1,7 @@
-# ResDec-MHE on gpath-residualized cognition. Residual base: stacked
-# TabPFN+RandomForest (per-fold mean prediction averaged element-wise; per-
-# subject sigma = max(sigma_tabpfn, sigma_rf)). Cache produced by
-# build_stacked_cache_cogn_residual.py.
+# ResDec-MHE on gpath-residualized cognition. Residual base: TabPFN-2.6 alone.
 
 experiment:
-  run_name: "cogn_residual_gpath_only_seed42"
+  run_name: "cogn_residual_gpath_only_tabpfn_base_seed42"
 
 model:
   n_genes: 4785
@@ -34,5 +31,5 @@ data:
   residualize_against:
     axes: ["gpath"]
     cache_dir: "outputs/canonical/cogn_residual/gpath_only/cache"
-  tabpfn_oof_dir: outputs/canonical/cogn_residual/gpath_only/stacked_cache
-  tabpfn_outer_dir: outputs/canonical/cogn_residual/gpath_only/stacked_cache
+  tabpfn_oof_dir: outputs/canonical/cogn_residual/gpath_only/tabpfn_cache
+  tabpfn_outer_dir: outputs/canonical/cogn_residual/gpath_only/tabpfn_cache
