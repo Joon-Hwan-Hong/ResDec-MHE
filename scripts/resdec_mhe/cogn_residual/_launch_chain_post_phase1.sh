@@ -75,11 +75,23 @@ run_phase "PHASE3" "_launch_phase3_variantB_permnull.sh" || exit 1
 # ── PHASE 4 (Variant A perm null N=50 stacked) ──
 run_phase "PHASE4" "_launch_phase4_variantA_permnull_n50.sh" || exit 1
 
-# ── PHASE 5/6/7 (CF + distributional + learning curve) ──
-# Pending launchers; will be filled in subsequent commits. The chain stops here
-# until those scripts exist; rerun with the new launchers in place to continue.
-log "=== Phases 1-4 complete; Phases 5-7 launchers pending ==="
-log "(Add _launch_phase5_variantA_cf.sh, _launch_phase6_variantA_distrib.sh, _launch_phase7_variantA_learning_curve.sh, then re-run this chain or call them directly.)"
+# ── PHASE 5 (Variant A counterfactuals: relative + absolute, fold 0) ──
+run_phase "PHASE5" "_launch_phase5_variantA_cf.sh" || exit 1
 
-touch "$SENTINEL_DIR/CHAIN_PHASES_1_TO_4_DONE"
-log "=== Chain Phases 1-4 done ==="
+# ── PHASE 6 (Variant A distributional: Wasserstein-1 + raw CMI) ──
+run_phase "PHASE6" "_launch_phase6_variantA_distrib.sh" || exit 1
+
+# ── PHASE 7 (Variant A learning curve 5-seed × 4 sub-Ns) ──
+# Pending — needs new orchestrator that re-fits per-fold OLS residualization on
+# subsampled training subjects (existing canonical run_learning_curve.py uses
+# raw cogn_global). Will be filled in a follow-up commit; the chain stops here
+# and emits CHAIN_PHASES_1_TO_6_DONE.
+if [ -f "$ROOT/scripts/resdec_mhe/cogn_residual/_launch_phase7_variantA_learning_curve.sh" ]; then
+    run_phase "PHASE7" "_launch_phase7_variantA_learning_curve.sh" || exit 1
+    touch "$SENTINEL_DIR/CHAIN_PHASES_1_TO_7_DONE"
+    log "=== Chain Phases 1-7 done ==="
+else
+    log "=== Phase 7 launcher absent; chain stops at Phase 6 ==="
+    touch "$SENTINEL_DIR/CHAIN_PHASES_1_TO_6_DONE"
+    log "=== Chain Phases 1-6 done ==="
+fi
