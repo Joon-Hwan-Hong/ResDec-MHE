@@ -232,7 +232,7 @@ For Variant A: ResDec-MHE wins the panel by +0.05 over the strongest classical b
 - DCCI (CT-CT edge attention paired Wilcoxon): 0/961 edges significant → CCC structure preserved.
 
 **Within-variant binned subgroup** (top vs bottom quartile residualized target):
-- DGE Wilcoxon: canonical 4154/148335 sig pairs; Variant A 1239 (≈30 % of canonical's signal); Variant B pending.
+- DGE Wilcoxon: canonical 4154/148335 sig pairs; Variant A 1239 (≈30 % of canonical); Variant B 261 (≈6 %). Monotonic decrease as residualization removes more variance.
 - Per-CT Captum importance: 0/31 CTs significant in canonical or Variant A.
 - Differential CCC: 0/961 edges significant.
 
