@@ -209,9 +209,20 @@ Beyond the canonical model trained on raw `cogn_global`, two variants train on *
 - **Variant A (gpath-only):** target = `cogn_global − (α + β·gpath)`, fit per-fold on training subjects only.
 - **Variant B (multi-axis):** target = `cogn_global − (α + β₁·gpath + β₂·tangsqrt + β₃·amylsqrt)`. Sensitivity check.
 
+The **default residual base for both variants is a stacked TabPFN-2.6 + RandomForest average** (per-subject mean prediction; sigma = elementwise max). The stacked base improves the residual-base R² from TabPFN-only 0.181 → 0.219 (Variant A) and lifts the composite ResDec-MHE R² from 0.249 → 0.280 — a +0.031 paired Δ over TabPFN-only base, 4/5 fold wins, paired one-sided Wilcoxon p=0.094.
+
+**Variant A composite R² across residual-base choices (5-fold mean ± std, best-checkpoint reinfer):**
+
+| Residual base | Composite R² | Encoder marginal Δ (5/5 folds, p=0.031) |
+|---|---:|---:|
+| **Stacked TabPFN+RF (default)** | **0.280 ± 0.066** | +0.061 over base (p=0.031) |
+| TabPFN-only | 0.249 ± 0.095 | +0.068 over base (p=0.031) |
+| RandomForest only | 0.239 ± 0.041 | +0.042 over base (p=0.031) |
+
 | Model on residualized target | Variant A R² (5-fold) | Variant B R² (5-fold) |
 |---|---|---|
-| **ResDec-MHE (this repo)** | **0.249 ± 0.095** | 0.168 ± 0.083 |
+| **ResDec-MHE w/ stacked base (this repo)** | **0.280 ± 0.066** | 0.184 ± 0.073 |
+| ResDec-MHE w/ TabPFN-only base | 0.249 ± 0.095 | 0.168 ± 0.083 |
 | RandomForest               | 0.197 ± 0.034 | 0.149 ± 0.072 |
 | TabPFN-2.6 standalone       | 0.181 ± 0.090 | 0.157 ± 0.090 |
 | SVR (RBF)                   | 0.157 ± 0.040 | 0.129 ± 0.038 |
@@ -220,21 +231,24 @@ Beyond the canonical model trained on raw `cogn_global`, two variants train on *
 | ElasticNet                  | -0.003 | -0.002 |
 | Ridge                       | -0.164 ± 0.108 | -0.168 ± 0.152 |
 
-For Variant A: ResDec-MHE wins the panel by +0.05 over the strongest classical baseline (RandomForest), +0.07 over TabPFN. The clinical-only baseline at R²≈0.02 confirms residualization is clean — most clinical signal is via pathology and the residual target retains negligible clinical predictivity.
+For Variant A: stacked-base ResDec-MHE wins the panel by +0.083 over the strongest classical baseline (RandomForest) and +0.099 over TabPFN. The clinical-only baseline at R²≈0.02 confirms residualization is clean — most clinical signal is via pathology and the residual target retains negligible clinical predictivity. The "swap residual base" choice is exposed via the variant config's `data.tabpfn_oof_dir` / `tabpfn_outer_dir` fields; see `configs/resdec_mhe/cogn_residual/{gpath_only,gpath_only_tabpfn_base,gpath_only_rf_base,multi_axis,multi_axis_tabpfn_base}.yaml`.
 
-**Variant A permutation null** (N=20 full-pipeline label-shuffle re-trains on residualized target):
-- z = +6.64, one-sided empirical p = 0.048 (= 1/21 floor at N=20)
-- 0/20 null permutations ≥ canonical 0.249
+**Variant A permutation null** (N=20 full-pipeline label-shuffle re-trains, stacked base):
+- z = +9.79 null-std units, one-sided empirical p = 0.048 (= 1/21 floor at N=20)
+- null mean = −0.2427 ± 0.0534
+- 0/20 null permutations ≥ canonical R²=+0.280
+- TabPFN-only base perm null (preserved for comparison): z = +6.64
 
-**Cross-variant differential analyses:**
+**Cross-variant differential analyses (stacked base):**
 - DAE (per CT-gene attribution magnitude paired Wilcoxon): 0/148335 pairs significant at BH-FDR for Captum IG / GradientSHAP / SmoothGrad → variant doesn't redirect per-pair attribution.
-- DCR (per-method CT-rank Spearman): ρ = 0.72-0.95 for 7/8 attribution methods → CT importance ranking preserved. One outlier: gradient-free GAF at ρ=-0.20 (rank inversion; likely method-noise rather than biology).
+- DCR (per-method CT-rank Spearman): ρ = 0.65-0.96 for 7/8 attribution methods → CT importance ranking preserved. Captum IG ρ=0.88, GAF AF ρ=0.96, GMAR ρ=0.95. One outlier: gradient-free GAF at ρ=-0.07 (mildly improved from -0.20 under TabPFN-only; method-noise rather than biology). Multi-axis Captum IG ρ=0.78.
 - DCCI (CT-CT edge attention paired Wilcoxon): 0/961 edges significant → CCC structure preserved.
 
-**Within-variant binned subgroup** (top vs bottom quartile residualized target):
+**Within-variant binned subgroup** (top vs bottom quartile residualized target; stacked-base attribution for variants):
 - DGE Wilcoxon: canonical 4154/148335 sig pairs; Variant A 1239 (≈30 % of canonical); Variant B 261 (≈6 %). Monotonic decrease as residualization removes more variance.
-- Per-CT Captum importance: 0/31 CTs significant in canonical or Variant A.
-- Differential CCC: 0/961 edges significant.
+- DGE DESeq2: 0/148335 sig in all 3 variants. Cross-method disagreement vs Wilcoxon at this N (~258) is dramatic — the deep model captures distributional signal classical DGE cannot recover.
+- Per-CT Captum importance: 0/31 CTs significant in canonical or Variant B; **1/31 in Variant A: Deep-layer corticothalamic and 6b (padj=0.033)** — the same CT that hosts PDE10A/ADAMTSL1/NRXN3/ERBB4 in the gene-level resilience module. Attribution-level convergence with gene-level finding.
+- Differential CCC: 0/961 edges significant in canonical / Variant A.
 
 Interpretation: residualizing cognition against pathology retains substantial predictive signal that ResDec-MHE captures better than any tested baseline; the model attends to the same per-(CT, gene) features regardless of which scalar cognitive component is the target. Cognitive resilience is a fine-grained gene-by-cell-type phenotype, not a coarse-grained CT-level rewiring.
 

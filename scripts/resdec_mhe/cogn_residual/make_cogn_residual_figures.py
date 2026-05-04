@@ -111,7 +111,7 @@ def _fig_predicted_vs_actual(out_dir: Path) -> None:
 
 def _fig_perm_null_collapse(out_dir: Path) -> None:
     summary = json.loads(
-        (_ROOT / "outputs/canonical/cogn_residual/gpath_only/permutation_test_n20/permutation_summary.json").read_text()
+        (_ROOT / "outputs/canonical/cogn_residual/gpath_only/permutation_test_n20_stacked/permutation_summary.json").read_text()
     )
     fig, ax = plt.subplots(figsize=(7, 5))
     canon = summary["canonical_mean_r2"]
@@ -124,7 +124,7 @@ def _fig_perm_null_collapse(out_dir: Path) -> None:
     rows = []
     for shard in ("shard_a", "shard_b"):
         sj = json.loads(
-            (_ROOT / f"outputs/canonical/cogn_residual/gpath_only/permutation_test_n20/{shard}/permutation_results.json").read_text()
+            (_ROOT / f"outputs/canonical/cogn_residual/gpath_only/permutation_test_n20_stacked/{shard}/permutation_results.json").read_text()
         )
         rows.extend(r["mean_r2_true"] for r in sj if "mean_r2_true" in r)
     null_means = np.array(rows)

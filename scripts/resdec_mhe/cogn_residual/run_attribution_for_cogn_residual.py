@@ -57,14 +57,26 @@ def main() -> int:
                    default=_ROOT / "data/precomputed")
     p.add_argument("--splits-path", type=Path,
                    default=_ROOT / "outputs/splits.json")
+    p.add_argument("--pred-root-name", default="p5_seed42",
+                   help="Trained model dir under outputs/canonical/cogn_residual/<variant>/.")
+    p.add_argument("--base-cache-name", default="stacked_cache",
+                   help="Residual-base cache dir under outputs/canonical/cogn_residual/<variant>/. "
+                        "Use 'tabpfn_cache' to reproduce TabPFN-only attribution.")
+    p.add_argument("--interp-out-name", default="interpretability",
+                   help="Output dir for attribution under outputs/canonical/cogn_residual/<variant>/.")
+    p.add_argument("--variant-config", type=Path,
+                   default=None,
+                   help="Override path to the variant YAML; default <variant_name>.yaml.")
     args = p.parse_args()
 
     out_root = _ROOT / "outputs/canonical/cogn_residual" / args.variant_name
-    canonical_dir = out_root / "p5_seed42"
-    interp_out = out_root / "interpretability"
+    canonical_dir = out_root / args.pred_root_name
+    interp_out = out_root / args.interp_out_name
     interp_out.mkdir(parents=True, exist_ok=True)
-    variant_config = _ROOT / "configs/resdec_mhe/cogn_residual" / f"{args.variant_name}.yaml"
-    variant_tabpfn_dir = out_root / "tabpfn_cache"
+    variant_config = args.variant_config or (
+        _ROOT / "configs/resdec_mhe/cogn_residual" / f"{args.variant_name}.yaml"
+    )
+    variant_tabpfn_dir = out_root / args.base_cache_name
 
     # 1. Captum IG composite attribution (always)
     _run([
