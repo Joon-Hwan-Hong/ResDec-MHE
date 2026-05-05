@@ -249,7 +249,11 @@ def run_one_seed_N(
             "--out-dir", str(residual_cache_dir),
         ], log, "residualization")
 
-        # Step 3: top-k features (canonical XGBoost selector on residualized target)
+        # Step 3: top-k features (XGBoost selector on cogn_global; selector is
+        # target-agnostic at the CLI layer — compute_top_k_features.py reads
+        # the metadata.csv we pass and uses its hard-coded 'cogn_global' column,
+        # which matches the variant pipeline's convention of cogn_global-driven
+        # feature selection followed by residualized-target downstream training).
         topk_dir = seed_dir / "top_k"
         run_step([
             "uv", "run", "python",
@@ -260,7 +264,6 @@ def run_one_seed_N(
             "--output-dir", str(topk_dir),
             "--top-k", str(TOP_K),
             "--feature-set", "A",
-            "--target-col", target_col,
         ], log, "top-k features")
 
         # Step 4: TabPFN cache build on sub-N residualized target

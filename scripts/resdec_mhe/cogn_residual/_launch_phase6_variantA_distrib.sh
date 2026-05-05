@@ -42,6 +42,8 @@ if [ ! -f "$RESIDUAL_CSV" ]; then
 fi
 
 CT_NAMES_SOURCE="$INTERP_OUT/captum_ig/composite_attribution_summary.json"
+VARIANT_CANONICAL_DIR="$ROOT/outputs/canonical/cogn_residual/${VARIANT_NAME}/p5_seed42"
+VARIANT_CAPTUM_NPZ="$INTERP_OUT/captum_ig/composite_attributions.npz"
 N_FAILED=0
 
 # 1. Wasserstein-1 per (CT, gene) between resilient and vulnerable quartiles
@@ -63,9 +65,14 @@ fi
 # 2. Raw-pseudobulk conditional MI per cell type (max + vector aggregation)
 # `run_resilience_analyses.py cmi --source raw` writes
 # conditional_mi_per_celltype_raw_<aggregation>.json to --out-dir.
+# IMPORTANT: --canonical-dir + --captum-npz must point at the variant model,
+# NOT the canonical default; cmd_cmi pulls Y from <canonical-dir>/foldX/
+# val_predictions_best.npz and the subject ordering from <captum-npz>.
 for AGG in max vector; do
     echo "[$(date -Iseconds)] CMI raw-pseudobulk (agg=${AGG})" | tee -a "$LOG"
     if uv run python scripts/resdec_mhe/interpretability/run_resilience_analyses.py \
+        --canonical-dir "$VARIANT_CANONICAL_DIR" \
+        --captum-npz "$VARIANT_CAPTUM_NPZ" \
         --residual-csv "$RESIDUAL_CSV" \
         --metadata-csv "$ROOT/data/metadata_ROSMAP/metadata.csv" \
         --out-dir "$INTERP_OUT" \
