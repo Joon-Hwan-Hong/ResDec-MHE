@@ -50,6 +50,10 @@ wait_for_sentinel() {
 
 run_phase() {
     local phase="$1"; local script="$2"
+    if [ -f "$SENTINEL_DIR/${phase}_DONE" ]; then
+        log "=== skipping $phase (already DONE per sentinel) ==="
+        return 0
+    fi
     log "=== launching $phase: $script ==="
     if bash "$ROOT/scripts/resdec_mhe/cogn_residual/$script"; then
         log "$phase script returned 0"

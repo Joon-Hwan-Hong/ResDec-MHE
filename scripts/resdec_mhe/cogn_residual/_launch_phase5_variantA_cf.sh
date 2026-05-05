@@ -57,6 +57,8 @@ for MODE in relative absolute; do
         CF_RESIDUAL_CSV="$RESIDUAL_CSV" \
         CF_DEVICE="$DEVICE" \
         CF_OUT_DIR="$OUT_DIR" \
+        CF_METADATA_PATH="$ROOT/data/metadata_ROSMAP" \
+        CF_PRECOMPUTED_DIR="$ROOT/data/precomputed" \
         uv run python scripts/resdec_mhe/interpretability/run_counterfactuals.py \
         --target-mode "$MODE" \
         >> "$LOG" 2>&1; then
