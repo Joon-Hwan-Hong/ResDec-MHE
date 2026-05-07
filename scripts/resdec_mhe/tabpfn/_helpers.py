@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +28,55 @@ import xgboost as xgb
 from tabpfn import TabPFNRegressor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TabPFNFoldArgs:
+    """Per-fold TabPFN-2.6 hyperparameters consumed by process_*_fold.
+
+    Single source of truth for the duck-typed `args` object historically passed
+    through subprocess.Popen-style argparse Namespaces. Build via
+    `TabPFNFoldArgs.from_argparse(args)` at the entry point.
+
+    Attributes
+    ----------
+    top_k : int
+        Top-K HVG count used by both compute_top_k_features and the per-fold
+        TabPFN feature selection. Default 2000 (canonical).
+    feature_set : str
+        Feature-set tag (canonical "A" = pseudobulk-only). Must match the tag
+        used to produce the top-K JSON.
+    seed : int
+        RNG seed for KFold splits and TabPFN initializer.
+    zscore : bool
+        If True, per-feature z-score the TabPFN input fit on inner/outer-fold
+        TRAIN ONLY (no leakage).
+    ignore_pretraining_limits : bool
+        Override TabPFN-2.6's 2000-feature safety check (only when explicitly
+        testing >2000-feature behavior; distributional extrapolation risk).
+    n_inner_folds : int
+        Inner-OOF fold count for compute_oof's KFold (default 5).
+    """
+    top_k: int = 2000
+    feature_set: str = "A"
+    seed: int = 42
+    zscore: bool = False
+    ignore_pretraining_limits: bool = False
+    n_inner_folds: int = 5
+
+    @classmethod
+    def from_argparse(cls, args) -> "TabPFNFoldArgs":
+        """Build from an argparse Namespace, picking up only the relevant fields."""
+        return cls(
+            top_k=int(getattr(args, "top_k", 2000)),
+            feature_set=str(getattr(args, "feature_set", "A")),
+            seed=int(getattr(args, "seed", 42)),
+            zscore=bool(getattr(args, "zscore", False)),
+            ignore_pretraining_limits=bool(
+                getattr(args, "ignore_pretraining_limits", False)
+            ),
+            n_inner_folds=int(getattr(args, "n_inner_folds", 5)),
+        )
 
 
 # Default XGBoost hyper-params used by compute_top_k_features. Centralised so

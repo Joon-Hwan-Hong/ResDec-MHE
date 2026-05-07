@@ -283,6 +283,16 @@ def attribute_one_fold(
     OmegaConf.set_struct(cfg, False)
     cfg.model.head.type = "deterministic"
     cfg.data.fold = int(fold)
+    if getattr(args, "metadata_path", None) is not None:
+        cfg.data.metadata_path = str(args.metadata_path)
+    if getattr(args, "precomputed_dir", None) is not None:
+        cfg.data.precomputed_dir = str(args.precomputed_dir)
+    # Force per-subject attribution batch — GS+SG noise tunneling tiles each
+    # subject by tile_factor=gs_n_samples*gs_n_baselines (default 100), so the
+    # effective in-flight batch is val_batch * tile_factor; with canonical
+    # batch_size=24 this OOMs on a 47 GB GPU. Single-subject batches keep
+    # peak memory linear in tile_factor only.
+    cfg.data.dataloader.batch_size = int(getattr(args, "attribution_batch_size", 1))
 
     fold_dir = Path(args.pred_root) / f"fold{fold}"
     ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
@@ -655,4 +665,12 @@ if __name__ == "__main__":
                    help="Run only fold 0; abort if wall > --smoke-max-min.")
     p.add_argument("--smoke-max-min", type=float, default=10.0,
                    help="Smoke-test wall-time cap (minutes).")
+    p.add_argument("--metadata-path", type=Path, default=None,
+                   help="Override cfg.data.metadata_path (variant pipelines).")
+    p.add_argument("--precomputed-dir", type=Path, default=None,
+                   help="Override cfg.data.precomputed_dir.")
+    p.add_argument("--attribution-batch-size", type=int, default=1,
+                   help="Val DataLoader batch size during attribution. Default 1 "
+                        "to keep peak memory linear in tile_factor only "
+                        "(GS+SG tiles by gs_n_samples*gs_n_baselines per subject).")
     sys.exit(main(p.parse_args()))

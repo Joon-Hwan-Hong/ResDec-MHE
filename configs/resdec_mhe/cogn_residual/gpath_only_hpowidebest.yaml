@@ -1,0 +1,264 @@
+experiment:
+  name: cognitive_resilience
+  run_name: cogn_residual_gpath_only_hpowidebest_trial4_seed42
+  seed: 42
+  device: auto
+data:
+  adata_path: path/to/your/snrnaseq.h5ad
+  cellchatdb_path: path/to/your/cellchatdb_interactions.csv
+  metadata_path: path/to/your/metadata_dir/
+  liana_cache_dir: path/to/your/liana_cache/
+  precomputed_dir: path/to/your/precomputed_dataset_cache/
+  preprocessing:
+    n_hvg: 4000
+    target_sum: 10000.0
+    min_cells_per_gene: 10
+  cell_type_column: supercluster_name
+  subject_column: ROSMAP_IndividualID
+  target_column: cogn_global
+  pathology_columns:
+  - gpath
+  - amylsqrt
+  - tangsqrt
+  splits:
+    test_frac: 0.0
+    n_folds: 5
+    stratify_by:
+    - gpath
+    - cogn_global
+  cell_sampling:
+    max_cells_per_type: 1000
+    min_cells_threshold: 50
+    sampling_strategy: random
+  max_missing_subject_fraction: 0.1
+  dataloader:
+    batch_size: 48
+    num_workers: 12
+    pin_memory: true
+    prefetch_factor: 2
+  use_cached_embeddings: false
+  tabpfn_oof_dir: outputs/canonical/cogn_residual/gpath_only/tabpfn_cache
+  tabpfn_outer_dir: outputs/canonical/cogn_residual/gpath_only/tabpfn_cache
+  residualize_against:
+    axes:
+    - gpath
+    cache_dir: outputs/canonical/cogn_residual/gpath_only/cache
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  d_embed: 64
+  d_fused: 64
+  dropout: 0.1
+  gene_gate:
+    initial_temperature: 1.0
+  hgt:
+    n_layers: 3
+    n_heads: 4
+    edge_types:
+    - Secreted_Signaling
+    - ECM_Receptor
+    - Cell_Cell_Contact
+    - Non_protein_Signaling
+    - Novel_Uncharacterized
+  set_transformer:
+    n_isab_layers: 2
+    n_inducing_points: 32
+    n_pma_seeds: 1
+    n_heads: 4
+    condition_on_cell_type: true
+  fusion:
+    type: cross_attention
+    n_heads: 4
+  pathology_attention:
+    d_cond: 64
+    n_heads: 4
+    n_pathology_features: 3
+  use_hgt_encoder: true
+  use_cell_transformer: true
+  use_gradient_checkpointing: true
+  use_torch_compile: false
+  head:
+    type: bayesian
+    d_hidden: 64
+    target_mean: null
+  resdec_head:
+    d_metadata: 8
+    n_heads: 8
+    n_stages: 3
+    aux_lambdas:
+    - 4.041986740582305
+    - 4.041986740582305
+    - 4.041986740582305
+    use_diff_attn: false
+training:
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_delta: 0.0
+    min_epochs: 3
+    monitor: val/r2
+    mode: max
+  optimizer:
+    type: adamw
+    lr: 0.0001
+    weight_decay: 0.0001
+    betas:
+    - 0.9
+    - 0.999
+    lrd: 0.9999
+    guide_lr: 0.005
+  scheduler:
+    type: cosine
+    warmup_epochs: 5
+    eta_min: 1.0e-06
+  loss:
+    type: beta_nll
+    beta: 0.5
+  temperature_annealing:
+    tau_max: 2.0
+    tau_min: 0.1
+    warmup_epochs: 5
+    anneal_epochs: 25
+    schedule: exponential
+  kl_annealing:
+    enabled: true
+    alpha_min: 0.01
+    warmup_epochs: 5
+    schedule: linear
+    temperature: 1.0
+  gradient_clip_val: 0.7399259687200288
+  gradient_modulation:
+    enabled: false
+    method: ogm_ge
+    alpha: 1.0
+    ge_enabled: true
+    log_modulation: false
+  precision: bf16-mixed
+  devices: auto
+  strategy: ddp
+  lr_scaling: true
+  checkpoint:
+    save_top_k: 3
+    monitor: val_nll
+    mode: min
+    save_last: true
+  regularization:
+    gene_gate_l1: 0.0
+  logging:
+    log_every_n_steps: 10
+    val_check_interval: 1.0
+  lr: 0.0016409286730647919
+  weight_decay: 1.0547383621352041e-08
+optuna:
+  n_trials: 100
+  timeout: null
+  pruner:
+    type: median
+    n_startup_trials: 5
+    n_warmup_steps: 10
+    interval_steps: 1
+  sampler:
+    type: tpe
+    seed: 42
+    n_startup_trials: 10
+  search_space:
+    lr:
+      type: loguniform
+      low: 5.0e-05
+      high: 0.001
+    d_embed:
+      type: categorical
+      choices:
+      - 64
+      - 128
+      - 256
+    dropout:
+      type: uniform
+      low: 0.08
+      high: 0.28
+    n_hgt_layers:
+      type: int
+      low: 2
+      high: 2
+    beta:
+      type: uniform
+      low: 0.03
+      high: 0.6
+    weight_decay:
+      type: loguniform
+      low: 5.0e-05
+      high: 0.003
+    batch_size:
+      type: categorical
+      choices:
+      - 16
+    n_heads:
+      type: categorical
+      choices:
+      - 2
+      - 4
+      - 8
+    n_inducing:
+      type: categorical
+      choices:
+      - 64
+    guide_lr:
+      type: loguniform
+      low: 0.001
+      high: 0.0025
+    fusion_type:
+      type: categorical
+      choices:
+      - concat_normalized
+      - cross_attention
+      - crossfuse
+      - crossfuse_blend
+    fusion_n_heads:
+      type: categorical
+      choices:
+      - 2
+      - 4
+      - 8
+inference:
+  num_posterior_samples: 100
+  extract_attention: true
+  attention_output_path: outputs/attention/
+  batch_size: 32
+paths:
+  output_dir: outputs/
+  checkpoint_dir: outputs/checkpoints/
+  logs_dir: outputs/logs/
+  figures_dir: outputs/figures/
+  predictions_dir: outputs/predictions/
+  attention_dir: outputs/attention/
+error_handling:
+  preprocessing:
+    missing_metadata: warn
+    corrupt_file: fail
+    insufficient_cells: skip
+  training:
+    nan_loss: fail
+    nan_batch: skip
+    max_nan_skip_fraction: 0.1
+  inference:
+    missing_field: skip
+  analysis:
+    insufficient_data: skip
+reproducibility:
+  deterministic: true
+  benchmark: true
+visualization:
+  dpi: 600
+  format: png
+analysis:
+  resilience:
+    n_permutations: 1000
+    apply_fdr_correction: true
+    fdr_method: benjamini_hochberg
+    alpha: 0.05
+    run_ablation_study: false
+  output:
+    save_attention_weights: true
+    save_cell_level_attention: true
+    top_n_genes: 100
+    top_n_interactions: 100

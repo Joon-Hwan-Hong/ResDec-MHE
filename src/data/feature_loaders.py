@@ -87,6 +87,39 @@ def load_targets(
     return out
 
 
+def load_residualized_targets(
+    subject_ids: Iterable[str],
+    cache_dir: Path,
+    fold_idx: int,
+) -> dict[str, float]:
+    """Load fold-specific residualized targets from a cache produced by
+    ``scripts/resdec_mhe/cogn_residual/compute_residual_target.py``.
+
+    Returns dict[ROSMAP_IndividualID -> residual_target_float], skipping
+    any subject whose stored target is NaN.
+
+    Note: the (subject_ids, cache_dir, fold_idx) argument order intentionally
+    differs from ``load_targets``'s (meta_csv, subject_ids, ...) — both
+    helpers preserve their own back-compat contracts with their existing
+    call sites; do not align them speculatively.
+    """
+    cache_dir = Path(cache_dir)
+    npz_path = cache_dir / f"residual_target_fold{fold_idx}.npz"
+    if not npz_path.is_file():
+        raise FileNotFoundError(
+            f"residual target cache not found at {npz_path}. "
+            f"Run scripts/resdec_mhe/cogn_residual/compute_residual_target.py first."
+        )
+    d = np.load(npz_path, allow_pickle=True)
+    sids = d["subject_ids"].tolist()
+    target = d["target"].astype(float).tolist()
+    full_map = dict(zip(sids, target))
+    return {
+        sid: full_map[sid] for sid in subject_ids
+        if sid in full_map and not np.isnan(full_map[sid])
+    }
+
+
 def compute_age_stats_from_training(
     meta_csv: Path,
     train_subject_ids: Iterable[str],

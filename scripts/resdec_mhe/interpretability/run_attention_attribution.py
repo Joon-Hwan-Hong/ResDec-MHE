@@ -204,6 +204,10 @@ def attribute_one_fold(args: argparse.Namespace, fold: int,
     OmegaConf.set_struct(cfg, False)
     cfg.model.head.type = "deterministic"
     cfg.data.fold = int(fold)
+    if getattr(args, "metadata_path", None) is not None:
+        cfg.data.metadata_path = str(args.metadata_path)
+    if getattr(args, "precomputed_dir", None) is not None:
+        cfg.data.precomputed_dir = str(args.precomputed_dir)
 
     fold_dir = Path(args.pred_root) / f"fold{fold}"
     ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
@@ -371,6 +375,10 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument("--top-k", type=int, default=10)
+    p.add_argument("--metadata-path", type=Path, default=None,
+                   help="Override cfg.data.metadata_path (variant pipelines).")
+    p.add_argument("--precomputed-dir", type=Path, default=None,
+                   help="Override cfg.data.precomputed_dir.")
     return p
 
 

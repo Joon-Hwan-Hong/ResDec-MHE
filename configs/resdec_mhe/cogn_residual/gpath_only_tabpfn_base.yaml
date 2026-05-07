@@ -1,0 +1,35 @@
+# ResDec-MHE on gpath-residualized cognition. Residual base: TabPFN-2.6 alone.
+
+experiment:
+  run_name: "cogn_residual_gpath_only_tabpfn_base_seed42"
+
+model:
+  n_genes: 4785
+  n_cell_types: 31
+  resdec_head:
+    d_metadata: 8
+    n_heads: 4
+    n_stages: 1
+    aux_lambdas: [1.0]
+    use_diff_attn: false
+
+training:
+  lr: 0.0015
+  weight_decay: 5.6e-6
+  max_epochs: 20
+  early_stopping:
+    patience: 5
+    min_epochs: 3
+    min_delta: 0.0
+    monitor: "val/r2"
+    mode: "max"
+
+data:
+  dataloader:
+    batch_size: 24
+  use_cached_embeddings: false
+  residualize_against:
+    axes: ["gpath"]
+    cache_dir: "outputs/canonical/cogn_residual/gpath_only/cache"
+  tabpfn_oof_dir: outputs/canonical/cogn_residual/gpath_only/tabpfn_cache
+  tabpfn_outer_dir: outputs/canonical/cogn_residual/gpath_only/tabpfn_cache

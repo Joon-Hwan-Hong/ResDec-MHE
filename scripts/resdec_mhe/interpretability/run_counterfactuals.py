@@ -478,6 +478,22 @@ def main():
             "outputs/canonical/interpretability/counterfactuals",
         ),
     )
+    p.add_argument(
+        "--metadata-path",
+        default=os.environ.get("CF_METADATA_PATH", None),
+        help=(
+            "Override cfg.data.metadata_path (parent dir of metadata.csv). "
+            "Required when configs/default.yaml has the sanitized placeholder."
+        ),
+    )
+    p.add_argument(
+        "--precomputed-dir",
+        default=os.environ.get("CF_PRECOMPUTED_DIR", None),
+        help=(
+            "Override cfg.data.precomputed_dir. Required when configs/default.yaml "
+            "has the sanitized placeholder."
+        ),
+    )
     p.add_argument("--n-resilient", type=int, default=10)
     p.add_argument("--n-vulnerable", type=int, default=10)
     p.add_argument("--max-steps", type=int, default=1000,
@@ -544,6 +560,10 @@ def main():
     OmegaConf.set_struct(cfg, False)
     cfg.model.head.type = "deterministic"
     cfg.data.fold = int(args.fold)
+    if args.metadata_path is not None:
+        cfg.data.metadata_path = args.metadata_path
+    if args.precomputed_dir is not None:
+        cfg.data.precomputed_dir = args.precomputed_dir
 
     fold_dir = Path(args.canonical_dir) / f"fold{args.fold}"
     ckpt_path = pick_max_r2_ckpt(fold_dir / "checkpoints")
