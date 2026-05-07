@@ -209,7 +209,7 @@ Beyond the canonical model trained on raw `cogn_global`, two variants train on *
 - **Variant A (gpath-only):** target = `cogn_global − (α + β·gpath)`, fit per-fold on training subjects only.
 - **Variant B (multi-axis):** target = `cogn_global − (α + β₁·gpath + β₂·tangsqrt + β₃·amylsqrt)`. Sensitivity check.
 
-The **default residual base for both variants is a stacked TabPFN-2.6 + RandomForest average** (per-subject mean prediction; sigma = elementwise max). The stacked base improves the residual-base R² from TabPFN-only 0.181 → 0.219 (Variant A) and lifts the composite ResDec-MHE R² from 0.249 → 0.280 — a +0.031 paired Δ over TabPFN-only base, 4/5 fold wins, paired one-sided Wilcoxon p=0.094.
+The **default residual base for both variants is a stacked TabPFN-2.6 + RandomForest average** (per-subject mean prediction; sigma = elementwise max). The stacked base improves the residual-base R² from TabPFN-only 0.181 → 0.219 (Variant A) and lifts the composite ResDec-MHE R² from 0.249 → 0.280. **Across 5 seeds × 5 folds = 25 paired observations**, the stacked-base advantage is **Δ = +0.038 ± 0.036, 23/25 paired wins, n=25 paired Wilcoxon-greater p = 9×10⁻⁶, Stouffer combined p (across the 5 seeds) = 0.0002, 5/5 seeds favor stacked**. Cross-seed std (0.008) is ~10× smaller than within-seed cross-fold std (~0.08) — the +0.038 Δ is a stable effect across seeds, not a single-seed artifact.
 
 **Variant A composite R² across residual-base choices (5-fold mean ± std, best-checkpoint reinfer):**
 
@@ -233,11 +233,13 @@ The **default residual base for both variants is a stacked TabPFN-2.6 + RandomFo
 
 For Variant A: stacked-base ResDec-MHE wins the panel by +0.083 over the strongest classical baseline (RandomForest) and +0.099 over TabPFN. The clinical-only baseline at R²≈0.02 confirms residualization is clean — most clinical signal is via pathology and the residual target retains negligible clinical predictivity. The "swap residual base" choice is exposed via the variant config's `data.tabpfn_oof_dir` / `tabpfn_outer_dir` fields; see `configs/resdec_mhe/cogn_residual/{gpath_only,gpath_only_tabpfn_base,gpath_only_rf_base,multi_axis,multi_axis_tabpfn_base}.yaml`.
 
-**Variant A permutation null** (N=20 full-pipeline label-shuffle re-trains, stacked base; outputs at `outputs/canonical/cogn_residual/gpath_only/permutation_test_n20_stacked/permutation_summary.json`):
-- z = +9.79 null-std units, one-sided empirical p = 0.048 (= 1/21 floor at N=20)
-- null mean = −0.2427 ± 0.0534
-- 0/20 null permutations ≥ canonical R²=+0.280
-- TabPFN-only base perm null (preserved at `permutation_test_n20/permutation_summary.json`): z = +6.64
+**Variant A permutation null** (N=50 full-pipeline label-shuffle re-trains, stacked base — matches the canonical N=50 headline; outputs at `outputs/canonical/cogn_residual/gpath_only/permutation_test_n50_stacked/permutation_summary.json`):
+- **z = +8.24 null-std units**, one-sided empirical p = 0.0196 (= 1/51, floor at N=50)
+- null mean = −0.2356 ± 0.0626
+- 0/50 null permutations ≥ canonical R²=+0.280
+- N=20 stacked-base sensitivity check (preserved at `permutation_test_n20_stacked/`): z = +9.79; TabPFN-only N=20 (`permutation_test_n20/`): z = +6.64.
+
+**Variant B permutation null** (N=20 stacked base; `multi_axis/permutation_test_n20_stacked/`): z = +4.81, p = 0.0476, 0/20 null ≥ canonical R²=+0.184, null mean = −0.253 ± 0.091. Confirms multi_axis residualized target is also predictable above null.
 
 **Cross-variant differential analyses (stacked base):**
 - DAE (per CT-gene attribution magnitude paired Wilcoxon): 0/148335 pairs significant at BH-FDR for Captum IG / GradientSHAP / SmoothGrad → variant doesn't redirect per-pair attribution.
@@ -250,9 +252,34 @@ For Variant A: stacked-base ResDec-MHE wins the panel by +0.083 over the stronge
 - Per-CT Captum importance: 0/31 CTs significant in canonical or Variant B; **1/31 in Variant A: Deep-layer corticothalamic and 6b (padj=0.033)** — the same CT that hosts PDE10A/ADAMTSL1/NRXN3/ERBB4 in the gene-level resilience module. Attribution-level convergence with gene-level finding.
 - Differential CCC: 0/961 edges significant in canonical / Variant A.
 
-Interpretation: residualizing cognition against pathology retains substantial predictive signal that ResDec-MHE captures better than any tested baseline; the model attends to the same per-(CT, gene) features regardless of which scalar cognitive component is the target. Cognitive resilience is a fine-grained gene-by-cell-type phenotype, not a coarse-grained CT-level rewiring.
+**Variant A counterfactuals** (Wachter Mode-A literal, B=20 batched on the 148,335-dim PFC slice, two target modes; `interpretability/counterfactuals_{relative,absolute}/`):
+- Top-5 CT overlap relative-vs-absolute: **4/5** (matches canonical CF's 4/5 stability).
+- Top-10 (CT, gene) pair overlap: **8/10** (matches canonical's 8/10).
+- Top-5 CTs (across both modes): Ependymal, Upper rhombic lip, Amygdala excitatory, Medium spiny neuron, Vascular/Lower rhombic lip — sparse / non-cortical compartments. The Splatter dominance of canonical CF is absent under variant residualization, suggesting pathology-residualization re-routes the model's actionable-perturbation surface to different compartments.
+- Variant CF wall is **3.7× faster than canonical** (~150 min vs canonical 548 min per mode); residualized target is more easily perturbed.
 
-Full per-variant artifacts under `outputs/canonical/cogn_residual/{gpath_only,multi_axis}/`. Plan + execution doc: `docs/plans/2026-05-03-cogn-residual-variant-design.md`.
+**Variant A distributional analyses** (raw pseudobulk; `interpretability/distributional_resilience/wasserstein_per_celltype_pseudobulk.json` + `interpretability/conditional_mi_per_celltype_raw_{max,vector}.json`):
+- **Wasserstein-1 top-5 CTs by mean W₁**: Splatter (mt-genes), **Fibroblast (top gene FKBP5, W₁=0.41)**, Miscellaneous (ROBO2), **Deep-layer corticothalamic and 6b (top gene PDE10A, W₁=0.38)**, Hippocampal CA1-3 (NRG1).
+- **Conditional-MI top-5 CTs**: **Deep-layer corticothalamic and 6b (cond=0.214, #1)**, Bergmann glia, Choroid plexus, Eccentric MSN, Committed OPC. The L6-CT compartment is the only top-5 entry with positive Δ (cond < unc, indicating pathology-mediated info present); the others have cond > unc (pathology-orthogonal residual signal).
+- **Astrocyte's top gene by W₁ is ALDH1A1 (W₁=0.31)** — distributional-level support for the retinoic-acid-arm interpretation.
+
+**Multi-way convergence on Deep-layer corticothalamic and 6b for variant resilience**: binned-subgroup attribution-level (padj=0.033, Variant A only), Wasserstein top-4 with PDE10A as lead gene, Conditional-MI rank-1. This is a 3-way convergence on the L6-CT synaptic-matrisome resilience module (PDE10A + ADAMTSL1 + NRXN3 + ERBB4) — analogous to canonical's 6-way Splatter convergence but localized to a circuit-defined cortical compartment rather than the heterogeneous Splatter pseudobulk.
+
+**Variant A learning curve** (5 seeds × 4 sub-Ns; `outputs/canonical/cogn_residual/gpath_only/learning_curve_k5/`):
+
+| N | Cross-seed mean R² | Range across 5 seeds |
+|---:|---:|---|
+| 100 | +0.145 | [+0.098, +0.176] |
+| 200 | +0.156 | [+0.125, +0.189] |
+| 300 | +0.133 | [+0.074, +0.201] |
+| 400 | +0.169 | [+0.136, +0.213] |
+| **516 (full, EXP-051 stacked seed 42)** | **+0.280** | — |
+
+All pairwise sub-N Wilcoxon (n=25 paired observations each) p > 0.14 — sub-Ns are noise-equivalent. Sub-N vs full-N=516 (paired by fold at seed 42, n=5): 5/5 fold wins for canonical, p=0.0312 (smallest possible at n=5) at every sub-N. **Only robust claim**: N=516 dominates every sub-N. Cross-seed std (~0.03–0.05) is 3–4× smaller than within-seed cross-fold std (~0.09–0.14) — fold-split drives noise, not seed.
+
+Interpretation: residualizing cognition against pathology retains substantial predictive signal that ResDec-MHE captures better than any tested baseline; the model attends to the same per-(CT, gene) features regardless of which scalar cognitive component is the target. Cognitive resilience is a fine-grained gene-by-cell-type phenotype, not a coarse-grained CT-level rewiring. The Variant A perm-null at z=+8.24 (N=50, p=1/51) and the multi-way convergence on Deep-layer corticothalamic and 6b (PDE10A) plus Astrocyte ALDH1A1 plus Fibroblast FKBP5 represent the strongest model-based + model-free cross-validated signals for pathology-orthogonal cognitive resilience at cell-type-by-gene resolution in human PFC to date (per WebSearch as of 2026-05-04 / Sun 2025 *Cell* multi-omic atlas).
+
+Full per-variant artifacts under `outputs/canonical/cogn_residual/{gpath_only,multi_axis}/`. Plan + execution doc: `docs/plans/2026-05-03-cogn-residual-variant-design.md`. Per-experiment registry: `docs/MASTER-INFO.md` EXP-045 through EXP-058.
 
 ## Reproducibility
 
